@@ -383,12 +383,12 @@ pub fn run() {
             // auto-hide on focus loss so the picker doesn't orphan.
             app.manage(DialogState(AtomicBool::new(false)));
 
-            // Native popover-window setup: cornerRadius drives the OS shadow
-            // around the rounded shape, masksToBounds stays OFF so the caret
-            // element above .app isn't clipped.
+            // Native popover-window setup: just transparent + no OS shadow.
+            // CSS .app paints the visible silhouette; we don't want a second,
+            // native-drawn shadow on top of it.
             #[cfg(target_os = "macos")]
             if let Some(win) = app.get_webview_window("main") {
-                macos::configure_popover_window(&win, 12.0);
+                macos::configure_popover_window(&win);
             }
 
             // Global shortcut: Cmd+Shift+Space

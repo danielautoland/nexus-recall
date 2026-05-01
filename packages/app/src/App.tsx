@@ -97,13 +97,13 @@ export function App() {
   };
 
   return (
-    <div className="popover-shell">
+    <div
+      className={faded ? "popover-shell faded" : "popover-shell"}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="caret" aria-hidden="true" />
-      <div
-        className={faded ? "app faded" : "app"}
-        onMouseEnter={onMouseEnter}
-        onMouseLeave={onMouseLeave}
-      >
+      <div className="app">
         <Titlebar
           vaultSize={vaultSize}
           clipboardCount={clipboardCount}

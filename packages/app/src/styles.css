@@ -29,8 +29,10 @@ body {
   overflow: hidden;
 }
 
-/* Outer shell holds caret + main rounded card. Reserve caret height on top
-   so we can draw the arrow pointing up at the tray icon. */
+/* The shell is invisible — pure layout. No background, no shadow,
+   no filter. Its only job is to reserve caret-area at the top and
+   give .app a containing block. The popover the user SEES is .app:
+   one rounded box with one shadow. Nothing on top, nothing around. */
 .popover-shell {
   position: relative;
   height: 100vh;
@@ -38,8 +40,16 @@ body {
   padding-top: var(--caret-size);
   display: flex;
   flex-direction: column;
+  --popover-opacity: 1;
 }
 
+.popover-shell.faded {
+  --popover-opacity: 0.10;
+}
+
+/* Caret sits in the reserved area above .app. Its color matches the
+   titlebar so it reads as a continuation of the popover, not a separate
+   element. z-index keeps it painted above .app's shadow halo. */
 .caret {
   position: absolute;
   top: 0;
@@ -51,9 +61,13 @@ body {
   border-right: var(--caret-size) solid transparent;
   border-bottom: var(--caret-size) solid var(--titlebar-top);
   pointer-events: none;
-  z-index: 2;
+  z-index: 100;
 }
 
+/* The popover itself. One element, one shape. The ambient shadow is
+   drawn by macOS (setHasShadow: true on the NSWindow) around the
+   opaque silhouette — so we don't add a CSS box-shadow on top, which
+   would double up on the OS shadow. */
 .app {
   flex: 1;
   display: flex;
@@ -61,14 +75,14 @@ body {
   background: var(--popover-bg);
   border-radius: var(--popover-radius);
   overflow: hidden;
-  box-shadow:
-    0 16px 44px rgba(0, 0, 0, 0.5),
-    0 4px 10px rgba(0, 0, 0, 0.32);
-  transition: opacity 280ms ease;
 }
 
-.app.faded {
-  opacity: 0.10;
+/* The fading layer: content sits inside .app, opacity is driven by the
+   --popover-opacity var on the shell. The container's silhouette and
+   shadow stay rock-solid; only what's *inside* the silhouette dims. */
+.app > * {
+  opacity: var(--popover-opacity);
+  transition: opacity 280ms ease;
 }
 
 .titlebar {
