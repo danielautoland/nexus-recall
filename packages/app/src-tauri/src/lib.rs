@@ -1,5 +1,7 @@
 mod bridge;
 mod clipboard;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use bridge::Bridge;
 use clipboard::{ClipboardItem, Store};
@@ -279,11 +281,13 @@ pub fn run() {
             // Pin state — managed across commands and the focus handler
             app.manage(PinState(AtomicBool::new(false)));
 
-            // No native corner-radius mask — that was clipping the OS shadow
-            // to a rectangle and chewing up the caret. With transparent +
-            // macOSPrivateApi the WebView is fully see-through, so the CSS
-            // rounded .app box plus its own box-shadow paints the entire
-            // popover silhouette by itself.
+            // Native popover-window setup: cornerRadius drives the OS shadow
+            // around the rounded shape, masksToBounds stays OFF so the caret
+            // element above .app isn't clipped.
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                macos::configure_popover_window(&win, 12.0);
+            }
 
             // Global shortcut: Cmd+Shift+Space
             #[cfg(desktop)]
