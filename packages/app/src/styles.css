@@ -1,0 +1,131 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-size: 13px;
+  color: #e6e6e6;
+  background: #1a1a1c;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body, html, #root {
+  height: 100%;
+  width: 100%;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+  gap: 10px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+header h1 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+}
+
+.vault-size {
+  font-size: 11px;
+  color: #888;
+}
+
+input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #2a2a2d;
+  border: 1px solid #3a3a3e;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+
+input:focus {
+  border-color: #5e6ad2;
+}
+
+.error {
+  padding: 8px 10px;
+  background: #3a1a1a;
+  border: 1px solid #6a2a2a;
+  border-radius: 6px;
+  color: #ff8a8a;
+  font-size: 12px;
+}
+
+.hits {
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hits li {
+  padding: 8px 10px;
+  background: #232326;
+  border: 1px solid #2e2e32;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.hits li:hover {
+  background: #2a2a2e;
+  border-color: #3a3a3e;
+}
+
+.hit-title {
+  font-weight: 500;
+  color: #f0f0f0;
+  margin-bottom: 4px;
+}
+
+.hit-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.type {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #2e2e32;
+  color: #aaa;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.type-lesson { color: #ffb86c; }
+.type-preference, .type-user-preference { color: #8be9fd; }
+.type-decision { color: #bd93f9; }
+.type-project-fact { color: #50fa7b; }
+.type-workflow { color: #f1fa8c; }
+.type-meta-working { color: #ff79c6; }
+
+.scope { color: #888; }
+.score { color: #555; margin-left: auto; }
+
+.hit-summary {
+  font-size: 12px;
+  color: #b0b0b0;
+  line-height: 1.4;
+}
