@@ -124,6 +124,36 @@ Auto-set by the save tool.
 - `replaces: <id>` — supersedes another memory
 - `superseded_by: <id>` — soft-replaced by a newer memory
 
+#### Optional augmentation fields (added during migration, 2026-05-01)
+
+These were introduced when migrating Daniel's existing carnexus memorys and proved useful enough to keep in the schema.
+
+##### `affects_files` (array of strings, optional)
+Concrete file paths this memory references. Used by the `PreToolUse` Write/Edit hook: when Claude is about to touch one of these files, this memory's relevance is boosted.
+
+```yaml
+affects_files:
+  - frontend/src/components/shared/SwapCardToggle.js
+  - frontend/src/styles/styleguide.css
+```
+
+##### `status` (string, optional)
+For project-fact / decision memorys with state. Free-form short token, but conventional values:
+
+| value | meaning |
+|---|---|
+| `stable` | well-established, unlikely to change |
+| `in-progress` | actively being built |
+| `partial` | partially implemented, some pieces still open |
+| `planned` | spec exists, no implementation yet |
+| `open` | known issue, not yet addressed |
+| `removed-but-reversible` | feature was removed but the code path is preserved |
+
+##### `issues` (array of strings, optional)
+GitHub issue numbers this memory tracks (e.g., `["#262", "#159"]`). Useful for cross-referencing during planning.
+
+The schema will continue to grow ad-hoc when real usage uncovers gaps. New fields should be added here in this doc with their semantics, not silently introduced into individual memorys.
+
 ## Body
 
 Full markdown. Recommended structure:
