@@ -1,5 +1,6 @@
 mod bridge;
 mod clipboard;
+mod config;
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -18,16 +19,45 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// When pinned, the popover stays visible on focus loss and is alwaysOnTop.
 pub struct PinState(pub AtomicBool);
 
-/// Optional because the bridge can fail to spawn (no NEXUS_VAULT_PATH set,
-/// node not found, etc). The clipboard tab still works without it.
-pub struct BridgeState(pub Option<Arc<Bridge>>);
+/// Holds the live bridge under a Mutex so we can swap it out when the
+/// user picks (or changes) the vault folder at runtime.
+pub struct BridgeState(pub std::sync::Mutex<Option<Arc<Bridge>>>);
+
+impl BridgeState {
+    fn current(&self) -> Option<Arc<Bridge>> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+    fn set(&self, new: Option<Arc<Bridge>>) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = new;
+        }
+    }
+}
+
+fn try_spawn_bridge(vault: &str) -> Option<Arc<Bridge>> {
+    let script = bridge::dev_script_path();
+    match Bridge::start("node", &script, vault) {
+        Ok(b) => {
+            eprintln!("[bridge] spawned, vault={}", vault);
+            Some(b)
+        }
+        Err(e) => {
+            eprintln!("[bridge] FAILED to spawn: {}", e);
+            None
+        }
+    }
+}
 
 #[tauri::command]
 async fn vault_status(state: State<'_, BridgeState>) -> Result<Value, String> {
-    let Some(bridge) = state.0.clone() else {
-        return Ok(json!({ "size": 0, "error": "vault not configured (set NEXUS_VAULT_PATH)" }));
+    let Some(bridge) = state.current() else {
+        return Ok(json!({ "size": 0, "configured": false }));
     };
-    bridge.request("vault_status", json!({})).await
+    let mut v = bridge.request("vault_status", json!({})).await?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("configured".into(), Value::Bool(true));
+    }
+    Ok(v)
 }
 
 #[tauri::command]
@@ -38,8 +68,8 @@ async fn recall(
     scope: Option<String>,
     r#type: Option<String>,
 ) -> Result<Value, String> {
-    let Some(bridge) = state.0.clone() else {
-        return Err("vault not configured (set NEXUS_VAULT_PATH and restart)".to_string());
+    let Some(bridge) = state.current() else {
+        return Err("vault not configured".to_string());
     };
     bridge
         .request(
@@ -54,10 +84,44 @@ async fn load_memory(
     state: State<'_, BridgeState>,
     id: String,
 ) -> Result<Value, String> {
-    let Some(bridge) = state.0.clone() else {
+    let Some(bridge) = state.current() else {
         return Err("vault not configured".to_string());
     };
     bridge.request("load_memory", json!({ "id": id })).await
+}
+
+#[tauri::command]
+fn app_config_get() -> Value {
+    let cfg = config::load();
+    json!({
+        "vault_path": cfg.vault_path,
+        "env_vault_path": std::env::var("NEXUS_VAULT_PATH").ok(),
+    })
+}
+
+#[tauri::command]
+fn app_config_set_vault(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    path: String,
+) -> Result<Value, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    if !std::path::Path::new(trimmed).is_dir() {
+        return Err(format!("not a directory: {}", trimmed));
+    }
+    let mut cfg = config::load();
+    cfg.vault_path = Some(trimmed.to_string());
+    config::save(&cfg)?;
+
+    // Replace the bridge with a fresh one pointing at the new vault.
+    let new_bridge = try_spawn_bridge(trimmed);
+    state.set(new_bridge.clone());
+    let configured = new_bridge.is_some();
+    let _ = app.emit("vault:reconfigured", json!({ "vault_path": trimmed, "configured": configured }));
+    Ok(json!({ "vault_path": trimmed, "configured": configured }))
 }
 
 #[tauri::command]
@@ -179,10 +243,13 @@ fn toggle_main_window(app: &AppHandle) {
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             vault_status,
             recall,
             load_memory,
+            app_config_get,
+            app_config_set_vault,
             clipboard_history,
             clipboard_count,
             clipboard_delete,
@@ -222,27 +289,11 @@ pub fn run() {
             clipboard::spawn_watcher(store.clone(), app.handle().clone());
             app.manage(store);
 
-            // Bridge to @nexus-recall/core (Node sidecar)
-            let bridge = match std::env::var("NEXUS_VAULT_PATH") {
-                Ok(vault) if !vault.is_empty() => {
-                    let script = bridge::dev_script_path();
-                    match Bridge::start("node", &script, &vault) {
-                        Ok(b) => {
-                            eprintln!("[bridge] spawned, vault={}", vault);
-                            Some(b)
-                        }
-                        Err(e) => {
-                            eprintln!("[bridge] FAILED to spawn: {}", e);
-                            None
-                        }
-                    }
-                }
-                _ => {
-                    eprintln!("[bridge] NEXUS_VAULT_PATH not set — memory tab disabled");
-                    None
-                }
-            };
-            app.manage(BridgeState(bridge));
+            // Bridge to @nexus-recall/core (Node sidecar) — env wins, then config.json
+            let bridge = config::resolve_vault_path()
+                .as_deref()
+                .and_then(try_spawn_bridge);
+            app.manage(BridgeState(std::sync::Mutex::new(bridge)));
 
             // Tray
             let show_item = MenuItem::with_id(app, "show", "Show Nexus", true, None::<&str>)?;

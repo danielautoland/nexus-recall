@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 
 interface RecallHit {
   id: string;
@@ -10,12 +12,52 @@ interface RecallHit {
   score: number;
 }
 
+interface VaultStatus {
+  size?: number;
+  configured?: boolean;
+}
+
 export function MemoryTab() {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<RecallHit[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const s = await invoke<VaultStatus>("vault_status");
+      setConfigured(!!s.configured);
+    } catch {
+      setConfigured(false);
+    }
+    try {
+      const cfg = await invoke<{ vault_path: string | null; env_vault_path: string | null }>(
+        "app_config_get",
+      );
+      setVaultPath(cfg.env_vault_path ?? cfg.vault_path);
+    } catch {
+      setVaultPath(null);
+    }
+  }, []);
 
   useEffect(() => {
+    refreshStatus();
+    let unlistenFn: (() => void) | null = null;
+    listen("vault:reconfigured", () => refreshStatus()).then((un) => {
+      unlistenFn = un;
+    });
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (!configured) {
+      setHits([]);
+      return;
+    }
     if (!query.trim()) {
       setHits([]);
       setError(null);
@@ -30,7 +72,60 @@ export function MemoryTab() {
         .catch((e) => setError(String(e)));
     }, 80);
     return () => clearTimeout(handle);
-  }, [query]);
+  }, [query, configured]);
+
+  const chooseFolder = async () => {
+    setBusy(true);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose your vault folder (containing .md memorys)",
+      });
+      if (!selected) return;
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      const result = await invoke<{ vault_path: string; configured: boolean }>(
+        "app_config_set_vault",
+        { path },
+      );
+      setVaultPath(result.vault_path);
+      setConfigured(result.configured);
+      if (!result.configured) {
+        setError("vault selected but bridge failed to start — check logs");
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (configured === null) {
+    return <div className="empty">loading…</div>;
+  }
+
+  if (!configured) {
+    return (
+      <div className="setup">
+        <div className="setup-card">
+          <h2>Choose your vault</h2>
+          <p>
+            Nexus indexes a folder of <code>.md</code> memorys with YAML
+            frontmatter — typically a subfolder of your Obsidian vault.
+          </p>
+          {vaultPath && (
+            <p className="muted">
+              Last set: <code>{vaultPath}</code>
+            </p>
+          )}
+          <button className="primary" onClick={chooseFolder} disabled={busy}>
+            {busy ? "Connecting…" : "Choose folder…"}
+          </button>
+          {error && <div className="error">{error}</div>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
