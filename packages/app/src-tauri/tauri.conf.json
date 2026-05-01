@@ -15,17 +15,18 @@
       {
         "label": "main",
         "title": "Nexus",
-        "width": 520,
-        "height": 600,
+        "width": 460,
+        "height": 560,
         "minWidth": 380,
         "minHeight": 320,
         "resizable": true,
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
         "alwaysOnTop": false,
         "visible": false,
         "skipTaskbar": true,
-        "focus": true
+        "focus": true,
+        "shadow": true
       }
     ],
     "security": {

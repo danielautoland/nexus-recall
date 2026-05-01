@@ -17,37 +17,98 @@ body, html, #root {
   width: 100%;
 }
 
+body {
+  overflow: hidden;
+  border-radius: 10px;
+}
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 12px;
-  gap: 10px;
+  background: #1a1a1c;
+  border-radius: 10px;
+  border: 1px solid #2a2a2e;
+  overflow: hidden;
 }
 
-header {
+.titlebar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #232326;
+  user-select: none;
+  -webkit-user-select: none;
+  background: linear-gradient(to bottom, #1f1f22 0%, #1a1a1c 100%);
 }
 
-header h1 {
-  font-size: 14px;
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+}
+
+.brand {
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: #fff;
 }
 
-.tabs {
+.titlebar-actions {
   display: flex;
   gap: 4px;
+}
+
+.icon-btn {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #888;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-family: inherit;
+}
+
+.icon-btn:hover {
+  background: #2a2a2e;
+  color: #ddd;
+}
+
+.icon-btn.pinned {
+  color: #5e6ad2;
+}
+
+.icon-btn.pinned:hover {
+  color: #8590e8;
+}
+
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 12px;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
 }
 
 .tab {
   background: transparent;
   border: 1px solid transparent;
   color: #888;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 5px;
   font-size: 12px;
   cursor: pointer;

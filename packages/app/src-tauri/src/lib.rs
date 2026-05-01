@@ -4,13 +4,17 @@ mod clipboard;
 use bridge::Bridge;
 use clipboard::{ClipboardItem, Store};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, LogicalPosition, Manager, PhysicalPosition, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+/// When pinned, the popover stays visible on focus loss and is alwaysOnTop.
+pub struct PinState(pub AtomicBool);
 
 /// Optional because the bridge can fail to spawn (no NEXUS_VAULT_PATH set,
 /// node not found, etc). The clipboard tab still works without it.
@@ -82,6 +86,68 @@ fn clipboard_paste_image(store: State<'_, Arc<Store>>, id: i64) -> Result<(), St
     clipboard::paste_image_back(&store, id)
 }
 
+#[tauri::command]
+fn set_pinned(
+    app: AppHandle,
+    pin: State<'_, PinState>,
+    pinned: bool,
+) -> Result<(), String> {
+    pin.0.store(pinned, Ordering::SeqCst);
+    if let Some(win) = app.get_webview_window("main") {
+        win.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_pinned(pin: State<'_, PinState>) -> bool {
+    pin.0.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn hide_window(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Show the window anchored to a screen position (typically the tray-icon
+/// click position). The window opens just below the click, horizontally
+/// centered on it, but clamped to stay on-screen.
+fn show_window_anchored(app: &AppHandle, anchor: PhysicalPosition<f64>) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let logical_anchor = LogicalPosition {
+        x: anchor.x / scale,
+        y: anchor.y / scale,
+    };
+    if let Ok(size) = win.outer_size() {
+        let logical_w = size.width as f64 / scale;
+        let mut x = logical_anchor.x - logical_w / 2.0;
+        // Tray sits at the top of the screen on macOS. Drop the popover
+        // ~6 px below the menubar edge for visual breathing room.
+        let y = logical_anchor.y + 6.0;
+        // Clamp to monitor; rough guard, no Mac-specific wizardry.
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let m_size = monitor.size();
+            let m_w = m_size.width as f64 / scale;
+            if x + logical_w > m_w - 4.0 {
+                x = m_w - logical_w - 4.0;
+            }
+            if x < 4.0 {
+                x = 4.0;
+            }
+        }
+        let _ = win.set_position(LogicalPosition { x, y });
+    }
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
+/// Hotkey toggle: no anchor — open at last position or center if first show.
 fn toggle_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         match win.is_visible() {
@@ -109,6 +175,9 @@ pub fn run() {
             clipboard_delete,
             clipboard_clear,
             clipboard_paste_image,
+            set_pinned,
+            get_pinned,
+            hide_window,
         ]);
 
     #[cfg(desktop)]
@@ -180,13 +249,24 @@ pub fn run() {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        position,
                         ..
                     } = event
                     {
-                        toggle_main_window(tray.app_handle());
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            if win.is_visible().unwrap_or(false) {
+                                let _ = win.hide();
+                                return;
+                            }
+                        }
+                        show_window_anchored(app, position);
                     }
                 })
                 .build(app)?;
+
+            // Pin state — managed across commands and the focus handler
+            app.manage(PinState(AtomicBool::new(false)));
 
             // Global shortcut: Cmd+Shift+Space
             #[cfg(desktop)]
@@ -202,12 +282,24 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 // Hide instead of quit — menubar app stays alive in tray.
                 let _ = window.hide();
                 api.prevent_close();
             }
+            WindowEvent::Focused(false) => {
+                // Auto-hide on focus loss UNLESS pinned.
+                let app = window.app_handle();
+                let pinned = app
+                    .try_state::<PinState>()
+                    .map(|s| s.0.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+                if !pinned && window.label() == "main" {
+                    let _ = window.hide();
+                }
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

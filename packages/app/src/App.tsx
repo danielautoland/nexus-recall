@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Titlebar } from "./Titlebar";
 import { MemoryTab } from "./MemoryTab";
 import { ClipboardTab } from "./ClipboardTab";
 
@@ -17,8 +18,6 @@ export function App() {
       .catch(() => setVaultSize(0));
   }, []);
 
-  // Clipboard count: initial fetch, then update on every "clipboard:changed"
-  // event from the Rust watcher. Safety-net poll every 10s in case events drop.
   useEffect(() => {
     let active = true;
     const tick = () => {
@@ -41,26 +40,15 @@ export function App() {
 
   return (
     <div className="app">
-      <header>
-        <h1>nexus</h1>
-        <nav className="tabs">
-          <button
-            className={tab === "memory" ? "tab active" : "tab"}
-            onClick={() => setTab("memory")}
-          >
-            memory
-            <span className="badge">{vaultSize ?? "…"}</span>
-          </button>
-          <button
-            className={tab === "clipboard" ? "tab active" : "tab"}
-            onClick={() => setTab("clipboard")}
-          >
-            clipboard
-            <span className="badge">{clipboardCount ?? "…"}</span>
-          </button>
-        </nav>
-      </header>
-      {tab === "memory" ? <MemoryTab /> : <ClipboardTab />}
+      <Titlebar
+        vaultSize={vaultSize}
+        clipboardCount={clipboardCount}
+        tab={tab}
+        onTabChange={setTab}
+      />
+      <div className="content">
+        {tab === "memory" ? <MemoryTab /> : <ClipboardTab />}
+      </div>
     </div>
   );
 }
