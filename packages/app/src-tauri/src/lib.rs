@@ -116,7 +116,10 @@ fn apply_vault_path(
     if !std::path::Path::new(trimmed).is_dir() {
         return Err(format!("not a directory: {}", trimmed));
     }
-    // Auto-descend into memorys/ if the user picked the Obsidian vault root.
+    // The vault now scans recursively + filters by memory `type:` frontmatter,
+    // so the user can pick the Obsidian vault root directly. We still call
+    // auto_resolve so existing setups that put memorys/ as a separate folder
+    // keep working without requiring a re-pick.
     let resolved = config::auto_resolve(trimmed);
     let mut cfg = config::load();
     cfg.vault_path = Some(resolved.clone());

@@ -19,5 +19,6 @@ export {
   FrontmatterSchema,
   parseMemory,
   parseMemoryWith,
+  NotAMemoryFile,
 } from "./schema.js";
 export type { Memory, MemoryType, Frontmatter } from "./schema.js";

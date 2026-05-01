@@ -21,6 +21,20 @@ export const MemoryTypeEnum = z.enum([
 ]);
 export type MemoryType = z.infer<typeof MemoryTypeEnum>;
 
+const MEMORY_TYPES: ReadonlySet<string> = new Set(MemoryTypeEnum.options);
+
+/**
+ * Thrown when a markdown file has no `type:` frontmatter that we recognize
+ * as a memory marker. Callers silently ignore these — they're plain Obsidian
+ * notes living next to memorys, not parse errors.
+ */
+export class NotAMemoryFile extends Error {
+  constructor(public readonly filePath: string) {
+    super(`not a memory file: ${filePath}`);
+    this.name = "NotAMemoryFile";
+  }
+}
+
 export const FrontmatterSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
@@ -76,6 +90,17 @@ export function parseMemoryWith(
   mtime: number,
 ): Memory {
   const { data, content } = matter(raw);
+  // Pre-check: if there's no recognizable memory `type:` field, throw a
+  // NotAMemoryFile so the caller can silently skip it. Lets the vault scan
+  // recursively through an Obsidian vault and only pick up memorys.
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("type" in data) ||
+    !MEMORY_TYPES.has(String((data as Record<string, unknown>).type))
+  ) {
+    throw new NotAMemoryFile(filePath);
+  }
   const parsed = FrontmatterSchema.safeParse(data);
   if (!parsed.success) {
     const where = parsed.error.issues
