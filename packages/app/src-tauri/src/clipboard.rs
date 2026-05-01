@@ -20,8 +20,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
-const POLL_INTERVAL_MS: u64 = 700;
+const POLL_INTERVAL_MS: u64 = 250;
 const MAX_CONTENT_LEN: usize = 100_000; // hard cap to keep DB sane
 
 #[derive(Serialize, Clone)]
@@ -129,7 +130,7 @@ impl Store {
     }
 }
 
-pub fn spawn_watcher(store: std::sync::Arc<Store>) {
+pub fn spawn_watcher(store: std::sync::Arc<Store>, app: AppHandle) {
     thread::spawn(move || {
         let mut clipboard = match Clipboard::new() {
             Ok(c) => c,
@@ -138,14 +139,22 @@ pub fn spawn_watcher(store: std::sync::Arc<Store>) {
                 return;
             }
         };
-        let mut last: Option<String> = None;
+        // Seed `last` with whatever's already on the clipboard so we don't
+        // record the first read on app start as a "new copy".
+        let mut last: Option<String> = clipboard.get_text().ok();
         loop {
             thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
             match clipboard.get_text() {
                 Ok(text) => {
                     if last.as_deref() != Some(text.as_str()) {
-                        if let Err(e) = store.upsert(&text) {
-                            eprintln!("[clipboard] upsert failed: {}", e);
+                        match store.upsert(&text) {
+                            Ok(()) => {
+                                // Push event to the UI immediately — no UI polling needed.
+                                if let Err(e) = app.emit("clipboard:changed", ()) {
+                                    eprintln!("[clipboard] emit failed: {}", e);
+                                }
+                            }
+                            Err(e) => eprintln!("[clipboard] upsert failed: {}", e),
                         }
                         last = Some(text);
                     }

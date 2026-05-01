@@ -152,7 +152,7 @@ pub fn run() {
                 eprintln!("[clipboard] store open failed: {}", e);
                 std::io::Error::new(std::io::ErrorKind::Other, e)
             })?);
-            clipboard::spawn_watcher(store.clone());
+            clipboard::spawn_watcher(store.clone(), app.handle().clone());
             app.manage(store);
 
             // Tray

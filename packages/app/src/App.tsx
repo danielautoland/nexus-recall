@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { MemoryTab } from "./MemoryTab";
 import { ClipboardTab } from "./ClipboardTab";
 
@@ -16,7 +17,8 @@ export function App() {
       .catch(() => setVaultSize(0));
   }, []);
 
-  // Refresh clipboard count when on clipboard tab and periodically.
+  // Clipboard count: initial fetch, then update on every "clipboard:changed"
+  // event from the Rust watcher. Safety-net poll every 10s in case events drop.
   useEffect(() => {
     let active = true;
     const tick = () => {
@@ -25,10 +27,15 @@ export function App() {
         .catch(() => {});
     };
     tick();
-    const handle = setInterval(tick, 2000);
+    let unlistenFn: (() => void) | null = null;
+    listen("clipboard:changed", () => tick()).then((un) => {
+      unlistenFn = un;
+    });
+    const handle = setInterval(tick, 10_000);
     return () => {
       active = false;
       clearInterval(handle);
+      if (unlistenFn) unlistenFn();
     };
   }, []);
 

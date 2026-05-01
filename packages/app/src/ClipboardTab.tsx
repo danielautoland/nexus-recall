@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 interface ClipboardItem {
   id: number;
@@ -28,9 +29,18 @@ export function ClipboardTab() {
 
   useEffect(() => {
     load();
-    // The watcher polls at ~700ms — refresh UI ~1.5s so we don't miss copies.
-    const handle = setInterval(load, 1500);
-    return () => clearInterval(handle);
+    // Push-based: the Rust watcher emits "clipboard:changed" right after a
+    // new copy is upserted, so the UI updates instantly with no polling.
+    let unlistenFn: (() => void) | null = null;
+    listen("clipboard:changed", () => load()).then((un) => {
+      unlistenFn = un;
+    });
+    // Tiny safety-net poll in case an event is dropped (rare).
+    const handle = setInterval(load, 5000);
+    return () => {
+      clearInterval(handle);
+      if (unlistenFn) unlistenFn();
+    };
   }, [load]);
 
   const filtered = useMemo(() => {
