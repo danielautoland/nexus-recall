@@ -116,18 +116,20 @@ fn apply_vault_path(
     if !std::path::Path::new(trimmed).is_dir() {
         return Err(format!("not a directory: {}", trimmed));
     }
+    // Auto-descend into memorys/ if the user picked the Obsidian vault root.
+    let resolved = config::auto_resolve(trimmed);
     let mut cfg = config::load();
-    cfg.vault_path = Some(trimmed.to_string());
+    cfg.vault_path = Some(resolved.clone());
     config::save(&cfg)?;
 
-    let new_bridge = try_spawn_bridge(trimmed);
+    let new_bridge = try_spawn_bridge(&resolved);
     state.set(new_bridge.clone());
     let configured = new_bridge.is_some();
     let _ = app.emit(
         "vault:reconfigured",
-        json!({ "vault_path": trimmed, "configured": configured }),
+        json!({ "vault_path": resolved.clone(), "configured": configured }),
     );
-    Ok(json!({ "vault_path": trimmed, "configured": configured }))
+    Ok(json!({ "vault_path": resolved, "configured": configured }))
 }
 
 #[tauri::command]

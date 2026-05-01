@@ -38,11 +38,30 @@ pub fn save(cfg: &Config) -> Result<(), String> {
 }
 
 /// Resolve the effective vault path: env var > config file > None.
+/// Also auto-descends into a `memorys/` subdir if the picked folder is the
+/// Obsidian vault root rather than the memory subfolder itself.
 pub fn resolve_vault_path() -> Option<String> {
-    if let Ok(env) = std::env::var("NEXUS_VAULT_PATH") {
-        if !env.is_empty() {
-            return Some(env);
+    let raw = if let Ok(env) = std::env::var("NEXUS_VAULT_PATH") {
+        if env.is_empty() {
+            None
+        } else {
+            Some(env)
         }
+    } else {
+        load().vault_path.filter(|s| !s.is_empty())
+    };
+    raw.map(|p| auto_resolve(&p))
+}
+
+/// If the path itself is not a vault but contains a `memorys/` subdirectory,
+/// use that. Lets users pick their Obsidian vault root in the folder picker
+/// and have us "do the right thing".
+pub fn auto_resolve(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let memorys_subdir = p.join("memorys");
+    if memorys_subdir.is_dir() {
+        memorys_subdir.to_string_lossy().into_owned()
+    } else {
+        path.to_string()
     }
-    load().vault_path.filter(|s| !s.is_empty())
 }
