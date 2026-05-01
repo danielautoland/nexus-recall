@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
@@ -6,22 +5,23 @@ interface Props {
   clipboardCount: number | null;
   tab: "memory" | "clipboard";
   onTabChange: (t: "memory" | "clipboard") => void;
+  pinned: boolean;
+  onPinnedChange: (p: boolean) => void;
 }
 
-export function Titlebar({ vaultSize, clipboardCount, tab, onTabChange }: Props) {
-  const [pinned, setPinned] = useState(false);
-
-  useEffect(() => {
-    invoke<boolean>("get_pinned")
-      .then(setPinned)
-      .catch(() => {});
-  }, []);
-
+export function Titlebar({
+  vaultSize,
+  clipboardCount,
+  tab,
+  onTabChange,
+  pinned,
+  onPinnedChange,
+}: Props) {
   const togglePin = async () => {
     const next = !pinned;
     try {
       await invoke("set_pinned", { pinned: next });
-      setPinned(next);
+      onPinnedChange(next);
     } catch {
       // ignore
     }

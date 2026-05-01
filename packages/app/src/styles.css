@@ -2,8 +2,12 @@
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   font-size: 13px;
   color: #e6e6e6;
-  background: #1a1a1c;
   -webkit-font-smoothing: antialiased;
+  --caret-x: 50%;
+  --caret-size: 8px;
+  --popover-bg: #1a1a1c;
+  --popover-border: #2a2a2e;
+  --titlebar-top: #1f1f22;
 }
 
 * {
@@ -12,24 +16,59 @@
   padding: 0;
 }
 
-body, html, #root {
+html, body, #root {
   height: 100%;
   width: 100%;
 }
 
+html, body, #root {
+  background: transparent;
+}
+
 body {
   overflow: hidden;
-  border-radius: 10px;
+}
+
+/* Outer shell holds caret + main rounded card. Reserve caret height on top
+   so we can draw the arrow pointing up at the tray icon. */
+.popover-shell {
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  padding-top: var(--caret-size);
+  display: flex;
+  flex-direction: column;
+}
+
+.caret {
+  position: absolute;
+  top: 0;
+  left: var(--caret-x);
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: var(--caret-size) solid transparent;
+  border-right: var(--caret-size) solid transparent;
+  border-bottom: var(--caret-size) solid var(--titlebar-top);
+  filter: drop-shadow(0 -1px 0 var(--popover-border));
+  pointer-events: none;
+  z-index: 2;
 }
 
 .app {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: #1a1a1c;
+  background: var(--popover-bg);
   border-radius: 10px;
-  border: 1px solid #2a2a2e;
+  border: 1px solid var(--popover-border);
   overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  transition: opacity 280ms ease;
+}
+
+.app.faded {
+  opacity: 0.10;
 }
 
 .titlebar {
@@ -40,7 +79,7 @@ body {
   border-bottom: 1px solid #232326;
   user-select: none;
   -webkit-user-select: none;
-  background: linear-gradient(to bottom, #1f1f22 0%, #1a1a1c 100%);
+  background: linear-gradient(to bottom, var(--titlebar-top) 0%, var(--popover-bg) 100%);
 }
 
 .titlebar-left {

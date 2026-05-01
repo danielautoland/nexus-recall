@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, LogicalPosition, Manager, PhysicalPosition, State, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -114,7 +114,9 @@ fn hide_window(app: AppHandle) -> Result<(), String> {
 
 /// Show the window anchored to a screen position (typically the tray-icon
 /// click position). The window opens just below the click, horizontally
-/// centered on it, but clamped to stay on-screen.
+/// centered on it, but clamped to stay on-screen. Emits `popover:anchor`
+/// with the caret's x-position inside the window so the frontend can draw
+/// the arrow pointing back at the tray icon.
 fn show_window_anchored(app: &AppHandle, anchor: PhysicalPosition<f64>) {
     let Some(win) = app.get_webview_window("main") else {
         return;
@@ -124,27 +126,36 @@ fn show_window_anchored(app: &AppHandle, anchor: PhysicalPosition<f64>) {
         x: anchor.x / scale,
         y: anchor.y / scale,
     };
+    let mut window_x_logical = logical_anchor.x; // fallback if size fails
+    let mut window_w_logical = 460.0;
     if let Ok(size) = win.outer_size() {
-        let logical_w = size.width as f64 / scale;
-        let mut x = logical_anchor.x - logical_w / 2.0;
+        window_w_logical = size.width as f64 / scale;
+        let mut x = logical_anchor.x - window_w_logical / 2.0;
         // Tray sits at the top of the screen on macOS. Drop the popover
         // ~6 px below the menubar edge for visual breathing room.
         let y = logical_anchor.y + 6.0;
-        // Clamp to monitor; rough guard, no Mac-specific wizardry.
+        // Clamp to monitor.
         if let Ok(Some(monitor)) = win.current_monitor() {
             let m_size = monitor.size();
             let m_w = m_size.width as f64 / scale;
-            if x + logical_w > m_w - 4.0 {
-                x = m_w - logical_w - 4.0;
+            if x + window_w_logical > m_w - 4.0 {
+                x = m_w - window_w_logical - 4.0;
             }
             if x < 4.0 {
                 x = 4.0;
             }
         }
+        window_x_logical = x;
         let _ = win.set_position(LogicalPosition { x, y });
     }
     let _ = win.show();
     let _ = win.set_focus();
+
+    // Caret-x inside the window = where on the popover the arrow should sit.
+    // Clamp away from the rounded corners so the arrow doesn't hang in space.
+    let raw_caret_x = logical_anchor.x - window_x_logical;
+    let caret_x = raw_caret_x.clamp(20.0, window_w_logical - 20.0);
+    let _ = win.emit("popover:anchor", serde_json::json!({ "x": caret_x }));
 }
 
 /// Hotkey toggle: no anchor — open at last position or center if first show.
