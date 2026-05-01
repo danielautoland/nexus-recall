@@ -19,6 +19,11 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// When pinned, the popover stays visible on focus loss and is alwaysOnTop.
 pub struct PinState(pub AtomicBool);
 
+/// Set to true while a native dialog (folder picker, etc.) is open.
+/// Auto-hide-on-focus-loss is suppressed while this is true, otherwise
+/// opening the picker steals focus → main window hides → picker orphans.
+pub struct DialogState(pub AtomicBool);
+
 /// Holds the live bridge under a Mutex so we can swap it out when the
 /// user picks (or changes) the vault folder at runtime.
 pub struct BridgeState(pub std::sync::Mutex<Option<Arc<Bridge>>>);
@@ -99,11 +104,10 @@ fn app_config_get() -> Value {
     })
 }
 
-#[tauri::command]
-fn app_config_set_vault(
-    app: AppHandle,
-    state: State<'_, BridgeState>,
-    path: String,
+fn apply_vault_path(
+    app: &AppHandle,
+    state: &State<'_, BridgeState>,
+    path: &str,
 ) -> Result<Value, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -116,12 +120,50 @@ fn app_config_set_vault(
     cfg.vault_path = Some(trimmed.to_string());
     config::save(&cfg)?;
 
-    // Replace the bridge with a fresh one pointing at the new vault.
     let new_bridge = try_spawn_bridge(trimmed);
     state.set(new_bridge.clone());
     let configured = new_bridge.is_some();
-    let _ = app.emit("vault:reconfigured", json!({ "vault_path": trimmed, "configured": configured }));
+    let _ = app.emit(
+        "vault:reconfigured",
+        json!({ "vault_path": trimmed, "configured": configured }),
+    );
     Ok(json!({ "vault_path": trimmed, "configured": configured }))
+}
+
+#[tauri::command]
+fn app_config_set_vault(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    path: String,
+) -> Result<Value, String> {
+    apply_vault_path(&app, &state, &path)
+}
+
+#[tauri::command]
+async fn pick_vault_folder(
+    app: AppHandle,
+    state: State<'_, BridgeState>,
+    dialog_state: State<'_, DialogState>,
+) -> Result<Option<Value>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    dialog_state.0.store(true, Ordering::SeqCst);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose your vault folder")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let picked = rx.await.map_err(|_| "dialog cancelled".to_string());
+    dialog_state.0.store(false, Ordering::SeqCst);
+
+    let Some(file_path) = picked? else {
+        return Ok(None); // user cancelled
+    };
+    let path_str = file_path.to_string();
+    let result = apply_vault_path(&app, &state, &path_str)?;
+    Ok(Some(result))
 }
 
 #[tauri::command]
@@ -250,6 +292,7 @@ pub fn run() {
             load_memory,
             app_config_get,
             app_config_set_vault,
+            pick_vault_folder,
             clipboard_history,
             clipboard_count,
             clipboard_delete,
@@ -331,6 +374,9 @@ pub fn run() {
 
             // Pin state — managed across commands and the focus handler
             app.manage(PinState(AtomicBool::new(false)));
+            // Dialog state — true while a native picker is open, suppresses
+            // auto-hide on focus loss so the picker doesn't orphan.
+            app.manage(DialogState(AtomicBool::new(false)));
 
             // Native popover-window setup: cornerRadius drives the OS shadow
             // around the rounded shape, masksToBounds stays OFF so the caret
@@ -361,13 +407,17 @@ pub fn run() {
                 api.prevent_close();
             }
             WindowEvent::Focused(false) => {
-                // Auto-hide on focus loss UNLESS pinned.
+                // Auto-hide on focus loss UNLESS pinned or a dialog is open.
                 let app = window.app_handle();
                 let pinned = app
                     .try_state::<PinState>()
                     .map(|s| s.0.load(Ordering::SeqCst))
                     .unwrap_or(false);
-                if !pinned && window.label() == "main" {
+                let dialog_open = app
+                    .try_state::<DialogState>()
+                    .map(|s| s.0.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+                if !pinned && !dialog_open && window.label() == "main" {
                     let _ = window.hide();
                 }
             }

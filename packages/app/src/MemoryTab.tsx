@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
 
 interface RecallHit {
   id: string;
@@ -77,17 +76,12 @@ export function MemoryTab() {
   const chooseFolder = async () => {
     setBusy(true);
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Choose your vault folder (containing .md memorys)",
-      });
-      if (!selected) return;
-      const path = Array.isArray(selected) ? selected[0] : selected;
-      const result = await invoke<{ vault_path: string; configured: boolean }>(
-        "app_config_set_vault",
-        { path },
+      // Single backend command: opens picker AND applies the result, so the
+      // dialog-open flag stays set across the focus-loss caused by the picker.
+      const result = await invoke<{ vault_path: string; configured: boolean } | null>(
+        "pick_vault_folder",
       );
+      if (!result) return; // user cancelled
       setVaultPath(result.vault_path);
       setConfigured(result.configured);
       if (!result.configured) {
