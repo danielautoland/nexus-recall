@@ -1,5 +1,7 @@
 mod bridge;
 mod clipboard;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use bridge::Bridge;
 use clipboard::{ClipboardItem, Store};
@@ -278,6 +280,13 @@ pub fn run() {
 
             // Pin state — managed across commands and the focus handler
             app.manage(PinState(AtomicBool::new(false)));
+
+            // Round the NSWindow corners natively so macOS clips the
+            // shadow + hit-region to match the CSS shape.
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                macos::apply_window_corner_radius(&win, 22.0);
+            }
 
             // Global shortcut: Cmd+Shift+Space
             #[cfg(desktop)]
