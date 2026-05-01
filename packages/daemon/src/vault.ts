@@ -41,13 +41,28 @@ export class Vault {
   /** Start watching the vault dir. Emits events for add/change/remove. */
   startWatching(): void {
     if (this.watcher) return;
+    // fsevents/kqueue do not fire reliably for files written *into* a
+    // GoogleDrive/iCloud/Dropbox provider mount. Force polling on those.
+    const isCloudMount = /(CloudStorage|Dropbox|iCloud)/i.test(this.root);
     this.watcher = chokidar.watch(`${this.root}/*.md`, {
       ignoreInitial: true,
       awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
+      usePolling: isCloudMount,
+      interval: isCloudMount ? 1500 : undefined,
     });
     this.watcher.on("add", (p) => void this.handleAddOrChange(p, "add"));
     this.watcher.on("change", (p) => void this.handleAddOrChange(p, "change"));
     this.watcher.on("unlink", (p) => this.handleRemove(p));
+  }
+
+  /**
+   * Force re-read of a single file and emit an add/change event.
+   * Use after a known write (e.g. save_memory) so callers don't have to
+   * wait for the watcher — which is unreliable on cloud-storage mounts.
+   */
+  async reindexFile(filePath: string): Promise<void> {
+    const existing = this.filePathToId.has(filePath);
+    await this.handleAddOrChange(filePath, existing ? "change" : "add");
   }
 
   async stop(): Promise<void> {

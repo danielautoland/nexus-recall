@@ -19,6 +19,7 @@ import {
 import { z } from "zod";
 import { Vault } from "./vault.js";
 import { SearchIndex } from "./search.js";
+import { saveMemory, SaveMemoryInput } from "./save.js";
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;
 if (!VAULT_PATH) {
@@ -65,11 +66,28 @@ async function main(): Promise<void> {
       {
         name: "recall",
         description:
-          "Search the memory vault. Returns the top-k matching memorys " +
-          "(id, title, type, scope, summary, score). Always call this " +
-          "BEFORE acting when the user's prompt or your intended action " +
-          "touches a topic that might have a relevant lesson, preference, " +
-          "decision, or project-fact stored.",
+          "Search the memory vault. Returns top-k matching memorys " +
+          "(id, title, type, scope, summary, score). " +
+          "\n\n" +
+          "WHEN TO CALL (recall is part of acting, not a separate step):\n" +
+          "- At session start (once): query for active-project + " +
+          "user-preferences to load durable context.\n" +
+          "- Before writing/editing a file: query with a description of " +
+          "what you are about to write (e.g. 'creating React input with " +
+          "focus styles'). This catches lessons before mistakes.\n" +
+          "- Before giving a multi-step plan or recommendation: query for " +
+          "preferences that shape format/scope.\n" +
+          "- When the user's prompt touches a topic that may have a stored " +
+          "lesson, decision, preference, or project-fact.\n" +
+          "- Before save_memory: query to avoid creating a duplicate.\n" +
+          "\n" +
+          "WHAT TO DO WITH HITS:\n" +
+          "- score >= ~100 with title/recall_when match: load_memory and " +
+          "apply the lesson before acting.\n" +
+          "- score 30-100: read the summary, load if directly relevant.\n" +
+          "- score < 30: usually noise; skip unless the summary is a " +
+          "perfect topic match.\n" +
+          "Never ignore a `lesson` hit with strong recall_when match.",
         inputSchema: {
           type: "object",
           properties: {
@@ -115,6 +133,156 @@ async function main(): Promise<void> {
             },
           },
           required: ["id"],
+        },
+      },
+      {
+        name: "save_memory",
+        description:
+          "Persist a new memory into the vault as a markdown file with YAML " +
+          "frontmatter. This is YOUR long-term memory — save autonomously " +
+          "when a memory-worthy moment occurs, do not wait to be asked.\n" +
+          "\n" +
+          "STRONG SIGNALS — save without confirmation, then 1-line ack:\n" +
+          "- User expresses repetition/frustration about a recurring issue " +
+          "  ('wieder', 'schon wieder', 'wie oft', emphatic caps) → lesson\n" +
+          "- User states an explicit durable rule ('immer X', 'nie Y', 'bei " +
+          "  diesem Projekt nutzen wir Z') → preference / workflow\n" +
+          "- User corrects a recurring tendency in your behavior → " +
+          "  meta-working\n" +
+          "- An architectural decision is finalized after weighing options " +
+          "  → decision\n" +
+          "- User confirms a workflow ('lass uns das immer so machen') → " +
+          "  workflow\n" +
+          "- A bug got fixed after >2 iterations with non-obvious root " +
+          "  cause → lesson (capture the FAILED PATH too, not just the fix)\n" +
+          "\n" +
+          "ANTI-SIGNALS — do NOT save:\n" +
+          "- One-off task descriptions ('baue mir bitte X') — that's a " +
+          "  task, not a memory\n" +
+          "- Speculation, 'maybe' statements, tentative ideas\n" +
+          "- Anything derivable from code/git/CLAUDE.md\n" +
+          "- Sensitive personal data (unless a stable preference)\n" +
+          "- When unsure: default to NOT saving. False saves erode trust.\n" +
+          "\n" +
+          "BEFORE SAVING: call recall() with the title/topic to check for " +
+          "an existing memory you should update (overwrite=true) instead " +
+          "of creating a duplicate.\n" +
+          "\n" +
+          "QUALITY BARS:\n" +
+          "- Title: short, specific, non-generic.\n" +
+          "- Summary (<=400 chars): one sentence with the gist.\n" +
+          "- Body: lead with the rule/fact, then **Why:** (root cause / " +
+          "  reason / incident) and **How to apply:** (when this kicks in). " +
+          "  For lessons, capture the failure path AND the fix.\n" +
+          "- recall_when (CRITICAL — highest-weighted search field): 2-4 " +
+          "  CONCRETE contexts/queries where future-you should be reminded. " +
+          "  'about to write a Tailwind grid' beats 'CSS questions'. Without " +
+          "  good recall_when, the memory is dead weight.\n" +
+          "\n" +
+          "AFTER SAVING: surface a single-line ack to the user, prefixed " +
+          "with `→`: `→ saved: <title> (id: <id>)`. Nothing more.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: {
+              type: "string",
+              description: "Short, specific title (becomes the slug/id).",
+            },
+            type: {
+              type: "string",
+              enum: [
+                "lesson",
+                "preference",
+                "project-fact",
+                "meta-working",
+                "decision",
+                "workflow",
+                "reference",
+                "user-preference",
+              ],
+              description:
+                "Memory type. Use 'lesson' for fixes/gotchas, 'preference' " +
+                "for project-scoped style choices, 'user-preference' for " +
+                "the human's cross-project preferences, 'project-fact' for " +
+                "non-derivable project state, 'decision' for committed " +
+                "design decisions, 'workflow' for recurring procedures.",
+            },
+            summary: {
+              type: "string",
+              description:
+                "One sentence (<=400 chars) capturing the gist — appears in " +
+                "recall() hits.",
+            },
+            body: {
+              type: "string",
+              description:
+                "Full markdown body. Lead with the rule/fact, then explain " +
+                "*why* (the reason/incident) and *how to apply* (when this " +
+                "kicks in). Wikilinks like [[other-memory-id]] are supported.",
+            },
+            topic_path: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Hierarchical topic path, e.g. ['nexus-recall','search','ranking'].",
+            },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Flat tags for filtering, at least one.",
+            },
+            scope: {
+              type: "string",
+              description:
+                "Project/area this memory belongs to, e.g. 'nexus-recall', " +
+                "'carnexus', 'user-preference', 'all-projects'.",
+            },
+            recall_when: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Trigger phrases — situations where this memory should " +
+                "surface. Highest-weighted search field. Be specific: " +
+                "'about to write a Tailwind grid', not 'CSS questions'.",
+            },
+            related: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional ids of related memories (for [[wikilink]] context).",
+            },
+            source: {
+              type: "string",
+              description:
+                "Optional provenance, e.g. 'Daniel, 2026-05-01 after retro'.",
+            },
+            confidence: {
+              type: "number",
+              description:
+                "0-1, default 1. Lower if the lesson is tentative.",
+            },
+            id: {
+              type: "string",
+              description:
+                "Optional explicit id/slug. Default: slugified title.",
+            },
+            overwrite: {
+              type: "boolean",
+              description:
+                "If true, replace an existing memory with the same id. " +
+                "Default false (errors on collision).",
+            },
+          },
+          required: [
+            "title",
+            "type",
+            "summary",
+            "body",
+            "topic_path",
+            "tags",
+            "scope",
+            "recall_when",
+          ],
         },
       },
     ],
@@ -171,6 +339,27 @@ async function main(): Promise<void> {
           },
         ],
       };
+    }
+
+    if (name === "save_memory") {
+      const parsed = SaveMemoryInput.safeParse(args);
+      if (!parsed.success) return errorResult(parsed.error.message);
+      try {
+        const result = await saveMemory(VAULT_PATH!, parsed.data);
+        // Don't trust the watcher on cloud-storage mounts — force-index now
+        // so a follow-up recall() in the same session sees the new memory.
+        await vault.reindexFile(result.file_path);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return errorResult((err as Error).message);
+      }
     }
 
     return errorResult(`unknown tool: ${name}`);
