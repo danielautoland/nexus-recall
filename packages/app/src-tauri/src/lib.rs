@@ -99,6 +99,11 @@ fn clipboard_clear(store: State<'_, Arc<Store>>) -> Result<usize, String> {
     store.clear()
 }
 
+#[tauri::command]
+fn clipboard_paste_image(store: State<'_, Arc<Store>>, id: i64) -> Result<(), String> {
+    clipboard::paste_image_back(&store, id)
+}
+
 fn toggle_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         match win.is_visible() {
@@ -124,6 +129,7 @@ pub fn run() {
             clipboard_count,
             clipboard_delete,
             clipboard_clear,
+            clipboard_paste_image,
         ]);
 
     #[cfg(desktop)]

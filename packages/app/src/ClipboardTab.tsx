@@ -65,6 +65,14 @@ export function ClipboardTab() {
     }
   };
 
+  const copyImageBack = async (id: number) => {
+    try {
+      await invoke("clipboard_paste_image", { id });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
   const remove = async (id: number) => {
     try {
       await invoke("clipboard_delete", { id });
@@ -119,11 +127,16 @@ export function ClipboardTab() {
               ) : (
                 <span className="bytes">{it.content.length}b</span>
               )}
-              {it.content_type !== "image" && (
-                <button className="link" onClick={() => copyBack(it.content)}>
-                  copy
-                </button>
-              )}
+              <button
+                className="link"
+                onClick={() =>
+                  it.content_type === "image"
+                    ? copyImageBack(it.id)
+                    : copyBack(it.content)
+                }
+              >
+                copy
+              </button>
               <button className="link danger" onClick={() => remove(it.id)}>
                 delete
               </button>

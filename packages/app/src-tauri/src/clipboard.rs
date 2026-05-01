@@ -218,6 +218,44 @@ impl Store {
             .unwrap_or(0);
         Ok(n)
     }
+
+    pub fn image_path_for(&self, id: i64) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let path: Option<String> = conn
+            .query_row(
+                "SELECT image_path FROM clipboard_items
+                  WHERE id = ?1 AND content_type = 'image'",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        Ok(path)
+    }
+}
+
+/// Read the on-disk PNG for the given clipboard item back into the system
+/// clipboard. The watcher will see the new contents on its next poll and
+/// bump copy_count via the hash-dedup path.
+pub fn paste_image_back(store: &Store, id: i64) -> Result<(), String> {
+    let path = store
+        .image_path_for(id)?
+        .ok_or_else(|| "item is not an image".to_string())?;
+    let img =
+        image::open(&path).map_err(|e| format!("read png {}: {}", path, e))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let bytes = rgba.into_raw();
+    let mut clipboard = Clipboard::new().map_err(|e| format!("clipboard init: {}", e))?;
+    clipboard
+        .set_image(ImageData {
+            width: w as usize,
+            height: h as usize,
+            bytes: std::borrow::Cow::Owned(bytes),
+        })
+        .map_err(|e| format!("set_image: {}", e))?;
+    Ok(())
 }
 
 pub fn spawn_watcher(store: std::sync::Arc<Store>, app: AppHandle) {
