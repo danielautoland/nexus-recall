@@ -4,9 +4,9 @@
   color: #e6e6e6;
   -webkit-font-smoothing: antialiased;
   --caret-x: 50%;
-  --caret-size: 9px;
+  --caret-size: 8px;
   --popover-bg: #1a1a1c;
-  --popover-radius: 22px;
+  --popover-radius: 12px;
   --titlebar-top: #1f1f22;
 }
 
@@ -62,9 +62,8 @@ body {
   border-radius: var(--popover-radius);
   overflow: hidden;
   box-shadow:
-    0 0 0 0.5px rgba(255, 255, 255, 0.06),
-    0 18px 50px rgba(0, 0, 0, 0.55),
-    0 4px 12px rgba(0, 0, 0, 0.35);
+    0 16px 44px rgba(0, 0, 0, 0.5),
+    0 4px 10px rgba(0, 0, 0, 0.32);
   transition: opacity 280ms ease;
 }
 
