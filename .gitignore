@@ -13,6 +13,9 @@ build/
 .next/
 out/
 
+# Daemon dev artifacts
+packages/daemon/test-vault/
+
 # Environment
 .env
 .env.local
