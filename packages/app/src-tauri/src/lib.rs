@@ -1,8 +1,12 @@
+mod clipboard;
+
+use clipboard::{ClipboardItem, Store};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -72,6 +76,29 @@ fn recall(query: String, _k: Option<usize>) -> Vec<RecallHit> {
         .collect()
 }
 
+#[tauri::command]
+fn clipboard_history(
+    store: State<'_, Arc<Store>>,
+    limit: Option<usize>,
+) -> Result<Vec<ClipboardItem>, String> {
+    store.list(limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn clipboard_count(store: State<'_, Arc<Store>>) -> Result<i64, String> {
+    store.count()
+}
+
+#[tauri::command]
+fn clipboard_delete(store: State<'_, Arc<Store>>, id: i64) -> Result<(), String> {
+    store.delete(id)
+}
+
+#[tauri::command]
+fn clipboard_clear(store: State<'_, Arc<Store>>) -> Result<usize, String> {
+    store.clear()
+}
+
 fn toggle_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         match win.is_visible() {
@@ -90,7 +117,14 @@ fn toggle_main_window(app: &AppHandle) {
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![vault_status, recall]);
+        .invoke_handler(tauri::generate_handler![
+            vault_status,
+            recall,
+            clipboard_history,
+            clipboard_count,
+            clipboard_delete,
+            clipboard_clear,
+        ]);
 
     #[cfg(desktop)]
     {
@@ -113,6 +147,14 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // Clipboard store + background watcher
+            let store = Arc::new(Store::open().map_err(|e| {
+                eprintln!("[clipboard] store open failed: {}", e);
+                std::io::Error::new(std::io::ErrorKind::Other, e)
+            })?);
+            clipboard::spawn_watcher(store.clone());
+            app.manage(store);
+
             // Tray
             let show_item = MenuItem::with_id(app, "show", "Show Nexus", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

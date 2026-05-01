@@ -38,9 +38,125 @@ header h1 {
   color: #fff;
 }
 
-.vault-size {
-  font-size: 11px;
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
   color: #888;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab:hover {
+  color: #ccc;
+  background: #232326;
+}
+
+.tab.active {
+  color: #fff;
+  background: #2a2a2e;
+  border-color: #3a3a3e;
+}
+
+.badge {
+  font-size: 10px;
+  color: #666;
+  padding: 1px 5px;
+  background: #1a1a1c;
+  border-radius: 8px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.tab.active .badge { color: #aaa; background: #1a1a1c; }
+
+.clipboard-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.clipboard-toolbar input { flex: 1; }
+
+.ghost {
+  background: transparent;
+  border: 1px solid #3a3a3e;
+  color: #aaa;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ghost:hover:not(:disabled) {
+  background: #2a2a2e;
+  color: #fff;
+}
+
+.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.clip-item { padding: 8px 10px; }
+.clip-content {
+  font-size: 12px;
+  color: #d8d8d8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SF Mono, Menlo, monospace;
+  margin-bottom: 6px;
+  line-height: 1.5;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.clip-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 11px;
+  color: #777;
+}
+
+.clip-meta .time { color: #999; }
+.clip-meta .count {
+  color: #5e6ad2;
+  font-weight: 500;
+}
+.clip-meta .bytes { color: #555; }
+
+.link {
+  background: transparent;
+  border: none;
+  color: #5e6ad2;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  font-family: inherit;
+  margin-left: auto;
+}
+
+.link:hover { color: #8590e8; }
+
+.link.danger { color: #ff6b6b; margin-left: 0; }
+.link.danger:hover { color: #ff8a8a; }
+
+.empty {
+  color: #555;
+  text-align: center;
+  padding: 24px 8px;
+  font-style: italic;
+  background: transparent !important;
+  border: 1px dashed #2e2e32 !important;
+  cursor: default !important;
 }
 
 input {

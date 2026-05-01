@@ -1,68 +1,59 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { MemoryTab } from "./MemoryTab";
+import { ClipboardTab } from "./ClipboardTab";
 
-interface RecallHit {
-  id: string;
-  title: string;
-  type: string;
-  scope: string;
-  summary: string;
-  score: number;
-}
+type Tab = "memory" | "clipboard";
 
 export function App() {
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<RecallHit[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("memory");
   const [vaultSize, setVaultSize] = useState<number | null>(null);
+  const [clipboardCount, setClipboardCount] = useState<number | null>(null);
 
   useEffect(() => {
     invoke<{ size: number }>("vault_status")
       .then((s) => setVaultSize(s.size))
-      .catch((e) => setError(String(e)));
+      .catch(() => setVaultSize(0));
   }, []);
 
+  // Refresh clipboard count when on clipboard tab and periodically.
   useEffect(() => {
-    if (!query.trim()) {
-      setHits([]);
-      return;
-    }
-    const handle = setTimeout(() => {
-      invoke<RecallHit[]>("recall", { query, k: 10 })
-        .then(setHits)
-        .catch((e) => setError(String(e)));
-    }, 80);
-    return () => clearTimeout(handle);
-  }, [query]);
+    let active = true;
+    const tick = () => {
+      invoke<number>("clipboard_count")
+        .then((n) => active && setClipboardCount(n))
+        .catch(() => {});
+    };
+    tick();
+    const handle = setInterval(tick, 2000);
+    return () => {
+      active = false;
+      clearInterval(handle);
+    };
+  }, []);
 
   return (
     <div className="app">
       <header>
         <h1>nexus</h1>
-        <span className="vault-size">
-          {vaultSize !== null ? `${vaultSize} memorys` : "loading…"}
-        </span>
+        <nav className="tabs">
+          <button
+            className={tab === "memory" ? "tab active" : "tab"}
+            onClick={() => setTab("memory")}
+          >
+            memory
+            <span className="badge">{vaultSize ?? "…"}</span>
+          </button>
+          <button
+            className={tab === "clipboard" ? "tab active" : "tab"}
+            onClick={() => setTab("clipboard")}
+          >
+            clipboard
+            <span className="badge">{clipboardCount ?? "…"}</span>
+          </button>
+        </nav>
       </header>
-      <input
-        autoFocus
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="search your memory…"
-      />
-      {error && <div className="error">{error}</div>}
-      <ul className="hits">
-        {hits.map((h) => (
-          <li key={h.id}>
-            <div className="hit-title">{h.title}</div>
-            <div className="hit-meta">
-              <span className={`type type-${h.type}`}>{h.type}</span>
-              <span className="scope">{h.scope}</span>
-              <span className="score">{h.score.toFixed(1)}</span>
-            </div>
-            <div className="hit-summary">{h.summary}</div>
-          </li>
-        ))}
-      </ul>
+      {tab === "memory" ? <MemoryTab /> : <ClipboardTab />}
     </div>
   );
 }
