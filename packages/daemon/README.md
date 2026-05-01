@@ -73,9 +73,22 @@ npm run check:types     # type-check only
 
 ## Configuration
 
-| env var | required | meaning |
-|---|---|---|
-| `NEXUS_VAULT_PATH` | yes | absolute path to the directory holding `.md` memory files |
+| env var | required | default | meaning |
+|---|---|---|---|
+| `NEXUS_VAULT_PATH` | yes | — | absolute path to the directory holding `.md` memory files |
+| `NEXUS_LOG_PATH` | no | `~/.nexus-recall/logs` | where telemetry JSONL files are written (out-of-vault on purpose, so they're not indexed) |
+| `NEXUS_TELEMETRY` | no | `on` | set to `off` to disable telemetry writes entirely |
+
+### Telemetry
+
+Every `recall`, `load_memory` and `save_memory` call appends one JSON line to `events-YYYY-MM-DD.jsonl` in the log dir. Each daemon process gets a fresh `session_id`; recalls get a `recall_id` and any `load_memory` / `save_memory` within 5 minutes references that id as `follows_recall`. That's enough to compute, after a dogfood week:
+
+- recalls per session, hit counts, top-score distribution, latency p50/p95
+- recall→load_memory follow-through rate (proxy for "was the hint useful?")
+- saves per session, type/scope distribution, % overwrite vs. new
+- save→follows_recall rate (was a duplicate-check done?)
+
+Logs live outside the vault on purpose so the file watcher doesn't index them. Tail one to watch live: `tail -f ~/.nexus-recall/logs/events-$(date +%F).jsonl`.
 
 ## Limitations (v0)
 

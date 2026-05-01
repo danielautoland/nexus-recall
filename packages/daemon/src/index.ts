@@ -20,6 +20,7 @@ import { z } from "zod";
 import { Vault } from "./vault.js";
 import { SearchIndex } from "./search.js";
 import { saveMemory, SaveMemoryInput } from "./save.js";
+import { Telemetry, fireAndForget } from "./telemetry.js";
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;
 if (!VAULT_PATH) {
@@ -55,6 +56,13 @@ async function main(): Promise<void> {
 
   const search = new SearchIndex(vault);
   search.start();
+
+  const telemetry = new Telemetry();
+  if (telemetry.isEnabled()) {
+    console.error(`[nexus-recall] telemetry: enabled (NEXUS_LOG_PATH=${process.env.NEXUS_LOG_PATH ?? "~/.nexus-recall/logs"})`);
+  } else {
+    console.error(`[nexus-recall] telemetry: disabled`);
+  }
 
   const server = new Server(
     { name: "nexus-recall", version: "0.1.0" },
@@ -294,11 +302,28 @@ async function main(): Promise<void> {
     if (name === "recall") {
       const parsed = RecallArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
+      const t0 = Date.now();
       const hits = search.recall(parsed.data.query, {
         k: parsed.data.k,
         scope: parsed.data.scope,
         type: parsed.data.type,
       });
+      const latencyMs = Date.now() - t0;
+      const recallId = telemetry.newRecallId();
+      fireAndForget(
+        telemetry.logRecall({
+          recall_id: recallId,
+          query: parsed.data.query,
+          k: parsed.data.k ?? null,
+          scope: parsed.data.scope ?? null,
+          type: parsed.data.type ?? null,
+          vault_size: vault.size(),
+          hit_count: hits.length,
+          top_score: hits[0]?.score ?? null,
+          hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
+          latency_ms: latencyMs,
+        }),
+      );
       return {
         content: [
           {
@@ -321,6 +346,13 @@ async function main(): Promise<void> {
       const parsed = LoadMemoryArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
       const m = search.loadFull(parsed.data.id);
+      fireAndForget(
+        telemetry.logLoadMemory({
+          id: parsed.data.id,
+          found: !!m,
+          follows_recall: telemetry.recentRecallId(),
+        }),
+      );
       if (!m) return errorResult(`memory not found: ${parsed.data.id}`);
       return {
         content: [
@@ -349,6 +381,20 @@ async function main(): Promise<void> {
         // Don't trust the watcher on cloud-storage mounts — force-index now
         // so a follow-up recall() in the same session sees the new memory.
         await vault.reindexFile(result.file_path);
+        fireAndForget(
+          telemetry.logSaveMemory({
+            id: result.id,
+            type: parsed.data.type,
+            scope: parsed.data.scope,
+            title: parsed.data.title,
+            tag_count: parsed.data.tags.length,
+            recall_when_count: parsed.data.recall_when.length,
+            body_chars: parsed.data.body.length,
+            overwrite: parsed.data.overwrite ?? false,
+            created: result.created,
+            follows_recall: telemetry.recentRecallId(),
+          }),
+        );
         return {
           content: [
             {
