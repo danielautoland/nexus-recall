@@ -9,7 +9,8 @@
     "node": ">=20"
   },
   "bin": {
-    "nexus-recall": "./dist/index.js"
+    "nexus-recall": "./dist/index.js",
+    "nexus-recall-bridge": "./dist/bridge.js"
   },
   "main": "./dist/index.js",
   "scripts": {

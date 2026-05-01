@@ -25,3 +25,4 @@ sha2 = "0.10"
 dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
+tokio = { version = "1", features = ["sync"] }

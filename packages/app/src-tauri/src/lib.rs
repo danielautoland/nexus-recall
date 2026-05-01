@@ -1,7 +1,9 @@
+mod bridge;
 mod clipboard;
 
+use bridge::Bridge;
 use clipboard::{ClipboardItem, Store};
-use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -10,70 +12,46 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-#[derive(Serialize)]
-struct VaultStatus {
-    size: usize,
+/// Optional because the bridge can fail to spawn (no NEXUS_VAULT_PATH set,
+/// node not found, etc). The clipboard tab still works without it.
+pub struct BridgeState(pub Option<Arc<Bridge>>);
+
+#[tauri::command]
+async fn vault_status(state: State<'_, BridgeState>) -> Result<Value, String> {
+    let Some(bridge) = state.0.clone() else {
+        return Ok(json!({ "size": 0, "error": "vault not configured (set NEXUS_VAULT_PATH)" }));
+    };
+    bridge.request("vault_status", json!({})).await
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct RecallHit {
+#[tauri::command]
+async fn recall(
+    state: State<'_, BridgeState>,
+    query: String,
+    k: Option<usize>,
+    scope: Option<String>,
+    r#type: Option<String>,
+) -> Result<Value, String> {
+    let Some(bridge) = state.0.clone() else {
+        return Err("vault not configured (set NEXUS_VAULT_PATH and restart)".to_string());
+    };
+    bridge
+        .request(
+            "recall",
+            json!({ "query": query, "k": k, "scope": scope, "type": r#type }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn load_memory(
+    state: State<'_, BridgeState>,
     id: String,
-    title: String,
-    #[serde(rename = "type")]
-    memory_type: String,
-    scope: String,
-    summary: String,
-    score: f64,
-}
-
-// SPIKE: returns mock data so we can validate the Tauri stack end-to-end
-// (window, tray, hotkey, IPC, frontend rendering) before wiring the real
-// @nexus-recall/core bridge. Bridge lands in the next iteration.
-#[tauri::command]
-fn vault_status() -> VaultStatus {
-    VaultStatus { size: 64 }
-}
-
-#[tauri::command]
-fn recall(query: String, _k: Option<usize>) -> Vec<RecallHit> {
-    if query.trim().is_empty() {
-        return vec![];
-    }
-    let q = query.to_lowercase();
-    let mock: Vec<RecallHit> = vec![
-        RecallHit {
-            id: "mock-scrollbar".into(),
-            title: "Don't stack focus styles on inputs".into(),
-            memory_type: "lesson".into(),
-            scope: "all-projects".into(),
-            summary: "Stacking ring + outline + custom :focus on nested inputs causes double focus rings.".into(),
-            score: 280.5,
-        },
-        RecallHit {
-            id: "mock-no-overengineering".into(),
-            title: "nexus-recall: nicht über-engineeren".into(),
-            memory_type: "preference".into(),
-            scope: "nexus-recall".into(),
-            summary: "Pragmatisch bleiben. Minimum das funktioniert, dann im Gebrauch verfeinern.".into(),
-            score: 212.9,
-        },
-        RecallHit {
-            id: "mock-best-memory-tool".into(),
-            title: "Ambition: das beste Memory-Tool für KI-Agenten".into(),
-            memory_type: "preference".into(),
-            scope: "nexus-recall".into(),
-            summary: "Ziel ist nicht 'gut genug', sondern THE beste Memory-Lösung für KI-Agenten.".into(),
-            score: 96.8,
-        },
-    ];
-    mock.into_iter()
-        .filter(|h| {
-            h.title.to_lowercase().contains(&q)
-                || h.summary.to_lowercase().contains(&q)
-                || h.scope.to_lowercase().contains(&q)
-                || q.is_empty()
-        })
-        .collect()
+) -> Result<Value, String> {
+    let Some(bridge) = state.0.clone() else {
+        return Err("vault not configured".to_string());
+    };
+    bridge.request("load_memory", json!({ "id": id })).await
 }
 
 #[tauri::command]
@@ -125,6 +103,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_status,
             recall,
+            load_memory,
             clipboard_history,
             clipboard_count,
             clipboard_delete,
@@ -160,6 +139,28 @@ pub fn run() {
             })?);
             clipboard::spawn_watcher(store.clone(), app.handle().clone());
             app.manage(store);
+
+            // Bridge to @nexus-recall/core (Node sidecar)
+            let bridge = match std::env::var("NEXUS_VAULT_PATH") {
+                Ok(vault) if !vault.is_empty() => {
+                    let script = bridge::dev_script_path();
+                    match Bridge::start("node", &script, &vault) {
+                        Ok(b) => {
+                            eprintln!("[bridge] spawned, vault={}", vault);
+                            Some(b)
+                        }
+                        Err(e) => {
+                            eprintln!("[bridge] FAILED to spawn: {}", e);
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("[bridge] NEXUS_VAULT_PATH not set — memory tab disabled");
+                    None
+                }
+            };
+            app.manage(BridgeState(bridge));
 
             // Tray
             let show_item = MenuItem::with_id(app, "show", "Show Nexus", true, None::<&str>)?;
