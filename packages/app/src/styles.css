@@ -4,9 +4,9 @@
   color: #e6e6e6;
   -webkit-font-smoothing: antialiased;
   --caret-x: 50%;
-  --caret-size: 8px;
+  --caret-size: 9px;
   --popover-bg: #1a1a1c;
-  --popover-border: #2a2a2e;
+  --popover-radius: 18px;
   --titlebar-top: #1f1f22;
 }
 
@@ -50,7 +50,6 @@ body {
   border-left: var(--caret-size) solid transparent;
   border-right: var(--caret-size) solid transparent;
   border-bottom: var(--caret-size) solid var(--titlebar-top);
-  filter: drop-shadow(0 -1px 0 var(--popover-border));
   pointer-events: none;
   z-index: 2;
 }
@@ -60,10 +59,12 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--popover-bg);
-  border-radius: 10px;
-  border: 1px solid var(--popover-border);
+  border-radius: var(--popover-radius);
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.06),
+    0 18px 50px rgba(0, 0, 0, 0.55),
+    0 4px 12px rgba(0, 0, 0, 0.35);
   transition: opacity 280ms ease;
 }
 
