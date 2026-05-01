@@ -1,112 +1,112 @@
 # nexus-recall
 
-> Persistent memory & codebase-index for Claude Code.
+> A persistent teammate memory for Claude — across every Claude surface.
 
-**Status:** 🟡 Pre-alpha — currently in initial design / public planning phase. No code yet, see [PLAN.md](./PLAN.md).
+**Status:** 🟡 Pre-alpha — design phase, no code yet. See [PLAN.md](./PLAN.md).
 
 ---
 
 ## Why
 
-Claude Code has a passive memory system: a markdown index gets loaded into every prompt, but **detail-memorys are never proactively surfaced**. Cross-cutting concerns (schema migrations, service-caller topology, deprecated patterns) stay invisible until a bug hits.
+Working with Claude over months means re-explaining the same things. CSS pitfalls Claude already learned in one project recur in the next. Stable preferences (*"give me a recommendation, not a 5-option menu"*) get forgotten between sessions. Project-specific facts get re-discovered every time.
 
-Real example from 2026-04-30: a PDF-export bug for `damageImages` slipped through, even though a memory `project_v11_vs_legacy_schemas.md` documented exactly the V11-vs-legacy schema coexistence that caused it. The memory existed. Claude didn't recall it actively.
+Claude has memory features, but they're **passive**: a static index file at best, no proactive recall, no cross-surface continuity.
 
-`nexus-recall` fixes this with a **2-stage hierarchical lookup**:
+The cost isn't just frustration — it's that the user ends up thinking *for* Claude. *"Wait, didn't we solve this last week?"* That's the bug.
 
-1. **Stage 1 (automatic, ~200 chars / prompt):** A `UserPromptSubmit` hook runs BM25 search over your memory tags + titles. If anything matches, it injects a tiny preview ("memorys for topic 'X': [t1, t2, t3]") into the context.
-2. **Stage 2 (on-demand):** Claude calls `recall(id)` to load the full memory only when it actually needs the detail.
+## What nexus-recall does
 
-Token-overhead per prompt stays tiny. Anthropic prompt-caching makes returning topics effectively free.
+A persistent memory layer that:
 
-## Vision
+- **Saves autonomously** — when a lesson is learned (frustration, repeated correction, durable preference, finalized decision), Claude writes it to the vault without being asked.
+- **Recalls before acting** — not only when the user prompts. A `PreToolUse` hook fires when Claude is about to write code; relevant lessons surface *before* the mistake happens.
+- **Works across surfaces** — one local daemon serves Claude Code, Claude Desktop, Claude.ai web/chat, Co-work. One vault, one source of truth.
+- **Plain markdown, Obsidian-compatible** — the vault is a folder of `.md` files. Edit in Obsidian, in Claude, by hand.
 
-**„Obsidian for Claude Code"** — file-based markdown vault as source-of-truth, hierarchical search, codebase-topology, local-first, optionally synced.
+## The single success metric
 
-**Differentiation vs. existing tools:**
+> **The user doesn't have to think for Claude anymore.**
 
-| | Cursor Memory | Claude Code (built-in) | nexus-recall |
-|---|---|---|---|
-| Format | Cloud-only, opaque | Plain markdown ✓ | Plain markdown ✓ |
-| Active recall | ✓ | ✗ | ✓ |
-| Codebase topology | partial | ✗ | ✓ (planned) |
-| Multi-device sync | ✓ (Cloud-only) | ✗ | ✓ (your-choice + optional hosted) |
-| Open source | ✗ | ✗ | ✓ MIT |
-| Self-hostable | ✗ | n/a | ✓ |
+If recurring mistakes still recur, if the user still has to re-state preferences each session — the project failed, regardless of how clean the architecture is.
 
-## Architecture (MVP)
+## How it works
 
 ```
-Vault (~/.claude/projects/<projectId>/memory/, plain Markdown)
-                    │
-                    ▼
-nexus-recall MCP-Server (Node.js / TypeScript)
-  Tools exposed to Claude:
-    - recall(query)        → BM25 search, top-K with snippets
-    - loadMemory(id)       → full memory by id
-    - listMemories(filter) → filtered by tag / scope
-    - saveMemory(payload)  → persist with schema validation
-  Storage: SQLite + FTS5 (full-text index)
-                    │
-                    ▼
-UserPromptSubmit-Hook (~200 chars context injection per prompt)
+Vault (~/nexus-vault/, plain markdown + YAML frontmatter)
+          │  watcher
+          ▼
+nexus-recall daemon (TypeScript, single local process)
+  - SQLite + FTS5 index (graph relations + keyword search)
+  - MCP tools: recall, load_memory, save_memory, list_memorys, link_memorys
+  - Two transports:
+      • stdio MCP   → Claude Code, Claude Desktop
+      • HTTP MCP    → Claude.ai web (Custom Connector)
+          │
+          ▼
+Hooks (per Claude Code session):
+  - SessionStart      → preload preferences + project facts
+  - UserPromptSubmit  → recall against the prompt
+  - PreToolUse(Write) → recall against what Claude is about to write
+  - Stop              → evaluate save-worthy moments
 ```
 
-See [docs/architecture.md](./docs/architecture.md) for detail.
+Details: [docs/architecture.md](./docs/architecture.md), [docs/memory-schema.md](./docs/memory-schema.md), [docs/triggers.md](./docs/triggers.md).
+
+## Memory shape
+
+Each memory is a markdown file with structured frontmatter:
+
+```yaml
+---
+id: css-input-focus-ring-stacking
+title: "Don't stack focus styles on inputs"
+type: lesson
+summary: "Stacking ring + outline + custom :focus on nested inputs causes double focus rings. Use single :focus-visible."
+topic_path: [css, input, focus]
+tags: [css, input, focus-ring, ui-bug]
+scope: all-projects
+recall_when:
+  - creating new input component
+  - writing input or form css
+  - focus or accessibility styling
+related: [css-effects-stacking-antipattern]
+source: "carnexus, recurring lesson"
+confidence: 0.95
+---
+```
+
+The `recall_when` field is the bridge between save and recall: when saving, Claude declares the contexts under which future-Claude should be reminded. See [docs/memory-schema.md](./docs/memory-schema.md) for full field semantics and six example memorys covering `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
 ## Quickstart (planned, not yet implemented)
 
 ```bash
-# Install
-npm install -g nexus-recall
-
-# Init in your project
-cd ~/your/project
-nexus-recall init
-
-# Migrate existing Claude Code memorys to strict schema
-nexus-recall migrate ~/.claude/projects/<your-project-id>/memory/
-
-# That's it — Claude Code now uses recall automatically via plugin
+brew install danielautoland/tap/nexus-recall
+nexus-recall init                  # creates vault, registers launchd daemon
+nexus-recall doctor                # health check
+# Add the MCP server to Claude Code / Desktop config (init prints the snippet)
 ```
-
-## Memory schema (strict)
-
-```yaml
----
-title: "PDF export for damage images"
-type: "feedback" | "project" | "reference" | "decision"
-tags: ["pdf-export", "schema-v2", "images"]
-scope: ["project:myapp", "feature:image-export"]
-summary: "v2 uses category='damage' instead of damageImages — paths in unified images folder"
-created: "2026-04-30"
-updated: "2026-04-30"
-related: ["v2-vs-legacy-schemas"]
----
-
-# Markdown body...
-```
-
-See [docs/memory-schema.md](./docs/memory-schema.md).
 
 ## Roadmap
 
-| Phase | Scope | Effort |
+Milestone-based, not phase-based. Each gate is a hard pass/fail.
+
+| Milestone | Scope | Pass criterion |
 |---|---|---|
-| **Phase 1 (MVP)** | Memory-recall MCP + UserPromptSubmit-hook + BM25 + schema-migration | 1-2 weeks |
-| **Phase 2** | Codebase indexing: AST-parsing for JS/TS, topology-map | 2-3 weeks |
-| **Phase 3** | Git-history + GitHub-issues as additional index sources | 1 week |
-| **Phase 4** | Embeddings upgrade (local: bge-m3 / cloud: Voyage) | 1-2 weeks |
-| **Phase 5** | Sync-layer (free: git/iCloud-friendly; premium: hosted) | 3-4 weeks |
-| **Phase 6** | Web-UI, team-sharing, SaaS-tier | 4-6 weeks |
-| **Phase 7** | Marketing site + hosted-tier launch | parallel |
+| **M0** | Eval harness on 20 real Q-A pairs | Recall@3 ≥ 0.7 with FTS5 alone |
+| **M1** | Daemon + read path (recall, load_memory) | CSS lesson surfaces in real Claude Code session |
+| **M2** | Save path + autonomous-save triggers | Strong-signal saves fire without user prompt; false-save < 10% |
+| **M3** | PreToolUse hook + dogfood week | ≥ 1 concrete bug avoided; user says *"ich vergesse, dass es da ist"* |
+
+Out of v0: embeddings (deferred to v0.5 only if M0 fails), codebase indexing, multi-device sync, web UI, team-sharing, SaaS. See [PLAN.md](./PLAN.md).
 
 ## License
 
 MIT — see [LICENSE](./LICENSE).
 
+Public docs and code on this branch are published under the open license; private notes (in `private/`, gitignored) are not.
+
 ## Status & contact
 
-Pre-alpha. See [PLAN.md](./PLAN.md) for the design. Issues + discussions welcome — early feedback shapes the architecture.
+Pre-alpha. See [PLAN.md](./PLAN.md). Issues and discussions welcome — early feedback shapes the design.
 
 Built by [@danielautoland](https://github.com/danielautoland).
