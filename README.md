@@ -101,13 +101,15 @@ Add the MCP server to Claude Code (`~/.claude.json`):
 }
 ```
 
-Activate the Skill (one symlink):
+Activate the Skill:
 
 ```bash
-ln -s /abs/path/to/nexus-recall/packages/skill ~/.claude/skills/nexus-recall
+bash packages/skill/install.sh
 ```
 
-Restart Claude Code. The Skill auto-activates on memory-worthy moments; the daemon serves `recall`, `load_memory`, `save_memory`. Edit the vault in Obsidian alongside.
+Then **restart Claude Code** — the Skill loader scans `~/.claude/skills/` only at startup. The Skill auto-activates on memory-worthy moments; the daemon serves `recall`, `load_memory`, `save_memory`. Edit the vault in Obsidian alongside.
+
+Re-run `install.sh` whenever `SKILL.md` is updated (the loader does not follow symlinks, so we copy).
 
 A Homebrew tap and `nexus-recall init` are tracked as roadmap issues.
 
