@@ -5,12 +5,16 @@ import { listen } from "@tauri-apps/api/event";
 interface ClipboardItem {
   id: number;
   content: string;
-  content_type: string;
+  content_type: "text" | "image" | string;
   source_app: string | null;
   first_copied_at: number;
   last_copied_at: number;
   copy_count: number;
   promoted_to_memory_id: string | null;
+  image_path: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  image_thumb_b64: string | null;
 }
 
 export function ClipboardTab() {
@@ -46,7 +50,11 @@ export function ClipboardTab() {
   const filtered = useMemo(() => {
     if (!filter.trim()) return items;
     const q = filter.toLowerCase();
-    return items.filter((i) => i.content.toLowerCase().includes(q));
+    return items.filter(
+      (i) =>
+        i.content.toLowerCase().includes(q) ||
+        (i.content_type === "image" && "image".includes(q)),
+    );
   }, [items, filter]);
 
   const copyBack = async (content: string) => {
@@ -92,16 +100,30 @@ export function ClipboardTab() {
       <ul className="hits">
         {filtered.map((it) => (
           <li key={it.id} className="clip-item">
-            <div className="clip-content">{truncate(it.content, 280)}</div>
+            {it.content_type === "image" && it.image_thumb_b64 ? (
+              <div className="clip-image">
+                <img src={it.image_thumb_b64} alt="clipboard" />
+              </div>
+            ) : (
+              <div className="clip-content">{truncate(it.content, 280)}</div>
+            )}
             <div className="clip-meta">
               <span className="time">{formatRelative(it.last_copied_at)}</span>
               {it.copy_count > 1 && (
                 <span className="count">×{it.copy_count}</span>
               )}
-              <span className="bytes">{it.content.length}b</span>
-              <button className="link" onClick={() => copyBack(it.content)}>
-                copy
-              </button>
+              {it.content_type === "image" ? (
+                <span className="bytes">
+                  {it.image_width}×{it.image_height}
+                </span>
+              ) : (
+                <span className="bytes">{it.content.length}b</span>
+              )}
+              {it.content_type !== "image" && (
+                <button className="link" onClick={() => copyBack(it.content)}>
+                  copy
+                </button>
+              )}
               <button className="link danger" onClick={() => remove(it.id)}>
                 delete
               </button>

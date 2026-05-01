@@ -2043,7 +2043,9 @@ name = "nexus-app"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "dirs 5.0.1",
+ "image",
  "rusqlite",
  "serde",
  "serde_json",

@@ -106,6 +106,26 @@ header h1 {
 .ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .clip-item { padding: 8px 10px; }
+
+.clip-image {
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: flex-start;
+  background: #1a1a1c;
+  border: 1px solid #2e2e32;
+  border-radius: 5px;
+  overflow: hidden;
+  max-height: 180px;
+}
+
+.clip-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+
 .clip-content {
   font-size: 12px;
   color: #d8d8d8;
