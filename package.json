@@ -1,0 +1,20 @@
+{
+  "name": "nexus-recall-monorepo",
+  "version": "0.1.0",
+  "description": "Workspace root for nexus-recall: OSS daemon + Mac-app surface, sharing the core library.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/daemon"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check:types": "npm run check:types --workspaces --if-present",
+    "smoke": "npm run smoke --workspace=@nexus-recall/daemon",
+    "smoke:telemetry": "npm run smoke:telemetry --workspace=@nexus-recall/daemon"
+  }
+}

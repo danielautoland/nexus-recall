@@ -17,9 +17,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { Vault } from "./vault.js";
-import { SearchIndex } from "./search.js";
-import { saveMemory, SaveMemoryInput } from "./save.js";
+import { Vault, SearchIndex, saveMemory, SaveMemoryInput } from "@nexus-recall/core";
 import { Telemetry, fireAndForget } from "./telemetry.js";
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;

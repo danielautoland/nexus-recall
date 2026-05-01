@@ -3,7 +3,7 @@
  * One-shot: persist the M0 eval result as a memory in the vault,
  * exercising the new saveMemory() path end-to-end.
  */
-import { saveMemory } from "../src/save.js";
+import { saveMemory } from "@nexus-recall/core";
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;
 if (!VAULT_PATH) {

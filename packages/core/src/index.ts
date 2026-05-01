@@ -1,0 +1,23 @@
+/**
+ * @nexus-recall/core — public API.
+ *
+ * Reusable building blocks shared by the daemon (MCP server) and the
+ * Mac-app surface. No transport coupling lives here.
+ */
+
+export { Vault } from "./vault.js";
+export type { VaultEvent, VaultListener } from "./vault.js";
+
+export { SearchIndex } from "./search.js";
+export type { RecallHit, RecallOptions } from "./search.js";
+
+export { saveMemory, slugify, SaveMemoryInput } from "./save.js";
+export type { SaveMemoryResult } from "./save.js";
+
+export {
+  MemoryTypeEnum,
+  FrontmatterSchema,
+  parseMemory,
+  parseMemoryWith,
+} from "./schema.js";
+export type { Memory, MemoryType, Frontmatter } from "./schema.js";

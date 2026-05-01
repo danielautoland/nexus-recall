@@ -12,8 +12,7 @@
  *
  * Run:  NEXUS_VAULT_PATH=/path/to/vault npx tsx scripts/eval.ts
  */
-import { Vault } from "../src/vault.js";
-import { SearchIndex } from "../src/search.js";
+import { Vault, SearchIndex } from "@nexus-recall/core";
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;
 if (!VAULT_PATH) {

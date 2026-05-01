@@ -5,8 +5,7 @@
  * Run: NEXUS_VAULT_PATH=/path/to/vault tsx scripts/smoke.ts
  *      (or: npm run smoke  — picks up env from default below)
  */
-import { Vault } from "../src/vault.js";
-import { SearchIndex } from "../src/search.js";
+import { Vault, SearchIndex } from "@nexus-recall/core";
 import { resolve } from "node:path";
 
 const DEFAULT_VAULT = resolve(
