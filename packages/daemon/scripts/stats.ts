@@ -115,6 +115,29 @@ function summarizeHook(events: AnyEvent[]): void {
   console.log(`     <  30:  ${below30.toString().padStart(4)}  (${pct(below30, topScores.length)})`);
 }
 
+function summarizeSessionHook(events: AnyEvent[]): void {
+  const calls = events.filter((e) => e.kind === "session_hook_call");
+  if (calls.length === 0) return;
+
+  const reachable = calls.filter((e) => e.daemon_reachable === true).length;
+  const withHints = calls.filter((c) => Number(c.hint_count ?? 0) > 0).length;
+  const lats = calls.map((c) => Number(c.latency_ms_total ?? 0));
+  const sources = new Map<string, number>();
+  for (const c of calls) {
+    const s = String(c.source ?? "unknown");
+    sources.set(s, (sources.get(s) ?? 0) + 1);
+  }
+
+  console.log(`\n## SessionStart hook  (${calls.length} invocations)`);
+  console.log(`  daemon reachable: ${reachable}  (${pct(reachable, calls.length)})`);
+  console.log(`  with hints:       ${withHints}  (${pct(withHints, calls.length)})`);
+  console.log(`  latency_ms_total: median ${median(lats).toFixed(0)}   p95 ${p95(lats).toFixed(0)}`);
+  console.log(`  by source:`);
+  for (const [s, n] of [...sources.entries()].sort((a, b) => b[1] - a[1])) {
+    console.log(`     ${n.toString().padStart(4)}  ${s}`);
+  }
+}
+
 function summarizeMcp(events: AnyEvent[]): void {
   const recalls = events.filter((e) => e.kind === "recall");
   const loads = events.filter((e) => e.kind === "load_memory");
@@ -134,6 +157,34 @@ function summarizeMcp(events: AnyEvent[]): void {
   if (saves.length) {
     const followsRecall = saves.filter((s) => s.follows_recall != null).length;
     console.log(`  saves following a recall (≤5min): ${followsRecall} of ${saves.length}  (${pct(followsRecall, saves.length)})`);
+  }
+}
+
+function summarizeFollowThrough(events: AnyEvent[]): void {
+  const loads = events.filter((e) => e.kind === "load_memory");
+  const hookRecalls = events.filter((e) => e.kind === "hook_recall");
+  if (loads.length === 0 && hookRecalls.length === 0) return;
+
+  const fromHook = loads.filter((l) => l.from_hook_recall != null);
+  const distinctHookRecallsConsumed = new Set(
+    fromHook.map((l) => String(l.from_hook_recall)),
+  );
+
+  const rankCounts = new Map<number, number>();
+  for (const l of fromHook) {
+    const r = Number(l.hook_hint_rank ?? 0);
+    if (r > 0) rankCounts.set(r, (rankCounts.get(r) ?? 0) + 1);
+  }
+
+  console.log(`\n## Follow-through  (did hook hints actually get loaded?)`);
+  console.log(`  load_memory total:                ${loads.length}`);
+  console.log(`  load_memory triggered by a hint:  ${fromHook.length}  (${pct(fromHook.length, loads.length)})`);
+  console.log(`  hook_recalls that produced ≥1 load: ${distinctHookRecallsConsumed.size} of ${hookRecalls.length}  (${pct(distinctHookRecallsConsumed.size, hookRecalls.length)})`);
+  if (rankCounts.size > 0) {
+    console.log(`  loaded-from-hint by rank in hint list:`);
+    for (const [r, n] of [...rankCounts.entries()].sort((a, b) => a[0] - b[0])) {
+      console.log(`     rank ${r}:  ${n.toString().padStart(4)}`);
+    }
   }
 }
 
@@ -181,7 +232,9 @@ async function main(): Promise<void> {
   console.log(`events: ${events.length}`);
 
   summarizeHook(events);
+  summarizeSessionHook(events);
   summarizeMcp(events);
+  summarizeFollowThrough(events);
   topProjects(events);
   topHints(events);
 }
