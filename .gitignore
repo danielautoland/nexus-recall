@@ -13,6 +13,9 @@ build/
 .next/
 out/
 
+# Daemon dev artifacts
+packages/daemon/test-vault/
+
 # Environment
 .env
 .env.local
@@ -55,6 +58,13 @@ Desktop.ini
 
 # Internal-only docs (strategy, branding, monetization drafts)
 .internal/
+
+# Private workspace — non-public notes, real-project memorys, decision logs
+private/
+
+# Local vault paths (in case someone symlinks ~/nexus-vault into the repo)
+vault/
+nexus-vault/
 
 # Test coverage
 coverage/

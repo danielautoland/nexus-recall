@@ -1,129 +1,131 @@
-# Nexus-Recall — Persistent Memory & Codebase-Index für Claude Code
+# nexus-recall — Plan v2
 
-## Context
+## Vision
 
-**Warum dieses Projekt:**
-Am 2026-04-30 entstand ein Schadensbilder-PDF-Bug, weil Claude die V11-vs-Legacy-Schema-Coexistenz übersehen hatte — obwohl die `DAMAGE_CATEGORY`-Konstante direkt in der gelesenen Datei stand und Memorys zu V11 existierten. Symptom eines strukturellen Problems: **Claude Code's Memory-System ist passiv**. Es lädt eine statische Index-Liste (MEMORY.md) in den Kontext, surfact aber relevante Detail-Memorys nicht aktiv. Cross-Cutting-Concerns (Schema-Migrationen, Service-Aufrufer-Topologie) bleiben unsichtbar bis ein Bug auftritt.
+A persistent, autonomous teammate-memory for Claude — across **every** Claude surface (Code, Desktop, Web, Co-work). The vault is plain markdown (Obsidian-compatible). Claude saves lessons as they're learned, without being asked, and recalls them *before* acting, not only when prompted.
 
-**Marktlücke:**
-- Cursor's Memory ist Cloud-only, intransparent, Lock-In
-- Claude Code's Memory ist file-based aber rudimentär (kein Search, keine Codebase-Indizierung)
-- Keine bestehende Lösung kombiniert: Markdown-First + Auto-Recall + Codebase-Topology + User-Owned-Data + Multi-Device
+The intent is not a tool the user invokes. The intent is a memory the user can mostly forget exists, because it just works.
 
-**Ziel:**
-„Obsidian für Claude Code" — file-based Markdown-Vault als Source-of-Truth + proaktive 2-Stage-Suche + Codebase-Topology, lokal-first, monetarisierbar als Hosted-SaaS-Layer.
+## The single success metric
 
-## Architektur (MVP)
+> **Daniel doesn't have to think for Claude anymore.**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Vault (~/.claude/projects/<projectId>/memory/, plain MD)   │
-│  - Memorys mit Strict-Frontmatter (title, tags, scope, ...) │
-│  - Format kompatibel mit Logseq, Obsidian, plain Markdown   │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  nexus-recall MCP-Server (Node.js / TypeScript)             │
-│  Tools (exposed an Claude):                                 │
-│    - recall(query)        → BM25-Search, Top-K + snippets   │
-│    - loadMemory(id)       → vollständige Memory-Datei       │
-│    - listMemories(filter) → tag-/scope-gefiltert            │
-│    - saveMemory(payload)  → schreibt mit Schema-Validation  │
-│  Storage: SQLite + FTS5 (Volltext-Index)                    │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  UserPromptSubmit-Hook (~200 chars Injektion pro Prompt)    │
-│  - Macht BM25-Topic-Match auf User-Prompt                   │
-│  - Injiziert: "Memorys zum Thema: [t1, t2, t3] — recall()"  │
-│  - Claude entscheidet: Detail laden via recall(id) oder nicht│
-└─────────────────────────────────────────────────────────────┘
-```
+Specifically:
 
-### 2-Stage Lookup (Kern-Innovation für Token-Efficiency)
+- Recurring CSS mistakes don't recur.
+- Stable preferences don't have to be re-stated each session.
+- Project-specific facts don't have to be re-explained.
+- The user's cognitive load drops.
 
-**Stage 1 (Hook, automatisch):** ~200 chars in Context. Antwortet nur „gibt's was zum Thema?". BM25 über Tags + Title + Summary.
+Every design choice in this project is justified by whether it serves that metric. Elegance, completeness, feature-count are not.
 
-**Stage 2 (Tool, on-demand):** `recall(id)` lädt volles Memory nur wenn Claude es aktiv anfordert. Anthropic Prompt-Caching greift bei wiederkehrenden Memorys → effektiv kostenlos.
+## Core design choices (decided)
 
-**Token-Budget pro Prompt:**
-- Stage 1: ~200 chars (constant, gecached)
-- Stage 2: ~500-2000 chars (nur on-demand)
+| | Choice | Source |
+|---|---|---|
+| Storage format | Plain markdown + YAML frontmatter, flat directory | `docs/memory-schema.md` |
+| Index | SQLite + FTS5 (graph + keyword) | `docs/architecture.md` |
+| Embeddings | Deferred to v0.5; FTS5 + `recall_when` patterns first | architecture |
+| Architecture | Single local daemon, multi-surface (stdio + HTTP MCP) | architecture |
+| Editor for humans | Obsidian.app | conscious choice |
+| Save trigger | Autonomous, on strong signals (no user prompt needed) | `docs/triggers.md` |
+| Recall trigger | Multiple hooks: SessionStart, UserPromptSubmit, **PreToolUse** | triggers |
+| Vault path | `~/nexus-vault/` (configurable) | architecture |
+| Distribution (v0) | Homebrew tap (Mac-first), npm fallback | architecture |
+| Language | TypeScript / Node 20+ | architecture |
+| License | MIT (public docs); private notes in gitignored `private/` | LICENSE |
 
-## Memory-Schema (Strict)
+## Milestones
 
-```yaml
----
-title: "PDF export for damage images"              # Pflicht, sucht-relevant
-type: "feedback" | "project" | "reference" | "decision"
-tags: ["pdf-export", "schema-v2", "images"]        # Pflicht, BM25-Schlüssel
-scope: ["project:myapp", "feature:image-export"]
-summary: "v2 nutzt category='damage' statt damageImages — Pfade in unified images-Ordner"
-created: "2026-04-30"
-updated: "2026-04-30"
-related: ["v2-vs-legacy-schemas", "memo-bailout-pattern"]
----
+Each milestone has hard pass/fail criteria. We do not advance until the previous one passes.
 
-# Markdown-Body...
-```
+### M0 — Eval harness (½ day)
 
-Validation beim `saveMemory` → konsistente Tags = verlässliche Suche.
-
-## MVP — Phase 1 (1-2 Wochen)
-
-**Scope:** nur Memory-Recall, keine Codebase-Indexierung. Schnellste Lösung für den Auto-Recall-Schmerz.
+**Why this comes first:** the riskiest assumption in the whole project is *"FTS5 + recall_when patterns will retrieve the right memory under realistic queries"*. If that's wrong, embeddings move into v0 and the timeline shifts. We measure *before* we build.
 
 **Deliverables:**
-1. MCP-Server (`nexus-recall-mcp`, Node.js/TS, NPM-Package)
-   - Tools: `recall(query)`, `loadMemory(id)`, `listMemories(filter)`, `saveMemory(payload)`
-   - SQLite + FTS5 als Index, gespeichert unter `~/.claude/projects/<id>/.nexus-recall/index.db`
-   - File-Watcher: re-indiziert bei Memory-Änderung
-2. Plugin-Bundle für Claude Code Plugin-Marketplace
-   - `hooks/hooks.json` mit `UserPromptSubmit` → Shell-Script
-   - Stage-1-Skript: ruft MCP-Tool, formatiert Top-3 als Context-Injection
-3. Schema-Migration-Tool: konvertiert existing Memorys aus `~/.claude/projects/<projectId>/memory/` ins Strict-Schema (Tags-Vorschläge via LLM, User-bestätigt)
-4. CLI: `nexus-recall init/index/search/save` für manuelle Operationen
+- 20 Q-A pairs based on Daniel's real-life scenarios (CSS lesson, preferences, project facts, workflows)
+- A standalone Python or TS script that loads candidate memorys into a temporary SQLite+FTS5 DB and runs the recall logic from `architecture.md`
+- A Recall@3 metric report
 
-**Verification:**
-- Test-Szenario: User-Prompt „Müssen wir den PDF-Export für Schadensbilder fixen?" → Stage-1 muss `project_v11_vs_legacy_schemas.md` als Top-Treffer liefern
-- Mindestens 80% Recall@3 auf einem Test-Set von 20 Q-A-Paaren aus existierenden Memorys
-- Token-Overhead pro Prompt: <300 chars (gemessen)
-- Cold-Start Latenz: <50ms (Stage-1 Hook)
+**Pass:** Recall@3 ≥ 0.7 on the test set, with median latency < 50 ms.
+**Fail action:** add `bge-m3` local embeddings to the v0 stack; re-measure.
 
-## Roadmap
+### M1 — Daemon + tools, read path (2-3 days)
 
-| Phase | Scope | Aufwand |
-|---|---|---|
-| **Phase 1 (MVP)** | Memory-Recall MCP + UserPromptSubmit-Hook + BM25 + Schema-Migration | 1-2 Wochen |
-| **Phase 2** | Codebase-Indexierung: AST-Parsing für JS/TS, Topology-Map (`topology(component)` Tool) | 2-3 Wochen |
-| **Phase 3** | Git-History + GitHub-Issues als zusätzliche Index-Quellen | 1 Woche |
-| **Phase 4** | Embeddings-Upgrade (lokal: bge-m3 / Cloud: Voyage), Hybrid-Search | 1-2 Wochen |
-| **Phase 5** | Sync-Layer (Du-wählst-Sync gratis: Git/iCloud-kompatibel; Hosted-Sync premium) | 3-4 Wochen |
-| **Phase 6** | Web-UI (View/Edit/Search), Team-Sharing, SaaS-Tier | 4-6 Wochen |
-| **Phase 7** | Marketing-Site + Hosted-Tier-Launch | parallel |
+**Scope:** the daemon comes up, indexes a vault, exposes `recall` and `load_memory` over both stdio and HTTP MCP. No save yet.
 
-## Monetarisierung
+**Deliverables:**
+- `nexus-recall` binary with subcommands: `serve`, `stdio`, `index`, `doctor`
+- Vault watcher (chokidar)
+- Initial vault populated with the six example memorys from `memory-schema.md`
+- Claude Code config snippet to wire it as MCP server
 
-OSS-Core (MIT) plus optionaler Hosted-Tier. Konkrete Tier-Struktur und Preise werden separat festgelegt.
+**Pass:**
+- Daniel can run a Claude Code session, ask *"baue mir ein Input"*, and the CSS-double-ring lesson appears in `<recall-hints>`
+- Daemon survives restart, re-indexes a vault edited in Obsidian within 100 ms
+- `doctor` reports green on a fresh install
 
-## Open Questions (für Issues nach Repo-Erstellung)
+### M2 — Save path + autonomous triggers (2-3 days)
 
-1. **Multi-Device-Privacy-Strategie:** wenn User 4 Geräte hat (Office/Home × Desktop/Laptop), wie wird der Sync-Konflikt gelöst? Last-write-wins, CRDT, manuelle Resolution?
-2. **Embeddings-Provider** für Phase 4: lokales Modell (bge-m3, kein Cloud-Call) vs. Voyage/OpenAI (beste Qualität, aber Daten-Sicht)?
-3. **Marketplace-Distribution:** Claude-Plugin-Marketplace direkt, eigener Marketplace, beides?
-4. **Schema-Versioning:** wie handhaben wir Schema-Migrationen wenn Vault zwischen v1 und v2 wechselt?
+**Scope:** the system can write back. Claude can call `save_memory` and the file appears in the vault. CLAUDE.md instruction conditions me to fire on strong signals.
 
-## Critical Files (after Phase 1 build)
+**Deliverables:**
+- `save_memory` tool with full schema validation
+- Save-side CLAUDE.md instruction (the text from `triggers.md`)
+- 1-line ack format implemented and visible in chat
+- `save_log` records every save with trigger reason
 
-- `packages/mcp-server/src/index.ts` — MCP-Tool-Definitionen
-- `packages/mcp-server/src/search/bm25.ts` — SQLite FTS5 Wrapper
-- `packages/mcp-server/src/schema/validator.ts` — Frontmatter-Validation
-- `packages/plugin/hooks/user-prompt-submit.sh` — Stage-1 Hook-Script
-- `packages/plugin/plugin.json`, `hooks/hooks.json`, `.mcp.json` — Plugin-Bundle
-- `packages/cli/src/commands/{init,index,search,save,migrate}.ts` — CLI
+**Pass:**
+- In a real Claude Code session, when Daniel triggers a strong signal (frustration phrase + solution), Claude saves a `lesson` autonomously, surfaces a 1-line ack, and the file is in `~/nexus-vault/` with valid frontmatter
+- False-save rate < 10% over 5 sessions
 
-## Erfolgs-Kriterium MVP
+### M3 — PreToolUse hook + dogfood week
 
-Wenn der MVP läuft, hätte Claude beim heutigen Schadensbild-Bug den Memory-Eintrag `project_v11_vs_legacy_schemas.md` automatisch in Stage-1 angezeigt bekommen (~200 chars: „Memorys zum Thema 'PDF-Export Schadensbilder': V11 vs Legacy-Schemas (relevance 0.92)") und über `recall(id)` aktiv geladen — bevor er den Bug-fix-Code schreibt. **Bug nicht entstanden.**
+**Scope:** the "buildin"-feel hook. Claude recalls before its own Write/Edit actions, not only on user prompts.
+
+**Deliverables:**
+- `PreToolUse` hook on Write/Edit, posting to `/hook/pre-write`
+- Topic-detection logic (regex/keyword for v0; AST in v0.5)
+- One full week of Daniel using the system in real carnexus / new-project work
+- Telemetry analysis at end of week
+
+**Pass:**
+- ≥ 1 concrete bug avoided that the user explicitly attributes to nexus-recall
+- Token-overhead per prompt: median < 300 chars
+- Hook latency p95 < 100 ms
+- False-positive recall rate < 30 % (i.e. ≥ 70 % of hints with score ≥ 0.8 lead to actual `load_memory` calls)
+- Daniel's subjective verdict: *"das funktioniert, ich vergesse, dass es da ist"*
+
+If M3 doesn't pass cleanly, the project iterates on triggers and ranking before adding any new feature.
+
+## Out of v0 (deliberately deferred)
+
+Listed not to forget, but to make clear they're explicitly *not* in M0–M3:
+
+- Embeddings (semantic recall) — only if M0 fails or M3 reveals miss patterns
+- Codebase indexing (AST, topology, service-caller graphs) — separate project track
+- Multi-Mac / multi-device sync — vault is a folder, defer to user's choice (iCloud / Dropbox / Git)
+- Web UI — Obsidian *is* the UI for humans
+- Team-sharing / SaaS / hosted tier — only after solo dogfood (≥ 1 month) proves value
+- Plugin-marketplace bundling — config-snippet works for v0 ergonomics
+- Schema migration via LLM — ten of Daniel's own existing memorys, hand-migrated, suffice
+
+## Open questions
+
+To be resolved during M0/M1, not earlier:
+
+1. **Project name registry.** `scope: carnexus` — free-form (typo risk) or registered (friction)? Default plan: free-form, with a one-time confirmation prompt the first time a new project name is used.
+2. **Web/chat surface auth.** The Custom Connector → localhost path may need a token or HTTPS. Decide based on Anthropic's web-MCP requirements when M1 is shipped.
+3. **Frustration-detection multilingual.** Daniel switches between German and English. The CLAUDE.md trigger phrases need both. Acceptable as part of M2.
+4. **`recall_when` author burden.** Will Claude reliably populate good `recall_when` patterns at save time? If patterns are weak, recall fails. May need a "review your last 5 saves" workflow.
+
+## What this branch contains
+
+The current `claude/review-project-goals-YcyVe` branch holds the design refresh:
+- `docs/memory-schema.md` — the schema
+- `docs/architecture.md` — the daemon + storage + hybrid retrieval
+- `docs/triggers.md` — save & recall heuristics
+- `PLAN.md` (this file) — milestones, metric, decisions
+
+No code yet. M0 starts after Daniel reviews and signs off.
