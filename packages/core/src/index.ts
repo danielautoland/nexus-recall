@@ -22,3 +22,6 @@ export {
   NotAMemoryFile,
 } from "./schema.js";
 export type { Memory, MemoryType, Frontmatter } from "./schema.js";
+
+export { detectTopics, detectProject, extractContentExcerpt } from "./topics.js";
+export type { ToolIntent, TopicResult } from "./topics.js";

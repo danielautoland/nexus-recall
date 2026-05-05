@@ -19,6 +19,10 @@ import {
 import { z } from "zod";
 import { Vault, SearchIndex, saveMemory, SaveMemoryInput } from "@nexus-recall/core";
 import { Telemetry, fireAndForget } from "./telemetry.js";
+import { startHttpServer } from "./http.js";
+
+const DAEMON_VERSION = "0.1.0";
+const DEFAULT_HTTP_PORT = 6723;
 
 const VAULT_PATH = process.env.NEXUS_VAULT_PATH;
 if (!VAULT_PATH) {
@@ -61,6 +65,18 @@ async function main(): Promise<void> {
   } else {
     console.error(`[nexus-recall] telemetry: disabled`);
   }
+
+  const httpPort = parseInt(process.env.NEXUS_HTTP_PORT ?? String(DEFAULT_HTTP_PORT), 10);
+  const httpHandle =
+    process.env.NEXUS_HTTP === "off"
+      ? { port: null, close: async () => undefined }
+      : await startHttpServer({
+          port: Number.isFinite(httpPort) ? httpPort : DEFAULT_HTTP_PORT,
+          vault,
+          search,
+          telemetry,
+          version: DAEMON_VERSION,
+        });
 
   const server = new Server(
     { name: "nexus-recall", version: "0.1.0" },
@@ -418,6 +434,7 @@ async function main(): Promise<void> {
     console.error("[nexus-recall] shutting down");
     search.stop();
     await vault.stop();
+    await httpHandle.close();
     await server.close();
     process.exit(0);
   };

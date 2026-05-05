@@ -6,7 +6,9 @@ import { randomUUID } from "node:crypto";
 export type TelemetryEvent =
   | RecallEvent
   | LoadMemoryEvent
-  | SaveMemoryEvent;
+  | SaveMemoryEvent
+  | HookRecallEvent
+  | HookCallEvent;
 
 interface BaseEvent {
   ts: string;
@@ -46,6 +48,41 @@ export interface SaveMemoryEvent extends BaseEvent {
   overwrite: boolean;
   created: boolean;
   follows_recall: string | null;
+}
+
+/** Recall served from the HTTP /hook/recall endpoint (server-side view). */
+export interface HookRecallEvent extends BaseEvent {
+  kind: "hook_recall";
+  recall_id: string;
+  query: string;
+  topics: string[];
+  tool_name: string | null;
+  project: string | null;
+  k: number;
+  scope: string | null;
+  type: string | null;
+  vault_size: number;
+  hit_count: number;
+  top_score: number | null;
+  hits: { id: string; score: number; type: string }[];
+  latency_ms_recall: number;
+  latency_ms_total: number;
+}
+
+/** Hook CLI invocation (client-side view: total wall-clock incl. network). */
+export interface HookCallEvent extends BaseEvent {
+  kind: "hook_call";
+  tool_name: string;
+  file_path: string | null;
+  topics: string[];
+  query_chars: number;
+  daemon_url: string;
+  daemon_reachable: boolean;
+  hint_count: number;
+  top_score: number | null;
+  latency_ms_total: number;
+  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
+  error: string | null;
 }
 
 const RECALL_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
@@ -110,6 +147,30 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "save_memory",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  async logHookRecall(
+    payload: Omit<HookRecallEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "hook_recall",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  async logHookCall(
+    payload: Omit<HookCallEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "hook_call",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

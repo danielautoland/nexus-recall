@@ -10,7 +10,8 @@
   },
   "bin": {
     "nexus-recall": "./dist/index.js",
-    "nexus-recall-bridge": "./dist/bridge.js"
+    "nexus-recall-bridge": "./dist/bridge.js",
+    "nexus-recall-hook": "./dist/hook.js"
   },
   "main": "./dist/index.js",
   "scripts": {
