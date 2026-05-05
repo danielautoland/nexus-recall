@@ -19,6 +19,7 @@ export const MemoryTypeEnum = z.enum([
   "reference",
   "user-preference",
   "bookmark",
+  "doc",
 ]);
 export type MemoryType = z.infer<typeof MemoryTypeEnum>;
 

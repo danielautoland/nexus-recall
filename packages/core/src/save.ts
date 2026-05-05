@@ -75,18 +75,33 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Type-based subfolder routing inside the vault. The vault root sits
- * next to `memorys/` and `bookmarks/`, both as siblings. Memories go
- * to `memorys/`, bookmarks to `bookmarks/`. The vault scans recursively,
- * so an existing flat `memorys/` corpus continues to work either way.
+ * Subfolder routing inside the vault.
+ *
+ * Top-level layout (three siblings):
+ *   memories/         lessons, decisions, preferences, project-facts,
+ *                     workflows — anything the agent learned and wants
+ *                     to recall later.
+ *     ├── user/             scope = "user-preference"
+ *     ├── all-projects/     scope = "all-projects"
+ *     └── projects/<scope>/ everything else
+ *
+ *   bookmarks/        type = "bookmark" — saved URLs with url/og_image.
+ *                     Kept as a sibling because bookmarks aren't really
+ *                     "memories" and carry their own metadata shape.
+ *
+ *   dokumentationen/  type = "doc" — living per-project documentation
+ *                     ("software wiki"). Routed to dokumentationen/<scope>/
+ *                     so each project owns its docs.
+ *
+ * The vault scans recursively, so older flat `memorys/` files continue to
+ * work until they are migrated.
  */
-function subfolderFor(type: string): string {
-  switch (type) {
-    case "bookmark":
-      return "bookmarks";
-    default:
-      return "memorys";
-  }
+function subfolderFor(scope: string, type: string): string {
+  if (type === "bookmark") return "bookmarks";
+  if (type === "doc") return `dokumentationen/${scope}`;
+  if (scope === "user-preference") return "memories/user";
+  if (scope === "all-projects") return "memories/all-projects";
+  return `memories/projects/${scope}`;
 }
 
 /**
@@ -98,7 +113,7 @@ export async function saveMemory(
   input: SaveMemoryInput,
 ): Promise<SaveMemoryResult> {
   const id = input.id ?? slugify(input.title);
-  const subdir = subfolderFor(input.type);
+  const subdir = subfolderFor(input.scope, input.type);
   const dir = join(vaultRoot, subdir);
   const filePath = join(dir, `${id}.md`);
   const exists = await fileExists(filePath);
