@@ -71,6 +71,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           const recallLatencyMs = Date.now() - tRecall0;
           const totalLatencyMs = Date.now() - t0;
           const recallId = telemetry.newRecallId();
+          telemetry.recordHookHints(recallId, hits);
 
           fireAndForget(
             telemetry.logHookRecall({

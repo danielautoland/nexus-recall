@@ -8,7 +8,8 @@ export type TelemetryEvent =
   | LoadMemoryEvent
   | SaveMemoryEvent
   | HookRecallEvent
-  | HookCallEvent;
+  | HookCallEvent
+  | SessionHookCallEvent;
 
 interface BaseEvent {
   ts: string;
@@ -34,6 +35,10 @@ export interface LoadMemoryEvent extends BaseEvent {
   id: string;
   found: boolean;
   follows_recall: string | null;
+  /** recall_id of a recent hook_recall whose hits[] contained this id, if any. */
+  from_hook_recall: string | null;
+  /** Rank (1-based) at which this id appeared in that hook_recall's hits[]. */
+  hook_hint_rank: number | null;
 }
 
 export interface SaveMemoryEvent extends BaseEvent {
@@ -85,13 +90,48 @@ export interface HookCallEvent extends BaseEvent {
   error: string | null;
 }
 
+/**
+ * SessionStart hook CLI invocation. Fires once per Claude Code session
+ * (also after /clear, /resume, and auto-compact via the `source` field).
+ * Logged client-side because the session hook makes 2-3 sub-recalls and
+ * we want one row per session, not per scope.
+ */
+export interface SessionHookCallEvent extends BaseEvent {
+  kind: "session_hook_call";
+  source: string | null;
+  project: string | null;
+  queries: number;
+  daemon_url: string;
+  daemon_reachable: boolean;
+  hint_count: number;
+  top_score: number | null;
+  latency_ms_total: number;
+  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
+  error: string | null;
+}
+
 const RECALL_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * Window during which a load_memory call is treated as a follow-up to a
+ * hook_recall hint. A bit longer than the MCP recall→save window because
+ * the user has to actually read the hint, decide it's relevant, and ask
+ * Claude to load the memory — that round-trip can take a few minutes.
+ */
+const HOOK_HINT_WINDOW_MS = 10 * 60 * 1000;
+
+interface HookHintTrace {
+  recall_id: string;
+  rank: number;
+  ts: number;
+}
 
 export class Telemetry {
   private readonly enabled: boolean;
   private readonly logDir: string;
   private readonly sessionId: string;
   private lastRecall: { id: string; ts: number } | null = null;
+  /** Map<memory_id, most-recent HookHintTrace>. Older traces are evicted lazily. */
+  private hookHints = new Map<string, HookHintTrace>();
   private initPromise: Promise<void> | null = null;
 
   constructor() {
@@ -117,6 +157,32 @@ export class Telemetry {
     if (!this.lastRecall) return null;
     if (Date.now() - this.lastRecall.ts > RECALL_FOLLOWUP_WINDOW_MS) return null;
     return this.lastRecall.id;
+  }
+
+  /**
+   * Record the rank-ordered hits returned by a hook_recall so that a later
+   * load_memory(id) can report whether (and where) the id was hinted to the
+   * user. Most-recent hint wins on collision.
+   */
+  recordHookHints(recall_id: string, hits: Array<{ id: string }>): void {
+    const ts = Date.now();
+    for (let i = 0; i < hits.length; i++) {
+      this.hookHints.set(hits[i].id, { recall_id, rank: i + 1, ts });
+    }
+  }
+
+  /**
+   * Returns the recall_id + rank if this id was hinted in the last
+   * HOOK_HINT_WINDOW_MS. Lazy-evicts the entry on miss.
+   */
+  findHookHintFor(id: string): { recall_id: string; rank: number } | null {
+    const t = this.hookHints.get(id);
+    if (!t) return null;
+    if (Date.now() - t.ts > HOOK_HINT_WINDOW_MS) {
+      this.hookHints.delete(id);
+      return null;
+    }
+    return { recall_id: t.recall_id, rank: t.rank };
   }
 
   async logRecall(payload: Omit<RecallEvent, "kind" | "ts" | "session_id">): Promise<void> {

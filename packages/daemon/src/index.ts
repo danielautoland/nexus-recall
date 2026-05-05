@@ -360,11 +360,14 @@ async function main(): Promise<void> {
       const parsed = LoadMemoryArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
       const m = search.loadFull(parsed.data.id);
+      const hookHint = telemetry.findHookHintFor(parsed.data.id);
       fireAndForget(
         telemetry.logLoadMemory({
           id: parsed.data.id,
           found: !!m,
           follows_recall: telemetry.recentRecallId(),
+          from_hook_recall: hookHint?.recall_id ?? null,
+          hook_hint_rank: hookHint?.rank ?? null,
         }),
       );
       if (!m) return errorResult(`memory not found: ${parsed.data.id}`);
