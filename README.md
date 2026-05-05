@@ -2,7 +2,7 @@
 
 > A persistent teammate memory for Claude — across every Claude surface.
 
-**Status:** 🟢 Early alpha — M0 (eval) and M1 (read path) done, M2 (save path) functional, M3 (PreToolUse hook) functional. Daemon runs locally, vault is live, hook injects `<recall-hints>` before every Write/Edit. Distribution and multi-surface are next. See [PLAN.md](./PLAN.md).
+**Status:** 🟢 Early alpha — M0 (eval) and M1 (read path) done, M2 (save path) functional, M3 reflex layer functional with two of four hooks live: `PreToolUse` (recall before each Write/Edit) and `SessionStart` (preload top memorys at session open). Distribution and multi-surface are next. See [PLAN.md](./PLAN.md).
 
 ---
 
@@ -49,7 +49,11 @@ Claude Code Skill (packages/skill/SKILL.md)
   - Single-file install, no settings.json edits
 ```
 
-Hooks: a `PreToolUse` reflex hook ships with the daemon — Claude Code runs `nexus-recall-hook` before every `Write`/`Edit`/`MultiEdit`, which posts to the daemon's loopback HTTP endpoint and injects `<recall-hints>` as `additionalContext`. `SessionStart`, `UserPromptSubmit`, and `Stop` hooks are queued for v0.5 if the dogfood reveals gaps.
+Hooks: two reflex hooks ship with the daemon, both speaking to its loopback HTTP endpoint:
+- **`PreToolUse`** (`nexus-recall-hook`) — fires before every `Write`/`Edit`/`MultiEdit`/`NotebookEdit`. Topic-detects from the tool intent and injects `<recall-hints>` as `additionalContext`.
+- **`SessionStart`** (`nexus-recall-session-hook`) — fires on `startup`/`resume`/`clear`/`compact`. Preloads top user-prefs + cross-project rules + project-scoped memorys as `<session-context>` so the model knows who, what, and what-not from the first prompt.
+
+`UserPromptSubmit` and `Stop` hooks remain queued for v0.5 once dogfood reveals where they'd close gaps. Telemetry (`scripts/stats.ts`) tracks per-hook latency, hint-quality, and follow-through (did the model actually `load_memory` after a hint).
 
 Details: [docs/architecture.md](./docs/architecture.md), [docs/memory-schema.md](./docs/memory-schema.md), [docs/triggers.md](./docs/triggers.md).
 
@@ -101,16 +105,16 @@ Add the MCP server to Claude Code (`~/.claude.json`):
 }
 ```
 
-Activate the Skill (save/recall trigger discipline) and the PreToolUse hook (reflex recall before each Write/Edit):
+Activate the Skill (save/recall trigger discipline) and the reflex hooks (PreToolUse + SessionStart):
 
 ```bash
 bash packages/skill/install.sh        # copies SKILL.md → ~/.claude/skills/nexus-recall/
-bash packages/skill/install-hook.sh   # registers PreToolUse hook in ~/.claude/settings.json
+bash packages/skill/install-hook.sh   # registers PreToolUse + SessionStart hooks in ~/.claude/settings.json
 ```
 
-Then **restart Claude Code** — Skills and hooks are read at startup. The hook posts to `http://127.0.0.1:6723/hook/recall` (port configurable via `NEXUS_HTTP_PORT`); if no daemon is reachable it silently no-ops, so an unloaded MCP server never blocks Claude.
+Then **restart Claude Code** — Skills and hooks are read at startup. Both hooks post to `http://127.0.0.1:6723/hook/recall` (port configurable via `NEXUS_HTTP_PORT`); if no daemon is reachable they silently no-op, so an unloaded MCP server never blocks Claude.
 
-Re-run `install.sh` whenever `SKILL.md` changes; re-run `install-hook.sh` only if the hook binary path moves. To remove the hook again: `bash packages/skill/install-hook.sh --uninstall`.
+Re-run `install.sh` whenever `SKILL.md` changes; re-run `install-hook.sh` only if hook binary paths move. To remove the hooks again: `bash packages/skill/install-hook.sh --uninstall`.
 
 A Homebrew tap and `nexus-recall init` are tracked as roadmap issues.
 
@@ -124,7 +128,7 @@ Milestone-based, not phase-based. Each gate is a hard pass/fail.
 | **M1** | Daemon + read path (`recall`, `load_memory`) | ✅ **Done** — MCP server live, watcher works on cloud-storage mounts. |
 | **M2** | Save path + autonomous-save triggers | 🟡 **Functional** — `save_memory` MCP tool live with force-reindex. Trigger discipline shipped as a Skill. False-save / missed-save metrics not yet collected. |
 | **M0.5** | Stress-test recall (paraphrased / cross-memory / anti-hallucination) | ⏳ Open — see issues. |
-| **M3** | Reflex layer: hooks for `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `Stop` | 🟡 **Functional (PreToolUse only)** — `nexus-recall-hook` ships and posts to daemon's `/hook/recall`. Other hooks queued for v0.5 once dogfood data is in. |
+| **M3** | Reflex layer: hooks for `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `Stop` | 🟡 **Functional (PreToolUse + SessionStart)** — both ship and post to daemon's `/hook/recall`. Telemetry tracks follow-through (load_memory ↔ hint correlation). `UserPromptSubmit` and `Stop` queued for v0.5 once data shows where they'd help. |
 | **Distribution** | Homebrew tap, `nexus-recall init`, npm package | ⏳ Open. |
 | **Multi-surface** | HTTP transport for Claude.ai web (Custom Connector) | ⏳ Open. |
 
