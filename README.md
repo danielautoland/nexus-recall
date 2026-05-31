@@ -52,7 +52,7 @@ If recurring mistakes still recur, if the user still has to re-state preferences
 Vault (configurable, plain markdown + YAML frontmatter, Obsidian-compatible)
           │  chokidar (auto-polls on cloud-storage mounts)
           ▼
-bastra-recall daemon (TypeScript / Node 20+, single local process)
+bastra-recall daemon (TypeScript / Node 22+, single local process)
   - In-memory BM25 index (MiniSearch) — recall_when×5, title×4, tags×3
   - Hybrid recall: BM25 + embeddings (Ollama or OpenAI) via RRF fusion
   - Tools: recall, load_memory, save_memory, find/read/save_document
@@ -123,7 +123,7 @@ The script installs Homebrew if it's missing, adds the bastra tap, installs `bas
 
 #### B) One command — for developers
 
-Pre-requisites: Node 20+, Git.
+Pre-requisites: Node 22+, Git.
 
 ```bash
 git clone https://github.com/n0mad-ai/bastra-recall.git
@@ -285,7 +285,7 @@ Wenn wiederkehrende Fehler weiter auftreten, wenn der User in jeder Sitzung dies
 Vault (konfigurierbar, reines Markdown + YAML-Frontmatter, Obsidian-kompatibel)
           │  chokidar (Auto-Polling auf Cloud-Storage-Mounts)
           ▼
-bastra-recall Daemon (TypeScript / Node 20+, ein lokaler Prozess)
+bastra-recall Daemon (TypeScript / Node 22+, ein lokaler Prozess)
   - In-Memory BM25-Index (MiniSearch) — recall_when×5, title×4, tags×3
   - Hybrid Recall: BM25 + Embeddings (Ollama oder OpenAI) via RRF-Fusion
   - Tools: recall, load_memory, save_memory, find/read/save_document
@@ -356,7 +356,7 @@ Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installi
 
 #### B) Ein Befehl — für Entwickler
 
-Voraussetzungen: Node 20+, Git.
+Voraussetzungen: Node 22+, Git.
 
 ```bash
 git clone https://github.com/n0mad-ai/bastra-recall.git

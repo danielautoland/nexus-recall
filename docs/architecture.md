@@ -16,7 +16,7 @@ Markdown vault
           |
           | Vault loader + chokidar watcher
           v
-bastra-recall daemon (Node 20+, TypeScript)
+bastra-recall daemon (Node 22+, TypeScript)
   - in-memory MiniSearch BM25 index
   - optional in-memory EmbeddingIndex persisted at <vault>/.bastra/embeddings.json
   - optional Auto-Related enrichment via embedding similarity
@@ -197,7 +197,7 @@ Topic detection is deterministic and based on file extension, path segments, and
 
 | Layer | Current choice |
 |---|---|
-| Runtime | Node 20+, TypeScript, ESM |
+| Runtime | Node 22+, TypeScript, ESM |
 | MCP | `@modelcontextprotocol/sdk` |
 | Search | MiniSearch BM25 in memory |
 | Embeddings | Optional OpenAI or Ollama provider, in-memory vectors with JSON persistence |

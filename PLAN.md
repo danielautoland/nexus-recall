@@ -17,7 +17,7 @@ The single success metric:
 |---|---|
 | Storage | Plain markdown + YAML frontmatter, recursive Obsidian-compatible vault scan |
 | Search | In-memory MiniSearch BM25, boosted `recall_when`, optional OpenAI/Ollama embeddings with RRF fusion |
-| Daemon | Node 20+ TypeScript daemon with stdio MCP + loopback HTTP REST on `127.0.0.1:6723` |
+| Daemon | Node 22+ TypeScript daemon with stdio MCP + loopback HTTP REST on `127.0.0.1:6723` |
 | Multi-client | MCP forwarder auto-spawns/reuses one shared daemon so clients share one vault/index |
 | Save path | `save_memory` validates and writes markdown, then force-reindexes the file |
 | Claude Code reflex layer | Hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse` edits/todos/bash, `PostToolUse` bash failures, plus optional `Stop` save-eval |
