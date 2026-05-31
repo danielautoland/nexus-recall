@@ -1,5 +1,3 @@
-/// <reference types="node" />
-import process from "process";
 import { probeDaemon } from "./helpers.js";
 import { ADAPTERS } from "./registry.js";
 
@@ -8,18 +6,18 @@ interface StatusOptions {
   quiet?: boolean;
 }
 
+const statusResult: Record<string, { status: string; message: string }> = {};
+
 function printLine(message: string) {
   process.stdout.write(message + "\n");
 }
 
 export async function cmdStatus(options: StatusOptions): Promise<number> {
   let hasError = false;
-  const statusResult: Record<string, any> = {};
 
   // 1. Check daemon status
   const daemonInfo = await probeDaemon();
   if (daemonInfo.ok) {
-    // Expose daemonInfo.detail as message
     statusResult["daemon"] = { status: "ok", message: daemonInfo.detail };
     if (!options.quiet && !options.json) {
       printLine(`✓ daemon          (${daemonInfo.detail})`);
@@ -64,6 +62,5 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     printLine(JSON.stringify(statusResult, null, 2));
   }
 
-  // Return exit code based on error status
   return hasError ? 1 : 0;
 }

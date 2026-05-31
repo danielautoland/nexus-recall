@@ -30,6 +30,7 @@ Options:
   --vault <path>             Vault path (BASTRA_VAULT_PATH env also works)
   --json                     Output status in JSON format (status command only)
   -q, --quiet                Suppress output, return exit code only (status command only)
+  --yes, -y                  Skip confirmation prompts
   --help, -h                 Show this help
   --version, -v              Show version
 
