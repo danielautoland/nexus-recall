@@ -3,6 +3,12 @@ import {
   CLAUDE_CODE_SETTINGS,
   PRE_TOOL_HOOK_BIN,
   SESSION_HOOK_BIN,
+  PROMPT_HOOK_BIN,
+  TODO_HOOK_BIN,
+  BASH_PRE_HOOK_BIN,
+  BASH_FAIL_HOOK_BIN,
+  STOP_HOOK_BIN,
+  STATUSLINE_BIN,
   SKILL_TARGET_FILE,
 } from "../paths.js";
 import {
@@ -22,42 +28,53 @@ import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult
 
 // ─── Hook helpers (claude-code-only surface) ─────────────────────
 
-interface HookBlock {
-  matcher: string;
-  hooks: Array<{
-    type: string;
-    command: string;
-    timeout: number;
-    __bastraRecall: true;
-    __note: string;
-  }>;
+type HookEventName = "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "Stop";
+
+interface HookDef {
+  event: HookEventName;
+  matcher?: string;
+  bin: string;
+  timeout: number;
+  note: string;
 }
 
-function buildPreToolHook(): HookBlock {
-  return {
-    matcher: "Write|Edit|MultiEdit|NotebookEdit",
-    hooks: [{
-      type: "command",
-      command: `node ${PRE_TOOL_HOOK_BIN}`,
-      timeout: 2,
-      __bastraRecall: true,
-      __note: "bastra-recall PreToolUse hook",
-    }],
-  };
+// Single source of truth for the reflex layer. The Stop hook is intentionally
+// opt-in because it can emit multi-line save-eval suggestions at turn end.
+function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
+  const defs: HookDef[] = [
+    { event: "SessionStart", matcher: "startup|resume|clear|compact", bin: SESSION_HOOK_BIN, timeout: 3, note: "bastra-recall SessionStart hook" },
+    { event: "UserPromptSubmit", bin: PROMPT_HOOK_BIN, timeout: 2, note: "bastra-recall UserPromptSubmit hook (lookup-mode, #33)" },
+    { event: "PreToolUse", matcher: "Write|Edit|MultiEdit|NotebookEdit", bin: PRE_TOOL_HOOK_BIN, timeout: 2, note: "bastra-recall PreToolUse hook" },
+    { event: "PreToolUse", matcher: "TodoWrite", bin: TODO_HOOK_BIN, timeout: 2, note: "bastra-recall TodoWrite hook (topology-recall, #36)" },
+    { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)" },
+    { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-fail hook (lesson recall on fail, #37)" },
+  ];
+  if (opts.includeStop) {
+    defs.push({ event: "Stop", bin: STOP_HOOK_BIN, timeout: 3, note: "bastra-recall Stop hook (optional autonomous save-eval, #35)" });
+  }
+  return defs;
 }
 
-function buildSessionHook(): HookBlock {
-  return {
-    matcher: "startup|resume|clear|compact",
-    hooks: [{
-      type: "command",
-      command: `node ${SESSION_HOOK_BIN}`,
-      timeout: 3,
-      __bastraRecall: true,
-      __note: "bastra-recall SessionStart hook",
-    }],
-  };
+function buildHookEntry(def: HookDef): Record<string, unknown> {
+  const entry: Record<string, unknown> = {};
+  if (def.matcher) entry.matcher = def.matcher;
+  entry.hooks = [{
+    type: "command",
+    command: `node ${def.bin}`,
+    timeout: def.timeout,
+    __bastraRecall: true,
+    __note: def.note,
+  }];
+  return entry;
 }
+
+// Hook bin filenames we own — recognised even on entries missing the
+// __bastraRecall marker (e.g. older hand-added ones).
+const OUR_HOOK_FILES = [
+  "hook.js", "session-hook.js", "prompt-hook.js", "todo-hook.js",
+  "bash-pre-hook.js", "bash-fail-hook.js", "stop-hook.js",
+];
+const REQUIRED_HOOK_FILES = OUR_HOOK_FILES.filter((f) => f !== "stop-hook.js");
 
 function isOurHookEntry(matcher: unknown): boolean {
   if (typeof matcher !== "object" || matcher === null) return false;
@@ -68,18 +85,54 @@ function isOurHookEntry(matcher: unknown): boolean {
     const hh = h as Record<string, unknown>;
     if (hh.__bastraRecall === true || hh.__nexusRecall === true) return true;
     const cmd = typeof hh.command === "string" ? hh.command : "";
-    if (cmd.includes("/daemon/dist/hook.js")) return true;
-    if (cmd.includes("/daemon/dist/session-hook.js")) return true;
+    if (cmd.includes("/daemon/dist/") && OUR_HOOK_FILES.some((f) => cmd.includes(`/${f}`))) return true;
+    // Fallback (mirrors install-hook.sh): bare-bin / legacy command form, e.g.
+    // `bastra-recall-session-hook` or `nexus-recall-*-hook` from the docs snippet.
+    if ((cmd.includes("bastra-recall") || cmd.includes("nexus-recall")) && cmd.includes("hook")) return true;
     return false;
   });
 }
 
+const HOOK_EVENTS: HookEventName[] = [
+  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+];
+
+// Which of our hook bins are actually registered (by dist filename), across
+// every event — used by doctor to report N/7 coverage.
+function registeredHookBins(hooks: Record<string, unknown>): Set<string> {
+  const found = new Set<string>();
+  for (const ev of HOOK_EVENTS) {
+    const arr = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
+    for (const entry of arr) {
+      if (!isOurHookEntry(entry)) continue;
+      const hs = (entry as Record<string, unknown>).hooks;
+      if (!Array.isArray(hs)) continue;
+      for (const h of hs) {
+        const cmd = typeof (h as Record<string, unknown>)?.command === "string"
+          ? ((h as Record<string, unknown>).command as string)
+          : "";
+        for (const f of OUR_HOOK_FILES) if (cmd.includes(`/${f}`)) found.add(f);
+      }
+    }
+  }
+  return found;
+}
+
 type HookStepStatus = "installed" | "already-installed" | "would-install" | "removed" | "not-present" | "would-remove" | "error";
 
-async function patchClaudeCodeHooks(action: "install" | "uninstall", opts: { dryRun: boolean }): Promise<{ status: HookStepStatus; detail: string; backupPath?: string }> {
+async function patchClaudeCodeHooks(
+  action: "install" | "uninstall",
+  opts: { dryRun: boolean; includeStop?: boolean },
+): Promise<{ status: HookStepStatus; detail: string; backupPath?: string }> {
+  const defs = hookDefinitions({ includeStop: opts.includeStop });
+  const includeStop = opts.includeStop === true;
+
   if (action === "install") {
-    if (!(await fileExists(PRE_TOOL_HOOK_BIN))) return { status: "error", detail: `hook binary missing: ${PRE_TOOL_HOOK_BIN} — run 'npm run build'` };
-    if (!(await fileExists(SESSION_HOOK_BIN))) return { status: "error", detail: `hook binary missing: ${SESSION_HOOK_BIN} — run 'npm run build'` };
+    for (const def of defs) {
+      if (!(await fileExists(def.bin))) {
+        return { status: "error", detail: `hook binary missing: ${def.bin} — run 'npm run build'` };
+      }
+    }
   }
 
   const read = await readJsonConfig(CLAUDE_CODE_SETTINGS);
@@ -90,46 +143,156 @@ async function patchClaudeCodeHooks(action: "install" | "uninstall", opts: { dry
     ? data.hooks as Record<string, unknown>
     : {};
 
-  const preTool = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [];
-  const session = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
-  const newPreTool = preTool.filter((m) => !isOurHookEntry(m));
-  const newSession = session.filter((m) => !isOurHookEntry(m));
-
-  let target: { preTool: unknown[]; session: unknown[] };
-  if (action === "install") {
-    newPreTool.push(buildPreToolHook());
-    newSession.push(buildSessionHook());
-    target = { preTool: newPreTool, session: newSession };
-  } else {
-    target = { preTool: newPreTool, session: newSession };
+  // Per event: keep all foreign entries, append our (possibly re-built) entries.
+  const before: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
+  const after: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
+  let stopPreserved = false;
+  for (const ev of HOOK_EVENTS) {
+    const cur = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
+    before[ev] = cur;
+    // On install without --with-stop-hook, preserve a previously opted-in Stop
+    // hook instead of stripping it: re-running install / `bastra update` must
+    // not silently remove a hook the user enabled earlier (#48).
+    if (action === "install" && !includeStop && ev === "Stop") {
+      after[ev] = cur;
+      stopPreserved = cur.some((m) => isOurHookEntry(m));
+    } else {
+      after[ev] = cur.filter((m) => !isOurHookEntry(m));
+    }
   }
+  if (action === "install") {
+    for (const def of defs) after[def.event].push(buildHookEntry(def));
+  }
+  const installNote = includeStop
+    ? ""
+    : stopPreserved
+      ? " (existing Stop hook kept)"
+      : " (Stop hook optional/off)";
 
-  const currentMatches =
-    JSON.stringify(preTool) === JSON.stringify(target.preTool) &&
-    JSON.stringify(session) === JSON.stringify(target.session);
+  const currentMatches = HOOK_EVENTS.every(
+    (ev) => JSON.stringify(before[ev]) === JSON.stringify(after[ev]),
+  );
 
   if (currentMatches) {
     return action === "install"
-      ? { status: "already-installed", detail: "hooks already registered with matching paths" }
+      ? { status: "already-installed", detail: `${defs.length} hooks already registered with matching paths${installNote}` }
       : { status: "not-present", detail: "no bastra-recall hooks present" };
   }
 
   if (opts.dryRun) {
     return action === "install"
-      ? { status: "would-install", detail: "would (re)register PreToolUse + SessionStart hooks" }
+      ? { status: "would-install", detail: `would (re)register ${defs.length} hooks across ${HOOK_EVENTS.length} events${installNote}` }
       : { status: "would-remove", detail: "would strip bastra-recall hook entries" };
   }
 
   // Commit changes
-  if (target.preTool.length > 0) hooks.PreToolUse = target.preTool; else delete hooks.PreToolUse;
-  if (target.session.length > 0) hooks.SessionStart = target.session; else delete hooks.SessionStart;
+  for (const ev of HOOK_EVENTS) {
+    if (after[ev].length > 0) hooks[ev] = after[ev];
+    else delete hooks[ev];
+  }
   data.hooks = hooks;
 
   const backupPath = await backupConfig(CLAUDE_CODE_SETTINGS);
   await atomicWriteJson(CLAUDE_CODE_SETTINGS, data);
   return action === "install"
-    ? { status: "installed", detail: "PreToolUse + SessionStart registered", backupPath: backupPath ?? undefined }
+    ? {
+        status: "installed",
+        detail: `${defs.length} hooks registered (SessionStart, UserPromptSubmit, PreToolUse×3, PostToolUse${includeStop ? ", Stop" : stopPreserved ? "; Stop kept" : "; Stop optional/off"})`,
+        backupPath: backupPath ?? undefined,
+      }
     : { status: "removed", detail: "bastra-recall hook entries removed", backupPath: backupPath ?? undefined };
+}
+
+// ─── Statusline helpers ──────────────────────────────────────────
+
+// Matches Daniel's hand-configured block + the One-command default:
+//   node <statusline>/dist/index.mjs --style=powerline
+const STATUSLINE_COMMAND = `node ${STATUSLINE_BIN} --style=powerline`;
+
+function buildStatuslineBlock(): Record<string, unknown> {
+  return {
+    type: "command",
+    command: STATUSLINE_COMMAND,
+    refreshInterval: 1,
+    __bastraRecall: true,
+  };
+}
+
+// Recognise our statusLine — by marker (our writes) or by command path
+// (hand-configured ones that predate the marker).
+function isOurStatusline(sl: unknown): boolean {
+  if (typeof sl !== "object" || sl === null) return false;
+  const s = sl as Record<string, unknown>;
+  if (s.__bastraRecall === true || s.__nexusRecall === true) return true;
+  const cmd = typeof s.command === "string" ? s.command : "";
+  return (
+    cmd.includes("bastra-statusline") ||
+    cmd.includes("/statusline/dist/index.mjs") ||
+    cmd.includes("/statusline/bin/claude-powerline") ||
+    (cmd.includes("statusline") && cmd.includes("bastra"))
+  );
+}
+
+function statuslineMatches(sl: unknown): boolean {
+  if (typeof sl !== "object" || sl === null) return false;
+  const s = sl as Record<string, unknown>;
+  return (
+    s.command === STATUSLINE_COMMAND &&
+    s.type === "command" &&
+    s.refreshInterval === 1
+  );
+}
+
+type StatuslineStepStatus =
+  | "installed" | "already-installed" | "would-install" | "foreign-kept"
+  | "removed" | "not-present" | "would-remove" | "error";
+
+async function patchClaudeCodeStatusline(
+  action: "install" | "uninstall",
+  opts: { dryRun: boolean; force: boolean },
+): Promise<{ status: StatuslineStepStatus; detail: string; backupPath?: string }> {
+  if (action === "install" && !(await fileExists(STATUSLINE_BIN))) {
+    return { status: "error", detail: `statusline not built: ${STATUSLINE_BIN} — run 'npm run build'` };
+  }
+
+  const read = await readJsonConfig(CLAUDE_CODE_SETTINGS);
+  if ("error" in read) return { status: "error", detail: read.error };
+  const data = read.data;
+  const existing = data.statusLine;
+  const present = existing !== undefined && existing !== null;
+
+  if (action === "install") {
+    // A different statusLine is configured → never clobber it without --yes.
+    if (present && !isOurStatusline(existing)) {
+      if (!opts.force) {
+        return { status: "foreign-kept", detail: "a different statusLine is configured — kept it (pass --yes to use bastra's)" };
+      }
+    } else if (statuslineMatches(existing)) {
+      return { status: "already-installed", detail: "bastra statusLine already configured" };
+    }
+
+    if (opts.dryRun) {
+      const verb = !present ? "would add" : isOurStatusline(existing) ? "would update" : "would replace foreign";
+      return { status: "would-install", detail: `${verb} statusLine → ${STATUSLINE_COMMAND}` };
+    }
+
+    const backupPath = await backupConfig(CLAUDE_CODE_SETTINGS);
+    data.statusLine = buildStatuslineBlock();
+    await atomicWriteJson(CLAUDE_CODE_SETTINGS, data);
+    const how = !present ? "powerline, refreshInterval 1s" : isOurStatusline(existing) ? "path updated" : "replaced foreign";
+    return { status: "installed", detail: `statusLine registered (${how})`, backupPath: backupPath ?? undefined };
+  }
+
+  // uninstall — only remove our own statusLine, never a foreign one.
+  if (!present || !isOurStatusline(existing)) {
+    return { status: "not-present", detail: present ? "statusLine is not bastra's — kept" : "no statusLine present" };
+  }
+  if (opts.dryRun) return { status: "would-remove", detail: "would remove bastra statusLine" };
+
+  const backupPath = await backupConfig(CLAUDE_CODE_SETTINGS);
+  delete data.statusLine;
+  await atomicWriteJson(CLAUDE_CODE_SETTINGS, data);
+  return { status: "removed", detail: "bastra statusLine removed", backupPath: backupPath ?? undefined };
 }
 
 // ─── Adapter functions ───────────────────────────────────────────
@@ -148,22 +311,31 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
 
   const mcpMatches = blocksMatch(servers[SERVER_KEY], block);
   const skillResult = await copySkill({ dryRun: opts.dryRun });
-  const hookResult = await patchClaudeCodeHooks("install", { dryRun: opts.dryRun });
+  const hookResult = await patchClaudeCodeHooks("install", {
+    dryRun: opts.dryRun,
+    includeStop: opts.withStopHook === true,
+  });
+  const statuslineResult = await patchClaudeCodeStatusline("install", { dryRun: opts.dryRun, force: opts.force === true });
 
   if (skillResult.status === "error") return { status: "error", message: `skill: ${skillResult.detail}`, configPath };
   if (hookResult.status === "error") return { status: "error", message: `hooks: ${hookResult.detail}`, configPath };
+  if (statuslineResult.status === "error") return { status: "error", message: `statusline: ${statuslineResult.detail}`, configPath };
 
-  // If everything is already in place: no MCP write, no Skill write, no Hook write
+  // If everything is already in place: no MCP write, no Skill write, no Hook write.
+  // A kept foreign statusLine counts as settled (nothing to write) — we just
+  // surface the hint that --yes would switch it to bastra's.
+  const statuslineSettled =
+    statuslineResult.status === "already-installed" || statuslineResult.status === "foreign-kept";
   const allAlreadyInstalled =
     mcpMatches &&
     skillResult.status === "already-installed" &&
-    hookResult.status === "already-installed";
+    hookResult.status === "already-installed" &&
+    statuslineSettled;
   if (allAlreadyInstalled) {
-    return {
-      status: "already-installed",
-      message: "MCP server, skill, and hooks all already in place",
-      configPath,
-    };
+    const msg = statuslineResult.status === "foreign-kept"
+      ? "MCP, skill, hooks in place; statusLine: foreign one kept (pass --yes to use bastra's)"
+      : "MCP server, skill, hooks, and statusLine all already in place";
+    return { status: "already-installed", message: msg, configPath };
   }
 
   if (opts.dryRun) {
@@ -172,6 +344,7 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
     else steps.push("mcp: already matches");
     steps.push(`skill: ${skillResult.detail}`);
     steps.push(`hooks: ${hookResult.detail}`);
+    steps.push(`statusline: ${statuslineResult.detail}`);
     return { status: "would-install", message: steps.join("\n  · "), configPath };
   }
 
@@ -187,13 +360,14 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   lines.push(mcpMatches ? "mcp: already matches" : `mcp: registered '${SERVER_KEY}'`);
   lines.push(`skill: ${skillResult.detail}`);
   lines.push(`hooks: ${hookResult.detail}`);
+  lines.push(`statusline: ${statuslineResult.detail}`);
   lines.push("restart Claude Code to activate");
 
   return {
     status: "installed",
     message: lines.join("\n  · "),
     configPath,
-    backupPath,
+    backupPath: backupPath ?? statuslineResult.backupPath,
   };
 }
 
@@ -211,8 +385,9 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
   // the skill, run a separate `bastra uninstall --purge-skill` or remove
   // the file manually.
   const hookResult = await patchClaudeCodeHooks("uninstall", { dryRun: opts.dryRun });
+  const statuslineResult = await patchClaudeCodeStatusline("uninstall", { dryRun: opts.dryRun, force: false });
 
-  if (!mcpPresent && hookResult.status === "not-present") {
+  if (!mcpPresent && hookResult.status === "not-present" && statuslineResult.status === "not-present") {
     return { status: "not-present", message: "nothing to remove (skill kept in case Claude Desktop still uses it)", configPath };
   }
 
@@ -220,6 +395,7 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
     const steps: string[] = [];
     steps.push(mcpPresent ? `mcp: would remove '${SERVER_KEY}'` : "mcp: not present");
     steps.push(`hooks: ${hookResult.detail}`);
+    steps.push(`statusline: ${statuslineResult.detail}`);
     steps.push("skill: kept (shared with Claude Desktop)");
     return { status: "would-remove", message: steps.join("\n  · "), configPath };
   }
@@ -236,6 +412,7 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
   const lines: string[] = [];
   lines.push(mcpPresent ? `mcp: removed '${SERVER_KEY}'` : "mcp: not present");
   lines.push(`hooks: ${hookResult.detail}`);
+  lines.push(`statusline: ${statuslineResult.detail}`);
   lines.push("skill: kept (shared with Claude Desktop)");
   lines.push("restart Claude Code to drop the connection");
 
@@ -243,7 +420,7 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
     status: "removed",
     message: lines.join("\n  · "),
     configPath,
-    backupPath,
+    backupPath: backupPath ?? statuslineResult.backupPath,
   };
 }
 
@@ -276,17 +453,36 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
   // Skill
   details["skill"] = (await fileExists(SKILL_TARGET_FILE)) ? `present (${SKILL_TARGET_FILE})` : "missing";
 
-  // Hooks
+  // Hooks. Stop is optional: some users intentionally disable autonomous
+  // save-eval while keeping the rest of the reflex layer active.
+  let requiredHooksMissing = false;
   const settingsRead = await readJsonConfig(CLAUDE_CODE_SETTINGS);
-  if ("error" in settingsRead) details["hooks"] = `settings.json broken: ${settingsRead.error}`;
-  else {
+  if ("error" in settingsRead) {
+    details["hooks"] = `settings.json broken: ${settingsRead.error}`;
+    requiredHooksMissing = true;
+  } else {
     const hooks = (settingsRead.data.hooks && typeof settingsRead.data.hooks === "object")
       ? settingsRead.data.hooks as Record<string, unknown>
       : {};
-    const preTool = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse.some(isOurHookEntry) : false;
-    const session = Array.isArray(hooks.SessionStart) ? hooks.SessionStart.some(isOurHookEntry) : false;
-    details["pretool-hook"] = preTool ? "registered" : "missing";
-    details["sessionstart-hook"] = session ? "registered" : "missing";
+    const found = registeredHookBins(hooks);
+    const requiredMissing = REQUIRED_HOOK_FILES.filter((f) => !found.has(f));
+    const optionalMissing = OUR_HOOK_FILES
+      .filter((f) => !REQUIRED_HOOK_FILES.includes(f))
+      .filter((f) => !found.has(f));
+    requiredHooksMissing = requiredMissing.length > 0;
+    details["hooks"] = requiredHooksMissing
+      ? `${found.size}/${OUR_HOOK_FILES.length} registered (missing required: ${requiredMissing.join(", ")})`
+      : optionalMissing.length > 0
+        ? `${found.size}/${OUR_HOOK_FILES.length} registered (optional disabled: ${optionalMissing.join(", ")})`
+        : `${OUR_HOOK_FILES.length}/${OUR_HOOK_FILES.length} registered`;
+
+    // Statusline (optional/cosmetic — never marks the surface as broken).
+    const sl = settingsRead.data.statusLine;
+    details["statusline"] = sl === undefined || sl === null
+      ? "missing (run 'bastra install' to add it)"
+      : isOurStatusline(sl)
+        ? "present (bastra)"
+        : "present (foreign — run 'bastra install --yes' to replace it)";
   }
 
   // Daemon
@@ -297,11 +493,10 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
   const broken =
     details["forwarder-path"]?.includes("MISSING") === true ||
     details["vault-path"]?.includes("MISSING") === true ||
-    details["pretool-hook"] === "missing" ||
-    details["sessionstart-hook"] === "missing" ||
+    requiredHooksMissing ||
     details["skill"] === "missing";
   if (broken) return { status: "broken", message: "registered but some pieces are missing", details };
-  return { status: "ok", message: "MCP + skill + hooks all registered and healthy", details };
+  return { status: "ok", message: "MCP + skill + required hooks registered and healthy", details };
 }
 
 export const claudeCodeAdapter: Adapter = {

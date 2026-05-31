@@ -67,7 +67,7 @@ import { startBackgroundCheck } from "./update-check.js";
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
 const DOCUMENT_WRITE_ENABLED = envFirst("BASTRA_DOCUMENT_WRITE", "NEXUS_DOCUMENT_WRITE") === "1";
 
-const DAEMON_VERSION = "0.1.0";
+const DAEMON_VERSION = "0.6.0-beta.1";
 const DEFAULT_HTTP_PORT = 6723;
 
 const VAULT_PATH = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
@@ -147,6 +147,16 @@ async function main(): Promise<void> {
     vaultPath: VAULT_PATH!,
   };
 
+  // Idle self-shutdown: the shared daemon is spawned on demand by the
+  // mcp-forwarder, so it can safely self-terminate after a stretch of no
+  // activity — the next recall respawns it. Keeps the process table clean
+  // (no orphaned daemons after sessions end). 0 disables. Default 30 min.
+  const idleShutdownMs = envInt("BASTRA_DAEMON_IDLE_SHUTDOWN_MS", 30 * 60 * 1000);
+  let lastActivityMs = Date.now();
+  const markActivity = (): void => {
+    lastActivityMs = Date.now();
+  };
+
   const httpPort = envInt("BASTRA_HTTP_PORT", DEFAULT_HTTP_PORT, "NEXUS_HTTP_PORT");
   const httpHandle =
     envFirst("BASTRA_HTTP", "NEXUS_HTTP") === "off"
@@ -159,10 +169,11 @@ async function main(): Promise<void> {
           version: DAEMON_VERSION,
           toolDeps,
           documentWriteEnabled: DOCUMENT_WRITE_ENABLED,
+          onActivity: markActivity,
         });
 
   const server = new Server(
-    { name: "bastra-recall", version: "0.1.0" },
+    { name: "bastra-recall", version: "0.6.0-beta.1" },
     { capabilities: { tools: {} } },
   );
 
@@ -183,6 +194,7 @@ async function main(): Promise<void> {
   const banterLang = (process.env.BASTRA_BANTER_LANG ?? "en").toLowerCase() === "de" ? "de" : "en";
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    markActivity();
     const { name, arguments: args } = req.params;
 
     if (name === "recall") {
@@ -338,6 +350,25 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  // Idle watchdog — terminate after `idleShutdownMs` without activity.
+  // `.unref()` so the timer itself never keeps the process alive.
+  if (idleShutdownMs > 0) {
+    const tick = Math.min(idleShutdownMs, 60_000);
+    const idleLabel =
+      idleShutdownMs >= 60_000
+        ? `${Math.round(idleShutdownMs / 60000)}min`
+        : `${Math.round(idleShutdownMs / 1000)}s`;
+    const idleTimer = setInterval(() => {
+      if (Date.now() - lastActivityMs >= idleShutdownMs) {
+        console.error(
+          `[bastra-recall] idle for ${idleLabel} — self-terminating (respawns on next recall)`,
+        );
+        void shutdown();
+      }
+    }, tick);
+    idleTimer.unref();
+  }
 }
 
 function errorResult(msg: string) {

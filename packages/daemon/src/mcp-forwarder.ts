@@ -48,6 +48,7 @@ import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   pickPhrase,
+  pickToolPhrase,
   banterModeFromEnv,
   progressIndexFor,
   RECALL_STAGE_ORDER,
@@ -56,7 +57,12 @@ import {
 import { MEMORY_TOOL_DEFS } from "./tool-handlers.js";
 import { documentTools } from "./documents-handler.js";
 import { documentWriteTools } from "./documents-write-handler.js";
-import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
+import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
+import {
+  adoptTurn,
+  defaultStatuslineState,
+  type StatuslineState,
+} from "./statusline-feed.js";
 
 const DAEMON_URL = (process.env.BASTRA_DAEMON_URL ?? "http://127.0.0.1:6723").replace(/\/+$/, "");
 const API_TOKEN = process.env.BASTRA_API_TOKEN ?? "";
@@ -185,7 +191,7 @@ async function main(): Promise<void> {
   }
 
   const server = new Server(
-    { name: "bastra-recall-mcp", version: "0.1.0" },
+    { name: "bastra-recall-mcp", version: "0.6.0-beta.1" },
     { capabilities: { tools: {} } },
   );
 
@@ -203,6 +209,18 @@ async function main(): Promise<void> {
     const { name, arguments: args } = req.params;
     const progressToken = (req.params as { _meta?: { progressToken?: string | number } })._meta
       ?.progressToken;
+
+    // Diagnostic (BASTRA_PROGRESS_DEBUG=1): logs whether Claude Code attaches a
+    // progressToken to each tool call. Without one, no notifications/progress
+    // can be sent — so this tells us if the live-phrase channel is even open.
+    // Lands in the CC MCP debug log as "Server stderr: …".
+    if (process.env.BASTRA_PROGRESS_DEBUG) {
+      console.error(
+        `[bastra-progress-debug] tool=${name} progressToken=${
+          progressToken === undefined ? "ABSENT" : `present(${JSON.stringify(progressToken)})`
+        }`,
+      );
+    }
 
     // Streaming recall (#38 follow-up): if the client sent a progressToken
     // and the call is `recall`, proxy via SSE against /hook/recall and
@@ -224,14 +242,20 @@ async function main(): Promise<void> {
       flushStatusline();
       try {
         const result = await callRecallStreaming(args, async (s: RecallStage) => {
-          // notifications/progress only when the client opted in via a
-          // progressToken. Claude Code drops them (bug #51713) — the
-          // statusline segment is the visible channel there.
+          // Banter phrase for this stage — the human-readable live message.
+          // Always computed (null when banter is off) so it reaches the
+          // statusline feed, which is the only visible channel in Claude Code
+          // (bug #51713). notifications/progress is sent only when the client
+          // opted in via a progressToken; CC drops it.
+          const phrase = pickPhrase(s, banterMode, banterLang);
           if (progressToken !== undefined) {
-            const phrase = pickPhrase(s, banterMode, banterLang);
             const dur = s.durationMs !== undefined ? `${s.durationMs}ms` : "";
+            // Phrase-first: the human-readable banter leads, the technical
+            // stage name only shows when banter is off (fallback).
             const message = phrase
-              ? `${s.name} · ${dur} · ${phrase}`
+              ? dur
+                ? `${phrase} · ${dur}`
+                : phrase
               : `${s.name}${dur ? ` · ${dur}` : ""}`;
             await extra
               .sendNotification({
@@ -246,6 +270,7 @@ async function main(): Promise<void> {
               .catch(() => undefined);
           }
           liveStatusline.current_stage = s.name;
+          liveStatusline.current_message = phrase;
           liveStatusline.current_stage_started_at = Date.now();
           flushStatusline();
         });
@@ -257,18 +282,35 @@ async function main(): Promise<void> {
         liveStatusline.total_ms += Date.now() - recallStartedAt;
         if (typeof vaultSize === "number") liveStatusline.vault_size = vaultSize;
         liveStatusline.current_stage = null;
+        liveStatusline.current_message = null;
         liveStatusline.current_stage_started_at = null;
         liveStatusline.current_recall_started_at = null;
+        // Done-banner phrase: the recall's `done` stage event is suppressed
+        // upstream, so pick a done phrase here. This persists in the feed and
+        // is the only phrase the ≥1s statusline refresh reliably shows.
+        liveStatusline.last_phrase = pickPhrase(
+          { name: "done", startedAtMs: Date.now() },
+          banterMode,
+          banterLang,
+        );
+        liveStatusline.last_phrase_at = Date.now();
         flushStatusline();
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
       } catch (err) {
         // On error: clear current-recall marks so the statusline doesn't
-        // hang on a stuck stage.
+        // hang on a stuck stage, and show an error banter phrase in the banner.
         liveStatusline.current_stage = null;
+        liveStatusline.current_message = null;
         liveStatusline.current_stage_started_at = null;
         liveStatusline.current_recall_started_at = null;
+        liveStatusline.last_phrase = pickPhrase(
+          { name: "error", startedAtMs: Date.now() },
+          banterMode,
+          banterLang,
+        );
+        liveStatusline.last_phrase_at = Date.now();
         flushStatusline();
         return {
           isError: true,
@@ -277,14 +319,46 @@ async function main(): Promise<void> {
       }
     }
 
+    // Non-streaming tools (load_memory, save_memory, find_document, …) have no
+    // stages. Count every bastra tool call into the statusline (so it stays
+    // alive on load_memory-heavy turns, not just recalls) and surface its
+    // phrase, then fire one progress notification so the phrase also shows
+    // under "Calling bastra-recall". Race-safe: same adoptTurn + serial
+    // in-memory path as recall (#51); no hits/ms are added here (those stay
+    // recall-only).
+    const toolPhrase = pickToolPhrase(name, banterMode, banterLang, toolPhraseSeed++);
+    syncStatuslineTurn();
+    liveStatusline.state = "running";
+    liveStatusline.recall_count += 1;
+    if (toolPhrase) {
+      liveStatusline.last_phrase = toolPhrase;
+      liveStatusline.last_phrase_at = Date.now();
+    }
+    flushStatusline();
+    if (progressToken !== undefined && toolPhrase) {
+      await extra
+        .sendNotification({
+          method: "notifications/progress",
+          params: { progressToken, progress: 1, total: 1, message: toolPhrase },
+        })
+        .catch(() => undefined);
+    }
+
+    const toolStartedAt = Date.now();
     try {
       const result = await callDaemon(name, args);
+      // Fold this tool call's duration into the turn total (hits stay
+      // recall-only, so the statusline shows "N calls · Xms" for load_memory).
+      liveStatusline.total_ms += Date.now() - toolStartedAt;
+      flushStatusline();
       return {
         content: [
           { type: "text", text: JSON.stringify(result, null, 2) },
         ],
       };
     } catch (err) {
+      liveStatusline.total_ms += Date.now() - toolStartedAt;
+      flushStatusline();
       return {
         isError: true,
         content: [
@@ -294,20 +368,40 @@ async function main(): Promise<void> {
     }
   });
 
+  // Clean up feed files left behind by CC sessions that died without a clean
+  // shutdown (hard kill / crash) — runs once at startup.
+  reapStaleFeeds();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
     `[bastra-recall-mcp] forwarder ready (daemon=${DAEMON_URL}, spawn=${SPAWN_ENABLED ? "on" : "off"})`,
   );
 
+  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
     // Forwarder beendet sich, aber lässt den Daemon laufen — andere
-    // Sessions können noch verbunden sein.
+    // Sessions können noch verbunden sein. Guard gegen Mehrfach-Trigger
+    // (SIGTERM + stdin-end + ppid-Poll können gleichzeitig feuern).
+    if (shuttingDown) return;
+    shuttingDown = true;
     await server.close();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  // Fast path: CC closes our stdin when it exits → shut down immediately.
+  process.stdin.on("end", () => void shutdown());
+  process.stdin.on("close", () => void shutdown());
+
+  // Backstop: if CC dies without closing stdin (hard kill), we get reparented
+  // to init/launchd → ppid becomes 1. Poll for it so we never linger as a
+  // zombie. unref() so the timer itself never keeps the process alive.
+  const orphanCheck = setInterval(() => {
+    if (process.ppid === 1) void shutdown();
+  }, 30_000);
+  orphanCheck.unref();
 }
 
 // ─── helpers ─────────────────────────────────────────────────────
@@ -372,6 +466,11 @@ async function callRecallStreaming(
   if (typeof a.k === "number") body.k = a.k;
   if (typeof a.scope === "string") body.scope = a.scope;
   if (typeof a.type === "string") body.type = a.type;
+  // MCP-Pfad: genau k Hits, keine 1-Hop-Nachbarn (#50). Der /hook/recall-
+  // Default ist 1 (gut für die PreToolUse-Hook-CLI), aber für den vom Modell
+  // ausgelösten recall verdoppeln die Nachbarn nur den Context. Das Modell
+  // kann expand_hops:1 explizit anfordern, wenn es Related-Memories will.
+  body.expand_hops = typeof a.expand_hops === "number" ? a.expand_hops : 0;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -404,7 +503,6 @@ async function callRecallStreaming(
   let buf = "";
   let payload: HookRecallDonePayload | null = null;
   let errorMsg: string | null = null;
-  const stageTimings: Record<string, number | boolean> = {};
 
   try {
     for (;;) {
@@ -427,10 +525,6 @@ async function callRecallStreaming(
             meta: d.meta,
           };
           await onStage(stage);
-          if (stage.name === "cache.hit") stageTimings.cache_hit = true;
-          else if (stage.durationMs !== undefined) {
-            stageTimings[`${stage.name.replace(/\./g, "_")}_ms`] = stage.durationMs;
-          }
         } else if (evt.type === "done") {
           payload = evt.data as HookRecallDonePayload;
         } else if (evt.type === "error") {
@@ -445,13 +539,15 @@ async function callRecallStreaming(
   if (errorMsg) throw new Error(errorMsg);
   if (!payload) throw new Error("daemon /hook/recall ended without done event");
 
+  // No `stages` block in the tool-result (#50): stage events already drove
+  // the live progress channel via onStage; the timing map would just bloat
+  // the context Claude reads. Debug timings live in /api/v1/recall + telemetry.
   return {
     query: body.query,
     vault_size: payload.vault_size,
     hits: payload.hits,
     recall_id: payload.recall_id,
     latency_ms: payload.latency_ms,
-    stages: stageTimings,
   };
 }
 
@@ -469,52 +565,26 @@ const STATUSLINE_FEED_PATH = sessionFeedPath(claudeSessionPid());
  * Ownership: this forwarder process owns the authoritative copy IN MEMORY
  * (single-threaded JS → concurrent recalls mutate it serially, no race).
  * The disk file is write-only from here, plus a single read at recall-start
- * to detect the prompt-hook's idle-reset (turn boundary).
+ * to detect the prompt-hook's turn boundary (see `adoptTurn` / Issue #51).
+ * State shape + the turn-boundary decision live in `statusline-feed.ts`.
  */
-interface StatuslineState {
-  ts: number;
-  state: "idle" | "running";
-  vault_size: number;
-  recall_count: number;
-  total_hits: number;
-  total_ms: number;
-  current_stage: string | null;
-  current_stage_started_at: number | null;
-  current_recall_started_at: number | null;
-}
-
-function defaultStatuslineState(): StatuslineState {
-  return {
-    ts: Date.now(),
-    state: "idle",
-    vault_size: 0,
-    recall_count: 0,
-    total_hits: 0,
-    total_ms: 0,
-    current_stage: null,
-    current_stage_started_at: null,
-    current_recall_started_at: null,
-  };
-}
-
 let liveStatusline: StatuslineState = defaultStatuslineState();
 
+/** Cycles per non-streaming tool call so a series shows varying tool phrases. */
+let toolPhraseSeed = 0;
+
 /**
- * At recall start: adopt a fresh turn if the prompt-hook wrote an idle
- * marker (state === "idle"). This is the only disk READ in the hot path.
- * Keeps the latest vault_size across the reset.
+ * At recall start: adopt a fresh turn iff the prompt-hook stamped a new
+ * `turn_id` (Issue #51 — replaces the old `state === "idle"` trigger that
+ * let late idle markers clobber parallel-recall counts). This is the only
+ * disk READ in the hot path. Keeps the latest vault_size across the reset.
  */
 function syncStatuslineTurn(): void {
   try {
     const onDisk = JSON.parse(
       fs.readFileSync(STATUSLINE_FEED_PATH, "utf8"),
     ) as Partial<StatuslineState>;
-    if (onDisk.state === "idle") {
-      liveStatusline = {
-        ...defaultStatuslineState(),
-        vault_size: onDisk.vault_size ?? liveStatusline.vault_size,
-      };
-    }
+    liveStatusline = adoptTurn(liveStatusline, onDisk);
   } catch {
     // no file / unreadable — keep in-memory state
   }

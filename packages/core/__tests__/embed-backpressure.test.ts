@@ -77,7 +77,7 @@ test("flushQueue respects MAX_CONCURRENT_BATCHES (default 2)", async () => {
     );
     idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -87,16 +87,13 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
   const prevStall = process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS;
   process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT = "20";
   process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS = "30";
-  // Re-import dynamic, damit env-Werte beim Module-Init greifen.
-  const mod = await import(
-    "../src/embeddings.js?bp=" + Math.random()
-  ).catch(() => import("../src/embeddings.js"));
+  // enqueue() liest die env zur Laufzeit → kein Modul-Reimport nötig.
 
   try {
     const { dir, vault } = await vaultWith(0);
     const provider = new SlowMockProvider(20);
     const persistPath = path.join(dir, ".bastra", "embeddings.json");
-    const idx = new mod.EmbeddingIndex(vault, provider, persistPath);
+    const idx = new EmbeddingIndex(vault, provider, persistPath);
     await idx.start();
 
     // 100 dummy-IDs in den Vault stopfen (file + reindex), dann enqueue alle.
@@ -118,7 +115,10 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
     assert.ok(dt > 30, `enqueue burst dt=${dt.toFixed(0)}ms must include stall`);
 
     idx.stop();
-    await rm(dir, { recursive: true, force: true });
+    // Drain in-flight provider calls before rm(), else a late embed-write
+    // into .bastra races the cleanup (ENOTEMPTY on the dir).
+    while (idx.inFlightCount() > 0) await new Promise((r) => setTimeout(r, 10));
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   } finally {
     if (prevLimit === undefined) delete process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT;
     else process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT = prevLimit;

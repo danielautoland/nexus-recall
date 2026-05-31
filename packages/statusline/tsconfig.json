@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
     "lib": ["ESNext"],
-    "target": "ES2022", 
+    "types": ["node"],
+    "target": "ES2022",
     "module": "ESNext",
     "moduleDetection": "force",
     "allowJs": true,

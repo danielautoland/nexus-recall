@@ -1,6 +1,10 @@
 export interface InstallOpts {
   dryRun: boolean;
   vaultPath: string | null;
+  // --yes: replace a foreign statusLine instead of keeping it.
+  force?: boolean;
+  // Stop hook can emit multi-line save-eval suggestions, so it is opt-in.
+  withStopHook?: boolean;
 }
 
 export interface InstallResult {
@@ -42,4 +46,6 @@ export interface ParsedArgs {
   json: boolean;
   quiet: boolean;
   yes: boolean;
+  fix: boolean;
+  withStopHook: boolean;
 }

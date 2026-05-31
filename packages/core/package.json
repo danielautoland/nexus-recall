@@ -1,12 +1,14 @@
 {
   "name": "@bastra-recall/core",
-  "version": "0.1.0",
+  "version": "0.6.0-beta.1",
   "description": "Reusable core library: vault loader, BM25 index, save_memory. Used by the daemon and the Mac-app.",
   "type": "module",
-  "private": true,
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,14 +29,14 @@
     "bench:vault-init": "tsx scripts/bench-vault-init.ts"
   },
   "dependencies": {
-    "chokidar": "^4.0.1",
+    "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
     "minisearch": "^7.1.1",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^6.0.3"
   }
 }

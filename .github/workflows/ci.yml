@@ -1,0 +1,64 @@
+name: CI
+
+# Mechanical build gate — does it compile, do the tests pass, on every
+# supported Node version. This does NOT replace human review: it says
+# nothing about malicious code, dependency tampering, or whether the
+# change makes sense. PRs still get reviewed by a maintainer (CODEOWNERS).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a previous run on the same ref when a new commit is pushed —
+# saves runner minutes on rapid PR iterations.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build + test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` installs strictly from package-lock.json and fails hard if
+      # the lockfile is out of sync with package.json — this is what catches
+      # an accidentally-rewritten lockfile in a PR.
+      - name: Install (clean, from lockfile)
+        run: npm ci
+
+      # Build first: it compiles each workspace and emits the .d.ts files
+      # (e.g. packages/core/dist) that the other workspaces' type-check
+      # step resolves @bastra-recall/core against. Type-checking before
+      # build would fail on a fresh checkout (core/dist not built yet).
+      - name: Build
+        run: npm run build
+
+      - name: Type-check
+        run: npm run check:types
+
+      - name: Test
+        run: npm test
+
+      - name: Update-check tests
+        run: npm run test:update
+
+      - name: Smoke test
+        run: npm run smoke
+
+      - name: Package dry-run
+        run: npm run pack:check
