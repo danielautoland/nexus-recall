@@ -32,17 +32,17 @@ const MAX_CONCURRENT_BATCHES = Math.max(
 );
 
 /** Queue-Länge ab der `enqueue()` ein kurzes Sleep einbaut, damit Aufrufer
- *  (z.B. bulk-Import von 1000 Memories) blockieren bis die Queue abebbt. */
-const BACKPRESSURE_LIMIT = Math.max(
-  1,
-  Number(process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT ?? "200"),
-);
+ *  (z.B. bulk-Import von 1000 Memories) blockieren bis die Queue abebbt.
+ *  Zur Laufzeit gelesen (nicht als Modul-Konstante), damit Tests die env
+ *  deterministisch setzen können — ohne fragilen Modul-Reimport. */
+function backpressureLimit(): number {
+  return Math.max(1, Number(process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT ?? "200"));
+}
 
 /** Stall-Dauer pro `enqueue()`-Call wenn queue über Limit. */
-const BACKPRESSURE_STALL_MS = Math.max(
-  0,
-  Number(process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS ?? "100"),
-);
+function backpressureStallMs(): number {
+  return Math.max(0, Number(process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS ?? "100"));
+}
 
 /** Polling-Interval für den Semaphore. */
 const SEMAPHORE_POLL_MS = Math.max(
@@ -391,8 +391,8 @@ export class EmbeddingIndex {
    */
   async enqueue(id: string): Promise<void> {
     this.pendingQueue.add(id);
-    if (this.pendingQueue.size > BACKPRESSURE_LIMIT) {
-      await new Promise<void>((r) => setTimeout(r, BACKPRESSURE_STALL_MS));
+    if (this.pendingQueue.size > backpressureLimit()) {
+      await new Promise<void>((r) => setTimeout(r, backpressureStallMs()));
     }
     void this.flushQueue();
   }
