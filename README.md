@@ -119,7 +119,7 @@ Three paths, in order of friction. bastra-recall is self-contained: the daemon, 
 
 The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and runs `bastra install all` — no terminal knowledge required.
 
-> If the `.command` asset is not attached to the latest release yet, use path B.
+> Until the Homebrew tap (`n0mad-ai/tap`) is published and the `.command` asset is attached to a release ([#3](https://github.com/n0mad-ai/bastra-recall/issues/3)), use path B.
 
 #### B) One command — for developers
 
@@ -141,7 +141,7 @@ Adapter status:
 
 | Surface | What gets installed | Status |
 |---|---|---|
-| `claude-desktop` | MCP server entry in `claude_desktop_config.json` | ✅ implemented |
+| `claude-desktop` | MCP server entry in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implemented |
 | `claude-code` | MCP server in `.claude.json` + Skill in `.claude/skills/` + hooks & powerline statusLine in `.claude/settings.json` | ✅ implemented |
 | `cursor` | MCP server entry in `.cursor/mcp.json` | ✅ implemented (Cursor Rules layer is a separate roadmap item) |
 
@@ -160,7 +160,7 @@ Add the MCP server block to your client's config (`~/.claude.json` for Claude Co
   "command": "node",
   "args": ["/abs/path/to/bastra-recall/packages/daemon/dist/mcp-forwarder.js"],
   "env": {
-    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault/memorys"
+    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault"
   }
 }
 ```
@@ -174,7 +174,7 @@ The forwarder is a thin stdio-MCP wrapper that talks to a single local HTTP daem
   "command": "node",
   "args": ["/abs/path/to/bastra-recall/packages/daemon/dist/index.js"],
   "env": {
-    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault/memorys"
+    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault"
   }
 }
 ```
@@ -222,9 +222,9 @@ Milestone-based, not phase-based. Each gate is a hard pass/fail.
 | **M0.5** | Stress-test recall (paraphrased / cross-memory / anti-hallucination) | ⏳ Open — see issues. |
 | **M3** | Reflex layer: hooks for `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` plus opt-in `Stop` | 🟡 **Functional** — six quiet Claude Code hooks are installed by default; `Stop` save-eval is available behind `--with-stop-hook`. |
 | **Distribution** | Homebrew tap, `bastra` CLI, `Install Bastra.command`, npm package | 🟡 **Functional / hardening** — `bastra` CLI ships with adapters for every surface; Homebrew formula and double-click installer exist; npm publish workflow and public smoke fixtures are being hardened. |
-| **Multi-surface** | One install per AI client (MCP + Skill + Hooks where applicable) + REST gateway for non-MCP clients | 🟡 **Functional** — `bastra install` covers Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP). REST `/api/v1/*` enables ChatGPT Custom GPT Actions over HTTPS + tunnel. Open: OpenAPI 3.0 spec, Claude.ai web Custom Connector registration (#7). |
+| **Multi-surface** | One install per AI client (MCP + Skill + Hooks where applicable) + REST gateway for non-MCP clients | 🟡 **Functional** — `bastra install` covers Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP). REST `/api/v1/*` enables ChatGPT Custom GPT Actions over HTTPS + tunnel. Open: Claude.ai web Custom Connector registration (#7). |
 
-Out of v0: **multi-device sync**. See [PLAN.md](./PLAN.md). (Codebase indexing has been pulled into v0 — see the M4 milestone.)
+Out of v0: **multi-device sync**. See [PLAN.md](./PLAN.md).
 
 Multi-device today works via the OS-level sync of the vault folder (iCloud / Google Drive / Dropbox / Git) — the file watcher's polling mode handles the latency. A browser-based UI is not planned — Obsidian already provides a great Markdown editor for the vault.
 
@@ -252,7 +252,7 @@ Built by [@n0mad-ai](https://github.com/n0mad-ai).
 
 **Was es ist** — Ein Langzeit-Gedächtnis für jeden AI-Assistenten oder Agent: Claude (Code, Desktop, Web), ChatGPT (via Custom GPT Actions), Cursor und alles andere, was MCP oder HTTP spricht. Sobald du etwas korrigierst, eine Regel aufstellst oder eine Entscheidung triffst, wird das als kleine Notiz gespeichert. In der nächsten Sitzung — Tage oder Wochen später, in jedem Tool — holt die AI diese Notizen automatisch wieder hervor. Schluss mit ewigem Wiederholen. Alles bleibt lokal auf deinem Mac als reine Markdown-Dateien (Obsidian-kompatibel). Alle deine AI-Tools teilen sich dasselbe Gedächtnis gleichzeitig.
 
-**Status** — 🟢 Frühes Alpha. M0 (Eval) und M1 (Read-Path) fertig, M2 (Save-Path) funktional, M3 Reflex-Layer funktional mit zwei von vier Hooks live: `PreToolUse` (Recall vor jedem Write/Edit) und `SessionStart` (Top-Memories beim Sitzungsstart vorladen). Distribution und Multi-Surface kommen als Nächstes. Siehe [PLAN.md](./PLAN.md).
+**Status** — 🟢 Frühe Beta. M0 (Eval) und M1 (Read-Path) fertig, M2 (Save-Path) funktional, und der Claude-Code-Reflex-Layer liefert Hooks für `SessionStart`, `UserPromptSubmit`, `PreToolUse` (Datei-Edits / Todos / Bash-Safety), `PostToolUse` (Bash-Fehler) plus optionalen `Stop` Save-Eval. Distribution und Multi-Surface-Hardening laufen. Siehe [PLAN.md](./PLAN.md).
 
 ### Warum
 
@@ -303,7 +303,7 @@ den lokalen HTTP-Endpoint des Daemons nutzen:
 
 - **`PreToolUse`** (`bastra-recall-hook`) — feuert vor jedem `Write`/`Edit`/`MultiEdit`/`NotebookEdit`. Erkennt das Thema aus dem Tool-Aufruf und injiziert `<recall-hints>` als `additionalContext`.
 - **`SessionStart`** (`bastra-recall-session-hook`) — feuert bei `startup`/`resume`/`clear`/`compact`. Lädt Top-User-Präferenzen + projektübergreifende Regeln + projekt-spezifische Memories als `<session-context>` vor, damit die AI ab dem ersten Prompt weiß: wer, was, und was-nicht.
-- **`UserPromptSubmit`**, **`TodoWrite`**, Bash-Safety und Bash-Failure decken Lookup-Prompts, Topology-Recall vor Plänen, riskante Shell-Befehle und fehlgeschlagene Commands ab.
+- **`UserPromptSubmit`**, **`TodoWrite`**, **Bash-Safety** und **Bash-Failure** decken Lookup-Prompts, Topology-Recall vor Plänen, Safety bei riskanten Shell-Befehlen und Lesson-Recall bei fehlgeschlagenen Commands ab.
 
 Der **`Stop`** Save-Eval-Hook existiert, ist aber opt-in, weil er am Turn-Ende
 mehrzeilige Vorschläge ausgeben kann. Aktivierung bewusst per
@@ -313,7 +313,7 @@ Hint wirklich `load_memory` gemacht).
 
 Details: [docs/architecture.md](./docs/architecture.md), [docs/memory-schema.md](./docs/memory-schema.md), [docs/triggers.md](./docs/triggers.md).
 
-### Schema einer Erinnerung
+### Aufbau einer Memory
 
 Jede Memory ist eine Markdown-Datei mit strukturiertem Frontmatter:
 
@@ -350,7 +350,7 @@ Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-S
 
 Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und führt `bastra install all` aus — kein Terminal-Wissen nötig.
 
-> **Status (heute):** `distribution/Install Bastra.command` liegt im Repo. Der Homebrew-Tap (`n0mad-ai/homebrew-tap`), den das Skript erwartet, wird mit Schließen von [#3](https://github.com/n0mad-ai/bastra-recall/issues/3) veröffentlicht. Bis dahin Pfad B nutzen.
+> **Status (heute):** `distribution/Install Bastra.command` liegt im Repo. Der Homebrew-Tap (`n0mad-ai/tap`), den das Skript erwartet, wird mit Schließen von [#3](https://github.com/n0mad-ai/bastra-recall/issues/3) veröffentlicht. Bis dahin Pfad B nutzen.
 
 #### B) Ein Befehl — für Entwickler
 
@@ -358,26 +358,27 @@ Voraussetzungen: Node 20+, Git.
 
 ```bash
 git clone https://github.com/n0mad-ai/bastra-recall.git
-cd bastra-recall/packages/daemon
+cd bastra-recall
 npm install
 npm run build
 
-node dist/cli.js install all       # registriert bei jedem unterstützten AI-Client
-node dist/cli.js doctor            # Status überall prüfen
-node dist/cli.js uninstall all     # alles rückgängig machen
+node packages/daemon/dist/cli.js install all --vault /abs/pfad/zu/deinem/vault
+node packages/daemon/dist/cli.js doctor
+node packages/daemon/dist/cli.js doctor --fix   # veraltete/fehlende Registrierungen reparieren
+node packages/daemon/dist/cli.js uninstall all
 ```
 
 Adapter-Status:
 
 | Surface | Was installiert wird | Status |
 |---|---|---|
-| `claude-desktop` | MCP-Server-Eintrag in `claude_desktop_config.json` | ✅ implementiert |
+| `claude-desktop` | MCP-Server-Eintrag in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implementiert |
 | `claude-code` | MCP-Server in `.claude.json` + Skill in `.claude/skills/` + Hooks & Powerline-statusLine in `.claude/settings.json` | ✅ implementiert |
 | `cursor` | MCP-Server-Eintrag in `.cursor/mcp.json` | ✅ implementiert (Cursor-Rules-Layer separater Roadmap-Punkt) |
 
 Jeder Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-File + Rename), **gesichert** (timestamped `.bak-…` neben dem Original) und **parse-safe** (kaputtes JSON bricht den Lauf ab statt es zu zerstören). Vault-Pfad-Auflösung in dieser Reihenfolge: `--vault <pfad>`-Flag → `BASTRA_VAULT_PATH`-ENV → Auto-Detect aus bestehender Registrierung in `~/.claude.json` oder `claude_desktop_config.json`. Wenn nichts greift, bricht die CLI mit klarer Meldung ab.
 
-Sobald der Brew-Tap live ist, verkürzt sich das zu `bastra install all`.
+Sobald über Homebrew oder npm installiert, verkürzt sich das zu `bastra install all`.
 
 #### C) Komplett manuell — Fallback
 
@@ -390,7 +391,7 @@ MCP-Server-Block in die Client-Config eintragen (für Claude Code: `~/.claude.js
   "command": "node",
   "args": ["/abs/path/to/bastra-recall/packages/daemon/dist/mcp-forwarder.js"],
   "env": {
-    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault/memorys"
+    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault"
   }
 }
 ```
@@ -404,7 +405,7 @@ Der Forwarder ist ein dünner stdio-MCP-Wrapper, der mit einem einzigen lokalen 
   "command": "node",
   "args": ["/abs/path/to/bastra-recall/packages/daemon/dist/index.js"],
   "env": {
-    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault/memorys"
+    "BASTRA_VAULT_PATH": "/abs/path/to/your/vault"
   }
 }
 ```
@@ -438,7 +439,7 @@ Auth und CORS:
 - Loopback-Aufrufer (`127.0.0.1`) umgehen die Auth per Default. Mit `BASTRA_AUTH_LOOPBACK_SKIP=0` wird das Token auch lokal verlangt.
 - CORS ist per Default permissiv (`Access-Control-Allow-Origin: *`). Einschränken mit `BASTRA_CORS_ORIGIN=https://dein.host`.
 
-Um die API für einen gehosteten Client wie ChatGPT verfügbar zu machen: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und im Custom GPT die Tunnel-URL + dein Token konfigurieren. Eine OpenAPI 3.0-Spec ist als Roadmap-Issue gelistet.
+Um die API für einen gehosteten Client wie ChatGPT verfügbar zu machen: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und im Custom GPT die Tunnel-URL + dein Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
 
 ### Roadmap
 
@@ -451,10 +452,10 @@ Milestone-basiert, nicht Phasen-basiert. Jedes Gate ist hartes Pass/Fail.
 | **M2** | Save-Path + autonome Save-Trigger | 🟡 **Funktional** — `save_memory` MCP-Tool live mit Force-Reindex. Trigger-Disziplin als Skill ausgeliefert. False-Save- / Missed-Save-Metriken noch nicht erhoben. |
 | **M0.5** | Stresstest für Recall (paraphrasiert / cross-memory / anti-halluzination) | ⏳ Offen — siehe Issues. |
 | **M3** | Reflex-Layer: Hooks für `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` plus opt-in `Stop` | 🟡 **Funktional** — sechs ruhige Claude-Code-Hooks werden standardmäßig installiert; `Stop` Save-Eval ist bewusst hinter `--with-stop-hook`. |
-| **Distribution** | Homebrew-Tap, `bastra`-CLI, `Install Bastra.command`, npm-Package | 🟡 **Funktional** — `bastra`-CLI mit Adaptern für jedes Surface; Homebrew-Tap [n0mad-ai/homebrew-tap](https://github.com/n0mad-ai/homebrew-tap) mit Head-only-Formula veröffentlicht; `distribution/Install Bastra.command` als Doppelklick-Wrapper. Offen: End-to-End-Brew-Test, npm publish, GitHub-Release mit der `.command`-Datei als Asset (#3). |
-| **Multi-Surface** | Ein Install pro AI-Client (MCP + Skill + Hooks wo zutreffend) + REST-Gateway für Nicht-MCP-Clients | 🟡 **Funktional** — `bastra install` deckt Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP) ab. REST `/api/v1/*` ermöglicht ChatGPT Custom GPT Actions via HTTPS + Tunnel. Offen: OpenAPI 3.0-Spec, Claude.ai Web Custom Connector Registrierung (#7). |
+| **Distribution** | Homebrew-Tap, `bastra`-CLI, `Install Bastra.command`, npm-Package | 🟡 **Funktional / Hardening** — `bastra`-CLI mit Adaptern für jedes Surface; Homebrew-Formula (head-only) liegt im Repo, der Tap `n0mad-ai/tap` wird mit [#3](https://github.com/n0mad-ai/bastra-recall/issues/3) veröffentlicht; `distribution/Install Bastra.command` als Doppelklick-Wrapper. Offen: End-to-End-Brew-Test, npm publish, GitHub-Release mit der `.command`-Datei als Asset (#3). |
+| **Multi-Surface** | Ein Install pro AI-Client (MCP + Skill + Hooks wo zutreffend) + REST-Gateway für Nicht-MCP-Clients | 🟡 **Funktional** — `bastra install` deckt Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP) ab. REST `/api/v1/*` ermöglicht ChatGPT Custom GPT Actions via HTTPS + Tunnel. Offen: Claude.ai Web Custom Connector Registrierung (#7). |
 
-Außerhalb von v0: **Multi-Device-Sync**. Siehe [PLAN.md](./PLAN.md). (Codebase-Indexing wurde in v0 vorgezogen — siehe M4-Milestone.)
+Außerhalb von v0: **Multi-Device-Sync**. Siehe [PLAN.md](./PLAN.md).
 
 Multi-Device funktioniert heute über OS-Level-Sync des Vault-Ordners (iCloud / Google Drive / Dropbox / Git) — der Polling-Modus des File-Watchers gleicht die Latenz aus. Ein Browser-basiertes UI ist nicht geplant — Obsidian liefert bereits einen sehr guten Markdown-Editor für den Vault.
 
@@ -472,6 +473,6 @@ Die Statusline (`packages/statusline/`) nutzt [owloops/claude-powerline](https:/
 
 ### Status & Kontakt
 
-Pre-Alpha. Siehe [PLAN.md](./PLAN.md). Issues und Diskussionen willkommen — frühes Feedback formt das Design.
+Frühe Beta. Siehe [PLAN.md](./PLAN.md). Issues und Diskussionen willkommen — frühes Feedback formt das Design. Sicherheitsprobleme bitte vertraulich über [SECURITY.md](./SECURITY.md) melden.
 
 Gebaut von [@n0mad-ai](https://github.com/n0mad-ai).
