@@ -207,5 +207,3 @@ export async function cmdDoctor(args: ParsedArgs): Promise<number> {
   }
   return hadBroken ? 1 : 0;
 }
-
-export { cmdStatus } from "./status.js";

@@ -13,11 +13,11 @@ import {
   cmdDoctor,
   cmdInstall,
   cmdUninstall,
-  cmdStatus,
   parseArgs,
   showHelp,
   showVersion,
 } from "./cli/commands.js";
+import { cmdStatus } from "./cli/status.js";
 import { cmdUpdate } from "./cli/update.js";
 import { cmdConfig } from "./cli/config-cmd.js";
 import { cmdPanel } from "./cli/panel.js";

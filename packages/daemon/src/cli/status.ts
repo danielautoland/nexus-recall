@@ -40,13 +40,13 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
   for (const [name, adapter] of Object.entries(ADAPTERS)) {
     try {
       const r = await adapter.doctor();
-      
+
       statusResult.surfaces[name] = { status: r.status, message: r.message };
-      
+
       if (!options.quiet && !options.json) {
         printLine(`${name.padEnd(15)} ${formatStatus(r.status)}: ${r.message}`);
       }
-      
+
       if (r.status === "broken") {
         hasError = true;
       }
