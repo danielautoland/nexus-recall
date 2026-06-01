@@ -1,6 +1,6 @@
 {
   "name": "@bastra-recall/statusline",
-  "version": "0.6.0-beta.1",
+  "version": "0.6.5-beta.1",
   "description": "bastra-recall statusline for Claude Code. Statusline engine: owloops/claude-powerline (MIT), with the bastra-status segment built in.",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "tsdown": "^0.21.4",
+    "tsdown": "^0.22.1",
     "typescript": "^6.0.3"
   }
 }

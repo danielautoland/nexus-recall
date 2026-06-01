@@ -78,7 +78,9 @@ export class BastraProvider {
       const state = d.state === "running" ? "running" : "idle";
       return {
         state,
-        vaultSize: numOr(d.vault_size, 0),
+        // Prefer the daemon-maintained shared count (always current, even when
+        // this session is idle); fall back to the per-session feed value.
+        vaultSize: readSharedVaultSize() ?? numOr(d.vault_size, 0),
         recallCount: numOr(d.recall_count, 0),
         totalHits: numOr(d.total_hits, 0),
         totalMs: numOr(d.total_ms, 0),
@@ -94,6 +96,21 @@ export class BastraProvider {
     } catch {
       return null;
     }
+  }
+}
+
+/**
+ * Reads the daemon-maintained shared vault size (~/.bastra/statusline/vault.json).
+ * Session-independent, so it stays current even when this session is idle.
+ * Null on any failure → caller falls back to the per-session feed value.
+ */
+function readSharedVaultSize(): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(STATUSLINE_DIR, "vault.json"), "utf8");
+    const v = (JSON.parse(raw) as { vault_size?: unknown }).vault_size;
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
   }
 }
 

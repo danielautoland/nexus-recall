@@ -19,12 +19,15 @@ import {
   showVersion,
 } from "./cli/commands.js";
 import { cmdUpdate } from "./cli/update.js";
+import { cmdConfig } from "./cli/config-cmd.js";
+import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
 async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
   if (args.showVersion) { showVersion(); return 0; }
   if (args.showHelp && !args.command) { showHelp(); return 0; }
-  if (!args.command || args.command === "help") { showHelp(); return 0; }
+  if (!args.command) { return cmdPanel(args); }
+  if (args.command === "help") { showHelp(); return 0; }
 
   switch (args.command) {
     case "version": showVersion(); return 0;
@@ -32,10 +35,12 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "uninstall": return cmdUninstall(args);
     case "doctor": return cmdDoctor(args);
     case "update": return cmdUpdate(args);
+
     case "status": {
       const rc = await cmdStatus({ json: args.json, quiet: args.quiet });
       return rc;
     }
+    case "config": return cmdConfig(args);
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
       return 2;
@@ -47,9 +52,17 @@ async function main(): Promise<number> {
   const code = await dispatch(args);
 
   // After every subcommand: optionally emit a dim update hint to stderr.
-  // Skip for `bastra update` itself (the user is already mid-update) and for
-  // help/version (low-noise commands; users hit them often).
-  const skipHint = args.command === "update" || args.command === "help" || args.command === "version" || args.showHelp || args.showVersion;
+  // Skip for `bastra update` itself (the user is already mid-update), for
+  // help/version (low-noise commands; users hit them often), and for the
+  // no-arg panel + config (the panel already shows update status inline).
+  const skipHint =
+    !args.command ||
+    args.command === "update" ||
+    args.command === "config" ||
+    args.command === "help" ||
+    args.command === "version" ||
+    args.showHelp ||
+    args.showVersion;
   if (!skipHint) {
     try { await maybeEmitUpdateHint(); } catch { /* never break the CLI over this */ }
   }

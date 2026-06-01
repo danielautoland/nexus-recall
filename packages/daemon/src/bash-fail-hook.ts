@@ -254,8 +254,13 @@ async function isThrottled(sessionId: string): Promise<boolean> {
 
 async function markThrottle(sessionId: string): Promise<void> {
   try {
-    await mkdir(THROTTLE_DIR, { recursive: true });
-    await writeFile(throttleFile(sessionId), String(Date.now()), "utf8");
+    // mode 0700/0600: os.tmpdir() is world-writable on Linux — keep the
+    // throttle dir/files owner-only to block symlink/TOCTOU races.
+    await mkdir(THROTTLE_DIR, { recursive: true, mode: 0o700 });
+    await writeFile(throttleFile(sessionId), String(Date.now()), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
   } catch {
     // Best-effort; missing throttle is acceptable.
   }

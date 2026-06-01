@@ -12,11 +12,36 @@
  * Feed layout: ~/.bastra/statusline/<claude-session-pid>.json
  */
 import { execFileSync } from "node:child_process";
-import { readdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 export const STATUSLINE_DIR = path.join(os.homedir(), ".bastra", "statusline");
+
+/**
+ * Shared, session-independent vault size, written by the daemon on every index
+ * change and read by every session's statusline segment.
+ *
+ * Why separate from the per-session feed: the forwarder only refreshes a
+ * session's `vault_size` on that session's own tool calls, so an idle session
+ * (no recalls) keeps showing a stale count after another session saves a
+ * memory. The daemon owns the vault and sees every add/remove, so it publishes
+ * the live count here; the segment prefers it over the per-session value.
+ *
+ * Not matched by reapStaleFeeds (which only deletes `<pid>.json`), so it
+ * survives feed reaping.
+ */
+export const SHARED_VAULT_FILE = path.join(STATUSLINE_DIR, "vault.json");
+
+export function writeSharedVaultSize(size: number): void {
+  try {
+    mkdirSync(STATUSLINE_DIR, { recursive: true });
+    writeFileSync(SHARED_VAULT_FILE, JSON.stringify({ vault_size: size }) + "\n", "utf8");
+  } catch {
+    // Best-effort — a missing shared file only means the segment falls back
+    // to the per-session value.
+  }
+}
 
 /** Existence check via signal 0. EPERM = alive but not ours; ESRCH = gone. */
 function pidAlive(pid: number): boolean {

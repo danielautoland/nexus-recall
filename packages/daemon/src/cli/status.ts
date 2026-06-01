@@ -1,4 +1,4 @@
-import { probeDaemon } from "./helpers.js";
+import { probeDaemon, formatStatus } from "./helpers.js";
 import { ADAPTERS } from "./registry.js";
 
 interface StatusOptions {
@@ -6,7 +6,10 @@ interface StatusOptions {
   quiet?: boolean;
 }
 
-const statusResult: Record<string, { status: string; message: string }> = {};
+interface StatusResult {
+  daemon: { status: string; message: string };
+  surfaces: Record<string, { status: string; message: string }>;
+}
 
 function printLine(message: string) {
   process.stdout.write(message + "\n");
@@ -15,50 +18,49 @@ function printLine(message: string) {
 export async function cmdStatus(options: StatusOptions): Promise<number> {
   let hasError = false;
 
-  // 1. Check daemon status
+  const statusResult: StatusResult = {
+    daemon: { status: "unknown", message: "" },
+    surfaces: {}
+  };
+
   const daemonInfo = await probeDaemon();
   if (daemonInfo.ok) {
-    statusResult["daemon"] = { status: "ok", message: daemonInfo.detail };
+    statusResult.daemon = { status: "ok", message: daemonInfo.detail };
     if (!options.quiet && !options.json) {
-      printLine(`✓ daemon          (${daemonInfo.detail})`);
+      printLine(`${"daemon".padEnd(15)} ${formatStatus("ok")}: ${daemonInfo.detail}`);
     }
   } else {
     hasError = true;
-    statusResult["daemon"] = { status: "error", message: daemonInfo.detail };
+    statusResult.daemon = { status: "error", message: daemonInfo.detail };
     if (!options.quiet && !options.json) {
-      printLine(`✗ daemon          (${daemonInfo.detail})`);
+      printLine(`${"daemon".padEnd(15)} ${formatStatus("error")}: ${daemonInfo.detail}`);
     }
   }
 
-  // 2. Check adapters status
   for (const [name, adapter] of Object.entries(ADAPTERS)) {
     try {
       const r = await adapter.doctor();
       
-      if (r.status === "ok") {
-        statusResult[name] = { status: "ok", message: r.message };
-        if (!options.quiet && !options.json) {
-          printLine(`✓ ${name.padEnd(15)} (${r.message})`);
-        }
-      } else {
+      statusResult.surfaces[name] = { status: r.status, message: r.message };
+      
+      if (!options.quiet && !options.json) {
+        printLine(`${name.padEnd(15)} ${formatStatus(r.status)}: ${r.message}`);
+      }
+      
+      if (r.status === "broken") {
         hasError = true;
-        statusResult[name] = { status: r.status, message: r.message };
-        if (!options.quiet && !options.json) {
-          printLine(`✗ ${name.padEnd(15)} (${r.message})`);
-        }
       }
     } catch (err) {
       hasError = true;
       const errMsg = (err as Error).message;
-      statusResult[name] = { status: "error", message: errMsg };
+      statusResult.surfaces[name] = { status: "error", message: errMsg };
       if (!options.quiet && !options.json) {
-        printLine(`✗ ${name.padEnd(15)} (failed to check: ${errMsg})`);
+        printLine(`${name.padEnd(15)} ${formatStatus("error")}: failed to check: ${errMsg}`);
       }
     }
   }
 
-  // 3. Handle options and flags
-  if (options.json) {
+  if (options.json && !options.quiet) {
     printLine(JSON.stringify(statusResult, null, 2));
   }
 

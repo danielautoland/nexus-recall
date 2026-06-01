@@ -48,4 +48,11 @@ export interface ParsedArgs {
   yes: boolean;
   fix: boolean;
   withStopHook: boolean;
+  // `update --staged`: swap files only (npm/brew + re-register), no daemon
+  // kickstart. The new code goes live on the next daemon boot. Used by the
+  // SessionStart auto-update path so a running session is never disrupted.
+  staged: boolean;
+  // All positional tokens, in order — for sub-commands like
+  // `config set update.mode auto` that need more than command+surface.
+  positional: string[];
 }

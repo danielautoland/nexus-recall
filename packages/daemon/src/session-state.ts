@@ -89,10 +89,13 @@ export async function saveSessionState(sessionId: string, state: SessionState): 
   if (!sessionId) return;
   try {
     const dir = sessionStateDir();
-    await mkdir(dir, { recursive: true });
+    // mode 0700/0600: on Linux os.tmpdir() is world-writable (/tmp), so a
+    // private dir + owner-only files block symlink/TOCTOU races from other
+    // local users. macOS already gives a per-user temp dir.
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const target = sessionFile(sessionId, dir);
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, JSON.stringify(state), "utf8");
+    await writeFile(tmp, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
     await rename(tmp, target);
   } catch {
     // dedup state is non-essential — never break the hot path
@@ -135,10 +138,10 @@ export async function touchLoadedMarker(memId: string): Promise<void> {
   if (!memId) return;
   try {
     const dir = sessionStateDir();
-    await mkdir(dir, { recursive: true });
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const file = loadedMarkerFile(memId, dir);
     // open-write-close gives us a fresh mtime even if the file already exists
-    await writeFile(file, String(Date.now()), "utf8");
+    await writeFile(file, String(Date.now()), { encoding: "utf8", mode: 0o600 });
   } catch {
     // marker is advisory — never break load_memory if /tmp is unwritable
   }
