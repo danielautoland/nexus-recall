@@ -43,6 +43,8 @@ export interface ParsedArgs {
   vaultPath: string | null;
   showHelp: boolean;
   showVersion: boolean;
+  json: boolean;
+  quiet: boolean;
   yes: boolean;
   fix: boolean;
   withStopHook: boolean;

@@ -19,6 +19,7 @@ Commands:
   config set <key> <value>   Write a setting (update.mode = notify|auto|off)
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
+  status                     Check daemon and adapters status (supports --json, -q)
   help                       Show this help
   version                    Show version
 
@@ -30,8 +31,10 @@ Surfaces:
 
 Options:
   --dry-run                  Print what would change; write nothing
-  --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
   --vault <path>             Vault path (BASTRA_VAULT_PATH env also works)
+  --json                     Output status in JSON format (status command only)
+  -q, --quiet                Suppress output, return exit code only (status command only)
+  --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --with-stop-hook           Install optional Stop save-eval hook
   --help, -h                 Show this help
@@ -40,6 +43,7 @@ Options:
 Examples:
   bastra install claude-desktop
   bastra install all --dry-run
+  bastra status --json
   bastra doctor
   bastra uninstall claude-desktop
 
@@ -59,6 +63,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     vaultPath: null,
     showHelp: false,
     showVersion: false,
+    json: false,
+    quiet: false,
     yes: false,
     fix: false,
     withStopHook: false,
@@ -72,6 +78,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (a === "--help" || a === "-h") result.showHelp = true;
     else if (a === "--version" || a === "-v") result.showVersion = true;
     else if (a === "--dry-run") result.dryRun = true;
+    else if (a === "--json") result.json = true;
+    else if (a === "-q" || a === "--quiet") result.quiet = true;
     else if (a === "--yes" || a === "-y") result.yes = true;
     else if (a === "--fix") result.fix = true;
     else if (a === "--with-stop-hook") result.withStopHook = true;

@@ -17,6 +17,7 @@ import {
   showHelp,
   showVersion,
 } from "./cli/commands.js";
+import { cmdStatus } from "./cli/status.js";
 import { cmdUpdate } from "./cli/update.js";
 import { cmdConfig } from "./cli/config-cmd.js";
 import { cmdPanel } from "./cli/panel.js";
@@ -34,6 +35,11 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "uninstall": return cmdUninstall(args);
     case "doctor": return cmdDoctor(args);
     case "update": return cmdUpdate(args);
+
+    case "status": {
+      const rc = await cmdStatus({ json: args.json, quiet: args.quiet });
+      return rc;
+    }
     case "config": return cmdConfig(args);
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
