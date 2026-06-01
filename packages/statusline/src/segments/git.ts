@@ -215,12 +215,17 @@ export class GitService {
 
   private resolveGitDir(workingDir: string): string {
     const dotGit = path.join(workingDir, ".git");
-    if (fs.existsSync(dotGit) && fs.statSync(dotGit).isFile()) {
+    // Read directly instead of exists/stat-then-read (TOCTOU): a submodule/
+    // worktree `.git` file holds `gitdir: <path>`. If `.git` is a directory,
+    // readFileSync throws EISDIR and we fall through to the dir path.
+    try {
       const content = fs.readFileSync(dotGit, "utf-8");
       const match = content.match(/^gitdir:\s*(.+)$/m);
       if (match?.[1]) {
         return path.resolve(workingDir, match[1].trim());
       }
+    } catch {
+      // `.git` is a directory (EISDIR) or missing — use the dir path.
     }
     return dotGit;
   }
