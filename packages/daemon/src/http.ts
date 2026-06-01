@@ -145,6 +145,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       return;
     }
 
+    if (method === "GET" && url === "/vault/count") {
+      // Reconcile the index against disk before answering — the fs watcher
+      // misses external writes/deletes on cloud-storage mounts, so a plain
+      // vault.size() can be stale. This is the fresh count the `bastra` status
+      // panel reads. Falls back to the in-memory size if reconcile throws.
+      vault
+        .reconcile()
+        .then((count) => sendJson(res, 200, { count }))
+        .catch(() => sendJson(res, 200, { count: vault.size() }));
+      return;
+    }
+
     if (method === "POST" && url === "/hook/recall") {
       handleHookRecall(req, res, t0, vault, search, telemetry);
       return;

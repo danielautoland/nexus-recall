@@ -20,10 +20,14 @@
  */
 import { detectProject } from "@bastra-recall/core";
 import { request } from "node:http";
-import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { homedir } from "node:os";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
+import { effectiveUpdateMode } from "./settings.js";
 import { defaultLogDir } from "./telemetry.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
@@ -140,6 +144,15 @@ async function main(): Promise<void> {
 
   // Best-effort update probe — only when we already have a daemon reachable.
   // Strict budget: 200 ms; if nothing back, we just skip the block.
+  //
+  // Mode decides what happens when an update is available:
+  //   · "auto"   → stage a detached file-swap (no daemon restart, so a running
+  //                session is never disrupted) on a real session start
+  //                (startup/resume — never mid-session via clear/compact),
+  //                throttled to once/day, and tell the user it's being applied.
+  //   · "notify" → just suggest `bastra update`.
+  //   · "off"    → never reached (detection is disabled, so update_available
+  //                is null).
   let updateBlock = "";
   if (responses.some((r) => r.resp !== null)) {
     const remainingMs = Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
@@ -148,7 +161,27 @@ async function main(): Promise<void> {
       const health = await probeHealth(url, probeBudget);
       if (health?.update_available) {
         const u = health.update_available;
-        updateBlock = `\n<bastra-update>\nA new bastra-recall version is available: ${u.current} → ${u.latest}.\nRelease notes: ${u.html_url}\nSuggest the user run \`bastra update\` when convenient.\n</bastra-update>`;
+        const mode = await effectiveUpdateMode();
+        const isSessionStart = payload.source === "startup" || payload.source === "resume";
+        if (mode === "auto" && isSessionStart && !(await stagedToday())) {
+          spawnStagedUpdate();
+          await markStagedToday();
+          updateBlock =
+            `\n<bastra-update>\n` +
+            `bastra-recall is updating in the background: ${u.current} → ${u.latest}.\n` +
+            `Files are being swapped now; the new code goes live on the next daemon ` +
+            `restart (automatically after idle, or right away when the user restarts).\n` +
+            `Tell the user: an update to ${u.latest} is being applied — restart Claude Code ` +
+            `(and any open Claude Desktop / Cursor) when convenient to pick it up.\n` +
+            `</bastra-update>`;
+        } else {
+          updateBlock =
+            `\n<bastra-update>\n` +
+            `A new bastra-recall version is available: ${u.current} → ${u.latest}.\n` +
+            `Release notes: ${u.html_url}\n` +
+            `Suggest the user run \`bastra update\` when convenient.\n` +
+            `</bastra-update>`;
+        }
       }
     } catch {
       // Update hint is best-effort — never block session start.
@@ -343,6 +376,56 @@ function probeHealth(baseUrl: string, timeoutMs: number): Promise<HealthResponse
     req.on("error", () => resolve_(null));
     req.end();
   });
+}
+
+/**
+ * Spawns a detached `bastra update --staged` so it outlives this short-lived
+ * hook process (which exits within its wall-clock budget). The CLI lives next
+ * to this file in dist/, so resolve it relative to import.meta.url. Detached +
+ * unref + stdio:ignore → survives the parent's process.exit(0). Best-effort.
+ */
+function spawnStagedUpdate(): void {
+  try {
+    const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
+    const child = spawn(process.execPath, [cliPath, "update", "--staged"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch {
+    // Never let a failed spawn break session start.
+  }
+}
+
+function stagedMarkerPath(): string {
+  return join(homedir(), ".bastra", "update-staged.txt");
+}
+
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+async function stagedToday(): Promise<boolean> {
+  try {
+    const raw = await readFile(stagedMarkerPath(), "utf8");
+    return raw.split("\n").some((line) => line.trim() === todayISO());
+  } catch {
+    return false;
+  }
+}
+
+async function markStagedToday(): Promise<void> {
+  try {
+    const path = stagedMarkerPath();
+    await mkdir(dirname(path), { recursive: true });
+    let existing = "";
+    try { existing = await readFile(path, "utf8"); } catch { /* may not exist */ }
+    const lines = existing.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    if (!lines.includes(todayISO())) lines.push(todayISO());
+    await writeFile(path, lines.slice(-30).join("\n") + "\n", "utf8"); // bounded growth
+  } catch {
+    // Best-effort throttle — worst case we stage twice.
+  }
 }
 
 interface SessionHookTelemetry {

@@ -7,6 +7,7 @@ export function showHelp(): void {
   process.stdout.write(`bastra ${VERSION} — install bastra-recall across AI clients
 
 Usage:
+  bastra                     Show status panel (version, update, daemon, vault)
   bastra <command> [surface] [options]
 
 Commands:
@@ -14,6 +15,8 @@ Commands:
   uninstall <surface|all>    Remove the registration (skill is kept; it's shared)
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
+  config get <key>           Read a setting (e.g. update.mode)
+  config set <key> <value>   Write a setting (update.mode = notify|auto|off)
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   help                       Show this help
@@ -59,6 +62,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     yes: false,
     fix: false,
     withStopHook: false,
+    staged: false,
+    positional: [],
   };
 
   const positional: string[] = [];
@@ -70,6 +75,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--yes" || a === "-y") result.yes = true;
     else if (a === "--fix") result.fix = true;
     else if (a === "--with-stop-hook") result.withStopHook = true;
+    else if (a === "--staged") result.staged = true;
     else if (a === "--vault") {
       result.vaultPath = argv[++i] ?? null;
     } else if (a.startsWith("--vault=")) {
@@ -83,6 +89,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   result.command = positional[0] ?? null;
   result.surface = positional[1] ?? null;
+  result.positional = positional;
   return result;
 }
 

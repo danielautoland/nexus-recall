@@ -109,6 +109,34 @@ export class Vault {
     await this.handleAddOrChange(filePath, existing ? "change" : "add");
   }
 
+  /**
+   * Reconcile the in-memory index against what's actually on disk and return
+   * the corrected count. Walks the tree (stat-level, cheap) and only *reads*
+   * files that aren't indexed yet; drops index entries whose file vanished.
+   *
+   * Needed because the fs watcher is unreliable on cloud-storage mounts
+   * (GoogleDrive/iCloud/Dropbox): adds, and especially deletes/moves done by
+   * another process — the Mac app, Obsidian, a second machine — get missed, so
+   * size() drifts from reality. Callers that need a trustworthy count (e.g. the
+   * `bastra` status panel) call this on demand; it is not on any hot path.
+   */
+  async reconcile(): Promise<number> {
+    const onDisk = new Set(await this.listMarkdownFiles());
+    // Drop index entries whose file is gone (missed unlink/move).
+    for (const filePath of [...this.filePathToId.keys()]) {
+      if (!onDisk.has(filePath)) this.handleRemove(filePath);
+    }
+    // Read files not yet indexed (handleAddOrChange silently skips non-memory).
+    const toAdd = [...onDisk].filter((p) => !this.filePathToId.has(p));
+    const BATCH = 32;
+    for (let i = 0; i < toAdd.length; i += BATCH) {
+      await Promise.all(
+        toAdd.slice(i, i + BATCH).map((p) => this.handleAddOrChange(p, "add")),
+      );
+    }
+    return this.memorys.size;
+  }
+
   async stop(): Promise<void> {
     await this.watcher?.close();
     this.watcher = undefined;

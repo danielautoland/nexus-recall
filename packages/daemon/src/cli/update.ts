@@ -89,6 +89,9 @@ function launchAgentPresent(uid: string): boolean {
 
 export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   const mode = detectInstallMode();
+  if (args.staged) {
+    process.stdout.write("→ staged update: swapping files only, no daemon restart\n");
+  }
   process.stdout.write(`→ install mode: ${mode.detail}\n`);
   process.stdout.write(`  cli path: ${mode.cliPath}\n\n`);
 
@@ -98,7 +101,11 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     process.stdout.write(`  update command: ${mode.updateCommand}\n\n`);
     process.stdout.write("  would: 1) run the update command above\n");
     process.stdout.write("         2) re-register every surface (idempotent)\n");
-    process.stdout.write("         3) restart the daemon\n");
+    process.stdout.write(
+      args.staged
+        ? "         3) leave the daemon running (staged — no restart mid-session)\n"
+        : "         3) restart the daemon\n",
+    );
     return 0;
   }
 
@@ -138,14 +145,33 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
 
   // 2. Re-register every surface (idempotent — refreshes skill content if SKILL.md changed)
   process.stdout.write("→ re-registering with every supported surface (idempotent)\n\n");
-  const installArgs: ParsedArgs = { ...args, command: "install", surface: "all" };
+  // --staged runs unattended (spawned from the SessionStart hook), so never block
+  // on a confirmation prompt.
+  const installArgs: ParsedArgs = {
+    ...args,
+    command: "install",
+    surface: "all",
+    yes: args.yes || args.staged,
+  };
   const installRC = await cmdInstall(installArgs);
   if (installRC !== 0) {
     process.stdout.write("✗ re-register failed — fix the surface errors above, then re-run\n");
     return installRC;
   }
 
-  // 3. Restart the daemon so the new code is actually loaded
+  // 3. Daemon restart.
+  //    --staged deliberately skips the kickstart: the running daemon keeps the
+  //    old code in memory and a current session stays intact. The new code goes
+  //    live on the next daemon boot (idle-shutdown after 30 min → forwarder
+  //    respawns with the new code), or immediately when the user restarts.
+  if (args.staged) {
+    process.stdout.write("→ staged — daemon left running on old code (no restart mid-session)\n");
+    process.stdout.write("  New code goes live on the next daemon restart:\n");
+    process.stdout.write("    · automatically after 30 min idle, or\n");
+    process.stdout.write("    · now — restart your AI clients (Claude Code, Desktop, Cursor)\n");
+    return 0;
+  }
+
   process.stdout.write("→ restarting daemon\n");
   const uid = String(process.getuid?.() ?? 0);
   if (launchAgentPresent(uid)) {

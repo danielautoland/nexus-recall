@@ -18,6 +18,7 @@ import { request as httpsRequest } from "node:https";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { effectiveUpdateMode } from "./settings.js";
 
 export const GITHUB_RELEASES_LATEST_URL =
   "https://api.github.com/repos/n0mad-ai/bastra-recall/releases/latest";
@@ -280,14 +281,20 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateState | 
 /**
  * Fire-and-forget wrapper used at daemon startup. Never throws, updates the
  * module-level singleton when a result is available.
+ *
+ * Respects the stored update mode: "off" skips detection entirely, so /health,
+ * the CLI hint and the SessionStart block all stay silent without any extra
+ * checks downstream. "notify" and "auto" both detect normally; the auto-apply
+ * lives in the SessionStart hook, not here.
  */
 export function startBackgroundCheck(currentVersion: string): void {
-  if (isOptedOut()) return;
-  checkForUpdate({ currentVersion })
-    .then((state) => {
-      if (state) setUpdateState(state);
-    })
-    .catch(() => {
-      // Swallow — never crash the daemon over an update check.
-    });
+  void (async () => {
+    if (isOptedOut()) return;
+    const mode = await effectiveUpdateMode();
+    if (mode === "off") return;
+    const state = await checkForUpdate({ currentVersion });
+    if (state) setUpdateState(state);
+  })().catch(() => {
+    // Swallow — never crash the daemon over an update check.
+  });
 }

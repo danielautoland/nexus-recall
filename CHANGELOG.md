@@ -6,7 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.5-beta.1] — 2026-06-01
+
 ### Added
+- Auto-update (opt-in): a new `update.mode` setting (`notify` default / `auto` /
+  `off`) stored in `~/.bastra/cli-settings.json`. In `auto`, a new Claude Code
+  session stages an update in the background (file swap, no daemon restart),
+  throttled to once per day — the running session is never disrupted and the new
+  code goes live on the next daemon start.
+- `bastra` with no arguments now prints a status panel: version, update status,
+  daemon health, and live vault size.
+- `bastra config get|set update.mode` to read or change the update mode.
+- `bastra update --staged` — swaps files without restarting the daemon (used by
+  the session-start auto-update).
+- Live memory count: `Vault.reconcile()` and `GET /vault/count` reconcile the
+  index against disk, so the status panel's count stays correct even when the
+  cloud-storage file watcher misses external writes or deletes.
 - Public `fixtures/sample-vault` smoke fixture so recall quality can be tested
   from a fresh clone without private data.
 - Security policy, Dependabot config, dependency review, CodeQL, OpenSSF
@@ -20,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   installed together.
 - Claude Code Stop save-eval hook is opt-in (`--with-stop-hook`) because its
   multi-line suggestions can add terminal noise.
+
+### Fixed
+- Lockfile: restored the `@esbuild/*` platform-binary entries that a prior
+  `npm update` had dropped. Without them `npm ci` (and the tsx test runner)
+  failed on a clean install on the affected platform.
 
 ## [0.6.0-beta.1] — 2026-05-29
 
