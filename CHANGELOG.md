@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Statusline memory count now stays correct across sessions. The daemon
+  publishes the live vault size to a shared file — refreshed on every index
+  change plus a periodic disk reconcile — and the statusline segment reads it.
+  Previously an idle session kept showing a stale count after another session
+  (or an external write the file watcher missed) changed the vault, because the
+  per-session feed only refreshed on that session's own tool calls.
+
 ## [0.6.5-beta.1] — 2026-06-01
 
 ### Added

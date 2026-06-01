@@ -62,6 +62,7 @@ import {
 } from "./documents-write-handler.js";
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { startBackgroundCheck } from "./update-check.js";
+import { writeSharedVaultSize } from "./statusline-session.js";
 
 // Triage Issue #24: Write-Tools sind Pro-Feature. Aktuelles Gate ist ein
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
@@ -90,6 +91,45 @@ async function main(): Promise<void> {
     console.error(`[bastra-recall]   skipped ${s.path}: ${s.err}`);
   }
   vault.startWatching();
+
+  // Publish the live vault size to a shared file so every session's statusline
+  // — including idle ones that make no tool calls — shows the current memory
+  // count. The per-session forwarder feed only refreshes on that session's own
+  // calls, so without this an idle session shows a stale count after another
+  // session (or an external write the watcher caught) changes the vault.
+  // Debounced so a burst of watcher events collapses into one write.
+  const publishVaultSize = (() => {
+    let last = -1;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    return () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        const size = vault.size();
+        if (size !== last) {
+          last = size;
+          writeSharedVaultSize(size);
+        }
+      }, 300);
+      timer.unref?.();
+    };
+  })();
+  writeSharedVaultSize(vault.size()); // initial, before any event
+  vault.on(() => publishVaultSize());
+
+  // Periodic disk reconcile: the fs watcher misses external writes/deletes on
+  // cloud-storage mounts (GoogleDrive/iCloud), so size() — and the shared
+  // count — would otherwise drift whenever the Mac app or another process
+  // touches the vault directly. reconcile() walks the disk itself (watcher-
+  // independent) and emits add/remove events, which flow through the listener
+  // above into the shared file. Set BASTRA_VAULT_RECONCILE_MS=0 to disable.
+  const reconcileMs = envInt("BASTRA_VAULT_RECONCILE_MS", 60_000);
+  if (reconcileMs > 0) {
+    const reconcileTimer = setInterval(() => {
+      void vault.reconcile().catch(() => {});
+    }, reconcileMs);
+    reconcileTimer.unref();
+  }
 
   const search = new SearchIndex(vault);
   search.start();
