@@ -325,12 +325,140 @@ export async function loadMemoryHandler(
 
 // ─── Save Memory ─────────────────────────────────────────────────
 
+export interface SaveQualityResult {
+  /** 0-100 advisory score: higher means more specific, less duplicative triggers. */
+  score: number;
+  band: "low" | "medium" | "high";
+  issues: string[];
+  suggestions: string[];
+  duplicate_candidates: Array<{ id: string; score: number; title: string }>;
+  trigger_collisions: Array<{ trigger: string; count: number; examples: string[] }>;
+}
+
 export interface SaveMemoryResult {
   id: string;
   file_path: string;
   created: boolean;
+  /** Advisory save-time quality signal for the agent; not persisted. */
+  save_quality: SaveQualityResult;
   /** Present only when saveMemory auto-truncated an over-long summary. */
   summary_note?: string;
+}
+
+const GENERIC_TRIGGER_WORDS = new Set([
+  "api",
+  "app",
+  "auth",
+  "bug",
+  "code",
+  "css",
+  "data",
+  "db",
+  "debug",
+  "design",
+  "docs",
+  "error",
+  "fix",
+  "frontend",
+  "ios",
+  "js",
+  "macos",
+  "memory",
+  "node",
+  "python",
+  "react",
+  "refactor",
+  "server",
+  "swift",
+  "test",
+  "typescript",
+  "ui",
+  "ux",
+]);
+
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? [];
+}
+
+function triggerSpecificityIssue(trigger: string): string | undefined {
+  const tokens = words(trigger);
+  if (tokens.length <= 1) return `recall_when '${trigger}' is too short/generic`;
+  if (tokens.length <= 2 && tokens.every((t) => GENERIC_TRIGGER_WORDS.has(t))) {
+    return `recall_when '${trigger}' is only generic technology words`;
+  }
+  return undefined;
+}
+
+function buildSpecificTriggerSuggestion(input: SaveMemoryInput): string {
+  const path = input.topic_path.join("/") || input.scope;
+  const summaryTokens = words(input.summary)
+    .filter((t) => !GENERIC_TRIGGER_WORDS.has(t))
+    .slice(0, 5)
+    .join(" ");
+  const anchor = summaryTokens || input.title.toLowerCase();
+  return `tighten recall_when around an action + anchor, e.g. 'about to ${input.type} in ${path}: ${anchor}'`;
+}
+
+function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityResult {
+  const issues: string[] = [];
+  const suggestions: string[] = [];
+  let score = 100;
+
+  const triggerIssues = input.recall_when
+    .map(triggerSpecificityIssue)
+    .filter((issue): issue is string => issue !== undefined);
+  if (triggerIssues.length > 0) {
+    issues.push(...triggerIssues);
+    suggestions.push(buildSpecificTriggerSuggestion(input));
+    score -= Math.min(55, triggerIssues.length * 25);
+  }
+
+  const genericTags = input.tags.filter((tag) => {
+    const tokens = words(tag);
+    return tokens.length === 1 && GENERIC_TRIGGER_WORDS.has(tokens[0]);
+  });
+  if (genericTags.length > 0) {
+    issues.push(`generic tags: ${genericTags.join(", ")}`);
+    suggestions.push("add at least one project/component/outcome tag so future matches are narrower");
+    score -= Math.min(24, genericTags.length * 12);
+  }
+
+  const duplicateQuery = [input.title, input.summary, ...input.recall_when, ...input.tags].join(" ");
+  const duplicateCandidates = deps.search
+    .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: true })
+    .filter((hit) => hit.id !== input.id)
+    .filter((hit) => hit.score >= 20)
+    .slice(0, 3)
+    .map((hit) => ({ id: hit.id, score: hit.score, title: hit.title }));
+  if (duplicateCandidates.length > 0) {
+    issues.push(`possible duplicate: ${duplicateCandidates[0].id}`);
+    suggestions.push(`consider load_memory('${duplicateCandidates[0].id}') and overwrite/update instead of creating a near-duplicate`);
+    score -= Math.min(30, 12 + duplicateCandidates.length * 6);
+  }
+
+  const triggerCollisions = input.recall_when
+    .map((trigger) => {
+      const hits = deps.search
+        .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: true })
+        .filter((hit) => hit.id !== input.id);
+      return { trigger, count: hits.length, examples: hits.slice(0, 3).map((h) => h.id) };
+    })
+    .filter((collision) => collision.count >= 3);
+  if (triggerCollisions.length > 0) {
+    issues.push(`trigger collision: ${triggerCollisions[0].trigger} already matches ${triggerCollisions[0].count} memories`);
+    suggestions.push("make high-collision triggers include a concrete action, subsystem, failure mode, or file family");
+    score -= Math.min(30, triggerCollisions.length * 12);
+  }
+
+  const clamped = Math.max(0, Math.min(100, Math.round(score)));
+  return {
+    score: clamped,
+    band: clamped >= 80 ? "high" : clamped >= 50 ? "medium" : "low",
+    issues,
+    suggestions: Array.from(new Set(suggestions)),
+    duplicate_candidates: duplicateCandidates,
+    trigger_collisions: triggerCollisions,
+  };
 }
 
 export async function saveMemoryHandler(
@@ -339,6 +467,8 @@ export async function saveMemoryHandler(
 ): Promise<SaveMemoryResult> {
   const parsed = SaveMemoryInput.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
+
+  const saveQuality = scoreSaveQuality(deps, parsed.data);
 
   const result = await saveMemory(deps.vaultPath, parsed.data);
   // Don't trust the watcher on cloud-storage mounts — force-index now
@@ -359,7 +489,7 @@ export async function saveMemoryHandler(
     }),
   );
 
-  return result;
+  return { ...result, save_quality: saveQuality };
 }
 
 // ─── MCP Tool-Definitionen ───────────────────────────────────────
