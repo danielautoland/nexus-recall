@@ -51,6 +51,31 @@ function leanMemory(id: string, title: string): string {
   ].join("\n");
 }
 
+function privateMemory(id: string, title: string): string {
+  const ts = new Date().toISOString();
+  return [
+    "---",
+    `id: ${id}`,
+    `title: ${title}`,
+    "type: lesson",
+    `summary: ${title} summary text`,
+    "topic_path:",
+    "  - test",
+    "tags:",
+    "  - private",
+    "scope: lean-test",
+    "sensitivity: private",
+    "recall_when:",
+    `  - ${title}`,
+    `created: ${ts}`,
+    `updated: ${ts}`,
+    "---",
+    "",
+    `Private body for ${title}.`,
+    "",
+  ].join("\n");
+}
+
 /** Memory mit voller Frontmatter (related_via/source/confidence) + Auto-Related-Block. */
 function richMemory(id: string, title: string): string {
   const ts = new Date().toISOString();
@@ -119,6 +144,7 @@ async function makeDeps(): Promise<{ deps: ToolDeps; close: () => Promise<void> 
   await writeFile(join(dir, "charlie.md"), leanMemory("charlie", "charlie delta"), "utf8");
   await writeFile(join(dir, "rich.md"), richMemory("rich", "rich echo"), "utf8");
   await writeFile(join(dir, "longsum.md"), longSummaryMemory("longsum", "alpha bravo"), "utf8");
+  await writeFile(join(dir, "private.md"), privateMemory("private-checkout-focus", "checkout button focus private leak"), "utf8");
   const vault = new Vault(dir);
   await vault.init();
   const search = new SearchIndex(vault);
@@ -259,6 +285,26 @@ test("save_memory returns advisory save_quality with low score for generic trigg
       "generic trigger should be reported",
     );
     assert.ok(res.save_quality.suggestions.length > 0, "expected concrete tightening suggestion");
+  } finally {
+    await close();
+  }
+});
+
+test("save_memory save_quality does not surface private duplicate candidates by default", async () => {
+  const { deps, close } = await makeDeps();
+  try {
+    const res = await saveMemoryHandler(deps, {
+      title: "checkout button focus private leak follow-up",
+      type: "lesson",
+      summary: "Follow-up about the checkout button focus private leak memory.",
+      body: "Do not expose private duplicate ids through save quality output.",
+      topic_path: ["checkout", "accessibility", "focus"],
+      tags: ["checkout-focus"],
+      scope: "lean-test",
+      recall_when: ["checkout button focus private leak"],
+    });
+    assert.deepEqual(res.save_quality.duplicate_candidates, []);
+    assert.deepEqual(res.save_quality.trigger_collisions, []);
   } finally {
     await close();
   }

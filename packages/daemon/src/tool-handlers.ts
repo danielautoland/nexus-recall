@@ -425,7 +425,7 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
 
   const duplicateQuery = [input.title, input.summary, ...input.recall_when, ...input.tags].join(" ");
   const duplicateCandidates = deps.search
-    .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: true })
+    .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: false })
     .filter((hit) => hit.id !== input.id)
     .filter((hit) => hit.score >= 20)
     .slice(0, 3)
@@ -439,7 +439,7 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
   const triggerCollisions = input.recall_when
     .map((trigger) => {
       const hits = deps.search
-        .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: true })
+        .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: false })
         .filter((hit) => hit.id !== input.id);
       return { trigger, count: hits.length, examples: hits.slice(0, 3).map((h) => h.id) };
     })
