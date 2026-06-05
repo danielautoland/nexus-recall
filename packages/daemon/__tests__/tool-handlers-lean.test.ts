@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex, AUTO_RELATED_START } from "@bastra-recall/core";
 import { Telemetry } from "../src/telemetry.js";
-import { recallHandler, loadMemoryHandler, truncateSummary, type ToolDeps } from "../src/tool-handlers.js";
+import { recallHandler, loadMemoryHandler, saveMemoryHandler, truncateSummary, type ToolDeps } from "../src/tool-handlers.js";
 
 const LONG_SUMMARY =
   "alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike november " +
@@ -47,6 +47,31 @@ function leanMemory(id: string, title: string): string {
     "---",
     "",
     `Body for ${title}.`,
+    "",
+  ].join("\n");
+}
+
+function privateMemory(id: string, title: string): string {
+  const ts = new Date().toISOString();
+  return [
+    "---",
+    `id: ${id}`,
+    `title: ${title}`,
+    "type: lesson",
+    `summary: ${title} summary text`,
+    "topic_path:",
+    "  - test",
+    "tags:",
+    "  - private",
+    "scope: lean-test",
+    "sensitivity: private",
+    "recall_when:",
+    `  - ${title}`,
+    `created: ${ts}`,
+    `updated: ${ts}`,
+    "---",
+    "",
+    `Private body for ${title}.`,
     "",
   ].join("\n");
 }
@@ -119,6 +144,7 @@ async function makeDeps(): Promise<{ deps: ToolDeps; close: () => Promise<void> 
   await writeFile(join(dir, "charlie.md"), leanMemory("charlie", "charlie delta"), "utf8");
   await writeFile(join(dir, "rich.md"), richMemory("rich", "rich echo"), "utf8");
   await writeFile(join(dir, "longsum.md"), longSummaryMemory("longsum", "alpha bravo"), "utf8");
+  await writeFile(join(dir, "private.md"), privateMemory("private-checkout-focus", "checkout button focus private leak"), "utf8");
   const vault = new Vault(dir);
   await vault.init();
   const search = new SearchIndex(vault);
@@ -234,6 +260,76 @@ test("load_memory verbosity:full: complete frontmatter + raw body", async () => 
     assert.ok(res.body.includes(AUTO_RELATED_START), "full body keeps auto-related block");
     assert.ok("related_via" in res.frontmatter, "full frontmatter keeps related_via");
     assert.ok("source" in res.frontmatter, "full frontmatter keeps source");
+  } finally {
+    await close();
+  }
+});
+
+test("save_memory returns advisory save_quality with low score for generic triggers", async () => {
+  const { deps, close } = await makeDeps();
+  try {
+    const res = await saveMemoryHandler(deps, {
+      title: "generic css lesson",
+      type: "lesson",
+      summary: "Remember to handle the project checkout button focus regression before changing css.",
+      body: "Use the checkout button focus fixture before changing styles.",
+      topic_path: ["checkout", "styles"],
+      tags: ["css"],
+      scope: "lean-test",
+      recall_when: ["css", "swift"],
+    });
+    assert.equal(res.save_quality.band, "low");
+    assert.ok(res.save_quality.score < 50, `expected low score, got ${res.save_quality.score}`);
+    assert.ok(
+      res.save_quality.issues.some((issue) => issue.includes("css")),
+      "generic trigger should be reported",
+    );
+    assert.ok(res.save_quality.suggestions.length > 0, "expected concrete tightening suggestion");
+  } finally {
+    await close();
+  }
+});
+
+test("save_memory save_quality does not surface private duplicate candidates by default", async () => {
+  const { deps, close } = await makeDeps();
+  try {
+    const res = await saveMemoryHandler(deps, {
+      title: "checkout button focus private leak follow-up",
+      type: "lesson",
+      summary: "Follow-up about the checkout button focus private leak memory.",
+      body: "Do not expose private duplicate ids through save quality output.",
+      topic_path: ["checkout", "accessibility", "focus"],
+      tags: ["checkout-focus"],
+      scope: "lean-test",
+      recall_when: ["checkout button focus private leak"],
+    });
+    assert.deepEqual(res.save_quality.duplicate_candidates, []);
+    assert.deepEqual(res.save_quality.trigger_collisions, []);
+  } finally {
+    await close();
+  }
+});
+
+test("save_memory returns high save_quality for specific anchored triggers", async () => {
+  const { deps, close } = await makeDeps();
+  try {
+    const res = await saveMemoryHandler(deps, {
+      title: "checkout button focus fixture",
+      type: "lesson",
+      summary: "Before changing checkout button focus styles, run the regression fixture that covers keyboard focus rings.",
+      body: "Run the checkout focus fixture before changing keyboard focus styles.",
+      topic_path: ["checkout", "accessibility", "focus"],
+      tags: ["checkout-focus", "accessibility"],
+      scope: "lean-test",
+      recall_when: [
+        "about to change checkout button keyboard focus styles",
+        "debugging missing focus ring in checkout flow",
+      ],
+    });
+    assert.equal(res.save_quality.band, "high");
+    assert.ok(res.save_quality.score >= 80, `expected high score, got ${res.save_quality.score}`);
+    assert.deepEqual(res.save_quality.issues, []);
+    assert.deepEqual(res.save_quality.suggestions, []);
   } finally {
     await close();
   }
