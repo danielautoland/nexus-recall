@@ -306,6 +306,15 @@ export async function loadMemoryHandler(
     throw new Error(`memory not found: ${parsed.data.id}`);
   }
 
+  const bodyForTelemetry = stripAutoRelatedSection(m.body);
+  deps.telemetry.recordLoadedMemory({
+    memory_id: parsed.data.id,
+    distinctive_tokens: distinctiveTokensForActedOn(bodyForTelemetry),
+    hook_hint: hookHint
+      ? { recall_id: hookHint.recall_id, score: hookHint.score }
+      : null,
+  });
+
   // Reset-signal for the hook's per-session dedup (#32): touch a marker
   // file so the next hook invocation knows the agent has consumed this
   // memory and the dedup clock should restart.
@@ -318,7 +327,7 @@ export async function loadMemoryHandler(
   return {
     id: m.fm.id,
     frontmatter: full ? fm : leanFrontmatter(fm),
-    body: full ? m.body : stripAutoRelatedSection(m.body),
+    body: full ? m.body : bodyForTelemetry,
     file_path: m.filePath,
   };
 }
@@ -345,7 +354,7 @@ export interface SaveMemoryResult {
   summary_note?: string;
 }
 
-const GENERIC_TRIGGER_WORDS = new Set([
+export const GENERIC_TRIGGER_WORDS = new Set([
   "api",
   "app",
   "auth",
@@ -378,6 +387,40 @@ const GENERIC_TRIGGER_WORDS = new Set([
 
 function words(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? [];
+}
+
+const ACTED_ON_STOPWORDS = new Set([
+  "about",
+  "after",
+  "also",
+  "and",
+  "because",
+  "been",
+  "before",
+  "between",
+  "from",
+  "have",
+  "into",
+  "that",
+  "their",
+  "then",
+  "there",
+  "this",
+  "through",
+  "with",
+  "without",
+  "would",
+]);
+
+export function distinctiveTokensForActedOn(text: string): string[] {
+  return Array.from(
+    new Set(
+      words(text)
+        .filter((token) => token.length >= 4)
+        .filter((token) => !ACTED_ON_STOPWORDS.has(token))
+        .filter((token) => !GENERIC_TRIGGER_WORDS.has(token)),
+    ),
+  ).slice(0, 200);
 }
 
 function triggerSpecificityIssue(trigger: string): string | undefined {

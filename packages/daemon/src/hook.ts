@@ -150,6 +150,8 @@ async function main(): Promise<void> {
       topics: topics.topics,
       project,
       tool_name: toolName,
+      session_id: payload.session_id ?? null,
+      tool_input_excerpt: intent.content_excerpt,
       k: 3,
     }, remainingMs);
   } catch (err) {
@@ -317,6 +319,8 @@ interface RecallRequestBody {
   topics: string[];
   project: string | null;
   tool_name: string;
+  session_id: string | null;
+  tool_input_excerpt: string;
   k: number;
   scope?: string;
 }

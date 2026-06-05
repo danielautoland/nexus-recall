@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   try {
     resp = await postRecall(
       url,
-      { query: prompt, project, k, tool_name: "UserPromptSubmit" },
+      { query: prompt, project, k, tool_name: "UserPromptSubmit", session_id: payload.session_id ?? null },
       remainingMs,
     );
   } catch (err) {
@@ -308,6 +308,7 @@ interface RecallRequestBody {
   project: string | null;
   k: number;
   tool_name: string;
+  session_id: string | null;
   scope?: string;
   type?: string;
 }

@@ -199,6 +199,42 @@ function summarizeFollowThrough(events: AnyEvent[]): void {
   }
 }
 
+function summarizeUseRate(events: AnyEvent[]): void {
+  const hookRecalls = events.filter((e) => e.kind === "hook_recall" && Array.isArray(e.hits));
+  const episodes = events.filter((e) => e.kind === "recall_episode");
+  if (hookRecalls.length === 0 && episodes.length === 0) return;
+
+  const bands = ["required", "optional", "below_floor"] as const;
+  const surfaced = new Map<string, number>(bands.map((band) => [band, 0]));
+  const loaded = new Map<string, number>(bands.map((band) => [band, 0]));
+  const acted = new Map<string, number>(bands.map((band) => [band, 0]));
+
+  for (const r of hookRecalls) {
+    const hits = r.hits as Array<{ score?: number }>;
+    for (const h of hits) {
+      const score = Number(h.score ?? 0);
+      const band = score >= 100 ? "required" : score >= 30 ? "optional" : "below_floor";
+      surfaced.set(band, (surfaced.get(band) ?? 0) + 1);
+    }
+  }
+
+  for (const e of episodes) {
+    const band = bands.includes(e.band as typeof bands[number])
+      ? String(e.band)
+      : "below_floor";
+    if (e.loaded === true) loaded.set(band, (loaded.get(band) ?? 0) + 1);
+    if (e.acted_on === true) acted.set(band, (acted.get(band) ?? 0) + 1);
+  }
+
+  console.log(`\n## USE-rate  (did loaded hints affect the next tool input?)`);
+  for (const band of bands) {
+    const s = surfaced.get(band) ?? 0;
+    const l = loaded.get(band) ?? 0;
+    const a = acted.get(band) ?? 0;
+    console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
+  }
+}
+
 function topHints(events: AnyEvent[]): void {
   const recalls = events.filter((e) => e.kind === "hook_recall" && Array.isArray(e.hits));
   const idCount = new Map<string, number>();
@@ -246,6 +282,7 @@ async function main(): Promise<void> {
   summarizeSessionHook(events);
   summarizeMcp(events);
   summarizeFollowThrough(events);
+  summarizeUseRate(events);
   topProjects(events);
   topHints(events);
 }

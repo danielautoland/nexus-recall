@@ -274,6 +274,11 @@ function handleHookRecall(
         return;
       }
       const k = clampInt(body.k, 1, 10, 3);
+      const hookSessionId = typeof body.session_id === "string" ? body.session_id : null;
+      const hookToolName = typeof body.tool_name === "string" ? body.tool_name : null;
+      if (hookToolName === "UserPromptSubmit") {
+        telemetry.rotateTurn(hookSessionId);
+      }
       const scope = typeof body.scope === "string" ? body.scope : undefined;
       const type = typeof body.type === "string" ? body.type : undefined;
       // expand_hops: Hooks profitieren vom Multi-Hop-Recall sobald
@@ -329,6 +334,19 @@ function handleHookRecall(
       const recallId = telemetry.newRecallId();
       telemetry.recordHookHints(recallId, hits);
 
+      const toolInputExcerpt = typeof body.tool_input_excerpt === "string"
+        ? body.tool_input_excerpt.slice(0, 4096)
+        : "";
+      if (toolInputExcerpt) {
+        for (const episode of telemetry.matchLoadedMemories({
+          tool_name: hookToolName,
+          tool_input_excerpt: toolInputExcerpt,
+          session_id: hookSessionId,
+        })) {
+          fireAndForget(telemetry.logRecallEpisode(episode));
+        }
+      }
+
       fireAndForget(
         telemetry.logHookRecall({
           recall_id: recallId,
@@ -336,7 +354,7 @@ function handleHookRecall(
           topics: Array.isArray(body.topics)
             ? (body.topics as unknown[]).filter((t): t is string => typeof t === "string")
             : [],
-          tool_name: typeof body.tool_name === "string" ? body.tool_name : null,
+          tool_name: hookToolName,
           project: typeof body.project === "string" ? body.project : null,
           k,
           scope: scope ?? null,
