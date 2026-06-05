@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { envFirst } from "./env.js";
+import { envFirst, envInt } from "./env.js";
 
 /**
  * Migration-aware default log directory: prefer `~/.bastra/logs`, aber
@@ -26,6 +26,7 @@ export type TelemetryEvent =
   | LoadMemoryEvent
   | SaveMemoryEvent
   | HookRecallEvent
+  | RecallEpisodeEvent
   | HookCallEvent
   | SessionHookCallEvent;
 
@@ -77,6 +78,23 @@ export interface LoadMemoryEvent extends BaseEvent {
   from_hook_recall: string | null;
   /** Rank (1-based) at which this id appeared in that hook_recall's hits[]. */
   hook_hint_rank: number | null;
+}
+
+export type RecallBand = "required" | "optional" | "below_floor";
+export type TurnSource = "session" | "inferred";
+
+export interface RecallEpisodeEvent extends BaseEvent {
+  kind: "recall_episode";
+  turn_id: string;
+  turn_source: TurnSource;
+  recall_id: string | null;
+  memory_id: string;
+  surfaced_score: number | null;
+  band: RecallBand;
+  loaded: boolean;
+  acted_on: boolean;
+  match_strength: number;
+  tool_name: string | null;
 }
 
 export interface SaveMemoryEvent extends BaseEvent {
@@ -171,7 +189,41 @@ const HOOK_HINT_WINDOW_MS = 10 * 60 * 1000;
 interface HookHintTrace {
   recall_id: string;
   rank: number;
+  score: number | null;
   ts: number;
+}
+
+interface TurnTrace {
+  turn_id: string;
+  session_id: string;
+  started_at: number;
+}
+
+interface LoadedMemoryTrace {
+  memory_id: string;
+  distinctive_tokens: Set<string>;
+  turn_id: string;
+  turn_source: TurnSource;
+  recall_id: string | null;
+  surfaced_score: number | null;
+  band: RecallBand;
+  ts: number;
+  closed: boolean;
+}
+
+const ACTED_ON_WINDOW_MS = envInt("BASTRA_ACTED_ON_WINDOW_MS", 180_000);
+const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
+const MUST_LOAD_SCORE = envInt("BASTRA_MUST_LOAD_SCORE", 100);
+
+function bandForScore(score: number | null): RecallBand {
+  if (score === null) return "below_floor";
+  if (score >= MUST_LOAD_SCORE) return "required";
+  if (score >= SCORE_FLOOR) return "optional";
+  return "below_floor";
+}
+
+function tokenize(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? []);
 }
 
 export class Telemetry {
@@ -181,6 +233,9 @@ export class Telemetry {
   private lastRecall: { id: string; ts: number } | null = null;
   /** Map<memory_id, most-recent HookHintTrace>. Older traces are evicted lazily. */
   private hookHints = new Map<string, HookHintTrace>();
+  private turns = new Map<string, TurnTrace>();
+  private latestTurn: TurnTrace | null = null;
+  private loadedMemories: LoadedMemoryTrace[] = [];
   private initPromise: Promise<void> | null = null;
 
   constructor() {
@@ -216,10 +271,17 @@ export class Telemetry {
    * load_memory(id) can report whether (and where) the id was hinted to the
    * user. Most-recent hint wins on collision.
    */
-  recordHookHints(recall_id: string, hits: Array<{ id: string }>): void {
+  recordHookHints(recall_id: string, hits: Array<{ id: string; score?: number }>): void {
     const ts = Date.now();
     for (let i = 0; i < hits.length; i++) {
-      this.hookHints.set(hits[i].id, { recall_id, rank: i + 1, ts });
+      const hit = hits[i];
+      if (!hit) continue;
+      this.hookHints.set(hit.id, {
+        recall_id,
+        rank: i + 1,
+        score: typeof hit.score === "number" ? hit.score : null,
+        ts,
+      });
     }
   }
 
@@ -227,14 +289,118 @@ export class Telemetry {
    * Returns the recall_id + rank if this id was hinted in the last
    * HOOK_HINT_WINDOW_MS. Lazy-evicts the entry on miss.
    */
-  findHookHintFor(id: string): { recall_id: string; rank: number } | null {
+  findHookHintFor(id: string): { recall_id: string; rank: number; score: number | null } | null {
     const t = this.hookHints.get(id);
     if (!t) return null;
     if (Date.now() - t.ts > HOOK_HINT_WINDOW_MS) {
       this.hookHints.delete(id);
       return null;
     }
-    return { recall_id: t.recall_id, rank: t.rank };
+    return { recall_id: t.recall_id, rank: t.rank, score: t.score };
+  }
+
+  rotateTurn(sessionId: string | null): string | null {
+    if (!sessionId) return null;
+    const trace: TurnTrace = {
+      turn_id: randomUUID(),
+      session_id: sessionId,
+      started_at: Date.now(),
+    };
+    this.turns.set(sessionId, trace);
+    this.latestTurn = trace;
+    return trace.turn_id;
+  }
+
+  private currentTurn(sessionId: string | null): { turn_id: string; turn_source: TurnSource } {
+    if (sessionId) {
+      const exact = this.turns.get(sessionId);
+      if (exact) return { turn_id: exact.turn_id, turn_source: "session" };
+    }
+    if (this.latestTurn) return { turn_id: this.latestTurn.turn_id, turn_source: "inferred" };
+    const fallback = randomUUID();
+    this.latestTurn = { turn_id: fallback, session_id: "", started_at: Date.now() };
+    return { turn_id: fallback, turn_source: "inferred" };
+  }
+
+  recordLoadedMemory(payload: {
+    memory_id: string;
+    distinctive_tokens: string[];
+    hook_hint: { recall_id: string; score: number | null } | null;
+    session_id?: string | null;
+  }): void {
+    const tokens = new Set(payload.distinctive_tokens);
+    if (tokens.size === 0) return;
+    const turn = this.currentTurn(payload.session_id ?? null);
+    const now = Date.now();
+    this.loadedMemories = this.loadedMemories.filter(
+      (entry) => !entry.closed && now - entry.ts <= ACTED_ON_WINDOW_MS,
+    );
+    this.loadedMemories.push({
+      memory_id: payload.memory_id,
+      distinctive_tokens: tokens,
+      turn_id: turn.turn_id,
+      turn_source: turn.turn_source,
+      recall_id: payload.hook_hint?.recall_id ?? null,
+      surfaced_score: payload.hook_hint?.score ?? null,
+      band: bandForScore(payload.hook_hint?.score ?? null),
+      ts: now,
+      closed: false,
+    });
+  }
+
+  matchLoadedMemories(payload: {
+    tool_name: string | null;
+    tool_input_excerpt: string;
+    session_id?: string | null;
+  }): Omit<RecallEpisodeEvent, "kind" | "ts" | "session_id">[] {
+    const now = Date.now();
+    const current = this.currentTurn(payload.session_id ?? null);
+    const inputTokens = tokenize(payload.tool_input_excerpt);
+    const episodes: Omit<RecallEpisodeEvent, "kind" | "ts" | "session_id">[] = [];
+
+    for (const entry of this.loadedMemories) {
+      if (entry.closed) continue;
+      if (now - entry.ts > ACTED_ON_WINDOW_MS) {
+        entry.closed = true;
+        continue;
+      }
+      if (entry.turn_source === "session" && entry.turn_id !== current.turn_id) continue;
+
+      let matchStrength = 0;
+      for (const token of entry.distinctive_tokens) {
+        if (inputTokens.has(token)) matchStrength++;
+      }
+      entry.closed = true;
+      episodes.push({
+        turn_id: entry.turn_id,
+        turn_source: entry.turn_source,
+        recall_id: entry.recall_id,
+        memory_id: entry.memory_id,
+        surfaced_score: entry.surfaced_score,
+        band: entry.band,
+        loaded: true,
+        acted_on: matchStrength >= 2,
+        match_strength: matchStrength,
+        tool_name: payload.tool_name,
+      });
+    }
+
+    this.loadedMemories = this.loadedMemories.filter(
+      (entry) => !entry.closed && now - entry.ts <= ACTED_ON_WINDOW_MS,
+    );
+    return episodes;
+  }
+
+  async logRecallEpisode(
+    payload: Omit<RecallEpisodeEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "recall_episode",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
   }
 
   async logRecall(payload: Omit<RecallEvent, "kind" | "ts" | "session_id">): Promise<void> {

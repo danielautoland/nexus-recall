@@ -148,6 +148,8 @@ async function main(): Promise<void> {
         topics: ["bash", match.severity, "safety"],
         project: null,
         tool_name: "Bash",
+        session_id: payload.session_id ?? null,
+        tool_input_excerpt: command.slice(0, 4096),
         scope: "all-projects",
         k: 3,
       },
@@ -255,6 +257,8 @@ interface RecallRequestBody {
   topics: string[];
   project: string | null;
   tool_name: string;
+  session_id: string | null;
+  tool_input_excerpt: string;
   k: number;
   scope?: string;
 }
