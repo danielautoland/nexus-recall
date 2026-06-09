@@ -35,6 +35,8 @@ import {
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
+import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
+import { getEmbeddingProvider } from "./settings.js";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -134,9 +136,11 @@ async function main(): Promise<void> {
   const search = new SearchIndex(vault);
   search.start();
 
-  // Hybrid-Recall: Provider via BASTRA_EMBEDDING_PROVIDER (ollama|openai|none).
-  // Backwards-compat: ohne expliziten Provider, aber mit OPENAI_API_KEY → openai.
-  const provider = pickEmbeddingProvider();
+  // Hybrid-Recall: provider precedence env → cli-settings.json → API-key → none.
+  // embeddingStatusLine logs the resolved mode on EVERY path including success —
+  // the silent-success path was the root of #79.
+  const { provider, status: embeddingStatus } = await resolveEmbedding();
+  console.error(embeddingStatusLine(embeddingStatus));
   if (provider) {
     const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
     const embIdx = new EmbeddingIndex(vault, provider, persistPath);
@@ -210,6 +214,7 @@ async function main(): Promise<void> {
           toolDeps,
           documentWriteEnabled: DOCUMENT_WRITE_ENABLED,
           onActivity: markActivity,
+          embedding: embeddingStatus,
         });
 
   const server = new Server(
@@ -419,43 +424,62 @@ function errorResult(msg: string) {
 }
 
 /**
- * Wählt den Embedding-Provider basierend auf BASTRA_EMBEDDING_PROVIDER:
- *   ollama  → lokale Ollama-Instanz (BASTRA_OLLAMA_URL, BASTRA_EMBEDDING_MODEL)
- *   openai  → OpenAI Cloud (OPENAI_API_KEY oder BASTRA_EMBEDDING_KEY)
- *   none/—  → Embeddings disabled (Recall fällt auf reines BM25 zurück)
- * Backwards-compat: wenn Provider nicht gesetzt aber API-Key da → openai.
+ * Resolve the embedding provider with explicit precedence:
+ *   1. env BASTRA_EMBEDDING_PROVIDER  — wins over the file (none|ollama|openai)
+ *   2. cli-settings.json embedding.provider — only when env is unset
+ *   3. backwards-compat — OPENAI_API_KEY present, no explicit choice → openai
+ *   4. none → BM25 only
+ * Returns the provider instance (or null) plus a status used for /health + the
+ * single user-facing log line.
  */
-function pickEmbeddingProvider(): EmbeddingProvider | null {
-  const requested = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
+async function resolveEmbedding(): Promise<{ provider: EmbeddingProvider | null; status: EmbeddingStatus }> {
+  const envProvider = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
   const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
 
-  if (requested === "none") {
-    console.error("[bastra-recall] embeddings disabled (provider=none)");
-    return null;
+  // Tier 1: explicit env wins over the file.
+  if (envProvider === "none") return offEmbedding("env");
+  if (envProvider === "ollama") return ollamaEmbedding("env");
+  if (envProvider === "openai") return apiKey ? openaiEmbedding("env", apiKey) : offEmbedding("env");
+  if (envProvider) {
+    // A typo'd env value must NOT silently disable embeddings and shadow a valid
+    // file choice — warn and fall through (treat as "no opinion"), like the file path.
+    console.error(
+      `[bastra-recall] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(process.env.BASTRA_EMBEDDING_PROVIDER)} — falling through to cli-settings / API-key`,
+    );
   }
-  if (requested === "ollama") {
-    const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
-    const model = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
-    const dimEnv = process.env.BASTRA_EMBEDDING_DIM;
-    const dim = dimEnv ? Number.parseInt(dimEnv, 10) : undefined;
-    return new OllamaEmbeddingProvider({ baseURL, model, dim });
-  }
-  if (requested === "openai") {
-    if (!apiKey) {
-      console.error(
-        "[bastra-recall] embeddings disabled (provider=openai but no API key)",
-      );
-      return null;
-    }
-    return new OpenAIEmbeddingProvider({ apiKey });
-  }
-  if (apiKey) {
-    return new OpenAIEmbeddingProvider({ apiKey });
-  }
-  console.error(
-    "[bastra-recall] embeddings disabled (no BASTRA_EMBEDDING_PROVIDER, no API key)",
-  );
-  return null;
+
+  // Tier 2: cli-settings.json (env unset or invalid → treat as no opinion).
+  const fileProvider = await getEmbeddingProvider();
+  if (fileProvider === "none") return offEmbedding("cli-settings");
+  if (fileProvider === "ollama") return ollamaEmbedding("cli-settings");
+  if (fileProvider === "openai") return apiKey ? openaiEmbedding("cli-settings", apiKey) : offEmbedding("cli-settings");
+
+  // Tier 3: backwards-compat — key present, no explicit choice anywhere.
+  if (apiKey) return openaiEmbedding("api-key", apiKey);
+
+  // Tier 4: nothing requested.
+  return offEmbedding("none");
+}
+
+function ollamaEmbedding(source: EmbeddingSource): { provider: EmbeddingProvider; status: EmbeddingStatus } {
+  const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
+  const model = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
+  const dimEnv = process.env.BASTRA_EMBEDDING_DIM;
+  const parsed = dimEnv ? Number.parseInt(dimEnv, 10) : undefined;
+  // Number.isFinite guard: `NaN ?? 768` keeps NaN (NaN isn't nullish), which
+  // would poison the index dim. A non-numeric env value → fall back to default.
+  const dim = parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
+  const provider = new OllamaEmbeddingProvider({ baseURL, model, dim });
+  return { provider, status: { on: true, providerId: provider.id, source } };
+}
+
+function openaiEmbedding(source: EmbeddingSource, apiKey: string): { provider: EmbeddingProvider; status: EmbeddingStatus } {
+  const provider = new OpenAIEmbeddingProvider({ apiKey });
+  return { provider, status: { on: true, providerId: provider.id, source } };
+}
+
+function offEmbedding(source: EmbeddingSource): { provider: null; status: EmbeddingStatus } {
+  return { provider: null, status: { on: false, providerId: null, source } };
 }
 
 main().catch((err) => {

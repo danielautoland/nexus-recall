@@ -188,6 +188,14 @@ bash packages/skill/install-hook.sh   # registers the 6 default reflex-layer hoo
 
 `bastra install claude-code` does both of these for you in path B. Re-run `install.sh` whenever `SKILL.md` changes; re-run `install-hook.sh` only if hook binary paths move. To remove the hooks again: `bash packages/skill/install-hook.sh --uninstall`.
 
+### Semantic recall (optional)
+
+Recall is hybrid: BM25 keyword search always works, and a semantic layer kicks in once an embedding provider is set up. On macOS, `bastra install` detects Ollama and — if it's missing — offers to install it via Homebrew, pull the `embeddinggemma` model (~600 MB), and start it as a local login service. Use `--ollama` to set it up non-interactively, `--no-ollama` to skip; the login service is a toggle (`bastra config set ollama.autostart off`). Without it, recall stays on BM25 — nothing breaks. `bastra status` shows the active mode.
+
+Manual: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Note: `--yes` does **not** trigger the Ollama download (use `--ollama`). Homebrew and the model come from third parties (Homebrew core, ollama.com).
+
+Full details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (wiki).
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -426,6 +434,14 @@ bash packages/skill/install-hook.sh   # registriert die 6 Standard-Reflex-Layer-
 ```
 
 `bastra install claude-code` aus Pfad B erledigt beides für dich. `install.sh` neu ausführen, wenn sich `SKILL.md` ändert; `install-hook.sh` nur, wenn sich Hook-Binärpfade verschieben. Hooks wieder entfernen: `bash packages/skill/install-hook.sh --uninstall`.
+
+### Semantischer Recall (optional)
+
+Recall ist hybrid: BM25-Stichwortsuche funktioniert immer, eine semantische Schicht kommt dazu, sobald ein Embedding-Provider eingerichtet ist. Auf macOS erkennt `bastra install` Ollama und bietet — falls es fehlt — an, es via Homebrew zu installieren, das Modell `embeddinggemma` (~600 MB) zu ziehen und als lokalen Login-Service zu starten. `--ollama` richtet ohne Nachfrage ein, `--no-ollama` überspringt; der Login-Service ist abschaltbar (`bastra config set ollama.autostart off`). Ohne das bleibt Recall bei BM25 — nichts bricht. `bastra status` zeigt den aktiven Modus.
+
+Manuell: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Hinweis: `--yes` löst den Ollama-Download **nicht** aus (dafür `--ollama`). Homebrew und das Modell kommen von Dritten (Homebrew Core, ollama.com).
+
+Details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (Wiki).
 
 ### Updates
 

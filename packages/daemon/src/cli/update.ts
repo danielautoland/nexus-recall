@@ -152,6 +152,11 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     command: "install",
     surface: "all",
     yes: args.yes || args.staged,
+    // Re-registration is a surface-config refresh — never the place to provision
+    // Ollama (a 600 MB download). Hard-skip on EVERY update path (staged from the
+    // SessionStart hook, or an interactive `bastra update`); don't lean on the
+    // TTY guard alone for an unattended background re-run.
+    ollama: "skip",
   };
   const installRC = await cmdInstall(installArgs);
   if (installRC !== 0) {

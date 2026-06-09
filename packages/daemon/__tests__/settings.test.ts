@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,10 @@ import {
   getUpdateMode,
   readSettings,
   setUpdateMode,
+  setEmbeddingProvider,
+  getEmbeddingProvider,
+  setOllamaAutostart,
+  getOllamaAutostart,
 } from "../src/settings.js";
 
 async function withTempFile<T>(fn: (path: string) => Promise<T>): Promise<T> {
@@ -101,5 +105,63 @@ test("setUpdateMode preserves the file as valid JSON object", async () => {
     await setUpdateMode("auto", path);
     const s = await readSettings(path);
     assert.equal(s.update.mode, "auto");
+  });
+});
+
+// ── #79: embedding.provider + ollama.autostart ──────────────────────────────
+
+test("embedding.provider + ollama.autostart round-trip", async () => {
+  await withTempFile(async (path) => {
+    await setEmbeddingProvider("ollama", path);
+    assert.equal(await getEmbeddingProvider(path), "ollama");
+    await setOllamaAutostart(false, path);
+    assert.equal(await getOllamaAutostart(path), false);
+    // embedding survives the later autostart write (no clobber)
+    assert.equal(await getEmbeddingProvider(path), "ollama");
+  });
+});
+
+test("getEmbeddingProvider: undefined when unset (not a synthesized 'none')", async () => {
+  await withTempFile(async (path) => {
+    assert.equal(await getEmbeddingProvider(path), undefined);
+  });
+});
+
+test("getOllamaAutostart: defaults to true when unset", async () => {
+  await withTempFile(async (path) => {
+    assert.equal(await getOllamaAutostart(path), true);
+  });
+});
+
+test("writes preserve sibling keys (update + embedding + ollama)", async () => {
+  await withTempFile(async (path) => {
+    await setUpdateMode("auto", path);
+    await setEmbeddingProvider("ollama", path);
+    await setOllamaAutostart(false, path);
+    const s = await readSettings(path);
+    assert.equal(s.update.mode, "auto");
+    assert.equal(s.embedding?.provider, "ollama");
+    assert.equal(s.ollama?.autostart, false);
+  });
+});
+
+test("readSettings: malformed embedding.provider → undefined, update.mode preserved", async () => {
+  await withTempFile(async (path) => {
+    await writeFile(path, JSON.stringify({ update: { mode: "auto" }, embedding: { provider: "llama" } }), "utf8");
+    const s = await readSettings(path);
+    assert.equal(s.update.mode, "auto");
+    assert.equal(s.embedding, undefined);
+  });
+});
+
+test("concurrent writes leave valid JSON (atomic tmp+rename, random suffix)", async () => {
+  await withTempFile(async (path) => {
+    await Promise.all([
+      setEmbeddingProvider("ollama", path),
+      setUpdateMode("auto", path),
+      setOllamaAutostart(true, path),
+    ]);
+    const raw = await readFile(path, "utf8");
+    assert.doesNotThrow(() => JSON.parse(raw), "file must never be a torn/garbage write");
   });
 });

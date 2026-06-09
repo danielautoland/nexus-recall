@@ -1,19 +1,24 @@
 /**
- * bastra-recall local CLI settings (#39 follow-up: auto-update).
+ * bastra-recall local CLI settings (#39: auto-update; #79: embedding provider).
  *
  * A small, OSS-owned settings file at ~/.bastra/cli-settings.json — deliberately
  * separate from ~/.bastra/config.json, which is owned by the Pro Mac-app and its
  * onboarding flow. We never touch that file; this one is ours.
  *
- * Currently only carries the update mode:
- *   - "notify" (default): detect + dim CLI hint + SessionStart <bastra-update> block.
- *   - "auto":             same detection, plus a detached staged update at session start.
- *   - "off":              no detection, no hint, no block, no auto.
+ * Keys:
+ *   - update.mode      : "notify" (default) | "auto" | "off"  (see #39)
+ *   - embedding.provider (optional): "ollama" | "openai" | "none"
+ *       Written by `bastra install` after the user opts into Ollama, or by
+ *       `bastra config set`. Absent = "no opinion" → the daemon falls through to
+ *       env / API-key. This is the file half of the #79 fix.
+ *   - ollama.autostart (optional): boolean (default true)
+ *       Whether `bastra install` keeps a local `ollama serve` running at login.
  *
- * The env var BASTRA_UPDATE_CHECK=off is a hard kill-switch that wins over the
- * stored mode (see effectiveUpdateMode) — kept for backwards-compat with #39.
+ * The env var BASTRA_UPDATE_CHECK=off is a hard kill-switch over update.mode.
+ * The env var BASTRA_EMBEDDING_PROVIDER wins over embedding.provider (the file).
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -21,8 +26,17 @@ export type UpdateMode = "notify" | "auto" | "off";
 export const UPDATE_MODES: readonly UpdateMode[] = ["notify", "auto", "off"];
 export const DEFAULT_UPDATE_MODE: UpdateMode = "notify";
 
+// Named "...Name" to avoid colliding with core's `EmbeddingProvider` (the
+// provider *class* interface). This is just the string id of the choice.
+export type EmbeddingProviderName = "ollama" | "openai" | "none";
+export const EMBEDDING_PROVIDERS: readonly EmbeddingProviderName[] = ["ollama", "openai", "none"];
+
 export interface CliSettings {
   update: { mode: UpdateMode };
+  // undefined = "no opinion" → daemon falls through to env / API-key.
+  embedding?: { provider: EmbeddingProviderName };
+  // undefined = unset → treated as default (true) by getOllamaAutostart.
+  ollama?: { autostart: boolean };
 }
 
 export function settingsFilePath(): string {
@@ -33,16 +47,63 @@ function isUpdateMode(v: unknown): v is UpdateMode {
   return typeof v === "string" && (UPDATE_MODES as readonly string[]).includes(v);
 }
 
-/** Reads the stored settings, falling back to defaults on any error. Never throws. */
+export function isEmbeddingProviderName(v: unknown): v is EmbeddingProviderName {
+  return typeof v === "string" && (EMBEDDING_PROVIDERS as readonly string[]).includes(v);
+}
+
+/**
+ * Reads stored settings. A missing file → silent defaults (normal: not created
+ * yet). A *corrupt* file → loud warning + defaults, and we do NOT silently
+ * revert (callers that write will repair it). Never throws.
+ */
 export async function readSettings(path: string = settingsFilePath()): Promise<CliSettings> {
+  let raw: string;
   try {
-    const raw = await readFile(path, "utf8");
-    const data = JSON.parse(raw) as { update?: { mode?: unknown } };
-    const mode = isUpdateMode(data?.update?.mode) ? data.update.mode : DEFAULT_UPDATE_MODE;
-    return { update: { mode } };
+    raw = await readFile(path, "utf8");
   } catch {
     return { update: { mode: DEFAULT_UPDATE_MODE } };
   }
+  if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
+
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown } };
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    // Corrupt is not normal — surface it instead of silently masking the user's
+    // real settings behind defaults (that silence was an #79-class footgun).
+    process.stderr.write(
+      `[bastra-recall] cli-settings.json is corrupt (${(e as Error).message}) — using defaults. Fix or delete ${path}\n`,
+    );
+    return { update: { mode: DEFAULT_UPDATE_MODE } };
+  }
+
+  const settings: CliSettings = {
+    update: { mode: isUpdateMode(data?.update?.mode) ? data.update.mode : DEFAULT_UPDATE_MODE },
+  };
+  // Preserve + validate the optional blocks. Invalid → drop to undefined (NOT a
+  // synthesized "none"), so the daemon's fall-through precedence still applies.
+  const embProvider = data?.embedding?.provider;
+  if (isEmbeddingProviderName(embProvider)) {
+    settings.embedding = { provider: embProvider };
+  } else if (data?.embedding !== undefined) {
+    process.stderr.write(
+      `[bastra-recall] cli-settings.json: ignoring invalid embedding.provider ${JSON.stringify(embProvider)}\n`,
+    );
+  }
+  if (typeof data?.ollama?.autostart === "boolean") {
+    settings.ollama = { autostart: data.ollama.autostart };
+  }
+  return settings;
+}
+
+/** Atomic tmp+rename. Random suffix (not just pid — PIDs recycle on macOS). */
+async function writeSettings(next: CliSettings, path: string): Promise<void> {
+  // Owner-only perms regardless of umask, matching the repo's temp-file
+  // hardening (commit 3af0cc8) — forward-safe if a secret ever lands here.
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  await writeFile(tmp, JSON.stringify(next, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, path);
 }
 
 /** The stored update mode (env-agnostic). */
@@ -60,12 +121,30 @@ export async function effectiveUpdateMode(path?: string): Promise<UpdateMode> {
   return getUpdateMode(path);
 }
 
-/** Persists a new update mode atomically (tmp + rename), merging into existing settings. */
+/** Persists a new update mode atomically, merging into existing settings. */
 export async function setUpdateMode(mode: UpdateMode, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
-  const next: CliSettings = { ...current, update: { ...current.update, mode } };
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  await writeFile(tmp, JSON.stringify(next, null, 2) + "\n", "utf8");
-  await rename(tmp, path);
+  await writeSettings({ ...current, update: { ...current.update, mode } }, path);
+}
+
+/** The stored embedding provider, or undefined when unset (no opinion). */
+export async function getEmbeddingProvider(path?: string): Promise<EmbeddingProviderName | undefined> {
+  return (await readSettings(path)).embedding?.provider;
+}
+
+/** Persists the embedding provider atomically, merging into existing settings. */
+export async function setEmbeddingProvider(provider: EmbeddingProviderName, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, embedding: { provider } }, path);
+}
+
+/** Whether Ollama should be kept running at login. Default true (if you use ollama, you want it up). */
+export async function getOllamaAutostart(path?: string): Promise<boolean> {
+  return (await readSettings(path)).ollama?.autostart ?? true;
+}
+
+/** Persists the Ollama autostart preference atomically. */
+export async function setOllamaAutostart(on: boolean, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, ollama: { autostart: on } }, path);
 }

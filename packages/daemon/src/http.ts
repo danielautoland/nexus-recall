@@ -68,6 +68,7 @@ import {
   moveDocument,
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
+import type { EmbeddingStatus } from "./embedding-status.js";
 
 export interface HttpOptions {
   port: number;
@@ -80,6 +81,9 @@ export interface HttpOptions {
   /** Called on every real request (everything except GET /health). Lets the
    *  daemon track activity for idle self-shutdown. */
   onActivity?: () => void;
+  /** Resolved embedding mode — surfaced on /health so `bastra status` can show
+   *  it (the daemon's own stderr is discarded when the forwarder spawns it). */
+  embedding: EmbeddingStatus;
 }
 
 const MAX_BODY_BYTES = 256 * 1024; // 256 KiB — content excerpts are capped client-side
@@ -133,6 +137,11 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         ok: true,
         vault_size: vault.size(),
         version,
+        // Embedding mode — lets `bastra status` show whether semantic recall is
+        // live without relying on the daemon's discarded stderr (#79).
+        semantic_recall: opts.embedding.on ? "on" : "off",
+        embedding_mode: opts.embedding.providerId ?? "disabled",
+        embedding_source: opts.embedding.source,
         update_available: updateState && updateState.hasUpdate
           ? {
               current: updateState.current,

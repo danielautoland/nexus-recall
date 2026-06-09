@@ -1,5 +1,7 @@
 import { ADAPTERS, resolveTargets } from "./registry.js";
 import { VERSION, formatStatus } from "./helpers.js";
+import { ensureOllama } from "./ollama.js";
+import { getEmbeddingProvider } from "../settings.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
 
 export function showHelp(): void {
@@ -35,6 +37,8 @@ Options:
   --json                     Output status in JSON format (status command only)
   -q, --quiet                Suppress output, return exit code only (status command only)
   --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
+  --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~600 MB)
+  --no-ollama                Skip the Ollama setup (semantic recall uses BM25 keyword search)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --with-stop-hook           Install optional Stop save-eval hook
   --help, -h                 Show this help
@@ -69,6 +73,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     fix: false,
     withStopHook: false,
     staged: false,
+    ollama: null,
     positional: [],
   };
 
@@ -84,6 +89,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--fix") result.fix = true;
     else if (a === "--with-stop-hook") result.withStopHook = true;
     else if (a === "--staged") result.staged = true;
+    else if (a === "--ollama") result.ollama = "auto";
+    else if (a === "--no-ollama") result.ollama = "skip";
     else if (a === "--vault") {
       result.vaultPath = argv[++i] ?? null;
     } else if (a.startsWith("--vault=")) {
@@ -111,6 +118,12 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
     process.stderr.write(`error: ${targets.error}\n`);
     return 2;
   }
+
+  // Ollama is a global concern (one daemon, one embedding engine), so it runs
+  // once here — not per surface. An Ollama failure never fails the install:
+  // surface registration is the job; semantic recall is an enhancement.
+  const ollama = await ensureOllama({ dryRun: args.dryRun, mode: args.ollama });
+  process.stdout.write(`→ semantic recall: ${ollama.message}\n\n`);
 
   const vaultPath = resolveVaultPath(args.vaultPath);
   const opts: InstallOpts = {
@@ -159,6 +172,17 @@ export async function cmdUninstall(args: ParsedArgs): Promise<number> {
       process.stdout.write(`  error: ${(err as Error).message}\n`);
     }
     process.stdout.write("\n");
+  }
+
+  // Ollama is global, not a surface. On a full uninstall, if bastra activated
+  // it, the login service is still running — print a teardown hint (we don't
+  // auto-stop: the user may run Ollama for other things).
+  if (args.surface === "all" && (await getEmbeddingProvider()) === "ollama") {
+    process.stdout.write(
+      "→ semantic recall: Ollama stays configured and its login service may still run.\n" +
+        "  Disable recall: bastra config set embedding.provider none\n" +
+        "  Stop the service: brew services stop ollama\n\n",
+    );
   }
   return hadError ? 1 : 0;
 }

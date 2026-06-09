@@ -1,5 +1,7 @@
-import { probeDaemon, formatStatus } from "./helpers.js";
+import { probeDaemon, formatStatus, type DaemonProbe } from "./helpers.js";
 import { ADAPTERS } from "./registry.js";
+import { probeOllama } from "./ollama.js";
+import { getEmbeddingProvider, type EmbeddingProviderName } from "../settings.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -8,6 +10,7 @@ interface StatusOptions {
 
 interface StatusResult {
   daemon: { status: string; message: string };
+  semanticRecall: { configured: string; active: string; detail: string };
   surfaces: Record<string, { status: string; message: string }>;
 }
 
@@ -20,7 +23,8 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
 
   const statusResult: StatusResult = {
     daemon: { status: "unknown", message: "" },
-    surfaces: {}
+    semanticRecall: { configured: "unset", active: "unknown", detail: "" },
+    surfaces: {},
   };
 
   const daemonInfo = await probeDaemon();
@@ -35,6 +39,19 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     if (!options.quiet && !options.json) {
       printLine(`${"daemon".padEnd(15)} ${formatStatus("error")}: ${daemonInfo.detail}`);
     }
+  }
+
+  // Semantic recall — daemon-level + global, so one line (not per adapter).
+  // It NEVER flips the exit code: BM25-only is degraded, not broken.
+  const configured = await getEmbeddingProvider();
+  const srDetail = await formatSemanticRecall(configured, daemonInfo);
+  statusResult.semanticRecall = {
+    configured: configured ?? "unset",
+    active: daemonInfo.semanticRecall ?? "unknown",
+    detail: srDetail,
+  };
+  if (!options.quiet && !options.json) {
+    printLine(`${"semantic recall".padEnd(15)} ${srDetail}`);
   }
 
   for (const [name, adapter] of Object.entries(ADAPTERS)) {
@@ -60,9 +77,54 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     }
   }
 
-  if (options.json && !options.quiet) {
+  // --json wins over --quiet so "machine-readable, no human noise" (-q --json)
+  // still emits the JSON payload, not just an exit code.
+  if (options.json) {
     printLine(JSON.stringify(statusResult, null, 2));
   }
 
   return hasError ? 1 : 0;
+}
+
+/**
+ * Reconciles the *configured* provider (cli-settings) with the *active* one
+ * (live /health). Distinguishes the drift classes so a just-installed user
+ * isn't alarmed by a scary ✗, and so the env-override footgun is diagnosable.
+ */
+async function formatSemanticRecall(configured: EmbeddingProviderName | undefined, d: DaemonProbe): Promise<string> {
+  if (!d.ok) {
+    // Daemon down → can't read the active mode. If ollama is configured, probe
+    // it directly so "installed but daemon down" vs "model missing" is visible.
+    if (configured === "ollama") {
+      const o = await probeOllama();
+      const detail = o.ok ? (o.hasModel ? "ollama ready" : "model embeddinggemma MISSING — run: ollama pull embeddinggemma") : o.detail;
+      return `· daemon not reachable; configured=ollama (${detail})`;
+    }
+    return `· daemon not reachable; configured=${configured ?? "unset"}`;
+  }
+  const active = d.semanticRecall;
+  if (active === undefined) return "· (daemon predates this field — restart it to report)";
+  if (active === "on") {
+    // /health reports "on" from the configured provider — but verify Ollama is
+    // actually reachable + the model pulled, else recall silently degrades to
+    // BM25 at runtime and "✓ on" would be a lie.
+    if ((d.embeddingMode ?? "").startsWith("ollama")) {
+      const o = await probeOllama();
+      if (o.ok && !o.hasModel) {
+        return `⚠ on (${d.embeddingMode}) but the embeddinggemma model is MISSING — recall falls back to BM25. Fix: ollama pull embeddinggemma`;
+      }
+      if (!o.ok) {
+        return `⚠ on (${d.embeddingMode}) but Ollama is unreachable (${o.detail}) — recall falls back to BM25`;
+      }
+    }
+    return `✓ on (${d.embeddingMode ?? "?"}${d.embeddingSource ? `, source: ${d.embeddingSource}` : ""})`;
+  }
+  // active is off
+  if (configured === "ollama") {
+    if (d.embeddingSource === "env") {
+      return "· off — BASTRA_EMBEDDING_PROVIDER (env) overrides your config=ollama; unset it";
+    }
+    return "· off — configured=ollama, daemon hasn't picked it up yet; restart pending (restart your AI client, or auto after idle)";
+  }
+  return "· off — BM25 keyword search only. Enable: bastra install --ollama";
 }

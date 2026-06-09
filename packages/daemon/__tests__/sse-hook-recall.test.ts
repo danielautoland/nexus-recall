@@ -109,6 +109,7 @@ async function makeDaemon(): Promise<{ port: number; close: () => Promise<void>;
     version: "test",
     toolDeps: { vault, search, telemetry, vaultPath: dir },
     documentWriteEnabled: false,
+    embedding: { on: false, providerId: null, source: "none" },
   });
   return {
     port: handle.port!,
