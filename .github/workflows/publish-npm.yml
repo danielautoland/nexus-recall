@@ -28,7 +28,8 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       # OIDC trusted publishing needs npm >= 11.5.1; Node 22 only bundles npm 10.x.
-      - run: npm install -g npm@^11.5.1
+      # Pinned exact (not a range) for Scorecard pinned-dependencies (#9).
+      - run: npm install -g npm@11.5.1
       - run: npm ci
       - run: npm run build
       - run: npm run check:types

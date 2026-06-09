@@ -9,15 +9,17 @@ on:
     - cron: "31 3 * * 1"
 
 permissions:
-  security-events: write
-  packages: read
-  actions: read
   contents: read
 
 jobs:
   analyze:
     name: Analyze TypeScript
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
