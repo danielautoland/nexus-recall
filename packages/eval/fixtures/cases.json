@@ -1,0 +1,103 @@
+{
+  "_comment": "Paraphrased held-out queries for the synthetic eval-vault. Each paraphrase is phrased to share as few literal tokens with the memory's recall_when as is realistic, simulating how a future session describes the situation in its own words. The 'anti' set is off-vault: no memory should genuinely match.",
+  "paraphrased": [
+    {
+      "id": "git-rebase-autosquash-fixup",
+      "label": "tidy history before PR",
+      "paraphrases": [
+        "tidy my branch history before opening a pull request",
+        "fold a follow-up edit into an earlier commit automatically",
+        "combine small correction commits into one"
+      ]
+    },
+    {
+      "id": "css-flexbox-min-width-zero",
+      "label": "flex item won't shrink",
+      "paraphrases": [
+        "long string blows out the row width instead of shrinking",
+        "ellipsis never appears on a label in a horizontal layout",
+        "column refuses to get narrower than its content"
+      ]
+    },
+    {
+      "id": "postgres-index-type-mismatch",
+      "label": "full scan despite index",
+      "paraphrases": [
+        "database does a full table scan even though I added an index",
+        "explain shows the planner avoiding my index",
+        "a casting mismatch makes the optimizer skip the index"
+      ]
+    },
+    {
+      "id": "money-not-float",
+      "label": "decimal arithmetic drift",
+      "paraphrases": [
+        "summing decimal amounts gives a tiny error",
+        "currency arithmetic drifts by a fraction",
+        "my totals come out a penny off"
+      ]
+    },
+    {
+      "id": "docker-manifest-before-source",
+      "label": "deps reinstall every build",
+      "paraphrases": [
+        "every container build redownloads node modules",
+        "image takes forever to rebuild after editing one file",
+        "dependency install step never gets cached"
+      ]
+    },
+    {
+      "id": "debounce-vs-throttle",
+      "label": "limit event frequency",
+      "paraphrases": [
+        "autocomplete sends a request on every keystroke",
+        "run a handler at most once per interval",
+        "stop a frequently firing event from spamming"
+      ]
+    },
+    {
+      "id": "timestamps-store-utc",
+      "label": "wrong time across regions",
+      "paraphrases": [
+        "appointment shows a different time for users in another country",
+        "clock jumps an hour twice a year",
+        "schedule is wrong after moving servers"
+      ]
+    },
+    {
+      "id": "backoff-jitter",
+      "label": "synchronized retries",
+      "paraphrases": [
+        "everything reconnects simultaneously and overloads the server",
+        "synchronized reconnection attempts spike the backend",
+        "spread out reconnection attempts over time"
+      ]
+    },
+    {
+      "id": "secrets-in-env",
+      "label": "leaked credential",
+      "paraphrases": [
+        "committed a database password by mistake and need to rotate",
+        "safe place for credentials outside source control",
+        "a token ended up in version history"
+      ]
+    },
+    {
+      "id": "focus-ring-keyboard",
+      "label": "missing focus indicator",
+      "paraphrases": [
+        "hiding the outline broke tabbing through the form",
+        "no indicator showing which element is selected via keyboard",
+        "assistive tech users can't see where focus is"
+      ]
+    }
+  ],
+  "anti": [
+    { "query": "kubernetes ingress tls termination", "note": "no k8s content" },
+    { "query": "tensorflow learning rate scheduler", "note": "no ML content" },
+    { "query": "rust borrow checker lifetime error", "note": "no rust content" },
+    { "query": "kafka consumer group rebalance storm", "note": "no kafka content" },
+    { "query": "graphql resolver dataloader batching", "note": "no graphql content" },
+    { "query": "webrtc ice candidate stun turn negotiation", "note": "no webrtc content" }
+  ]
+}
