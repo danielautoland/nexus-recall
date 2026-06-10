@@ -41,7 +41,7 @@
  *     auf konkrete Origin einschränken.
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { Vault, SearchIndex, RecallStage, StageListener } from "@bastra-recall/core";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
@@ -109,14 +109,15 @@ function isLoopback(req: IncomingMessage): boolean {
 }
 
 /**
- * Constant-time string equality for the Bearer-token check. Hashing first
- * equalizes the lengths, so the comparison leaks neither content nor length
- * of the expected token. Exported for unit tests.
+ * Constant-time string equality for the Bearer-token check. The early return
+ * on length mismatch leaks only the length — not secret here, the token has
+ * a fixed format (`Bearer ` + 43-char base64url). Exported for unit tests.
  */
 export function safeEqual(a: string, b: string): boolean {
-  const ha = createHash("sha256").update(a).digest();
-  const hb = createHash("sha256").update(b).digest();
-  return timingSafeEqual(ha, hb);
+  const ba = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
 }
 
 /**
