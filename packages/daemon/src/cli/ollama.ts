@@ -41,23 +41,24 @@ export async function ensureOllama(opts: { dryRun: boolean; mode: "auto" | "skip
     if (opts.mode === "skip") {
       return { status: "skipped", activated: false, message: "skipped (--no-ollama) — semantic recall uses BM25 keyword search" };
     }
-    if (process.platform !== "darwin") {
-      return {
-        status: "unsupported",
-        activated: false,
-        message:
-          "automatic Ollama setup is macOS-only today (Windows: #84). Manual: install Ollama, then `bastra config set embedding.provider ollama`",
-      };
-    }
-
     // env wins over the file at runtime — don't burn a 600 MB download on a
-    // choice the daemon will shadow.
+    // choice the daemon will shadow. Checked before the platform gate: the
+    // explicit user override outranks "unsupported here" on every OS.
     const envProvider = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
     if (envProvider && envProvider !== "ollama") {
       return {
         status: "env-override",
         activated: false,
         message: `BASTRA_EMBEDDING_PROVIDER=${envProvider} (env) overrides the config file — not setting up Ollama. Unset it (or set it to ollama) first.`,
+      };
+    }
+
+    if (process.platform !== "darwin") {
+      return {
+        status: "unsupported",
+        activated: false,
+        message:
+          "automatic Ollama setup is macOS-only today (Windows: #84). Manual: install Ollama, then `bastra config set embedding.provider ollama`",
       };
     }
 

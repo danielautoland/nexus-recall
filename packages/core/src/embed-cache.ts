@@ -101,7 +101,10 @@ export class EmbedCache {
     };
     try {
       await fs.mkdir(path.dirname(this.cachePath), { recursive: true });
-      await fs.writeFile(this.cachePath, JSON.stringify(data));
+      // tmp + rename — kein Torn-Write bei Prozess-Kill mitten im Save.
+      const tmp = `${this.cachePath}.tmp-${process.pid}`;
+      await fs.writeFile(tmp, JSON.stringify(data));
+      await fs.rename(tmp, this.cachePath);
     } catch (err) {
       console.error("[bastra.embeddings] embed-cache persist error:", err);
     }

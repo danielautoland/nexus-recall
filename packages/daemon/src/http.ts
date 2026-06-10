@@ -41,6 +41,7 @@
  *     auf konkrete Origin einschränken.
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { Vault, SearchIndex, RecallStage, StageListener } from "@bastra-recall/core";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
@@ -108,6 +109,41 @@ function isLoopback(req: IncomingMessage): boolean {
 }
 
 /**
+ * Constant-time string equality for the Bearer-token check. The early return
+ * on length mismatch leaks only the length — not secret here, the token has
+ * a fixed format (`Bearer ` + 43-char base64url). Exported for unit tests.
+ */
+export function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
+/**
+ * DNS-Rebinding-Gate für die token-losen Loopback-Endpoints (/hook/recall,
+ * /vault/count, /health): ein Browser, der eine Angreifer-Domain auf
+ * 127.0.0.1 umbiegt, schickt deren Hostname im Host-Header — aus Browser-
+ * Sicht ist der Request dann same-origin, CORS greift nicht. Nur loopback-
+ * Hosts werden bedient; BASTRA_ALLOWED_HOSTS (Komma-Liste) ist der Escape-
+ * Hatch für Tunnel-Setups, die mehr als /api/v1/* exposen wollen. Fehlender
+ * Host-Header (HTTP/1.0-CLIs) passiert — Rebinding trägt immer einen.
+ * Exported for unit tests.
+ */
+export function isLoopbackHost(
+  hostHeader: string | undefined,
+  extraHosts: readonly string[],
+): boolean {
+  if (!hostHeader) return true;
+  const lower = hostHeader.toLowerCase();
+  const host = lower.replace(/:\d+$/, "");
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") {
+    return true;
+  }
+  return extraHosts.includes(host) || extraHosts.includes(lower);
+}
+
+/**
  * Which Origin to reflect in `Access-Control-Allow-Origin`. `null` = the origin
  * isn't allowed → emit no ACAO header and the browser blocks the response. "*"
  * in the allowlist is permissive (tunnel/dev): reflect the caller's origin, or
@@ -142,11 +178,11 @@ export function gateApiRequest(p: {
   const isBrowser = typeof p.reqOrigin === "string" && p.reqOrigin.length > 0;
   if (isBrowser) {
     if (!p.allowedOrigin) return 403;
-    if (!p.apiToken || p.authHeader !== `Bearer ${p.apiToken}`) return 401;
+    if (!p.apiToken || !safeEqual(p.authHeader, `Bearer ${p.apiToken}`)) return 401;
     return 200;
   }
   if (p.apiToken && !(p.loopbackSkip && p.isLoopback)) {
-    if (p.authHeader !== `Bearer ${p.apiToken}`) return 401;
+    if (!safeEqual(p.authHeader, `Bearer ${p.apiToken}`)) return 401;
   }
   return 200;
 }
@@ -167,6 +203,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  // Zusätzliche Hosts für das Rebinding-Gate (Tunnel-Setups, die auch die
+  // loopback-only Endpoints exposen wollen). /api/v1/* braucht das nicht —
+  // dort schützt das Token.
+  const allowedHosts = (process.env.BASTRA_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 
   const server = createServer((req, res) => {
     const t0 = Date.now();
@@ -176,6 +219,14 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // Activity signal for idle self-shutdown — count real work, not the
     // cheap /health liveness ping (else a monitor would keep us alive forever).
     if (url !== "/health") onActivity?.();
+
+    // DNS-Rebinding-Gate für alles außer /api/v1/* (dort schützt das Token):
+    // die offenen Endpoints sind loopback-only by design — ein nicht-loopback
+    // Host-Header heißt, ein Browser wurde auf 127.0.0.1 umgebogen.
+    if (!url.startsWith("/api/v1/") && !isLoopbackHost(req.headers.host, allowedHosts)) {
+      sendJson(res, 403, { error: "host not allowed" });
+      return;
+    }
 
     // CORS preflight for /api/v1/*
     if (method === "OPTIONS" && url.startsWith("/api/v1/")) {

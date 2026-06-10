@@ -15,7 +15,7 @@
  *   Triage-Acceptance: erfüllt.
  */
 import { writeFile, mkdir, copyFile, unlink, stat, rename, access } from "node:fs/promises";
-import { join, basename, isAbsolute } from "node:path";
+import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
@@ -218,6 +218,30 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
+/**
+ * Join a caller-supplied folder_path under the documents root and verify the
+ * result stays inside it. folder_path is legitimately multi-segment
+ * ("Rechnungen/2026"), so we can't ban separators — but `..` segments survive
+ * join() unharmed, so a containment check is the only reliable gate against
+ * mkdir/copyFile/rename landing outside the vault.
+ */
+function resolveDocsFolder(docsRoot: string, folderPath: string): string {
+  const folder = folderPath ? join(docsRoot, folderPath) : docsRoot;
+  const docsAbs = resolve(docsRoot);
+  const folderAbs = resolve(folder);
+  if (folderAbs !== docsAbs && !folderAbs.startsWith(docsAbs + sep)) {
+    throw new Error(`folder_path escapes the documents folder: ${folderPath}`);
+  }
+  return folder;
+}
+
+/** write-to-tmp + rename, so a crash mid-write never leaves a torn sidecar. */
+async function atomicWriteFile(path: string, content: string): Promise<void> {
+  const tmp = `${path}.tmp-${process.pid}`;
+  await writeFile(tmp, content, "utf8");
+  await rename(tmp, path);
+}
+
 interface DocumentFrontmatter {
   id: string;
   title: string;
@@ -303,9 +327,7 @@ export async function saveDocument(
 
   const root = vaultRoot(vault);
   const docsRoot = join(root, DOCUMENTS_ROOT);
-  const folder = args.folder_path
-    ? join(docsRoot, args.folder_path)
-    : docsRoot;
+  const folder = resolveDocsFolder(docsRoot, args.folder_path);
   await mkdir(folder, { recursive: true });
 
   const filename = basename(args.original_path);
@@ -354,7 +376,7 @@ export async function saveDocument(
     ? `> Sidecar für \`${originalDest}\`.\n\n## Extrahierter Inhalt\n\n${args.body}`
     : `> Sidecar für \`${originalDest}\`.\n\n_(Kein extrahierter Inhalt — vom Caller nicht mitgeliefert.)_`;
 
-  await writeFile(sidecarPath, renderSidecar(fm, body), "utf8");
+  await atomicWriteFile(sidecarPath, renderSidecar(fm, body));
 
   // Cloud-Watcher-Mitigation: synchroner reindex statt auf chokidar warten.
   await vault.reindexFile(sidecarPath);
@@ -440,7 +462,7 @@ export async function recategorizeDocument(
     updated: todayISO(),
   });
 
-  await writeFile(sidecarPath, renderSidecar(updated, m.body), "utf8");
+  await atomicWriteFile(sidecarPath, renderSidecar(updated, m.body));
   await vault.reindexFile(sidecarPath);
 
   return { id: m.fm.id, sidecar_path: sidecarPath, reindexed: true };
@@ -484,7 +506,7 @@ export async function moveDocument(
     created: m.fm.created,
     updated: todayISO(),
   });
-  await writeFile(moved.newSidecarPath, renderSidecar(updated, m.body), "utf8");
+  await atomicWriteFile(moved.newSidecarPath, renderSidecar(updated, m.body));
   await vault.reindexFile(moved.newSidecarPath);
 
   return {
@@ -507,9 +529,7 @@ async function moveDocumentFiles(
 ): Promise<{ newSidecarPath: string; newOriginalPath: string }> {
   const root = vaultRoot(vault);
   const docsRoot = join(root, DOCUMENTS_ROOT);
-  const targetFolder = args.newFolderPath
-    ? join(docsRoot, args.newFolderPath)
-    : docsRoot;
+  const targetFolder = resolveDocsFolder(docsRoot, args.newFolderPath);
   await mkdir(targetFolder, { recursive: true });
 
   const sidecarFilename = basename(args.sidecarPath);

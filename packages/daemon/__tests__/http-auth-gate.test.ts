@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveCorsOrigin, gateApiRequest } from "../src/http.js";
+import { resolveCorsOrigin, gateApiRequest, safeEqual, isLoopbackHost } from "../src/http.js";
 
 const SITE = "https://bastra.io";
 const TOKEN = "secret-token";
@@ -120,4 +120,29 @@ test("gate: browser, allowed origin but NO token issued → 401 (secure by defau
     }),
     401,
   );
+});
+
+// ── safeEqual: timing-safe Token-Vergleich ───────────────────────────
+test("safeEqual: equal true; different content or length false", () => {
+  assert.equal(safeEqual(`Bearer ${TOKEN}`, `Bearer ${TOKEN}`), true);
+  assert.equal(safeEqual("Bearer secret-tokeX", `Bearer ${TOKEN}`), false);
+  assert.equal(safeEqual("", `Bearer ${TOKEN}`), false);
+});
+
+// ── isLoopbackHost: DNS-Rebinding-Gate für token-lose Endpoints ──────
+test("isLoopbackHost: loopback hosts pass, rebound domains do not", () => {
+  assert.equal(isLoopbackHost("127.0.0.1:6723", []), true);
+  assert.equal(isLoopbackHost("localhost:6723", []), true);
+  assert.equal(isLoopbackHost("LOCALHOST", []), true);
+  assert.equal(isLoopbackHost("[::1]:6723", []), true);
+  // HTTP/1.0-CLIs ohne Host-Header — Rebinding trägt immer einen.
+  assert.equal(isLoopbackHost(undefined, []), true);
+  assert.equal(isLoopbackHost("attacker.example:6723", []), false);
+  assert.equal(isLoopbackHost("attacker.example", []), false);
+});
+
+test("isLoopbackHost: BASTRA_ALLOWED_HOSTS entries pass (tunnel escape hatch)", () => {
+  assert.equal(isLoopbackHost("tunnel.example.com", ["tunnel.example.com"]), true);
+  assert.equal(isLoopbackHost("tunnel.example.com:443", ["tunnel.example.com"]), true);
+  assert.equal(isLoopbackHost("other.example.com", ["tunnel.example.com"]), false);
 });
