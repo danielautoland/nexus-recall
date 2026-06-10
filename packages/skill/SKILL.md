@@ -134,6 +134,43 @@ When you complete the **next** version of a feature you already have a topology 
 
 ---
 
+## Self-learning taxonomy — let the vault grow its own structure
+
+The vault can teach itself new categories on the free axes (`folder`,
+`topic_path`, `tags`) — the closed `type` enum stays untouched. A **convention**
+is a memory in the reserved scope `taxonomy` (tag `convention`) that fixes how a
+recurring cluster is stored: its folder, topic_path shape, tags, and body shape.
+Active conventions arrive at session start in a `<vault-taxonomy>` block.
+
+### Apply (always)
+
+Before saving into a recurring cluster (people, places, tools, …): check the
+injected conventions — or `recall("taxonomy convention <cluster>")`. If one
+covers the cluster, **follow it exactly** (its `folder`/`topic_path`/`tags`).
+Never invent variant tags for a covered cluster; that fragments recall.
+
+### Establish (when a cluster recurs without a home)
+
+When you notice the same ad-hoc cluster for the third time — or the stop hook
+surfaces a `<taxonomy-drift>` suggestion — establish a convention:
+
+1. `save_memory` with `scope: "taxonomy"`, `type: "workflow"`, tags
+   `["convention", "<cluster-key>"]`, body = the rule (folder, topic_path
+   shape, tags, body shape, one worked example).
+2. Apply it immediately to the memory you were about to save (use the
+   `folder` arg so members get a real home, e.g. `memories/people`).
+3. Re-file existing members: `save_memory` with `overwrite: true` + the
+   convention's `folder` **moves** a memory (old file goes to the vault
+   trash, recoverable). Split collection memos into one-memory-per-entity
+   while you're at it, and link them with `[[wikilinks]]` instead of
+   restating their story.
+
+Conventions are living rules: refresh with `overwrite=true`, never fork a
+`-v2`. For bulk re-filing (>5 memories at once), tell the user what you're
+about to move first.
+
+---
+
 ## Tone with the user
 
 - If you load a memory and apply it, you don't need to mention it unless asked. Just behave correctly. Silence is the best compliment to a working memory.

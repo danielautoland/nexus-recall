@@ -69,6 +69,7 @@ import {
   moveDocument,
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
+import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { getApiToken } from "./settings.js";
 import type { EmbeddingStatus } from "./embedding-status.js";
 
@@ -273,6 +274,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     if (method === "POST" && url === "/hook/recall") {
       handleHookRecall(req, res, t0, vault, search, telemetry);
+      return;
+    }
+
+    // Selbstlernende Taxonomie (#64): Konventions-Liste für die Session-Hook-
+    // Injection (#66) und Drift-Analyse für den Stop-Hook (#67). Beides
+    // loopback-only (Host-Gate oben), read-only, kein Auth — wie /hook/recall.
+    if (method === "GET" && url === "/hook/taxonomy") {
+      sendJson(res, 200, { conventions: listConventions(vault) });
+      return;
+    }
+    if (method === "GET" && url === "/hook/drift") {
+      sendJson(res, 200, { clusters: detectTaxonomyDrift(vault) });
       return;
     }
 

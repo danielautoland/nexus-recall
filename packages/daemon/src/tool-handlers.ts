@@ -12,6 +12,8 @@
 import { z } from "zod";
 import {
   saveMemory,
+  slugify,
+  moveToTrash,
   truncateSummaryTo,
   SaveMemoryInput,
   stripAutoRelatedSection,
@@ -513,7 +515,30 @@ export async function saveMemoryHandler(
 
   const saveQuality = scoreSaveQuality(deps, parsed.data);
 
+  // Re-Filing (#64): Wenn die id schon indexiert ist, aber der neue Save sie
+  // woanders ablegt (geänderte folder/scope-Konvention), würde saveMemory nur
+  // den NEUEN Pfad auf Kollision prüfen — die alte Datei bliebe als Duplikat
+  // mit derselben id liegen. Deshalb: ohne overwrite ablehnen, mit overwrite
+  // die alte Datei in den Trash verschieben (recoverbar, kein Hard-Delete).
+  const finalId = parsed.data.id ?? slugify(parsed.data.title);
+  const previous = deps.vault.get(finalId);
+  if (previous && !parsed.data.overwrite) {
+    throw new Error(
+      `memory already exists: ${finalId} (at ${previous.filePath}). ` +
+        `Pass overwrite=true to replace it — a changed folder/scope moves the file.`,
+    );
+  }
+
   const result = await saveMemory(deps.vaultPath, parsed.data);
+  if (previous && previous.filePath !== result.file_path) {
+    try {
+      await moveToTrash(deps.vaultPath, previous.filePath, finalId);
+      deps.vault.forgetFile(previous.filePath);
+    } catch (err) {
+      // Alte Datei schon weg (extern gelöscht/verschoben) → nichts aufzuräumen.
+      console.error(`[bastra-recall] re-file: could not trash old path: ${(err as Error).message}`);
+    }
+  }
   // Don't trust the watcher on cloud-storage mounts — force-index now
   // so a follow-up recall() in the same session sees the new memory.
   await deps.vault.reindexFile(result.file_path);
@@ -695,6 +720,23 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "  'about to write a Tailwind grid' beats 'CSS questions'. Without " +
       "  good recall_when, the memory is dead weight.\n" +
       "\n" +
+      "TAXONOMY CONVENTIONS (self-learning vault structure):\n" +
+      "- The vault can teach itself new categories. A convention is a " +
+      "  memory in the reserved scope 'taxonomy' that names a cluster " +
+      "  and fixes its axes: folder, topic_path shape, tags, body shape.\n" +
+      "- BEFORE saving into a recurring cluster (people, places, tools, " +
+      "  …): recall('taxonomy convention <cluster>') — if a convention " +
+      "  exists, FOLLOW it exactly (its folder/topic_path/tags), do not " +
+      "  invent variant tags that fragment recall.\n" +
+      "- When you notice the same ad-hoc cluster for the third time " +
+      "  without a convention, establish one: save a memory with " +
+      "  scope='taxonomy', tag 'convention', body = the rule (axes + " +
+      "  folder + body shape + one example), then apply it. Use the " +
+      "  `folder` arg so members get a real home (e.g. 'memories/people').\n" +
+      "- Re-filing: overwrite=true with a new folder MOVES the memory " +
+      "  (old file goes to the vault trash) — use this to migrate " +
+      "  existing memories under a new convention.\n" +
+      "\n" +
       "AFTER SAVING: surface a single-line ack to the user, prefixed " +
       "with `→`: `→ saved: <title> (id: <id>)`. Nothing more.",
     inputSchema: {
@@ -753,7 +795,18 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
           type: "string",
           description:
             "Project/area this memory belongs to, e.g. 'bastra-recall', " +
-            "'carnexus', 'user-preference', 'all-projects'.",
+            "'carnexus', 'user-preference', 'all-projects'. The scope " +
+            "'taxonomy' is reserved for convention memories (self-learned " +
+            "vault structure rules).",
+        },
+        folder: {
+          type: "string",
+          description:
+            "Optional target folder relative to the vault root (e.g. " +
+            "'memories/people'). Overrides the default scope/type routing — " +
+            "use it when a taxonomy convention assigns this cluster a home. " +
+            "With overwrite=true a changed folder MOVES the memory (old " +
+            "file is trashed, recoverable).",
         },
         recall_when: {
           type: "array",

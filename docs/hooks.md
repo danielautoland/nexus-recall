@@ -173,8 +173,22 @@ Output is one or more multi-line `<save-eval>` blocks suggesting title/type/body
 hook **never calls `save_memory` itself** — only the agent does, in the next
 turn, if it agrees with the suggestion.
 
+Additionally the stop hook asks the daemon's drift detector (`GET /hook/drift`,
+budget 250 ms, fail-silent) whether recent memories form a recurring cluster
+with no taxonomy convention covering it, and surfaces at most two clusters as a
+`<taxonomy-drift>` suggestion — see [taxonomy.md](taxonomy.md). Same contract:
+suggestion only, the agent decides.
+
 Budget 1000 ms. Telemetry: `save_eval_call` with `heuristic, suggested_count,
-turn_count, latency_ms_total`.
+drift_clusters, turn_count, latency_ms_total`.
+
+### Taxonomy injection (session hook, #66)
+
+The session hook also fetches `GET /hook/taxonomy` (budget 150 ms within the
+overall hook budget, fail-silent) and appends a `<vault-taxonomy>` block with
+the active convention memories (reserved scope `taxonomy`, newest first, cap
+6 rendered). Conventions are binding save-rules — see
+[taxonomy.md](taxonomy.md). Telemetry gains `convention_count`.
 
 ## Environment overrides
 
@@ -186,5 +200,7 @@ turn_count, latency_ms_total`.
 | `BASTRA_PROMPT_HOOK_MODE`     | `retrieval-only` | `retrieval-only` or `all` — only the prompt-hook reads this   |
 | `BASTRA_TELEMETRY`            | `on`             | `off` to disable JSONL telemetry writes                       |
 | `BASTRA_LOG_PATH`             | `~/.bastra/logs` | Telemetry log directory                                       |
+| `BASTRA_DRIFT_WINDOW_DAYS`    | `14`             | Drift detector: how far back "recent memories" reaches        |
+| `BASTRA_DRIFT_MIN_CLUSTER`    | `3`              | Drift detector: distinct memories before a cluster is flagged |
 
 All `BASTRA_*` vars accept a legacy `NEXUS_*` fallback for migration.

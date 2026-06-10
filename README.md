@@ -107,6 +107,10 @@ confidence: 0.95
 
 The `recall_when` field is the bridge between save and recall: when saving, the AI declares the contexts under which future-sessions should be reminded. See [docs/memory-schema.md](./docs/memory-schema.md) for full field semantics and six example memories covering `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
+### Self-learning taxonomy
+
+The vault grows its own structure. When recent memories keep forming the same ad-hoc cluster (people, places, tools, …) without a home, the stop hook suggests recording a **convention** — a memory in the reserved scope `taxonomy` that fixes the cluster's folder, `topic_path` shape and tags. Active conventions are injected at session start and are binding for future saves. `save_memory` takes a `folder` argument so cluster members get a real folder (e.g. `memories/people/`), and re-saving with a changed folder *moves* the file (the old copy lands in the vault trash, recoverable). All of it lives per-vault on the free axes — the `type` schema stays fixed. Details: [docs/taxonomy.md](./docs/taxonomy.md).
+
 ### Install
 
 Three paths, in order of friction. bastra-recall is self-contained: the daemon, the MCP server, the REST gateway, the `bastra` CLI, and the Skill all ship in this repo — nothing else needed for full vault functionality.
@@ -222,6 +226,7 @@ Auth and CORS:
 - **Local tools** (CLI, MCP-forwarder — no `Origin` header) reach `/api/v1/*` over loopback without a token. Set `BASTRA_AUTH_LOOPBACK_SKIP=0` to require the token even for them.
 - **Browser clients** (any request *with* an `Origin` header) must always present the token **and** be on the CORS allowlist — even over loopback, since the user's browser shares `127.0.0.1` with the daemon and only the `Origin` header tells a real site from a stray one.
 - **CORS** is permissive by default (`Access-Control-Allow-Origin: *`). For a hosted web app, set an allowlist: `BASTRA_CORS_ORIGIN=https://your.host` (comma-separated for several) — the daemon then reflects only listed origins and a browser blocks the rest.
+- **DNS rebinding** is blocked: the token-less loopback endpoints (`/health`, `/hook/*`, `/vault/count`) only answer requests whose `Host` header is loopback (`127.0.0.1` / `localhost` / `[::1]`). `/api/v1/*` is unaffected (the token protects it). Tunnel setups that need more than `/api/v1/*` can allowlist hosts via `BASTRA_ALLOWED_HOSTS` (comma-separated).
 
 To reach this daemon from a hosted web app (e.g. a site's admin talking to the user's *local* vault from the browser), set `BASTRA_CORS_ORIGIN` to the site origin, run `bastra token`, and paste the token into the site. For a server-side client like ChatGPT, point a tunnel (Cloudflare Tunnel / ngrok / your own reverse proxy) at `127.0.0.1:6723` and configure it with the tunnel URL + your token. An OpenAPI 3.0 starter spec lives in [docs/openapi.yaml](./docs/openapi.yaml).
 
@@ -355,6 +360,10 @@ confidence: 0.95
 
 Das `recall_when`-Feld ist die Brücke zwischen Save und Recall: beim Speichern deklariert die AI die Kontexte, in denen die spätere Sitzung daran erinnert werden soll. Siehe [docs/memory-schema.md](./docs/memory-schema.md) für die vollständige Feld-Semantik und sechs Beispiel-Memories für `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
+### Selbstlernende Taxonomie
+
+Der Vault baut sich seine Struktur selbst. Wenn jüngste Memories wiederholt dasselbe Ad-hoc-Cluster bilden (Personen, Orte, Tools, …), ohne dass es eine Heimat hat, schlägt der Stop-Hook vor, eine **Konvention** festzuhalten — ein Memory im reservierten Scope `taxonomy`, das Ordner, `topic_path`-Form und Tags des Clusters festlegt. Aktive Konventionen werden bei Session-Start injiziert und sind für künftige Saves bindend. `save_memory` nimmt ein `folder`-Argument, damit Cluster-Mitglieder einen echten Ordner bekommen (z.B. `memories/people/`); ein erneutes Speichern mit geändertem Ordner *verschiebt* die Datei (die alte Kopie landet recoverbar im Vault-Trash). Alles lebt pro Vault auf den freien Achsen — das `type`-Schema bleibt fix. Details: [docs/taxonomy.md](./docs/taxonomy.md).
+
 ### Installation
 
 Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-Server, REST-Gateway, `bastra`-CLI und Skill liegen alle in diesem Repo — mehr braucht es nicht für die volle Vault-Funktionalität.
@@ -470,6 +479,7 @@ Auth und CORS:
 - **Lokale Tools** (CLI, MCP-Forwarder — kein `Origin`-Header) erreichen `/api/v1/*` über Loopback ohne Token. Mit `BASTRA_AUTH_LOOPBACK_SKIP=0` wird das Token auch von ihnen verlangt.
 - **Browser-Clients** (jeder Request *mit* `Origin`-Header) müssen immer das Token tragen **und** auf der CORS-Allowlist stehen — auch über Loopback, denn der Browser des Users teilt sich `127.0.0.1` mit dem Daemon und nur der `Origin`-Header trennt eine echte Seite von einer fremden.
 - **CORS** ist per Default permissiv (`Access-Control-Allow-Origin: *`). Für eine gehostete Web-App eine Allowlist setzen: `BASTRA_CORS_ORIGIN=https://dein.host` (kommagetrennt für mehrere) — der Daemon spiegelt dann nur gelistete Origins zurück, den Rest blockt der Browser.
+- **DNS-Rebinding** wird geblockt: Die token-losen Loopback-Endpoints (`/health`, `/hook/*`, `/vault/count`) antworten nur auf Requests, deren `Host`-Header loopback ist (`127.0.0.1` / `localhost` / `[::1]`). `/api/v1/*` ist nicht betroffen (dort schützt das Token). Tunnel-Setups, die mehr als `/api/v1/*` brauchen, können Hosts via `BASTRA_ALLOWED_HOSTS` (kommagetrennt) freischalten.
 
 Um diesen Daemon aus einer gehosteten Web-App zu erreichen (z.B. das Admin einer Seite, das aus dem Browser auf den *lokalen* Vault des Users zugreift): `BASTRA_CORS_ORIGIN` auf die Seiten-Origin setzen, `bastra token` ausführen und das Token in der Seite hinterlegen. Für einen serverseitigen Client wie ChatGPT: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und mit Tunnel-URL + Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
 
