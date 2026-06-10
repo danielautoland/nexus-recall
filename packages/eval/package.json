@@ -10,6 +10,7 @@
   },
   "scripts": {
     "lift": "tsx src/marginal-lift.ts",
+    "personas": "tsx src/persona-lift.ts",
     "check:types": "tsc --noEmit"
   },
   "dependencies": {

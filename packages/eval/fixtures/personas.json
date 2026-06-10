@@ -1,0 +1,125 @@
+{
+  "_comment": "Simulated-user queries for the synthetic eval-vault: 10 personas x 10 memories, each persona phrasing every situation in its own voice (junior/senior/non-native/terse/verbose/concept-namer/error-message/why-asker/outsider/mobile-typo). LLM-generated on purpose — production memories and recall queries are both AI-mediated, so this is the ecologically faithful test (see persona-lift.ts / README). Diversity is guarded: mean pairwise query similarity ~0.12, 10/10 distinct voices. Like cases.json, the synthetic-vault number is a mechanism demo, not a headline.",
+  "personas": {
+    "junior": {
+      "backoff-jitter": "why do all my requests fail at the same time after server comes back",
+      "css-flexbox-min-width-zero": "text in flex container not shrinking going outside the box",
+      "debounce-vs-throttle": "function running too many times when user types in search box",
+      "docker-manifest-before-source": "docker build taking forever reinstalling everything each time I change code",
+      "focus-ring-keyboard": "how to remove that ugly blue outline but not break accessibility",
+      "git-rebase-autosquash-fixup": "how to clean up my messy commits before pull request",
+      "money-not-float": "prices showing wrong like 9.999999 instead of 10 in javascript",
+      "postgres-index-type-mismatch": "added index but query still slow postgres not using it",
+      "secrets-in-env": "accidentally pushed api key to github what do I do",
+      "timestamps-store-utc": "date showing wrong time for users in different countries"
+    },
+    "senior": {
+      "backoff-jitter": "thundering herd on retry storm exponential backoff needs jitter to decorrelate",
+      "css-flexbox-min-width-zero": "flex child overflows container due to implicit min-width auto; override with min-width:0",
+      "debounce-vs-throttle": "leading vs trailing edge rate limiting for input events debounce throttle tradeoffs",
+      "docker-manifest-before-source": "layer cache invalidation on source change; copy package.json before COPY . to preserve dep layer",
+      "focus-ring-keyboard": "outline:none removes :focus indicator for keyboard navigation; use :focus-visible instead",
+      "git-rebase-autosquash-fixup": "squash fixup commits via --fixup flag and rebase --autosquash before merge",
+      "money-not-float": "IEEE 754 floating point precision loss for currency; store as integer minor units or use decimal type",
+      "postgres-index-type-mismatch": "index scan skipped by planner due to implicit type coercion breaking operator class match",
+      "secrets-in-env": "credential exposure in git history; rotate immediately, use env vars or secrets manager, git filter-repo",
+      "timestamps-store-utc": "timezone-aware storage strategy; persist UTC epoch or timestamptz, localize at presentation layer"
+    },
+    "nonnative": {
+      "backoff-jitter": "many clients retry in same time and make server crash again how to spread the requests",
+      "css-flexbox-min-width-zero": "flex item is not becoming smaller and is going outside parent div why",
+      "debounce-vs-throttle": "event is firing too many times on typing what is difference debounce and throttle",
+      "docker-manifest-before-source": "every time I change one file docker is reinstalling all packages from beginning",
+      "focus-ring-keyboard": "I remove outline from button but now keyboard users cannot see where is focus",
+      "git-rebase-autosquash-fixup": "before merge request I want to combine small fix commits into one clean commit",
+      "money-not-float": "when I save price as float number the calculation is not correct like 10.00 becomes 9.9999",
+      "postgres-index-type-mismatch": "my index is existing but postgres is not using it why query is still slow",
+      "secrets-in-env": "I pushed secret key in git repository by mistake what should I do now",
+      "timestamps-store-utc": "time is showing wrong in different timezone for my users how to fix"
+    },
+    "terse": {
+      "backoff-jitter": "retry stampede fix jitter",
+      "css-flexbox-min-width-zero": "flex child overflow shrink fix",
+      "debounce-vs-throttle": "debounce throttle input events",
+      "docker-manifest-before-source": "docker cache bust dependencies",
+      "focus-ring-keyboard": "remove outline keep accessibility",
+      "git-rebase-autosquash-fixup": "clean commits before merge",
+      "money-not-float": "float currency rounding bug",
+      "postgres-index-type-mismatch": "index ignored type mismatch",
+      "secrets-in-env": "committed secret git rotate",
+      "timestamps-store-utc": "timezone storage best practice"
+    },
+    "verbose": {
+      "backoff-jitter": "I have a bunch of microservices that all retry failed requests at the same interval and when a downstream service recovers they all hit it simultaneously and knock it back down so I need a way to spread out those retries randomly",
+      "css-flexbox-min-width-zero": "I have a flex row with text inside one of the children and the text is really long so instead of truncating or wrapping it just pushes past the container boundary and I cannot figure out why min-width or overflow hidden is not working",
+      "debounce-vs-throttle": "my search input fires an API call on every keystroke and my scroll handler runs constantly and I know there are two different techniques to limit how often a function runs but I cannot remember when to use each one",
+      "docker-manifest-before-source": "my Dockerfile copies all my source code then runs npm install but every single time I change any file it reinstalls all the node modules from scratch even if package.json did not change",
+      "focus-ring-keyboard": "my designer asked me to remove the default browser focus outline because it looks ugly but someone told me it completely breaks keyboard navigation so I need a CSS-only solution that keeps it for keyboard users",
+      "git-rebase-autosquash-fixup": "I have like fifteen commits on my feature branch that are a mix of real work and tiny oops fixes and I want to clean them into a few logical commits before I open a pull request",
+      "money-not-float": "I am storing product prices as floating point numbers and after arithmetic the results come back as something like 19.999999998 instead of 20.00 and I need the correct way to handle money",
+      "postgres-index-type-mismatch": "I created an index on a column I query all the time but when I run EXPLAIN ANALYZE the planner is still doing a sequential scan instead of using the index and I cannot figure out why",
+      "secrets-in-env": "I accidentally committed a database password and an API token into my git repository and pushed it to GitHub and I need to know what steps to take right now",
+      "timestamps-store-utc": "users in different timezones are seeing event times that are off by several hours and during daylight saving it gets even worse and I need the correct architecture for storing times"
+    },
+    "conceptnamer": {
+      "backoff-jitter": "jitter decorrelation thundering herd mitigation",
+      "css-flexbox-min-width-zero": "flex child min-width overflow containment",
+      "debounce-vs-throttle": "debounce throttle input rate limiting tradeoff",
+      "docker-manifest-before-source": "dependency layer cache invalidation ordering",
+      "focus-ring-keyboard": "focus-visible progressive outline accessibility",
+      "git-rebase-autosquash-fixup": "fixup autosquash interactive rebase commit hygiene",
+      "money-not-float": "monetary value integer minor units decimal precision",
+      "postgres-index-type-mismatch": "predicate type coercion index scan suppression",
+      "secrets-in-env": "credential externalization git history remediation",
+      "timestamps-store-utc": "UTC normalization timezone-agnostic storage"
+    },
+    "errormsg": {
+      "backoff-jitter": "503 spike after outage recovery all clients retry simultaneously",
+      "css-flexbox-min-width-zero": "flex item overflow parent container text not truncating",
+      "debounce-vs-throttle": "function called hundreds of times on keypress scroll event listener",
+      "docker-manifest-before-source": "npm install runs every build no cache hit layer invalidated",
+      "focus-ring-keyboard": "outline none accessibility audit keyboard navigation broken tab",
+      "git-rebase-autosquash-fixup": "squash merge wip commits history dirty before pr",
+      "money-not-float": "0.1 + 0.2 != 0.3 currency calculation rounding error production",
+      "postgres-index-type-mismatch": "seq scan instead of index scan explain analyze query slow",
+      "secrets-in-env": "api key committed git log exposed credential rotation",
+      "timestamps-store-utc": "timestamp wrong timezone DST clock shift date display bug"
+    },
+    "whyasker": {
+      "backoff-jitter": "why do all my clients retry at the same time after a service comes back up",
+      "css-flexbox-min-width-zero": "why does flex child element overflow instead of shrinking to fit",
+      "debounce-vs-throttle": "why does my event handler fire too many times and when should I use debounce vs throttle",
+      "docker-manifest-before-source": "why does docker reinstall all dependencies every time I change source code",
+      "focus-ring-keyboard": "why does removing outline css break keyboard navigation for accessibility",
+      "git-rebase-autosquash-fixup": "why are my wip and fixup commits showing up in the final git history",
+      "money-not-float": "why does floating point arithmetic give wrong results when calculating money",
+      "postgres-index-type-mismatch": "why is postgres ignoring my index and doing a sequential scan",
+      "secrets-in-env": "why should I never store secrets in source code and what do I do if I already did",
+      "timestamps-store-utc": "why do my timestamps show the wrong time for users in different timezones"
+    },
+    "outsider": {
+      "backoff-jitter": "when server comes back online all apps hit it at once and it crashes again",
+      "css-flexbox-min-width-zero": "text in row element sticks out past the edge instead of cutting off",
+      "debounce-vs-throttle": "search box fires too many requests while user is still typing",
+      "docker-manifest-before-source": "every small code change makes docker download all packages again from scratch",
+      "focus-ring-keyboard": "removed the ugly dotted box around buttons now keyboard users cant see where they are",
+      "git-rebase-autosquash-fixup": "how to clean up messy save point commits before sharing code with team",
+      "money-not-float": "prices come out slightly wrong like 9.999999 instead of 10 in database",
+      "postgres-index-type-mismatch": "added index to database column but queries are still slow not using it",
+      "secrets-in-env": "accidentally pushed password to github what do I do now",
+      "timestamps-store-utc": "time shown to users is wrong depending on what country they are in"
+    },
+    "mobiletypo": {
+      "backoff-jitter": "retyr storm aftr outage all clients hit same time fix",
+      "css-flexbox-min-width-zero": "flex item wont shrink overfow row min width",
+      "debounce-vs-throttle": "to many fn calls on scroll typin debounce throttle diff",
+      "docker-manifest-before-source": "docker cache miss evry build reinstals deps copy order",
+      "focus-ring-keyboard": "removed outline css now kbd nav broke focus visble",
+      "git-rebase-autosquash-fixup": "cleanup wip commits b4 merge autosquash fixup rebse",
+      "money-not-float": "float moeny rounding wrnog use deciml or int cents",
+      "postgres-index-type-mismatch": "index not used postgres seq scan type mismtch cast",
+      "secrets-in-env": "commited secret to git by accident rotate env var",
+      "timestamps-store-utc": "wrong time diff timezone store utc dsplay local"
+    }
+  }
+}
