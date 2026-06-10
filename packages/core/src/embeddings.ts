@@ -44,12 +44,6 @@ function backpressureStallMs(): number {
   return Math.max(0, Number(process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS ?? "100"));
 }
 
-/** Polling-Interval für den Semaphore. */
-const SEMAPHORE_POLL_MS = Math.max(
-  1,
-  Number(process.env.BASTRA_EMBED_SEMAPHORE_POLL_MS ?? "50"),
-);
-
 // ─── Provider Interface ──────────────────────────────────────────
 
 export interface EmbeddingProvider {
@@ -349,7 +343,11 @@ export class EmbeddingIndex {
     };
     try {
       await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
-      await fs.writeFile(this.persistPath, JSON.stringify(data));
+      // tmp + rename: ein Kill mitten im Write darf keine angerissene (aber
+      // JSON-valide) Datei hinterlassen, die beim Load Vectors verliert.
+      const tmp = `${this.persistPath}.tmp-${process.pid}`;
+      await fs.writeFile(tmp, JSON.stringify(data));
+      await fs.rename(tmp, this.persistPath);
     } catch (err) {
       console.error("[bastra.embeddings] persist error:", err);
     }
@@ -410,11 +408,16 @@ export class EmbeddingIndex {
   private async flushQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
+    // Laufende Provider-Calls. Batches werden NICHT inline awaited — sonst
+    // wäre der Semaphore toter Code und alles liefe strikt seriell (genau so
+    // war der Bug: inFlight konnte nie über 1 steigen).
+    const inFlightBatches = new Set<Promise<void>>();
+    let aborted = false;
     try {
-      while (this.pendingQueue.size > 0) {
+      while (!aborted && this.pendingQueue.size > 0) {
         // Semaphore: warte bis ein In-Flight-Slot frei wird.
         while (this.inFlight >= MAX_CONCURRENT_BATCHES) {
-          await new Promise<void>((r) => setTimeout(r, SEMAPHORE_POLL_MS));
+          await Promise.race(inFlightBatches);
         }
         const batch = Array.from(this.pendingQueue).slice(0, 50);
         for (const id of batch) this.pendingQueue.delete(id);
@@ -456,33 +459,39 @@ export class EmbeddingIndex {
 
         const texts = toEmbed.map(({ m }) => buildEmbedText(m));
         this.inFlight++;
-        try {
-          const vectors = await this.provider.embed(texts);
-          for (let i = 0; i < toEmbed.length; i++) {
-            this.vectors.set(toEmbed[i].id, vectors[i]);
-            this.cache.set(toEmbed[i].id, toEmbed[i].hash);
-          }
-          this.schedulePersist();
-          void this.cache.save();
-          for (const { id } of toEmbed) {
-            for (const listener of this.embedListeners) {
-              try {
-                listener(id);
-              } catch (err) {
-                console.error("[bastra.embeddings] embed listener error:", err);
+        const batchPromise = (async () => {
+          try {
+            const vectors = await this.provider.embed(texts);
+            for (let i = 0; i < toEmbed.length; i++) {
+              this.vectors.set(toEmbed[i].id, vectors[i]);
+              this.cache.set(toEmbed[i].id, toEmbed[i].hash);
+            }
+            this.schedulePersist();
+            void this.cache.save();
+            for (const { id } of toEmbed) {
+              for (const listener of this.embedListeners) {
+                try {
+                  listener(id);
+                } catch (err) {
+                  console.error("[bastra.embeddings] embed listener error:", err);
+                }
               }
             }
+          } catch (err) {
+            console.error("[bastra.embeddings] batch error, requeue:", err);
+            // Bei Fehler: Items zurück in queue für Retry beim nächsten
+            // Add-Event oder Restart; keine neuen Batches mehr starten,
+            // um einen Retry-Storm zu vermeiden.
+            for (const { id } of toEmbed) this.pendingQueue.add(id);
+            aborted = true;
+          } finally {
+            this.inFlight--;
           }
-        } catch (err) {
-          console.error("[bastra.embeddings] batch error, requeue:", err);
-          // Bei Fehler: Items zurück in queue für Retry beim nächsten Add-Event
-          // oder Restart. Wir brechen den loop ab um Retry-Storm zu vermeiden.
-          for (const { id } of toEmbed) this.pendingQueue.add(id);
-          break;
-        } finally {
-          this.inFlight--;
-        }
+        })();
+        inFlightBatches.add(batchPromise);
+        void batchPromise.then(() => inFlightBatches.delete(batchPromise));
       }
+      await Promise.all(inFlightBatches);
     } finally {
       this.processing = false;
     }

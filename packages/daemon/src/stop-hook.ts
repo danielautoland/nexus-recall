@@ -25,7 +25,7 @@
  *   - Never blocks the workflow.
  *   - Telemetry best-effort.
  */
-import { readFile, appendFile, mkdir } from "node:fs/promises";
+import { readFile, appendFile, mkdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -117,6 +117,12 @@ async function loadTranscript(payload: ClaudeStopPayload): Promise<TranscriptTur
   }
   if (typeof payload.transcript_path === "string") {
     try {
+      // transcript_path kommt aus dem Hook-Payload (untrusted): nur echte
+      // Transcript-Dateien lesen (.jsonl/.json) und eine Größenschranke
+      // ziehen — sonst wird der Hook zum Arbitrary-File-Read / Memory-DoS.
+      if (!/\.jsonl?$/.test(payload.transcript_path)) return [];
+      const st = await stat(payload.transcript_path);
+      if (!st.isFile() || st.size > MAX_TRANSCRIPT_BYTES) return [];
       const content = await readFile(payload.transcript_path, "utf8");
       return parseTranscriptFile(content);
     } catch {
@@ -125,6 +131,8 @@ async function loadTranscript(payload: ClaudeStopPayload): Promise<TranscriptTur
   }
   return [];
 }
+
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024; // 64 MiB — weit über realen Transcripts
 
 function parseTranscriptFile(raw: string): TranscriptTurn[] {
   const trimmed = raw.trim();

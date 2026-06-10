@@ -1,8 +1,8 @@
 import { writeFile, access, mkdir, unlink } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
-import { MemoryTypeEnum } from "./schema.js";
+import { MemoryTypeEnum, isPathSafeComponent } from "./schema.js";
 import { clampSummary, SUMMARY_MAX } from "./summary.js";
 
 /**
@@ -21,7 +21,11 @@ export const SaveMemoryInput = z.object({
   body: z.string().min(1),
   topic_path: z.array(z.string().min(1)).min(1),
   tags: z.array(z.string().min(1)).min(1),
-  scope: z.string().min(1),
+  // scope becomes a directory segment (`memories/projects/<scope>/`) — reject
+  // anything that could climb out of the vault.
+  scope: z.string().min(1).refine(isPathSafeComponent, {
+    message: "scope must not contain path separators, '..', or a leading dot",
+  }),
   recall_when: z.array(z.string().min(1)).min(1),
   related: z.array(z.string()).optional(),
   /**
@@ -64,7 +68,11 @@ export const SaveMemoryInput = z.object({
   confidence: z.number().min(0).max(1).optional(),
   affects_files: z.array(z.string()).optional(),
   issues: z.array(z.string()).optional(),
-  id: z.string().optional(),
+  // id becomes the filename (`<id>.md`) — same path-safety bar as scope.
+  // slugify() output always passes; only explicit caller-set ids can violate.
+  id: z.string().min(1).refine(isPathSafeComponent, {
+    message: "id must not contain path separators, '..', or a leading dot",
+  }).optional(),
   overwrite: z.boolean().optional(),
   // Bookmark-only fields
   url: z.string().optional(),
@@ -218,6 +226,12 @@ export async function saveMemory(
   const subdir = subfolderFor(input.scope, input.type);
   const dir = join(vaultRoot, subdir);
   const filePath = join(dir, `${id}.md`);
+  // Belt-and-suspenders against path escape: id/scope are schema-validated as
+  // path-safe, but every join of caller input into a path re-checks here —
+  // callers that bypass SaveMemoryInput.parse() are covered too.
+  if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
+    throw new Error(`refusing to write outside the vault: ${filePath}`);
+  }
   const exists = await fileExists(filePath);
   if (exists && !input.overwrite) {
     throw new Error(

@@ -38,8 +38,28 @@ export class NotAMemoryFile extends Error {
   }
 }
 
+/**
+ * Path-safety guard for values that end up as path components (`<id>.md`,
+ * `memories/projects/<scope>/`, `.bastra/trash/<id>.md`). Deliberately loose:
+ * it rejects only what can escape the vault (separators, `..`, NUL, leading
+ * dot) — not unusual-but-harmless ids, so pre-existing vault files keep
+ * loading instead of silently dropping out of the index.
+ */
+export function isPathSafeComponent(value: string): boolean {
+  return (
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes("..") &&
+    !value.includes("\0") &&
+    !value.startsWith(".")
+  );
+}
+
+const pathSafeMessage =
+  "must not contain path separators, '..', or a leading dot";
+
 export const FrontmatterSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).refine(isPathSafeComponent, { message: pathSafeMessage }),
   title: z.string().min(1),
   type: MemoryTypeEnum,
   // Truncate instead of reject on load: a pre-existing vault file with a

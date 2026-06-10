@@ -1,5 +1,5 @@
 import { mkdir, readFile, appendFile, rename, access } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 
 /**
  * Audit-Log: jede Memory-Mutation wird als JSON-Zeile in
@@ -165,7 +165,14 @@ async function fileExists(p: string): Promise<boolean> {
 const TRASH_DIR = "trash";
 
 export function trashPathFor(vaultRoot: string, id: string): string {
-  return join(vaultRoot, AUDIT_DIR, TRASH_DIR, `${id}.md`);
+  const trashRoot = join(vaultRoot, AUDIT_DIR, TRASH_DIR);
+  const dest = join(trashRoot, `${id}.md`);
+  // The id comes from file frontmatter — a crafted `id: ../../x` must not
+  // turn the soft-delete rename into a write outside the trash folder.
+  if (!resolve(dest).startsWith(resolve(trashRoot) + sep)) {
+    throw new Error(`refusing trash path outside the trash folder for id: ${id}`);
+  }
+  return dest;
 }
 
 export async function moveToTrash(
