@@ -188,6 +188,14 @@ bash packages/skill/install-hook.sh   # registers the 6 default reflex-layer hoo
 
 `bastra install claude-code` does both of these for you in path B. Re-run `install.sh` whenever `SKILL.md` changes; re-run `install-hook.sh` only if hook binary paths move. To remove the hooks again: `bash packages/skill/install-hook.sh --uninstall`.
 
+### Semantic recall (optional)
+
+Recall is hybrid: BM25 keyword search always works, and a semantic layer kicks in once an embedding provider is set up. On macOS, `bastra install` detects Ollama and — if it's missing — offers to install it via Homebrew, pull the `embeddinggemma` model (~600 MB), and start it as a local login service. Use `--ollama` to set it up non-interactively, `--no-ollama` to skip; the login service is a toggle (`bastra config set ollama.autostart off`). Without it, recall stays on BM25 — nothing breaks. `bastra status` shows the active mode.
+
+Manual: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Note: `--yes` does **not** trigger the Ollama download (use `--ollama`). Homebrew and the model come from third parties (Homebrew core, ollama.com).
+
+Full details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (wiki).
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -210,11 +218,12 @@ Endpoints (all `POST`, JSON body):
 
 Auth and CORS:
 
-- If `BASTRA_API_TOKEN` is set, the daemon requires `Authorization: Bearer <token>` on every `/api/v1/*` request.
-- Loopback callers (`127.0.0.1`) bypass auth by default. Set `BASTRA_AUTH_LOOPBACK_SKIP=0` to require the token even locally.
-- CORS is permissive by default (`Access-Control-Allow-Origin: *`). Restrict via `BASTRA_CORS_ORIGIN=https://your.host`.
+- **Token:** `bastra token` prints the daemon's API token, minting one on first use (`bastra token rotate` issues a fresh one). It's stored in `cli-settings.json`; the daemon reads it at startup, so restart after issuing. `BASTRA_API_TOKEN` overrides it.
+- **Local tools** (CLI, MCP-forwarder — no `Origin` header) reach `/api/v1/*` over loopback without a token. Set `BASTRA_AUTH_LOOPBACK_SKIP=0` to require the token even for them.
+- **Browser clients** (any request *with* an `Origin` header) must always present the token **and** be on the CORS allowlist — even over loopback, since the user's browser shares `127.0.0.1` with the daemon and only the `Origin` header tells a real site from a stray one.
+- **CORS** is permissive by default (`Access-Control-Allow-Origin: *`). For a hosted web app, set an allowlist: `BASTRA_CORS_ORIGIN=https://your.host` (comma-separated for several) — the daemon then reflects only listed origins and a browser blocks the rest.
 
-To expose this API to a hosted client like ChatGPT, point a tunnel (Cloudflare Tunnel / ngrok / your own reverse proxy) at `127.0.0.1:6723` and configure the Custom GPT with the tunnel URL + your token. An OpenAPI 3.0 starter spec lives in [docs/openapi.yaml](./docs/openapi.yaml).
+To reach this daemon from a hosted web app (e.g. a site's admin talking to the user's *local* vault from the browser), set `BASTRA_CORS_ORIGIN` to the site origin, run `bastra token`, and paste the token into the site. For a server-side client like ChatGPT, point a tunnel (Cloudflare Tunnel / ngrok / your own reverse proxy) at `127.0.0.1:6723` and configure it with the tunnel URL + your token. An OpenAPI 3.0 starter spec lives in [docs/openapi.yaml](./docs/openapi.yaml).
 
 > **Status:** the ChatGPT Custom GPT Actions path does **not work end-to-end yet**. The REST API and the OpenAPI spec are in place, but the Custom GPT integration is still being worked out — see the roadmap below.
 
@@ -427,6 +436,14 @@ bash packages/skill/install-hook.sh   # registriert die 6 Standard-Reflex-Layer-
 
 `bastra install claude-code` aus Pfad B erledigt beides für dich. `install.sh` neu ausführen, wenn sich `SKILL.md` ändert; `install-hook.sh` nur, wenn sich Hook-Binärpfade verschieben. Hooks wieder entfernen: `bash packages/skill/install-hook.sh --uninstall`.
 
+### Semantischer Recall (optional)
+
+Recall ist hybrid: BM25-Stichwortsuche funktioniert immer, eine semantische Schicht kommt dazu, sobald ein Embedding-Provider eingerichtet ist. Auf macOS erkennt `bastra install` Ollama und bietet — falls es fehlt — an, es via Homebrew zu installieren, das Modell `embeddinggemma` (~600 MB) zu ziehen und als lokalen Login-Service zu starten. `--ollama` richtet ohne Nachfrage ein, `--no-ollama` überspringt; der Login-Service ist abschaltbar (`bastra config set ollama.autostart off`). Ohne das bleibt Recall bei BM25 — nichts bricht. `bastra status` zeigt den aktiven Modus.
+
+Manuell: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Hinweis: `--yes` löst den Ollama-Download **nicht** aus (dafür `--ollama`). Homebrew und das Modell kommen von Dritten (Homebrew Core, ollama.com).
+
+Details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (Wiki).
+
 ### Updates
 
 `bastra update` zieht den neuesten Release (npm oder Homebrew), registriert alle Surfaces neu und startet den Daemon neu. Für freihändige Updates `bastra config set update.mode auto` — bastra stagt dann am Session-Start eine neue Version, ohne eine laufende Session zu stören. `bastra` ohne Argument zeigt Version, Update-Status, Daemon-Health und Vault-Größe.
@@ -449,11 +466,12 @@ Endpoints (alle `POST`, JSON-Body):
 
 Auth und CORS:
 
-- Wenn `BASTRA_API_TOKEN` gesetzt ist, verlangt der Daemon `Authorization: Bearer <token>` bei jedem `/api/v1/*`-Aufruf.
-- Loopback-Aufrufer (`127.0.0.1`) umgehen die Auth per Default. Mit `BASTRA_AUTH_LOOPBACK_SKIP=0` wird das Token auch lokal verlangt.
-- CORS ist per Default permissiv (`Access-Control-Allow-Origin: *`). Einschränken mit `BASTRA_CORS_ORIGIN=https://dein.host`.
+- **Token:** `bastra token` zeigt das API-Token des Daemons und erzeugt beim ersten Aufruf eines (`bastra token rotate` erneuert es). Es liegt in `cli-settings.json`; der Daemon liest es beim Start, also nach dem Erzeugen neu starten. `BASTRA_API_TOKEN` hat Vorrang.
+- **Lokale Tools** (CLI, MCP-Forwarder — kein `Origin`-Header) erreichen `/api/v1/*` über Loopback ohne Token. Mit `BASTRA_AUTH_LOOPBACK_SKIP=0` wird das Token auch von ihnen verlangt.
+- **Browser-Clients** (jeder Request *mit* `Origin`-Header) müssen immer das Token tragen **und** auf der CORS-Allowlist stehen — auch über Loopback, denn der Browser des Users teilt sich `127.0.0.1` mit dem Daemon und nur der `Origin`-Header trennt eine echte Seite von einer fremden.
+- **CORS** ist per Default permissiv (`Access-Control-Allow-Origin: *`). Für eine gehostete Web-App eine Allowlist setzen: `BASTRA_CORS_ORIGIN=https://dein.host` (kommagetrennt für mehrere) — der Daemon spiegelt dann nur gelistete Origins zurück, den Rest blockt der Browser.
 
-Um die API für einen gehosteten Client wie ChatGPT verfügbar zu machen: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und im Custom GPT die Tunnel-URL + dein Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
+Um diesen Daemon aus einer gehosteten Web-App zu erreichen (z.B. das Admin einer Seite, das aus dem Browser auf den *lokalen* Vault des Users zugreift): `BASTRA_CORS_ORIGIN` auf die Seiten-Origin setzen, `bastra token` ausführen und das Token in der Seite hinterlegen. Für einen serverseitigen Client wie ChatGPT: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und mit Tunnel-URL + Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
 
 > **Status:** Der ChatGPT-Custom-GPT-Actions-Weg **funktioniert noch nicht end-to-end**. REST-API und OpenAPI-Spec stehen, aber die Custom-GPT-Anbindung ist noch in Arbeit — siehe Roadmap unten.
 

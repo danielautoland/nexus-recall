@@ -36,6 +36,7 @@ import {
   auditedRestore,
 } from "@bastra-recall/core";
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
+import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import readline from "node:readline";
 import * as path from "node:path";
 
@@ -52,14 +53,17 @@ import * as path from "node:path";
  *   BASTRA_EMBEDDING_PROVIDER=ollama.
  */
 async function attachEmbeddings(search: SearchIndex, vault: Vault): Promise<void> {
-  const provider = pickEmbeddingProvider();
+  const { provider, status } = resolveEmbedding();
+  // Same wording as the daemon (index.ts) via the shared helper; bridge keeps
+  // its own tag. Logged on every path including success (the silence was #79).
+  process.stderr.write(embeddingStatusLine(status, "[bastra-recall.bridge]") + "\n");
   if (!provider) return;
   const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
   const idx = new EmbeddingIndex(vault, provider, persistPath);
   await idx.start();
   search.useEmbeddings(idx);
   process.stderr.write(
-    `[bastra-recall.bridge] embeddings ready provider=${provider.id} (${idx.size()} vectors, ${idx.pendingSize()} pending)\n`,
+    `[bastra-recall.bridge] embeddings ready (${idx.size()} vectors, ${idx.pendingSize()} pending)\n`,
   );
   // Auto-Related-Enricher: pflegt frontmatter.related_via nach jedem Embed-
   // Batch. Im Bridge-Pfad (Mac-App) gleicher Default-Status wie im MCP-Pfad.
@@ -75,44 +79,48 @@ async function attachEmbeddings(search: SearchIndex, vault: Vault): Promise<void
   }
 }
 
-function pickEmbeddingProvider(): EmbeddingProvider | null {
+/**
+ * Env-only provider resolution for the bridge (the Pro app passes the choice in
+ * the spawn env). Deliberately does NOT read cli-settings.json — that file is
+ * the OSS CLI's; mixing it in could make the app and CLI disagree. Env always
+ * wins, so OSS activation never silently overrides the app on a shared machine.
+ */
+function resolveEmbedding(): { provider: EmbeddingProvider | null; status: EmbeddingStatus } {
   const requested = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
   const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
 
-  if (requested === "none") {
-    process.stderr.write("[bastra-recall.bridge] embeddings disabled (provider=none)\n");
-    return null;
+  if (requested === "none") return offE("env");
+  if (requested === "ollama") return ollamaE("env");
+  if (requested === "openai") return apiKey ? openaiE("env", apiKey) : offE("env");
+  if (requested) {
+    process.stderr.write(
+      `[bastra-recall.bridge] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(process.env.BASTRA_EMBEDDING_PROVIDER)} — falling back to API-key / BM25\n`,
+    );
   }
-  if (requested === "ollama") {
-    return makeOllamaProvider();
-  }
-  if (requested === "openai") {
-    if (!apiKey) {
-      process.stderr.write(
-        "[bastra-recall.bridge] embeddings disabled (provider=openai but no API key)\n",
-      );
-      return null;
-    }
-    return new OpenAIEmbeddingProvider({ apiKey });
-  }
-  // Backwards-compat: kein expliziter Provider, aber API-Key vorhanden.
-  if (apiKey) {
-    return new OpenAIEmbeddingProvider({ apiKey });
-  }
-  process.stderr.write(
-    "[bastra-recall.bridge] embeddings disabled (no BASTRA_EMBEDDING_PROVIDER, no API key)\n",
-  );
-  return null;
+  // Backwards-compat: no explicit provider but an API key is present.
+  if (apiKey) return openaiE("api-key", apiKey);
+  return offE("none");
 }
 
-function makeOllamaProvider(): OllamaEmbeddingProvider {
+function ollamaE(source: EmbeddingSource): { provider: EmbeddingProvider; status: EmbeddingStatus } {
   const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
   const model = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
-  // Optional: dim per env override-bar — bei nicht-default Modell (z.B.
-  // bge-m3 mit 1024 dim) muss der User das matchen.
+  // Optional dim override for non-default models (e.g. bge-m3 at 1024 dim).
+  // Number.isFinite guard: `NaN ?? default` keeps NaN, poisoning the index dim.
   const dimEnv = process.env.BASTRA_EMBEDDING_DIM;
-  const dim = dimEnv ? Number.parseInt(dimEnv, 10) : undefined;
-  return new OllamaEmbeddingProvider({ baseURL, model, dim });
+  const parsed = dimEnv ? Number.parseInt(dimEnv, 10) : undefined;
+  const dim = parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
+  const provider = new OllamaEmbeddingProvider({ baseURL, model, dim });
+  return { provider, status: { on: true, providerId: provider.id, source } };
+}
+
+function openaiE(source: EmbeddingSource, apiKey: string): { provider: EmbeddingProvider; status: EmbeddingStatus } {
+  const provider = new OpenAIEmbeddingProvider({ apiKey });
+  return { provider, status: { on: true, providerId: provider.id, source } };
+}
+
+function offE(source: EmbeddingSource): { provider: null; status: EmbeddingStatus } {
+  return { provider: null, status: { on: false, providerId: null, source } };
 }
 
 const VAULT_PATH = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
@@ -144,9 +152,10 @@ async function main(): Promise<void> {
   search.start();
   const auditLog = new AuditLog(VAULT_PATH!);
 
-  // Optional: Embedding-Index für semantische Recall-Suche. Bei vorhandenem
-  // OPENAI_API_KEY wird OpenAI text-embedding-3-small aktiviert und mit
-  // BM25 via RRF gefused. Sonst bleibt Recall reines BM25.
+  // Optional: Embedding-Index für semantische Recall-Suche. Provider wird per
+  // BASTRA_EMBEDDING_PROVIDER gewählt (ollama|openai|none) und mit BM25 via RRF
+  // gefused. Ohne expliziten Provider aktiviert ein vorhandener OPENAI_API_KEY
+  // OpenAI (Backwards-Compat); sonst bleibt Recall reines BM25.
   attachEmbeddings(search, vault).catch((err) => {
     process.stderr.write(`[bastra-recall.bridge] embeddings attach error: ${err}\n`);
   });

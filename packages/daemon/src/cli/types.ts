@@ -52,6 +52,9 @@ export interface ParsedArgs {
   // kickstart. The new code goes live on the next daemon boot. Used by the
   // SessionStart auto-update path so a running session is never disrupted.
   staged: boolean;
+  // `install --ollama` → "auto" (provision without asking); `--no-ollama`
+  // → "skip"; null → ask interactively on a TTY, default-skip otherwise.
+  ollama: "auto" | "skip" | null;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];

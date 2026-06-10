@@ -4,7 +4,7 @@ import { request as httpRequest } from "node:http";
 import { FORWARDER_SCRIPT_PATH, CLAUDE_DESKTOP_CONFIG, CLAUDE_CODE_CONFIG } from "./paths.js";
 import type { InstallOpts } from "./types.js";
 
-export const VERSION = "0.6.5-beta.1";
+export const VERSION = "0.6.6-beta.1";
 export const SERVER_KEY = "bastra-recall";
 const DAEMON_HEALTH_URL = "http://127.0.0.1:6723/health";
 
@@ -98,7 +98,18 @@ export async function resolveVault(opts: InstallOpts): Promise<{ path: string } 
   };
 }
 
-export function probeDaemon(): Promise<{ ok: boolean; detail: string }> {
+export interface DaemonProbe {
+  ok: boolean;
+  detail: string;
+  // From /health when reachable — lets `bastra status` show the live embedding
+  // mode (the user-visible #79 fix; the daemon's own stderr is /dev/null'd when
+  // the forwarder spawns it).
+  semanticRecall?: "on" | "off";
+  embeddingMode?: string;
+  embeddingSource?: string;
+}
+
+export function probeDaemon(): Promise<DaemonProbe> {
   return new Promise((resolve_) => {
     const req = httpRequest(DAEMON_HEALTH_URL, { method: "GET", timeout: 1500 }, (res) => {
       let body = "";
@@ -107,7 +118,13 @@ export function probeDaemon(): Promise<{ ok: boolean; detail: string }> {
         try {
           const data = JSON.parse(body);
           if (res.statusCode === 200 && data?.ok) {
-            resolve_({ ok: true, detail: `vault_size=${data.vault_size}` });
+            resolve_({
+              ok: true,
+              detail: `vault_size=${data.vault_size}`,
+              semanticRecall: data.semantic_recall,
+              embeddingMode: data.embedding_mode,
+              embeddingSource: data.embedding_source,
+            });
             return;
           }
         } catch { /* fallthrough */ }

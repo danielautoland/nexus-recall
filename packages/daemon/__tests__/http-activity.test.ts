@@ -72,6 +72,7 @@ test("onActivity: fires on /hook/recall, not on /health", async () => {
     onActivity: () => {
       activityCount += 1;
     },
+    embedding: { on: false, providerId: null, source: "none" },
   });
 
   try {
