@@ -19,6 +19,8 @@ Commands:
                              daemon restart. Use this after pulling new code.
   config get <key>           Read a setting (e.g. update.mode)
   config set <key> <value>   Write a setting (update.mode = notify|auto|off)
+  token [rotate]             Print the REST API token (mint on first use) for
+                             browser/REST clients; 'rotate' issues a fresh one
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)

@@ -37,6 +37,10 @@ export interface CliSettings {
   embedding?: { provider: EmbeddingProviderName };
   // undefined = unset → treated as default (true) by getOllamaAutostart.
   ollama?: { autostart: boolean };
+  // undefined = no token issued yet → browser/REST clients that send an Origin
+  // are rejected (secure by default). Created on demand by `bastra token`; the
+  // daemon reads it at startup as the Bearer the bastra.io web app must present.
+  api?: { token: string };
 }
 
 export function settingsFilePath(): string {
@@ -65,7 +69,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -92,6 +96,9 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.ollama?.autostart === "boolean") {
     settings.ollama = { autostart: data.ollama.autostart };
+  }
+  if (typeof data?.api?.token === "string" && data.api.token.length > 0) {
+    settings.api = { token: data.api.token };
   }
   return settings;
 }
@@ -147,4 +154,31 @@ export async function getOllamaAutostart(path?: string): Promise<boolean> {
 export async function setOllamaAutostart(on: boolean, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, ollama: { autostart: on } }, path);
+}
+
+/** The stored REST API token, or undefined when none has been issued. */
+export async function getApiToken(path?: string): Promise<string | undefined> {
+  return (await readSettings(path)).api?.token;
+}
+
+/** Persists an explicit API token atomically (merging into existing settings). */
+export async function setApiToken(token: string, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, api: { token } }, path);
+}
+
+/**
+ * Returns the stored API token, minting + persisting one on first use. 256-bit,
+ * base64url (URL-safe, no padding). `rotate` forces a fresh token, invalidating
+ * the old one. The file is written 0600 (see writeSettings).
+ */
+export async function ensureApiToken(
+  opts: { rotate?: boolean } = {},
+  path: string = settingsFilePath(),
+): Promise<string> {
+  const current = await readSettings(path);
+  if (!opts.rotate && current.api?.token) return current.api.token;
+  const token = randomBytes(32).toString("base64url");
+  await writeSettings({ ...current, api: { token } }, path);
+  return token;
 }

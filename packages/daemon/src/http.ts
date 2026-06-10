@@ -68,6 +68,7 @@ import {
   moveDocument,
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
+import { getApiToken } from "./settings.js";
 import type { EmbeddingStatus } from "./embedding-status.js";
 
 export interface HttpOptions {
@@ -106,13 +107,66 @@ function isLoopback(req: IncomingMessage): boolean {
   );
 }
 
+/**
+ * Which Origin to reflect in `Access-Control-Allow-Origin`. `null` = the origin
+ * isn't allowed → emit no ACAO header and the browser blocks the response. "*"
+ * in the allowlist is permissive (tunnel/dev): reflect the caller's origin, or
+ * "*" when there's none. Exported for unit tests.
+ */
+export function resolveCorsOrigin(
+  reqOrigin: string | undefined,
+  allow: readonly string[],
+): string | null {
+  if (allow.includes("*")) return reqOrigin ?? "*";
+  if (reqOrigin && allow.includes(reqOrigin)) return reqOrigin;
+  return null;
+}
+
+/**
+ * Auth decision for /api/v1/*. A request WITH an Origin header is a browser
+ * request (possibly a foreign site): it must be on the allowlist AND carry the
+ * token — even over loopback, because the user's browser runs on 127.0.0.1 and
+ * is indistinguishable from the CLI by TCP source; only the Origin header tells
+ * them apart. Local tools (CLI, MCP-forwarder) send no Origin and may stay
+ * tokenless via loopback-skip. Returns the HTTP status to apply. Exported for
+ * unit tests.
+ */
+export function gateApiRequest(p: {
+  reqOrigin: string | undefined;
+  allowedOrigin: string | null;
+  isLoopback: boolean;
+  authHeader: string;
+  apiToken: string;
+  loopbackSkip: boolean;
+}): 200 | 401 | 403 {
+  const isBrowser = typeof p.reqOrigin === "string" && p.reqOrigin.length > 0;
+  if (isBrowser) {
+    if (!p.allowedOrigin) return 403;
+    if (!p.apiToken || p.authHeader !== `Bearer ${p.apiToken}`) return 401;
+    return 200;
+  }
+  if (p.apiToken && !(p.loopbackSkip && p.isLoopback)) {
+    if (p.authHeader !== `Bearer ${p.apiToken}`) return 401;
+  }
+  return 200;
+}
+
 export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   const { port, vault, telemetry, version, toolDeps, documentWriteEnabled, onActivity } = opts;
   const { search } = toolDeps;
 
-  const apiToken = process.env.BASTRA_API_TOKEN ?? "";
+  // env wins (ops override); else the token minted by `bastra token` in
+  // cli-settings.json. Empty = no token issued → browser clients are rejected.
+  const apiToken = process.env.BASTRA_API_TOKEN || (await getApiToken()) || "";
   const loopbackSkip = (process.env.BASTRA_AUTH_LOOPBACK_SKIP ?? "1") !== "0";
-  const corsOrigin = process.env.BASTRA_CORS_ORIGIN ?? "*";
+  // CORS-Allowlist (Komma-Liste). "*" = permissiv (Tunnel/Dev). Bei einer echten
+  // Liste wird die Request-Origin nur zurückgespiegelt, wenn sie erlaubt ist —
+  // sonst kein ACAO-Header und der Browser blockt die Response selbst. Browser-
+  // Requests (Origin gesetzt) müssen zusätzlich das Token tragen (siehe Gate).
+  const corsAllow = (process.env.BASTRA_CORS_ORIGIN ?? "*")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const server = createServer((req, res) => {
     const t0 = Date.now();
@@ -125,7 +179,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     // CORS preflight for /api/v1/*
     if (method === "OPTIONS" && url.startsWith("/api/v1/")) {
-      sendCors(res, corsOrigin);
+      sendCors(res, resolveCorsOrigin(req.headers.origin, corsAllow));
       res.writeHead(204);
       res.end();
       return;
@@ -173,17 +227,25 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     // ─── REST-API /api/v1/* ──────────────────────────────────────
     if (url.startsWith("/api/v1/")) {
-      sendCors(res, corsOrigin);
+      const reqOrigin = req.headers.origin;
+      const allowedOrigin = resolveCorsOrigin(reqOrigin, corsAllow);
+      sendCors(res, allowedOrigin); // before the gate, so a 401/403 still carries CORS
 
-      // Auth-Gate (nach CORS-Header, damit Browser-Preflight nicht
-      // an 401 verzweifelt)
-      if (apiToken && !(loopbackSkip && isLoopback(req))) {
-        const authz = req.headers.authorization ?? "";
-        const expected = `Bearer ${apiToken}`;
-        if (authz !== expected) {
-          sendJson(res, 401, { error: "unauthorized" });
-          return;
-        }
+      const gate = gateApiRequest({
+        reqOrigin,
+        allowedOrigin,
+        isLoopback: isLoopback(req),
+        authHeader: req.headers.authorization ?? "",
+        apiToken,
+        loopbackSkip,
+      });
+      if (gate === 403) {
+        sendJson(res, 403, { error: "origin not allowed" });
+        return;
+      }
+      if (gate === 401) {
+        sendJson(res, 401, { error: "unauthorized" });
+        return;
       }
 
       if (method !== "POST") {
@@ -505,8 +567,14 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function sendCors(res: ServerResponse, origin: string): void {
-  res.setHeader("Access-Control-Allow-Origin", origin);
+function sendCors(res: ServerResponse, origin: string | null): void {
+  // Nur spiegeln, wenn die Origin erlaubt ist (null = nicht erlaubt → kein
+  // ACAO-Header, der Browser blockt die Response selbst). Vary: Origin, damit
+  // Caches/Proxies die per-Origin-Antwort nicht über Origins hinweg vermischen.
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
