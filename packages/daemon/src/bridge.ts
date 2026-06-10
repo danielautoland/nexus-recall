@@ -67,15 +67,56 @@ async function attachEmbeddings(search: SearchIndex, vault: Vault): Promise<void
   );
   // Auto-Related-Enricher: pflegt frontmatter.related_via nach jedem Embed-
   // Batch. Im Bridge-Pfad (Mac-App) gleicher Default-Status wie im MCP-Pfad.
+  // Single-Writer: writeGate lässt die Bridge nur schreiben, wenn KEIN Daemon
+  // läuft (App-only-Setup). Läuft einer, gehört related_via ihm — zwei
+  // Enricher mit eigenen Indizes runden Cosines minimal anders und
+  // überschreiben sonst dasselbe File im Sekundentakt (Write-Ping-Pong,
+  // hielt das Ollama-Modell permanent geladen).
   if (envBool("BASTRA_AUTO_RELATED", true)) {
     const enricher = new RelatedEnricher(vault, idx, {
       topN: envInt("BASTRA_RELATED_TOP_N", 5),
       threshold: envFloat("BASTRA_RELATED_THRESHOLD", 0.7),
+      writeGate: daemonAbsent,
     });
     enricher.start();
     process.stderr.write(
-      `[bastra-recall.bridge] auto-related: enabled (top ${envInt("BASTRA_RELATED_TOP_N", 5)} ≥ ${envFloat("BASTRA_RELATED_THRESHOLD", 0.7)})\n`,
+      `[bastra-recall.bridge] auto-related: enabled (top ${envInt("BASTRA_RELATED_TOP_N", 5)} ≥ ${envFloat("BASTRA_RELATED_THRESHOLD", 0.7)}, defers to daemon)\n`,
     );
+  }
+}
+
+// ─── Single-Writer-Probe ─────────────────────────────────────────
+// Cached health-Probe auf den Daemon (Port BASTRA_HTTP_PORT, Default 6723 —
+// gleiche Auflösung wie die Hooks). TTL 30s: der Gate wird pro Enrich-Write
+// gefragt; ohne Cache würde jeder Embed-Batch eine HTTP-Probe kosten.
+const DAEMON_PROBE_TTL_MS = 30_000;
+let daemonProbeAt = 0;
+let daemonAlive = false;
+
+async function daemonAbsent(): Promise<boolean> {
+  const now = Date.now();
+  if (now - daemonProbeAt > DAEMON_PROBE_TTL_MS) {
+    daemonProbeAt = now;
+    daemonAlive = await probeDaemonHealth();
+  }
+  return !daemonAlive;
+}
+
+async function probeDaemonHealth(): Promise<boolean> {
+  const port = envInt("BASTRA_HTTP_PORT", 6723, "NEXUS_HTTP_PORT");
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 1000);
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return false;
+    const body = (await resp.json()) as { ok?: boolean };
+    return body.ok === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(tid);
   }
 }
 

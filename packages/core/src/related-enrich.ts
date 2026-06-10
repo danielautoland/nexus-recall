@@ -19,10 +19,16 @@
  * Loop-Prevention:
  *   Der reindex triggert ein neues Embed (Body hat sich geändert). Das zweite
  *   Embed liefert dasselbe Similarity-Set → sameIdSet UND sameBody → no-op.
- *   Kein File-Write, kein Loop. (Score-Rundung ist deterministisch über
- *   .toFixed(3), also vergleichbar.)
+ *   Kein File-Write, kein Loop.
+ *
+ *   WICHTIG: Der Vergleich ist drift-tolerant (SCORE_EPSILON), nicht exakt.
+ *   Zwei Prozesse auf demselben Vault (Daemon + Mac-App-Bridge) haben eigene
+ *   EmbeddingIndizes mit minimal abweichenden Vektoren (~±0.002 Cosine). Ein
+ *   exakter String-Vergleich ließ beide an Rundungsgrenzen (0.8049 vs 0.8051
+ *   → "0.80" vs "0.81") dasselbe File im Sekundentakt gegenseitig
+ *   überschreiben — Dauer-Re-Embed, Ollama-Modell entlud nie.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import matter from "gray-matter";
 import type { Vault } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
@@ -36,7 +42,17 @@ export interface RelatedEnricherOptions {
    *  0.7 — lieber wenige präzise Links als viele Halb-Treffer (Multi-Hop
    *  würde sonst rauschen). */
   threshold?: number;
+  /** Optionaler Single-Writer-Gate: wird unmittelbar vor einem File-Write
+   *  gefragt; liefert er false, wird der Write übersprungen (ein anderer
+   *  Prozess — typisch der Daemon — besitzt die related_via-Pflege). Ohne
+   *  Gate schreibt der Enricher immer. */
+  writeGate?: () => boolean | Promise<boolean>;
 }
+
+/** Toleranz für Cosine-Drift zwischen Prozessen mit eigenem EmbeddingIndex
+ *  (Daemon vs. Mac-App-Bridge). Drift liegt real bei ~±0.002 — 0.02 ist weit
+ *  darüber und weit unter jeder inhaltlich relevanten Score-Änderung. */
+const SCORE_EPSILON = 0.02;
 
 interface RelatedViaEntry {
   id: string;
@@ -49,6 +65,8 @@ export class RelatedEnricher {
   private readonly topN: number;
   private readonly threshold: number;
 
+  private readonly writeGate?: () => boolean | Promise<boolean>;
+
   constructor(
     private readonly vault: Vault,
     private readonly embeddings: EmbeddingIndex,
@@ -56,6 +74,7 @@ export class RelatedEnricher {
   ) {
     this.topN = opts.topN ?? 5;
     this.threshold = opts.threshold ?? 0.7;
+    this.writeGate = opts.writeGate;
   }
 
   start(): void {
@@ -81,8 +100,13 @@ export class RelatedEnricher {
     const similar = this.embeddings.findSimilarById(id, this.topN * 2);
     if (!similar) return null; // Vector noch nicht da
 
+    const existing = (memory.fm as { related_via?: RelatedViaEntry[] }).related_via ?? [];
+    // Hysterese: bestehende Links überleben bis threshold−ε. Sonst flappt ein
+    // Nachbar, der zwischen zwei Prozessen um die Schwelle pendelt (0.699 vs
+    // 0.701), als add/remove-Ping-Pong.
+    const keepIds = new Set(existing.map((e) => e.id));
     const filtered = similar
-      .filter((h) => h.score >= this.threshold)
+      .filter((h) => h.score >= this.threshold - (keepIds.has(h.id) ? SCORE_EPSILON : 0))
       .slice(0, this.topN)
       .map<RelatedViaEntry>((h) => ({
         id: h.id,
@@ -90,13 +114,14 @@ export class RelatedEnricher {
         score: Number(h.score.toFixed(3)),
       }));
 
-    const existing = (memory.fm as { related_via?: RelatedViaEntry[] }).related_via ?? [];
     const sameVia = sameIdSet(existing, filtered);
 
     const expectedBody = rebuildBodyWithAutoSection(memory.body, filtered);
-    const sameBody = memory.body === expectedBody;
+    const sameBody = autoRelatedEquivalent(memory.body, expectedBody);
 
     if (sameVia && sameBody) return null;
+
+    if (this.writeGate && !(await this.writeGate())) return null;
 
     await rewriteFile(memory.filePath, filtered, expectedBody);
     await this.vault.reindexFile(memory.filePath);
@@ -108,6 +133,43 @@ function sameIdSet(a: RelatedViaEntry[], b: RelatedViaEntry[]): boolean {
   if (a.length !== b.length) return false;
   const aIds = new Set(a.map((e) => e.id));
   for (const e of b) if (!aIds.has(e.id)) return false;
+  return true;
+}
+
+const AUTO_LINE = /^- \[\[([^\]]+)\]\] \(cosine (\d+(?:\.\d+)?)\)$/;
+
+/** Liest die Einträge der Auto-Related-Section als id→cosine-Map.
+ *  Ohne Section: leere Map (== „keine Einträge"). */
+function parseAutoSectionEntries(body: string): Map<string, number> {
+  const entries = new Map<string, number>();
+  const startIdx = body.indexOf(AUTO_RELATED_START);
+  const endIdx = body.indexOf(AUTO_RELATED_END);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return entries;
+  const section = body.slice(startIdx + AUTO_RELATED_START.length, endIdx);
+  for (const line of section.split("\n")) {
+    const m = AUTO_LINE.exec(line.trim());
+    if (m) entries.set(m[1], Number(m[2]));
+  }
+  return entries;
+}
+
+/** Drift-toleranter Body-Vergleich: gleich, wenn der Body außerhalb der
+ *  Auto-Section identisch ist und die Section dieselben ids mit Cosines
+ *  innerhalb von SCORE_EPSILON trägt. Reihenfolge der Einträge ist egal —
+ *  zwei Prozesse dürfen bei nahezu gleichen Scores unterschiedlich sortieren,
+ *  ohne sich gegenseitig zu überschreiben. */
+function autoRelatedEquivalent(current: string, expected: string): boolean {
+  if (current === expected) return true;
+  if (stripAutoRelatedSection(current) !== stripAutoRelatedSection(expected)) {
+    return false;
+  }
+  const a = parseAutoSectionEntries(current);
+  const b = parseAutoSectionEntries(expected);
+  if (a.size !== b.size) return false;
+  for (const [id, score] of b) {
+    const cur = a.get(id);
+    if (cur === undefined || Math.abs(cur - score) > SCORE_EPSILON) return false;
+  }
   return true;
 }
 
@@ -151,5 +213,16 @@ async function rewriteFile(
     newBody.startsWith("\n") ? newBody : `\n${newBody}`,
     fm,
   );
-  await writeFile(filePath, next, "utf8");
+  // Atomar via temp+rename: ein direkter writeFile lässt das File kurzzeitig
+  // leer (live beobachtet) — Datenverlust-Fenster für Watcher, Cloud-Sync und
+  // parallele Reader. Temp liegt im selben Verzeichnis (gleiches Volume,
+  // rename bleibt atomar) und endet nicht auf .md (Vault-Walker ignoriert es).
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  await writeFile(tmp, next, "utf8");
+  try {
+    await rename(tmp, filePath);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
