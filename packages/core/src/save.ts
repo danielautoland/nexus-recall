@@ -73,6 +73,17 @@ export const SaveMemoryInput = z.object({
   id: z.string().min(1).refine(isPathSafeComponent, {
     message: "id must not contain path separators, '..', or a leading dot",
   }).optional(),
+  /**
+   * Selbstlernende Taxonomie (#64/#65): optionaler Ziel-Ordner relativ zum
+   * Vault-Root (z.B. "memories/people"). Überschreibt das scope/type-Routing
+   * von subfolderFor() — damit kann eine Taxonomie-Konvention neue physische
+   * Strukturen im Vault etablieren, ohne dass core sie kennen muss. Der Vault
+   * scannt rekursiv, jeder Ordner wird indexiert.
+   */
+  folder: z.string().min(1).refine(isPathSafeFolder, {
+    message:
+      "folder must be a relative path without '..', '\\', or dot-segments (e.g. \"memories/people\")",
+  }).optional(),
   overwrite: z.boolean().optional(),
   // Bookmark-only fields
   url: z.string().optional(),
@@ -93,6 +104,21 @@ export interface SaveMemoryResult {
 }
 
 const SLUG_MAX_LEN = 80;
+
+/**
+ * Folder-Werte sind legitim mehrsegmentig ("memories/people/extern") — kein
+ * Charset-Verbot wie bei id/scope, aber jedes Segment muss harmlos sein:
+ * kein "..", kein ".", kein führender Punkt, keine Backslashes/NUL, nicht
+ * absolut. Der Containment-Assert in saveMemory() bleibt als zweite Schicht.
+ */
+function isPathSafeFolder(value: string): boolean {
+  if (value.includes("\0") || value.includes("\\") || value.startsWith("/")) {
+    return false;
+  }
+  const segments = value.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return false;
+  return segments.every((s) => s !== ".." && s !== "." && !s.startsWith("."));
+}
 
 /**
  * Marker-Kommentare, zwischen denen der RelatedEnricher die Auto-Wikilink-
@@ -211,6 +237,11 @@ function subfolderFor(scope: string, type: string): string {
   if (type === "doc") return `dokumentationen/${scope}`;
   if (scope === "user-preference") return "memories/user";
   if (scope === "all-projects") return "memories/all-projects";
+  // Reservierter Ort für selbst-etablierte Taxonomie-Konventionen (#65):
+  // Regeln, die beschreiben, wie der Vault künftig strukturiert wird
+  // ("Personen nach memories/people/, Tag person, …"). Die Hooks laden
+  // diesen Scope bei Session-Start und injizieren ihn als Kontext.
+  if (scope === "taxonomy") return "memories/taxonomy";
   return `memories/projects/${scope}`;
 }
 
@@ -223,7 +254,9 @@ export async function saveMemory(
   input: SaveMemoryInput,
 ): Promise<SaveMemoryResult> {
   const id = input.id ?? slugify(input.title);
-  const subdir = subfolderFor(input.scope, input.type);
+  // Konventions-getriebener Ziel-Ordner gewinnt über das scope/type-Routing —
+  // so kann der Vault neue Strukturen lernen (z.B. memories/people/).
+  const subdir = input.folder ?? subfolderFor(input.scope, input.type);
   const dir = join(vaultRoot, subdir);
   const filePath = join(dir, `${id}.md`);
   // Belt-and-suspenders against path escape: id/scope are schema-validated as

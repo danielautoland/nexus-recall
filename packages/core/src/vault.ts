@@ -147,6 +147,15 @@ export class Vault {
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Drop a file's index entry without touching disk — for callers that moved
+   * or trashed the file themselves (e.g. a convention-driven re-file on save)
+   * and can't wait for the cloud-unreliable watcher to notice the unlink.
+   */
+  forgetFile(filePath: string): void {
+    this.handleRemove(filePath);
+  }
+
   list(): Memory[] {
     return [...this.memorys.values()];
   }

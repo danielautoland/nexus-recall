@@ -26,6 +26,7 @@
  *   - Telemetry best-effort.
  */
 import { appendFile, mkdir, open } from "node:fs/promises";
+import { request } from "node:http";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -83,14 +84,22 @@ async function main(): Promise<void> {
   const last30 = turns.slice(-30);
   const suggestions = evaluateHeuristics(last30, { cwd: payload.cwd });
 
-  if (suggestions.length === 0) {
+  // Drift-Detektor (#67): unabhängig vom Transcript — der Daemon prüft, ob
+  // jüngste Memories ein wiederkehrendes Cluster ohne Taxonomie-Konvention
+  // bilden. Best-effort mit hartem Budget; Daemon weg → still.
+  const drift = await fetchDrift(250);
+
+  if (suggestions.length === 0 && drift.length === 0) {
     emitEmpty();
   } else {
     // Stop-Hook hat kein hookSpecificOutput im Claude-Code-Schema.
     // Nur top-level Felder erlaubt: continue, suppressOutput, stopReason,
     // decision, reason, systemMessage, terminalSequence, permissionDecision.
     // → systemMessage trägt den <save-eval>-Block (sichtbar für den Agent).
-    const blocks = suggestions.map(formatSuggestion).join("\n");
+    const blocks = [
+      ...suggestions.map(formatSuggestion),
+      ...(drift.length > 0 ? [formatDriftBlock(drift)] : []),
+    ].join("\n");
     process.stdout.write(
       JSON.stringify({
         systemMessage: blocks,
@@ -102,8 +111,86 @@ async function main(): Promise<void> {
   await writeTelemetry({
     heuristic: suggestions.map((s) => s.heuristic).join(",") || null,
     suggested_count: suggestions.length,
+    drift_clusters: drift.length,
     turn_count: turns.length,
     latency_ms_total: totalMs,
+  });
+}
+
+// ─── Taxonomie-Drift (#67) ───────────────────────────────────────
+
+interface DriftCluster {
+  key: string;
+  kind: "tag" | "topic";
+  count: number;
+  examples: string[];
+}
+
+/**
+ * Drift-Hinweis für den Agent. Suggestion-only — der Agent entscheidet im
+ * nächsten Turn, ob er eine Konvention etabliert; geschrieben wird hier nie.
+ */
+function formatDriftBlock(clusters: DriftCluster[]): string {
+  const lines = clusters.map(
+    (c) =>
+      `- ${c.count} recent memories share the ${c.kind} '${c.key}' with no ` +
+      `taxonomy convention covering it (e.g. ${c.examples.join(", ")}).`,
+  );
+  return (
+    `<taxonomy-drift>\n` +
+    `The vault is forming ad-hoc clusters without a home:\n` +
+    lines.join("\n") +
+    `\nIf a cluster is here to stay, establish a convention next turn: ` +
+    `save_memory with scope='taxonomy', tag 'convention', body = the rule ` +
+    `(folder, topic_path shape, tags, body shape, one example) — then re-file ` +
+    `the members (overwrite=true + the convention's folder). ` +
+    `Suggestion only: weigh it, ask the user if unsure, never bulk-move silently.\n` +
+    `</taxonomy-drift>`
+  );
+}
+
+function fetchDrift(timeoutMs: number): Promise<DriftCluster[]> {
+  return new Promise((resolve_) => {
+    const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
+    const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? "6723";
+    let url: URL;
+    try {
+      url = new URL("/hook/drift", httpURL ?? `http://127.0.0.1:${httpPort}`);
+    } catch {
+      resolve_([]);
+      return;
+    }
+    const req = request(
+      {
+        method: "GET",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+              clusters?: DriftCluster[];
+            };
+            if ((res.statusCode ?? 500) === 200 && Array.isArray(data.clusters)) {
+              resolve_(data.clusters);
+              return;
+            }
+          } catch { /* fallthrough */ }
+          resolve_([]);
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve_([]);
+    });
+    req.on("error", () => resolve_([]));
+    req.end();
   });
 }
 
@@ -447,6 +534,7 @@ function readStdin(): Promise<string> {
 interface StopHookTelemetry {
   heuristic: string | null;
   suggested_count: number;
+  drift_clusters: number;
   turn_count: number;
   latency_ms_total: number;
 }

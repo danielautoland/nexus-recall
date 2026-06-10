@@ -72,6 +72,17 @@ interface HealthResponse {
   update_available: UpdateAvailable | null;
 }
 
+interface ConventionLean {
+  id: string;
+  title: string;
+  summary: string;
+  updated: string;
+}
+
+interface TaxonomyResponse {
+  conventions: ConventionLean[];
+}
+
 async function main(): Promise<void> {
   const startedAt = Date.now();
 
@@ -142,6 +153,16 @@ async function main(): Promise<void> {
   merged.sort((a, b) => b.score - a.score);
   const top = merged.slice(0, TOTAL_HINTS_CAP);
 
+  // Taxonomie-Konventionen (#66): bindende, selbst-gelernte Struktur-Regeln
+  // des Vaults. Dedizierter Listen-Endpoint statt Recall-Suche — Konventionen
+  // konkurrieren nicht über Scores und dürfen nicht am Floor sterben.
+  let conventions: ConventionLean[] = [];
+  if (responses.some((r) => r.resp !== null)) {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    conventions = await fetchTaxonomy(url, Math.min(150, remainingMs));
+  }
+  const taxonomyBlock = formatTaxonomyBlock(conventions);
+
   // Best-effort update probe — only when we already have a daemon reachable.
   // Strict budget: 200 ms; if nothing back, we just skip the block.
   //
@@ -188,16 +209,17 @@ async function main(): Promise<void> {
     }
   }
 
-  if (top.length === 0 && updateBlock === "") {
+  const extras = taxonomyBlock + updateBlock;
+  if (top.length === 0 && extras === "") {
     if (status === "ok") status = "no-hits";
     emitEmpty();
   } else if (top.length === 0) {
-    // Only an update banner, no recall hits.
+    // Only conventions and/or an update banner, no recall hits.
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: updateBlock.trimStart(),
+          additionalContext: extras.trimStart(),
         },
       }),
     );
@@ -206,7 +228,7 @@ async function main(): Promise<void> {
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: formatBlock(top, project, payload.source ?? null) + updateBlock,
+          additionalContext: formatBlock(top, project, payload.source ?? null) + extras,
         },
       }),
     );
@@ -219,6 +241,7 @@ async function main(): Promise<void> {
     daemon_url: url,
     daemon_reachable: responses.some((r) => r.resp !== null),
     hint_count: top.length,
+    convention_count: conventions.length,
     top_score: top[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     status,
@@ -340,6 +363,68 @@ function postRecall(
   });
 }
 
+/**
+ * Konventions-Block (#66). Kompakt: Titel + Summary pro Konvention, dazu die
+ * Anweisung, sie beim Speichern zu BEFOLGEN (Details via load_memory). Cap 6 —
+ * mehr Konventionen heißt das Vault braucht eher eine Meta-Aufräumrunde als
+ * mehr Kontext.
+ */
+function formatTaxonomyBlock(conventions: ConventionLean[]): string {
+  if (conventions.length === 0) return "";
+  const lines = conventions
+    .slice(0, 6)
+    .map((c) => `- [${c.id}] ${c.title}: ${c.summary}`);
+  return (
+    `\n<vault-taxonomy>\n` +
+    `Self-learned vault conventions — BINDING when saving memories in these clusters. ` +
+    `Follow the convention's folder/topic_path/tags exactly (load_memory(id) for the full rule) ` +
+    `instead of inventing variant tags that fragment recall:\n` +
+    lines.join("\n") +
+    `\n</vault-taxonomy>`
+  );
+}
+
+function fetchTaxonomy(baseUrl: string, timeoutMs: number): Promise<ConventionLean[]> {
+  return new Promise((resolve_) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/taxonomy", baseUrl);
+    } catch {
+      resolve_([]);
+      return;
+    }
+    const req = request(
+      {
+        method: "GET",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString("utf8")) as TaxonomyResponse;
+            if ((res.statusCode ?? 500) === 200 && Array.isArray(data.conventions)) {
+              resolve_(data.conventions);
+              return;
+            }
+          } catch { /* fallthrough */ }
+          resolve_([]);
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve_([]);
+    });
+    req.on("error", () => resolve_([]));
+    req.end();
+  });
+}
+
 function probeHealth(baseUrl: string, timeoutMs: number): Promise<HealthResponse | null> {
   return new Promise((resolve_) => {
     let url: URL;
@@ -435,6 +520,7 @@ interface SessionHookTelemetry {
   daemon_url: string;
   daemon_reachable: boolean;
   hint_count: number;
+  convention_count: number;
   top_score: number | null;
   latency_ms_total: number;
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
