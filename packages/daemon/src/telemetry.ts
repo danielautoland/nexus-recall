@@ -92,7 +92,10 @@ export interface RecallEpisodeEvent extends BaseEvent {
   memory_id: string;
   surfaced_score: number | null;
   band: RecallBand;
-  loaded: boolean;
+  /** true = der Load folgte einem Hook-Hint (#77). false = Direkt-Load ohne
+   *  Hint — zählt NICHT in die USE-rate (sonst mischt das below_floor-Band
+   *  zwei fremde Populationen). Ersetzt das frühere, immer-wahre `loaded`. */
+  surfaced: boolean;
   acted_on: boolean;
   match_strength: number;
   tool_name: string | null;
@@ -224,6 +227,7 @@ interface LoadedMemoryTrace {
   recall_id: string | null;
   surfaced_score: number | null;
   band: RecallBand;
+  surfaced: boolean;
   ts: number;
   closed: boolean;
 }
@@ -328,6 +332,23 @@ export class Telemetry {
     return trace.turn_id;
   }
 
+  /** Pro Session der zuletzt adoptierte externe Turn-Key (#74). */
+  private adoptedTurnKeys = new Map<string, number>();
+
+  /**
+   * #74: Adopt an externally stamped turn (forwarder headers — the prompt-hook
+   * stamps `turn_id` per user turn into the session feed). Rotates the
+   * session's turn only when the key actually changes, so every MCP call in
+   * the same user turn shares one turn_id and `turn_source: "session"` —
+   * accurate even with multiple CC sessions on one daemon.
+   */
+  ensureTurn(sessionId: string | null, turnKey: number | null): void {
+    if (!sessionId || !turnKey || !Number.isFinite(turnKey)) return;
+    if (this.adoptedTurnKeys.get(sessionId) === turnKey) return;
+    this.adoptedTurnKeys.set(sessionId, turnKey);
+    this.rotateTurn(sessionId);
+  }
+
   private currentTurn(sessionId: string | null): { turn_id: string; turn_source: TurnSource } {
     if (sessionId) {
       const exact = this.turns.get(sessionId);
@@ -360,6 +381,7 @@ export class Telemetry {
       recall_id: payload.hook_hint?.recall_id ?? null,
       surfaced_score: payload.hook_hint?.score ?? null,
       band: bandForScore(payload.hook_hint?.score ?? null),
+      surfaced: payload.hook_hint !== null,
       ts: now,
       closed: false,
     });
@@ -395,7 +417,7 @@ export class Telemetry {
         memory_id: entry.memory_id,
         surfaced_score: entry.surfaced_score,
         band: entry.band,
-        loaded: true,
+        surfaced: entry.surfaced,
         acted_on: matchStrength >= 2,
         match_strength: matchStrength,
         tool_name: payload.tool_name,

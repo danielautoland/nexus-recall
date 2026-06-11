@@ -204,6 +204,16 @@ function summarizeUseRate(events: AnyEvent[]): void {
   const episodes = events.filter((e) => e.kind === "recall_episode");
   if (hookRecalls.length === 0 && episodes.length === 0) return;
 
+  // #77: Direkt-Loads ohne Hook-Hint fliegen aus den Band-Quoten — sonst
+  // teilt below_floor acted-on-Direkt-Loads durch <30-Score-Hints (zwei
+  // fremde Populationen). Alt-Events ohne `surfaced`-Feld werden über
+  // surfaced_score != null erkannt (das war genau dann gesetzt, wenn ein
+  // Hint voranging).
+  const isSurfaced = (e: AnyEvent): boolean =>
+    typeof e.surfaced === "boolean" ? Boolean(e.surfaced) : e.surfaced_score != null;
+  const surfacedEpisodes = episodes.filter(isSurfaced);
+  const directLoads = episodes.length - surfacedEpisodes.length;
+
   const bands = ["required", "optional", "below_floor"] as const;
   const surfaced = new Map<string, number>(bands.map((band) => [band, 0]));
   const loaded = new Map<string, number>(bands.map((band) => [band, 0]));
@@ -218,11 +228,11 @@ function summarizeUseRate(events: AnyEvent[]): void {
     }
   }
 
-  for (const e of episodes) {
+  for (const e of surfacedEpisodes) {
     const band = bands.includes(e.band as typeof bands[number])
       ? String(e.band)
       : "below_floor";
-    if (e.loaded === true) loaded.set(band, (loaded.get(band) ?? 0) + 1);
+    loaded.set(band, (loaded.get(band) ?? 0) + 1);
     if (e.acted_on === true) acted.set(band, (acted.get(band) ?? 0) + 1);
   }
 
@@ -232,6 +242,35 @@ function summarizeUseRate(events: AnyEvent[]): void {
     const l = loaded.get(band) ?? 0;
     const a = acted.get(band) ?? 0;
     console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
+  }
+  if (directLoads > 0) {
+    console.log(`  (excluded: ${directLoads} direct load(s) with no preceding hint — not part of any band quota)`);
+  }
+
+  // #71: Tripwire-Hints (bash-pre-hook, tool_name="Bash") getrennt von den
+  // positiven Write/Edit-Hints ausweisen — die These ist, dass negative
+  // Hints am gefährlichen Befehl eine deutlich höhere USE-rate haben.
+  const recallTool = new Map<string, string>();
+  for (const r of hookRecalls) recallTool.set(String(r.recall_id), String(r.tool_name ?? ""));
+  const sourceOf = (e: AnyEvent): "bash-tripwire" | "write-edit" =>
+    recallTool.get(String(e.recall_id)) === "Bash" ? "bash-tripwire" : "write-edit";
+
+  const hintsBySource = { "bash-tripwire": 0, "write-edit": 0 };
+  for (const r of hookRecalls) {
+    const src = String(r.tool_name ?? "") === "Bash" ? "bash-tripwire" : "write-edit";
+    hintsBySource[src] += (r.hits as unknown[]).length;
+  }
+  const epBySource = { "bash-tripwire": [0, 0], "write-edit": [0, 0] } as Record<string, [number, number]>;
+  for (const e of surfacedEpisodes) {
+    const src = sourceOf(e);
+    epBySource[src][0]++;
+    if (e.acted_on === true) epBySource[src][1]++;
+  }
+  console.log(`  by hint source:`);
+  for (const src of ["bash-tripwire", "write-edit"] as const) {
+    const s = hintsBySource[src];
+    const [l, a] = epBySource[src];
+    console.log(`    ${src.padEnd(14)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
   }
 }
 
@@ -264,6 +303,70 @@ function topProjects(events: AnyEvent[]): void {
   console.log(`\n## Hook calls by project`);
   for (const [p, n] of [...projCount.entries()].sort((a, b) => b[1] - a[1])) {
     console.log(`  ${n.toString().padStart(4)}  ${p}`);
+  }
+}
+
+function summarizeContextROI(events: AnyEvent[]): void {
+  // #72 net-context-ROI: Tokens, die die Reflex-Layer-Hooks injiziert haben,
+  // vs. acted-on-Loads, die sie verursacht haben. hint_tokens_est gibt es
+  // erst ab dem #72-Build — Alt-Events zählen 0, die Quote wächst ehrlich
+  // mit frischen Daten.
+  const hookKinds = new Set(["hook_call", "session_hook_call", "bash_hook_call"]);
+  const hookEvents = events.filter((e) => hookKinds.has(String(e.kind)));
+  const withTokens = hookEvents.filter((e) => typeof e.hint_tokens_est === "number");
+  if (withTokens.length === 0) return;
+
+  const totalTokens = withTokens.reduce((sum, e) => sum + Number(e.hint_tokens_est), 0);
+  const episodes = events.filter((e) => e.kind === "recall_episode");
+  const isSurfaced = (e: AnyEvent): boolean =>
+    typeof e.surfaced === "boolean" ? Boolean(e.surfaced) : e.surfaced_score != null;
+  const actedSurfaced = episodes.filter((e) => isSurfaced(e) && e.acted_on === true);
+
+  console.log(`\n## Net-context-ROI  (hint tokens spent vs. acted-on loads they caused)`);
+  console.log(`  injected hint tokens (est.):  ${totalTokens}  across ${withTokens.length} hook emissions`);
+  console.log(`  acted-on surfaced loads:      ${actedSurfaced.length}`);
+  console.log(
+    actedSurfaced.length > 0
+      ? `  tokens per acted-on load:     ~${Math.round(totalTokens / actedSurfaced.length)}`
+      : `  tokens per acted-on load:     ∞ (no acted-on load yet — pure context tax so far)`,
+  );
+
+  // Per-session injected tokens (top 5 by cost).
+  const perSession = new Map<string, number>();
+  for (const e of withTokens) {
+    const sid = String(e.session_id ?? "(none)");
+    perSession.set(sid, (perSession.get(sid) ?? 0) + Number(e.hint_tokens_est));
+  }
+  const topSessions = [...perSession.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  console.log(`  top sessions by injected tokens:`);
+  for (const [sid, n] of topSessions) {
+    console.log(`    ${n.toString().padStart(6)}  ${sid.slice(0, 8)}…`);
+  }
+
+  // Context-Tax: Memories, die oft emittiert werden, aber (fast) nie eine
+  // acted-on-Episode verursachen — Archiv-Kandidaten.
+  const emitted = new Map<string, number>();
+  for (const e of hookEvents) {
+    if (!Array.isArray(e.hinted_ids)) continue;
+    for (const id of e.hinted_ids as string[]) {
+      emitted.set(id, (emitted.get(id) ?? 0) + 1);
+    }
+  }
+  const actedByMemory = new Map<string, number>();
+  for (const e of actedSurfaced) {
+    const id = String(e.memory_id);
+    actedByMemory.set(id, (actedByMemory.get(id) ?? 0) + 1);
+  }
+  const tax = [...emitted.entries()]
+    .map(([id, n]) => ({ id, emitted: n, acted: actedByMemory.get(id) ?? 0 }))
+    .filter((t) => t.acted === 0 && t.emitted >= 3)
+    .sort((a, b) => b.emitted - a.emitted)
+    .slice(0, 10);
+  if (tax.length > 0) {
+    console.log(`  top context-tax memories (emitted ≥3×, acted_on 0 — archival candidates):`);
+    for (const t of tax) {
+      console.log(`    ${t.emitted.toString().padStart(4)}×  ${t.id}`);
+    }
   }
 }
 
@@ -317,6 +420,7 @@ async function main(): Promise<void> {
   summarizeMcp(events);
   summarizeFollowThrough(events);
   summarizeUseRate(events);
+  summarizeContextROI(events);
   summarizeOllamaLifecycle(events);
   topProjects(events);
   topHints(events);

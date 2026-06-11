@@ -279,6 +279,9 @@ export function leanFrontmatter(fm: Record<string, unknown>): Record<string, unk
 export async function loadMemoryHandler(
   deps: ToolDeps,
   rawArgs: unknown,
+  // #74: echte CC-Session aus den Forwarder-Headern (HTTP-Pfad). Ohne sie
+  // fällt recordLoadedMemory auf den zuletzt rotierten Turn zurück (inferred).
+  ctx?: { sessionId?: string | null },
 ): Promise<LoadMemoryResult> {
   const parsed = LoadMemoryArgs.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
@@ -315,6 +318,7 @@ export async function loadMemoryHandler(
     hook_hint: hookHint
       ? { recall_id: hookHint.recall_id, score: hookHint.score }
       : null,
+    session_id: ctx?.sessionId ?? null,
   });
 
   // Reset-signal for the hook's per-session dedup (#32): touch a marker

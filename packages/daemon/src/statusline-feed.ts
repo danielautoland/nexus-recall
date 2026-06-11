@@ -25,6 +25,11 @@ export interface StatuslineState {
    *  (`Date.now()` of UserPromptSubmit). The forwarder adopts it once per turn
    *  and preserves it across flushes. */
   turn_id: number;
+  /** Claude-Code session_id, stamped by the prompt-hook (#74). The forwarder
+   *  forwards it (+ turn_id) as headers on /api/v1 calls so the daemon can
+   *  attribute MCP loads to the REAL session/turn instead of inferring.
+   *  Optional: stale pre-#74 feeds don't carry it. */
+  cc_session_id?: string | null;
   state: "idle" | "running";
   vault_size: number;
   /** Count of bastra tool calls this turn — recalls AND non-streaming tools
@@ -79,12 +84,17 @@ export function defaultStatuslineState(): StatuslineState {
  * `turn_id` so the forwarder knows a new turn started, and preserves the last
  * known `vault_size` so the statusline keeps showing `N memories` while idle.
  */
-export function idleStatuslineState(turnId: number, vaultSize: number): StatuslineState {
+export function idleStatuslineState(
+  turnId: number,
+  vaultSize: number,
+  ccSessionId: string | null = null,
+): StatuslineState {
   return {
     ...defaultStatuslineState(),
     ts: turnId,
     turn_id: turnId,
     vault_size: vaultSize,
+    cc_session_id: ccSessionId,
   };
 }
 
@@ -110,6 +120,9 @@ export function adoptTurn(
       turn_id: diskTurn,
       vault_size:
         typeof onDisk?.vault_size === "number" ? onDisk.vault_size : current.vault_size,
+      // #74: Session-Key vom prompt-hook übernehmen und über Flushes erhalten.
+      cc_session_id:
+        typeof onDisk?.cc_session_id === "string" ? onDisk.cc_session_id : current.cc_session_id ?? null,
     };
   }
   return current;

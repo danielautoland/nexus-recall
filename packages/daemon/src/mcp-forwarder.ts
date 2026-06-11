@@ -146,10 +146,26 @@ async function holdForDaemon<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Session/Turn-Header (#74): die echte CC-session_id (vom prompt-hook in den
+ * Feed gestempelt) + die Feed-turn_id. Der Daemon nutzt sie, um MCP-Loads dem
+ * RICHTIGEN Turn zuzuordnen, statt auf den zuletzt rotierten zu raten —
+ * relevant, sobald mehrere CC-Sessions denselben Daemon teilen.
+ */
+function ccTurnHeaders(): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (typeof liveStatusline.cc_session_id === "string" && liveStatusline.cc_session_id) {
+    h["x-bastra-cc-session"] = liveStatusline.cc_session_id;
+    if (liveStatusline.turn_id > 0) h["x-bastra-cc-turn"] = String(liveStatusline.turn_id);
+  }
+  return h;
+}
+
 async function callDaemon(tool: string, args: unknown): Promise<unknown> {
   const url = `${DAEMON_URL}/api/v1/${tool}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...ccTurnHeaders(),
   };
   if (API_TOKEN) headers.Authorization = `Bearer ${API_TOKEN}`;
 
@@ -505,6 +521,8 @@ async function callRecallStreaming(
   const body: Record<string, unknown> = {
     query: typeof a.query === "string" ? a.query : "",
     tool_name: "mcp-forwarder",
+    // #74: echte CC-Session an die hook_recall-Telemetrie durchreichen.
+    session_id: typeof liveStatusline.cc_session_id === "string" ? liveStatusline.cc_session_id : null,
   };
   if (typeof a.k === "number") body.k = a.k;
   if (typeof a.scope === "string") body.scope = a.scope;
@@ -518,6 +536,7 @@ async function callRecallStreaming(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "text/event-stream",
+    ...ccTurnHeaders(),
   };
   if (API_TOKEN) headers.Authorization = `Bearer ${API_TOKEN}`;
 

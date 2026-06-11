@@ -195,6 +195,8 @@ async function main(): Promise<void> {
     hint_count: hits.length,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: totalMs,
+    hint_tokens_est: Math.ceil(block.length / 4),
+    hinted_ids: hits.map((h) => h.id),
     status,
     error: errMsg,
   });
@@ -323,6 +325,9 @@ interface BashHookCallTelemetry {
   hint_count: number;
   top_score: number | null;
   latency_ms_total: number;
+  /** Geschätzte Tokens des injizierten Tripwire-Blocks (#72). */
+  hint_tokens_est: number;
+  hinted_ids: string[];
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }

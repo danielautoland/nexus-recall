@@ -117,6 +117,8 @@ async function main(): Promise<void> {
       latency_ms_total: Date.now() - startedAt,
       dropped_dedup_count: 0,
       dropped_scope_count: 0,
+      hint_tokens_est: 0,
+      hinted_ids: [],
       status: "skipped",
       error: null,
     });
@@ -225,10 +227,16 @@ async function main(): Promise<void> {
   const topScore = resp?.hits?.[0]?.score ?? null;
 
   // 8) Emit Claude-Code hookSpecificOutput first — that's the hot path.
+  // hint_tokens_est (#72): grobe Token-Schätzung (~4 chars/token) des
+  // tatsächlich injizierten Blocks — die Kostenseite der net-context-ROI.
+  let hintTokensEst = 0;
+  let hintedIds: string[] = [];
   if (totalHints === 0) {
     emitEmpty();
   } else {
     const block = formatHintBlock(requiredHits, optionalHits, project);
+    hintTokensEst = Math.ceil(block.length / 4);
+    hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
@@ -270,6 +278,8 @@ async function main(): Promise<void> {
     latency_ms_total: totalMs,
     dropped_dedup_count: droppedDedupCount,
     dropped_scope_count: droppedScopeCount,
+    hint_tokens_est: hintTokensEst,
+    hinted_ids: hintedIds,
     status,
     error: errMsg,
   });
@@ -402,6 +412,10 @@ interface HookCallTelemetry {
   latency_ms_total: number;
   dropped_dedup_count: number;
   dropped_scope_count: number;
+  /** Geschätzte Tokens des injizierten <recall-hints>-Blocks (#72). */
+  hint_tokens_est: number;
+  /** IDs, die tatsächlich emittiert wurden (#72 context-tax per memory). */
+  hinted_ids: string[];
   status: HookStatus;
   error: string | null;
 }

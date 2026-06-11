@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   dropped recall to BM25.
 
 ### Changed
+- Honest v0.7 scoreboard: `recall_episode` carries a `surfaced` flag so direct
+  loads without a preceding hint no longer pollute the `below_floor` USE-rate
+  band (#77); `stats.ts` adds a net-context-ROI report (injected hint tokens
+  vs. acted-on loads, plus top context-tax memories as archival candidates,
+  #72) and splits the USE-rate by hint source — bash-tripwire vs. write/edit
+  (#71). MCP `load_memory` calls now join the real Claude Code session/turn
+  via forwarder headers (`x-bastra-cc-session`/`x-bastra-cc-turn`, stamped by
+  the prompt-hook into the session feed), making the acted-on join accurate
+  with multiple concurrent sessions on one daemon (#74).
 - Claude Desktop reliability (#78): the MCP forwarder holds tool calls while
   the daemon boots (health timeout 10 s → 60 s) and respawns a dead daemon
   once instead of erroring; the daemon skips idle self-shutdown when a

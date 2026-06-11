@@ -41,7 +41,7 @@ const STATUSLINE_FEED_PATH = sessionFeedPath(claudeSessionPid());
  * turn_id it has already adopted (Issue #51, see statusline-feed.ts). Preserves
  * the previous vault_size; the forwarder refreshes it on the next recall-done.
  */
-function resetStatuslineFeed(): void {
+function resetStatuslineFeed(ccSessionId: string | null): void {
   try {
     let vaultSize = 0;
     try {
@@ -52,7 +52,9 @@ function resetStatuslineFeed(): void {
     } catch {
       // no prior file — vault_size stays 0 until first recall populates it
     }
-    const state = idleStatuslineState(Date.now(), vaultSize);
+    // cc_session_id (#74): der Hook ist die einzige Stelle, die die echte
+    // Claude-Code session_id kennt — über den Feed erreicht sie den Forwarder.
+    const state = idleStatuslineState(Date.now(), vaultSize, ccSessionId);
     mkdirSync(STATUSLINE_DIR, { recursive: true });
     const tmp = `${STATUSLINE_FEED_PATH}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(state), "utf8");
@@ -137,7 +139,7 @@ async function main(): Promise<void> {
   if (payload.hook_event_name !== "UserPromptSubmit") return emitEmpty();
 
   // New user turn → reset statusline counters to idle (synchronous, instant).
-  resetStatuslineFeed();
+  resetStatuslineFeed(payload.session_id ?? null);
 
   const prompt = extractPrompt(payload);
   if (!prompt) return emitEmpty();

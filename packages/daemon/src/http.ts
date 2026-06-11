@@ -349,12 +349,23 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
       const tool = url.slice("/api/v1/".length);
 
+      // #74: Session/Turn-Header des Forwarders — machen MCP-Loads dem
+      // echten CC-Turn zuordenbar (statt latestTurn-Raterei bei parallelen
+      // Sessions). Fehlen die Header (alte Forwarder, Direkt-Caller), bleibt
+      // alles beim inferred-Verhalten.
+      const ccSessionHeader = req.headers["x-bastra-cc-session"];
+      const ccTurnHeader = req.headers["x-bastra-cc-turn"];
+      const ccSessionId = typeof ccSessionHeader === "string" && ccSessionHeader ? ccSessionHeader : null;
+      const ccTurnKey = typeof ccTurnHeader === "string" ? Number(ccTurnHeader) : null;
+
       readJsonBody(req, MAX_BODY_BYTES)
         .then(async (body) => {
           try {
+            toolDeps.telemetry.ensureTurn(ccSessionId, ccTurnKey);
             const result = await dispatchApi(tool, body, {
               toolDeps,
               documentWriteEnabled,
+              ccSessionId,
             });
             if (result === undefined) {
               sendJson(res, 404, { error: `unknown tool: ${tool}` });
@@ -587,6 +598,8 @@ function writeSseEvent(res: ServerResponse, event: string, data: unknown): void 
 interface DispatchCtx {
   toolDeps: ToolDeps;
   documentWriteEnabled: boolean;
+  /** Echte CC-Session aus den Forwarder-Headern (#74); null = unbekannt. */
+  ccSessionId?: string | null;
 }
 
 async function dispatchApi(
@@ -601,7 +614,7 @@ async function dispatchApi(
     case "recall":
       return await recallHandler(toolDeps, body);
     case "load_memory":
-      return await loadMemoryHandler(toolDeps, body);
+      return await loadMemoryHandler(toolDeps, body, { sessionId: ctx.ccSessionId ?? null });
     case "save_memory":
       return await saveMemoryHandler(toolDeps, body);
 

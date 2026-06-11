@@ -210,25 +210,29 @@ async function main(): Promise<void> {
   }
 
   const extras = taxonomyBlock + updateBlock;
+  // hint_tokens_est (#72): Token-Schätzung des injizierten Kontexts.
+  let injected = "";
   if (top.length === 0 && extras === "") {
     if (status === "ok") status = "no-hits";
     emitEmpty();
   } else if (top.length === 0) {
     // Only conventions and/or an update banner, no recall hits.
+    injected = extras.trimStart();
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: extras.trimStart(),
+          additionalContext: injected,
         },
       }),
     );
   } else {
+    injected = formatBlock(top, project, payload.source ?? null) + extras;
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: formatBlock(top, project, payload.source ?? null) + extras,
+          additionalContext: injected,
         },
       }),
     );
@@ -244,6 +248,8 @@ async function main(): Promise<void> {
     convention_count: conventions.length,
     top_score: top[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
+    hint_tokens_est: Math.ceil(injected.length / 4),
+    hinted_ids: top.map((h) => h.id),
     status,
     error: errMsg,
   });
@@ -523,6 +529,9 @@ interface SessionHookTelemetry {
   convention_count: number;
   top_score: number | null;
   latency_ms_total: number;
+  /** Geschätzte Tokens des injizierten Session-Kontexts (#72). */
+  hint_tokens_est: number;
+  hinted_ids: string[];
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }
