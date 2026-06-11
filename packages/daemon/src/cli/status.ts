@@ -119,6 +119,12 @@ async function formatSemanticRecall(configured: EmbeddingProviderName | undefine
     }
     return `✓ on (${d.embeddingMode ?? "?"}${d.embeddingSource ? `, source: ${d.embeddingSource}` : ""})`;
   }
+  if (active === "degraded") {
+    // Daemon-side runtime health (#92): the last provider call failed after
+    // boot (model deleted / server died) — recall is silently BM25-only.
+    const why = d.embeddingError ? ` — last error: ${d.embeddingError}` : "";
+    return `⚠ degraded (${d.embeddingMode ?? "?"})${why} — recall falls back to BM25. Check: ollama list / ollama serve`;
+  }
   // active is off
   if (configured === "ollama") {
     if (d.embeddingSource === "env") {

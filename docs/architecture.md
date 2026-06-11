@@ -168,7 +168,7 @@ The HTTP server binds to loopback only. Main endpoints:
 
 If `BASTRA_API_TOKEN` is set, `/api/v1/*` requires `Authorization: Bearer <token>`. Loopback callers bypass auth by default; set `BASTRA_AUTH_LOOPBACK_SKIP=0` to require the token even locally.
 
-CORS defaults to `Access-Control-Allow-Origin: *` and can be restricted with `BASTRA_CORS_ORIGIN`.
+CORS is deny-by-default: no browser origin is allowed until `BASTRA_CORS_ORIGIN` lists it (comma-separated). `BASTRA_CORS_ORIGIN=*` is an explicit permissive opt-in for tunnel/dev setups.
 
 ## Hooks
 

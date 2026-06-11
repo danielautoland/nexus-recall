@@ -12,9 +12,8 @@
  * of blocking a non-interactive run). The provider is persisted only after the
  * model is verified present.
  */
-import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { spawn } from "node:child_process";
+import { findExecutable, run } from "./exec.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider, getOllamaAutostart, setEmbeddingProvider } from "../settings.js";
 
@@ -200,6 +199,45 @@ async function modelPresent(): Promise<boolean> {
   }
 }
 
+/** Loopback-Guard für den Daemon-Autostart: nur einen LOKALEN Ollama-Server
+ *  starten — eine Remote-BASTRA_OLLAMA_URL kann der Daemon nicht "starten".
+ *  Exported for unit tests. */
+export function isLoopbackOllamaURL(baseURL: string): boolean {
+  try {
+    const host = new URL(baseURL).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Daemon-Boot-Autostart: semantic recall ist auf Ollama konfiguriert, aber
+ * der Server läuft nicht (z.B. Mac-App beendet, die ihr embedded Ollama
+ * mitgenommen hat) → der Daemon zieht ihn selbst hoch. Probe-first
+ * (Singleton-safe — dieselbe Semantik wie die Mac-App), respektiert
+ * `ollama.autostart` (default true), nur für Loopback-URLs. Best-effort,
+ * wirft nie — ohne Ollama bleibt Recall BM25-only und /health zeigt
+ * "degraded" (#92).
+ */
+export async function ensureOllamaServerForDaemon(
+  baseURL: string,
+): Promise<{ started: boolean; detail: string }> {
+  try {
+    if (!isLoopbackOllamaURL(baseURL)) {
+      return { started: false, detail: "remote ollama URL — not starting a local server" };
+    }
+    if (await serverVersion()) return { started: false, detail: "already running" };
+    if (!(await getOllamaAutostart())) return { started: false, detail: "ollama.autostart off" };
+    const bin = findExecutable("ollama");
+    if (!bin) return { started: false, detail: "ollama binary not found on a trusted PATH" };
+    const r = await ensureServing(true, findExecutable("brew"), bin);
+    return { started: r.ok, detail: r.detail };
+  } catch (err) {
+    return { started: false, detail: (err as Error).message };
+  }
+}
+
 /** Public, read-only probe for `bastra doctor`/`status`. Never throws. */
 export async function probeOllama(): Promise<{ ok: boolean; detail: string; hasModel: boolean }> {
   const bin = findExecutable("ollama");
@@ -252,66 +290,7 @@ async function pollServer(timeoutMs: number): Promise<boolean> {
 }
 
 // ── exec helpers ─────────────────────────────────────────────────────────────
-
-interface RunResult {
-  ok: boolean;
-  signal: boolean;
-  detail: string;
-}
-
-/**
- * spawnSync with a hard timeout and a closed stdin. stdin:"ignore" means a
- * brew sudo prompt fails fast instead of hanging a non-interactive run.
- */
-function run(bin: string, args: string[], opts: { timeoutMs: number; showProgress?: boolean }): RunResult {
-  const r = spawnSync(bin, args, {
-    stdio: opts.showProgress ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
-    timeout: opts.timeoutMs,
-  });
-  if (r.error) {
-    const code = (r.error as NodeJS.ErrnoException).code;
-    return { ok: false, signal: false, detail: code === "ETIMEDOUT" ? `timed out after ${opts.timeoutMs}ms` : r.error.message };
-  }
-  if (r.signal) return { ok: false, signal: true, detail: `killed by ${r.signal}` };
-  if (r.status !== 0) return { ok: false, signal: false, detail: `exit ${r.status}` };
-  return { ok: true, signal: false, detail: "ok" };
-}
-
-/**
- * Resolve a command to an absolute, executable, non-world-writable path.
- * Augments PATH with the Homebrew bin dirs because GUI/hook-spawned processes
- * inherit a stripped PATH (the #79 root cause). Spawning the resolved absolute
- * path — never the bare name — keeps detection and execution in agreement and
- * closes the PATH-hijack vector.
- */
-function findExecutable(name: string): string | null {
-  const me = process.getuid?.() ?? -1;
-  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  const dirs = [...pathDirs, "/opt/homebrew/bin", "/usr/local/bin"];
-  const seen = new Set<string>();
-  for (const dir of dirs) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    // Never resolve against CWD: a relative PATH entry (".", "x/bin") would make
-    // join() return a relative path and spawn an attacker's ./ollama. Absolute only.
-    if (!isAbsolute(dir)) continue;
-    const full = join(dir, name);
-    try {
-      // A world-writable dir — or a group-writable one not owned by root/us —
-      // lets an attacker swap the binary; skip it (mirrors the repo's temp-file
-      // hardening, commit 3af0cc8).
-      const dirSt = statSync(dir);
-      if (dirSt.mode & 0o002) continue;
-      if (dirSt.mode & 0o020 && dirSt.uid !== 0 && dirSt.uid !== me) continue;
-      accessSync(full, constants.X_OK);
-      if (statSync(full).mode & 0o002) continue; // reject world-writable binary
-      return full;
-    } catch {
-      /* not here — try next */
-    }
-  }
-  return null;
-}
+// findExecutable() + run() live in exec.ts (shared with update.ts, #91).
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

@@ -91,13 +91,16 @@ npm run backfill:related   # populate related_via on legacy memories
 | `BASTRA_HTTP_URL` | no | derived | full URL override (for non-loopback testing) |
 | `BASTRA_API_TOKEN` | no | unset | when set, REST `/api/v1/*` requires `Authorization: Bearer <token>` |
 | `BASTRA_AUTH_LOOPBACK_SKIP` | no | `1` | set to `0` to require the bearer even for 127.0.0.1 callers |
-| `BASTRA_CORS_ORIGIN` | no | `*` | restrict CORS to a single host for hosted-client integrations |
+| `BASTRA_CORS_ORIGIN` | no | unset (deny all) | comma-separated browser-origin allowlist; unset = no browser origin allowed; `*` = explicit permissive opt-in (tunnel/dev) |
 | `BASTRA_EMBEDDING_PROVIDER` | no | unset | `ollama` or `openai`; without it the daemon stays BM25-only |
 | `BASTRA_EMBEDDING_MODEL` | no | provider default | e.g. `embeddinggemma` (ollama) or `text-embedding-3-small` (openai) |
 | `BASTRA_OLLAMA_URL` | no | `http://localhost:11434` | ollama provider endpoint |
+| `BASTRA_OLLAMA_KEEP_ALIVE` | no | `10m` | per-request `keep_alive` window — how long Ollama keeps the embedding model in RAM after each embed |
+| `BASTRA_OLLAMA_IDLE_UNLOAD_MS` | no | `600000` (10 min) | unload the embedding model from Ollama RAM after this long without an embed (battery saver); `0` disables |
 | `OPENAI_API_KEY` | no | unset | required when `BASTRA_EMBEDDING_PROVIDER=openai` |
 | `BASTRA_FORWARDER_SPAWN` | no | `1` | when `0`, the MCP forwarder will not auto-spawn the daemon |
 | `BASTRA_HOOK_TIMEOUT_MS` | no | `500` | per-hook wall-clock budget before fail-silent |
+| `BASTRA_HOOK_MAX_SHOW` | no | `1` | how often the same memory may appear in `<recall-hints>` per session (4h window); a `load_memory` of that id resets the counter |
 | `BASTRA_DOCUMENT_WRITE` | no | unset | set to `1` to expose document write tools |
 | `BASTRA_LOG_PATH` | no | `~/.bastra/logs` | telemetry JSONL output directory (out-of-vault on purpose) |
 | `BASTRA_TELEMETRY` | no | `on` | set to `off` to disable telemetry writes entirely |

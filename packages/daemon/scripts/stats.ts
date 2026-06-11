@@ -267,6 +267,40 @@ function topProjects(events: AnyEvent[]): void {
   }
 }
 
+function summarizeOllamaLifecycle(events: AnyEvent[]): void {
+  const lifecycle = events.filter((e) => e.kind === "ollama_lifecycle");
+  if (lifecycle.length === 0) return;
+  const prewarms = lifecycle.filter((e) => e.action === "prewarm");
+  const unloads = lifecycle.filter((e) => e.action === "unload");
+
+  // RAM-Residenz-Schätzung (#109): Fenster vom letzten Load-Punkt (prewarm)
+  // bis zum nächsten unload. Embeds zwischendrin verlängern real via
+  // keep_alive — das hier ist die UNTERE Schranke, gut genug für den Trend.
+  let residentMs = 0;
+  let cycles = 0;
+  let loadedAt: number | null = null;
+  for (const e of lifecycle) {
+    const t = Date.parse(String(e.ts));
+    if (e.action === "prewarm" && e.ok === true && loadedAt === null) loadedAt = t;
+    if (e.action === "unload" && e.ok === true && loadedAt !== null) {
+      residentMs += Math.max(0, t - loadedAt);
+      loadedAt = null;
+      cycles++;
+    }
+  }
+
+  console.log(`\n## Ollama model lifecycle  (${lifecycle.length} events)`);
+  console.log(`  prewarms (boot wakeups):  ${prewarms.length}`);
+  console.log(`  idle unloads:             ${unloads.length}`);
+  if (cycles > 0) {
+    console.log(`  est. RAM residency:       ~${Math.round(residentMs / 60000)} min across ${cycles} load cycle(s) (lower bound)`);
+  }
+  const lastUnload = unloads[unloads.length - 1];
+  if (lastUnload && typeof lastUnload.embed_calls_since_boot === "number") {
+    console.log(`  embed calls at last unload: ${lastUnload.embed_calls_since_boot} (since that daemon boot)`);
+  }
+}
+
 async function main(): Promise<void> {
   const events = await loadEvents();
   if (events.length === 0) {
@@ -283,6 +317,7 @@ async function main(): Promise<void> {
   summarizeMcp(events);
   summarizeFollowThrough(events);
   summarizeUseRate(events);
+  summarizeOllamaLifecycle(events);
   topProjects(events);
   topHints(events);
 }

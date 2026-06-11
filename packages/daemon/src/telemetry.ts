@@ -28,7 +28,8 @@ export type TelemetryEvent =
   | HookRecallEvent
   | RecallEpisodeEvent
   | HookCallEvent
-  | SessionHookCallEvent;
+  | SessionHookCallEvent
+  | OllamaLifecycleEvent;
 
 interface BaseEvent {
   ts: string;
@@ -155,6 +156,22 @@ export interface HookCallEvent extends BaseEvent {
   latency_ms_total: number;
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
+}
+
+/**
+ * Ollama-Modell-Lifecycle (#109): prewarm (Boot-Wakeup) und idle-unload.
+ * Aus den Paaren prewarm→unload lässt sich die RAM-Residenz des Embedding-
+ * Modells schätzen — die Messgröße hinter dem #78-Energie-Design.
+ */
+export interface OllamaLifecycleEvent extends BaseEvent {
+  kind: "ollama_lifecycle";
+  action: "prewarm" | "unload";
+  model: string;
+  ok: boolean;
+  /** Beim unload: Alter des letzten erfolgreichen Embeds (ms); sonst null. */
+  last_embed_age_ms: number | null;
+  /** Provider-Calls (query + backfill batches) seit Daemon-Boot. */
+  embed_calls_since_boot: number | null;
 }
 
 /**
@@ -455,6 +472,18 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "hook_call",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  async logOllamaLifecycle(
+    payload: Omit<OllamaLifecycleEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "ollama_lifecycle",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

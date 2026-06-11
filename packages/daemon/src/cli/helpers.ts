@@ -104,9 +104,11 @@ export interface DaemonProbe {
   // From /health when reachable — lets `bastra status` show the live embedding
   // mode (the user-visible #79 fix; the daemon's own stderr is /dev/null'd when
   // the forwarder spawns it).
-  semanticRecall?: "on" | "off";
+  semanticRecall?: "on" | "off" | "degraded";
   embeddingMode?: string;
   embeddingSource?: string;
+  /** Last provider error when semanticRecall === "degraded" (#92). */
+  embeddingError?: string;
 }
 
 export function probeDaemon(): Promise<DaemonProbe> {
@@ -124,6 +126,7 @@ export function probeDaemon(): Promise<DaemonProbe> {
               semanticRecall: data.semantic_recall,
               embeddingMode: data.embedding_mode,
               embeddingSource: data.embedding_source,
+              embeddingError: data.embedding_error,
             });
             return;
           }

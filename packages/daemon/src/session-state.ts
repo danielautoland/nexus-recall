@@ -27,6 +27,7 @@
 import { mkdir, readFile, rename, stat, writeFile, readdir, unlink } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { envInt } from "./env.js";
 
 export interface ShownEntry {
   count: number;
@@ -37,8 +38,13 @@ export interface SessionState {
   shown: Record<string, ShownEntry>;
 }
 
-/** Threshold above which a memory is dropped from hints (#32 acceptance). */
-export const MAX_SHOW = 3;
+/** Threshold above which a memory is dropped from hints. #32 startete mit 3;
+ *  #106 senkt den Default auf 1 — jeder Hint erscheint pro Session (innerhalb
+ *  des 4h-Fensters) genau EINMAL. Wiederholte Injektionen desselben Blocks
+ *  sind purer Kontext-Cost (#72) bei ~null marginaler acted_on-Chance. Ein
+ *  load_memory-Marker resettet weiterhin (nach Kompaktierung darf der Hint
+ *  wiederkommen). Env-tunable ohne Rebuild. */
+export const MAX_SHOW = Math.max(1, envInt("BASTRA_HOOK_MAX_SHOW", 1));
 /** Window in ms after which the dedup counter expires (4h per #32). */
 export const RESET_WINDOW_MS = 4 * 60 * 60 * 1000;
 /** Cleanup: drop session files older than this (mtime). */

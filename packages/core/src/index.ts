@@ -64,7 +64,7 @@ export {
   OllamaEmbeddingProvider,
   fuseRRF,
 } from "./embeddings.js";
-export type { EmbeddingProvider, EmbeddingHit, EmbedListener } from "./embeddings.js";
+export type { EmbeddingProvider, EmbeddingHit, EmbedListener, EmbeddingRuntimeHealth } from "./embeddings.js";
 
 export { EmbedCache, hashEmbedContent } from "./embed-cache.js";
 export type { EmbedCacheEntry, EmbedCacheFile } from "./embed-cache.js";

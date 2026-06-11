@@ -58,6 +58,7 @@ import { MEMORY_TOOL_DEFS } from "./tool-handlers.js";
 import { documentTools } from "./documents-handler.js";
 import { documentWriteTools } from "./documents-write-handler.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
+import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import {
   adoptTurn,
   defaultStatuslineState,
@@ -67,7 +68,9 @@ import {
 const DAEMON_URL = (process.env.BASTRA_DAEMON_URL ?? "http://127.0.0.1:6723").replace(/\/+$/, "");
 const API_TOKEN = process.env.BASTRA_API_TOKEN ?? "";
 const SPAWN_ENABLED = (process.env.BASTRA_FORWARDER_SPAWN ?? "1") !== "0";
-const HEALTH_TIMEOUT_MS = 10_000;
+// 60 s statt 10 s (#78): ein Cold-Start (Vault-Load + Ollama-Modell) kann
+// die alten 10 s reißen — der Call wird gehalten statt sofort zu erroren.
+const HEALTH_TIMEOUT_MS = 60_000;
 const HEALTH_POLL_INTERVAL_MS = 200;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -121,6 +124,28 @@ async function ensureDaemonRunning(): Promise<boolean> {
   return ready;
 }
 
+/** Boot-Promise des Daemons — Tool-Calls warten darauf statt zu erroren (#78). */
+let daemonReady: Promise<boolean> = Promise.resolve(false);
+
+/**
+ * Hold-the-call (#78): erst den laufenden Boot abwarten, dann den Call
+ * ausführen. Scheitert er mit "daemon unreachable" (Idle-Self-Terminate oder
+ * Crash NACH dem ersten Boot), wird der Daemon einmal respawnt und der Call
+ * wiederholt — statt dem Client "no access to the MCP server" zu zeigen.
+ */
+async function holdForDaemon<T>(fn: () => Promise<T>): Promise<T> {
+  await daemonReady.catch(() => false);
+  try {
+    return await fn();
+  } catch (err) {
+    if (!String((err as Error).message).includes("unreachable")) throw err;
+    daemonReady = ensureDaemonRunning();
+    const ok = await daemonReady;
+    if (!ok) throw err;
+    return await fn();
+  }
+}
+
 async function callDaemon(tool: string, args: unknown): Promise<unknown> {
   const url = `${DAEMON_URL}/api/v1/${tool}`;
   const headers: Record<string, string> = {
@@ -172,23 +197,26 @@ async function callDaemon(tool: string, args: unknown): Promise<unknown> {
 }
 
 async function main(): Promise<void> {
-  // Best-effort: Daemon hochziehen wenn er fehlt. Fehlschlag blockt den
-  // Stdio-Server NICHT — Tool-Calls scheitern dann mit klarer Message.
-  await ensureDaemonRunning();
+  // Best-effort: Daemon hochziehen wenn er fehlt. NICHT awaited (#78): der
+  // Stdio-Server connected sofort (Client-initialize hängt nicht am Boot);
+  // Tool-Calls warten via holdForDaemon() bis der Daemon healthy ist.
+  daemonReady = ensureDaemonRunning();
 
   // Seed the session statusline feed with the current vault size, so the
   // idle banner shows "N memories" from session start (not "0 memories"
-  // until the first recall). Best-effort.
-  try {
-    const resp = await fetchWithTimeout(`${DAEMON_URL}/health`, {}, 1500);
-    const body = (await resp.json()) as { vault_size?: number };
-    if (typeof body.vault_size === "number") {
-      liveStatusline.vault_size = body.vault_size;
-      flushStatusline();
+  // until the first recall). Best-effort, sobald der Daemon steht.
+  void daemonReady.then(async () => {
+    try {
+      const resp = await fetchWithTimeout(`${DAEMON_URL}/health`, {}, 1500);
+      const body = (await resp.json()) as { vault_size?: number };
+      if (typeof body.vault_size === "number") {
+        liveStatusline.vault_size = body.vault_size;
+        flushStatusline();
+      }
+    } catch {
+      // no health / no vault_size — idle banner shows 0 until first recall
     }
-  } catch {
-    // no health / no vault_size — idle banner shows 0 until first recall
-  }
+  });
 
   const server = new Server(
     { name: "bastra-recall-mcp", version: "0.6.6-beta.1" },
@@ -241,7 +269,7 @@ async function main(): Promise<void> {
       liveStatusline.current_recall_started_at = recallStartedAt;
       flushStatusline();
       try {
-        const result = await callRecallStreaming(args, async (s: RecallStage) => {
+        const result = await holdForDaemon(() => callRecallStreaming(args, async (s: RecallStage) => {
           // Banter phrase for this stage — the human-readable live message.
           // Always computed (null when banter is off) so it reaches the
           // statusline feed, which is the only visible channel in Claude Code
@@ -273,7 +301,7 @@ async function main(): Promise<void> {
           liveStatusline.current_message = phrase;
           liveStatusline.current_stage_started_at = Date.now();
           flushStatusline();
-        });
+        }));
         // Recall complete: fold this recall's hits + duration into the turn
         // totals, clear the current-recall marks.
         const hits = (result as { hits?: unknown[] }).hits;
@@ -346,7 +374,7 @@ async function main(): Promise<void> {
 
     const toolStartedAt = Date.now();
     try {
-      const result = await callDaemon(name, args);
+      const result = await holdForDaemon(() => callDaemon(name, args));
       // Fold this tool call's duration into the turn total (hits stay
       // recall-only, so the statusline shows "N calls · Xms" for load_memory).
       liveStatusline.total_ms += Date.now() - toolStartedAt;
@@ -398,8 +426,23 @@ async function main(): Promise<void> {
   // Backstop: if CC dies without closing stdin (hard kill), we get reparented
   // to init/launchd → ppid becomes 1. Poll for it so we never linger as a
   // zombie. unref() so the timer itself never keeps the process alive.
+  //
+  // Desktop-Wrapper-Shape (#80): Claude Desktop spawnt uns durch den
+  // `disclaimer`-Helper. Stirbt Desktop hart, lebt der Wrapper weiter (hält
+  // unsere stdio-Pipes offen, ppid bleibt ≠ 1) — beide #49-Pfade greifen
+  // nie. Erkennung: der WRAPPER wird dann zu init/launchd reparented, also
+  // poll'en wir im Wrapper-Modus zusätzlich `ppid(wrapper) === 1`.
+  const wrapperPid = process.ppid;
+  const wrapperMode = /disclaimer/i.test(commandOf(wrapperPid) ?? "");
   const orphanCheck = setInterval(() => {
-    if (process.ppid === 1) void shutdown();
+    if (process.ppid === 1) {
+      void shutdown();
+      return;
+    }
+    if (wrapperMode && process.ppid === wrapperPid) {
+      const wrapperParent = parentPidOf(wrapperPid);
+      if (wrapperParent === 1 || wrapperParent === null) void shutdown();
+    }
   }, 30_000);
   orphanCheck.unref();
 }

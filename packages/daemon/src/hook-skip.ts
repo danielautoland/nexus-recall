@@ -68,3 +68,22 @@ export function shouldSkipPath(filePath: string, _cwd?: string): boolean {
 
   return false;
 }
+
+/** Scopes, die in JEDEM Projekt-Kontext relevant sein können. */
+const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy"]);
+
+/**
+ * Scope-Hard-Filter für Recall-Hints (#107): bei erkanntem Projekt fliegen
+ * Hints aus FREMDEN Projekt-Scopes raus (z.B. bastra-io-CSS-Hints bei einem
+ * bastra-recall-Daemon-Edit) statt nur schlechter zu ranken. Kompatibel sind
+ * der Projekt-Scope selbst, globale Scopes und die Scope-Familie über ein
+ * Präfix-Verhältnis ("bastra" deckt "bastra-recall", nicht aber "bastra-io"
+ * vs "bastra-recall"). Hits im REQUIRED-Band (score ≥ MUST_LOAD_SCORE)
+ * passieren immer — ein starker recall_when-Match schlägt die Heuristik.
+ */
+export function isScopeCompatible(scope: string, project: string | null): boolean {
+  if (!project || !scope) return true;
+  if (GLOBAL_SCOPES.has(scope)) return true;
+  if (scope === project) return true;
+  return project.startsWith(scope + "-") || scope.startsWith(project + "-");
+}

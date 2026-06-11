@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveCorsOrigin, gateApiRequest, safeEqual, isLoopbackHost } from "../src/http.js";
+import { corsAllowlistFromEnv, resolveCorsOrigin, gateApiRequest, safeEqual, isLoopbackHost } from "../src/http.js";
 
 const SITE = "https://bastra.io";
 const TOKEN = "secret-token";
@@ -120,6 +120,35 @@ test("gate: browser, allowed origin but NO token issued → 401 (secure by defau
     }),
     401,
   );
+});
+
+// ── corsAllowlistFromEnv: sicherer Default (#95) ─────────────────────
+test("corsAllowlist (#95): unset/empty env → EMPTY allowlist, '*' only as explicit opt-in", () => {
+  assert.deepEqual(corsAllowlistFromEnv(undefined), []);
+  assert.deepEqual(corsAllowlistFromEnv(""), []);
+  assert.deepEqual(corsAllowlistFromEnv("  "), []);
+  assert.deepEqual(corsAllowlistFromEnv("*"), ["*"]);
+  assert.deepEqual(corsAllowlistFromEnv(`${SITE}, https://x.dev`), [SITE, "https://x.dev"]);
+});
+
+test("corsAllowlist (#95): milestone test D — evil.com + valid token → 403 on default allowlist", () => {
+  // Default (env unset): no origin is reflected …
+  const allowedOrigin = resolveCorsOrigin("https://evil.com", corsAllowlistFromEnv(undefined));
+  assert.equal(allowedOrigin, null);
+  // … and the gate rejects the browser request even WITH the valid token.
+  assert.equal(
+    gateApiRequest({
+      reqOrigin: "https://evil.com",
+      allowedOrigin,
+      isLoopback: true,
+      authHeader: `Bearer ${TOKEN}`,
+      apiToken: TOKEN,
+      loopbackSkip: true,
+    }),
+    403,
+  );
+  // Explicit legacy "*" would still let it through (the documented tunnel/dev tradeoff).
+  assert.equal(resolveCorsOrigin("https://evil.com", corsAllowlistFromEnv("*")), "https://evil.com");
 });
 
 // ── safeEqual: timing-safe Token-Vergleich ───────────────────────────

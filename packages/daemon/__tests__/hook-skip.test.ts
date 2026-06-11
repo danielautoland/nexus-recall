@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { shouldSkipPath } from "../src/hook-skip.js";
+import { shouldSkipPath, isScopeCompatible } from "../src/hook-skip.js";
 
 interface MatrixRow {
   path: string;
@@ -75,4 +75,21 @@ test("shouldSkipPath: cwd parameter is accepted but currently informational", ()
   // Future-proofing — we don't want a regression where cwd changes behavior.
   assert.equal(shouldSkipPath("src/foo.ts", "/some/cwd"), false);
   assert.equal(shouldSkipPath("issue-1.md", "/some/cwd"), true);
+});
+
+test("isScopeCompatible (#107): foreign project scopes are filtered, family/global scopes pass", () => {
+  // Das beobachtete Problem: bastra-io-Hint bei einem bastra-recall-Edit.
+  assert.equal(isScopeCompatible("bastra-io", "bastra-recall"), false);
+  assert.equal(isScopeCompatible("carnexus", "bastra-recall"), false);
+  // Eigener Scope + Scope-Familie über Präfix.
+  assert.equal(isScopeCompatible("bastra-recall", "bastra-recall"), true);
+  assert.equal(isScopeCompatible("bastra", "bastra-recall"), true);
+  assert.equal(isScopeCompatible("bastra-recall", "bastra"), true);
+  // Globale Scopes immer.
+  assert.equal(isScopeCompatible("all-projects", "bastra-recall"), true);
+  assert.equal(isScopeCompatible("user-preference", "bastra-recall"), true);
+  assert.equal(isScopeCompatible("taxonomy", "bastra-recall"), true);
+  // Ohne erkanntes Projekt oder ohne Scope: kein Filter.
+  assert.equal(isScopeCompatible("bastra-io", null), true);
+  assert.equal(isScopeCompatible("", "bastra-recall"), true);
 });

@@ -6,7 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Energy-aware Ollama model lifecycle (#78, #109): the daemon prewarms the
+  embedding model on boot, sends a per-request `keep_alive`
+  (`BASTRA_OLLAMA_KEEP_ALIVE`, default `10m`) via the native `/api/embed`
+  endpoint, and unloads the model from Ollama RAM after an embed-idle window
+  (`BASTRA_OLLAMA_IDLE_UNLOAD_MS`, default 10 min) — instead of pinning it
+  forever with `OLLAMA_KEEP_ALIVE=-1`. New `ollama_lifecycle` telemetry events
+  plus a RAM-residency summary in `stats.ts`.
+- Daemon boot now restarts a stopped local Ollama (probe-first, loopback-only,
+  honours `ollama.autostart`) when semantic recall is configured — previously
+  only `bastra install` could start it, so killing the Mac app silently
+  dropped recall to BM25.
+
+### Changed
+- Claude Desktop reliability (#78): the MCP forwarder holds tool calls while
+  the daemon boots (health timeout 10 s → 60 s) and respawns a dead daemon
+  once instead of erroring; the daemon skips idle self-shutdown when a
+  LaunchAgent owns its lifecycle.
+- Recall-hint hygiene: the same memory now appears in `<recall-hints>` at most
+  once per session by default (`BASTRA_HOOK_MAX_SHOW`, #106), and hints from
+  foreign project scopes below the required band are hard-filtered (#107).
+- `save_memory` quality advisory (#108): trigger-collision counting applies
+  the recall noise floor instead of reporting the raw top-k for every trigger.
+
+### Security
+- CORS is deny-by-default (#95): with `BASTRA_CORS_ORIGIN` unset no browser
+  origin is allowed; `*` is an explicit opt-in and warns when combined with a
+  minted API token.
+- `bastra update` spawns brew/npm via vetted absolute paths with hard
+  timeouts; a spawn killed by signal/timeout no longer counts as success (#91).
+
 ### Fixed
+- Zombie `mcp-forwarder` processes from Claude Desktop's `disclaimer` wrapper
+  are now reaped — the forwarder detects the dead grandparent, the daemon
+  sweeps stale forwarders on boot (#80).
+- `/health` and `bastra status` report `semantic_recall: "degraded"` (with the
+  last provider error) when the embedding provider dies at runtime, instead of
+  silently advertising semantic recall while serving BM25-only (#92).
 - Statusline memory count now stays correct across sessions. The daemon
   publishes the live vault size to a shared file — refreshed on every index
   change plus a periodic disk reconcile — and the statusline segment reads it.

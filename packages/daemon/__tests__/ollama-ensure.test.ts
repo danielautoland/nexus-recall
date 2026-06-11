@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ensureOllama } from "../src/cli/ollama.js";
+import { ensureOllama, isLoopbackOllamaURL } from "../src/cli/ollama.js";
 
 // These cover the paths that must NEVER spawn a subprocess or download
 // anything — the safety guards. We deliberately do not test the acting path
@@ -24,4 +24,13 @@ test("ensureOllama: env BASTRA_EMBEDDING_PROVIDER=none blocks setup before any d
     if (prev === undefined) delete process.env.BASTRA_EMBEDDING_PROVIDER;
     else process.env.BASTRA_EMBEDDING_PROVIDER = prev;
   }
+});
+
+test("isLoopbackOllamaURL: daemon autostart only ever targets a LOCAL server", () => {
+  assert.equal(isLoopbackOllamaURL("http://localhost:11434"), true);
+  assert.equal(isLoopbackOllamaURL("http://127.0.0.1:11434"), true);
+  assert.equal(isLoopbackOllamaURL("http://[::1]:11434"), true);
+  assert.equal(isLoopbackOllamaURL("http://ollama.lan:11434"), false);
+  assert.equal(isLoopbackOllamaURL("https://api.example.com"), false);
+  assert.equal(isLoopbackOllamaURL("not a url"), false);
 });

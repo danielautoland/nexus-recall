@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
-import { shouldSkipPath } from "./hook-skip.js";
+import { shouldSkipPath, isScopeCompatible } from "./hook-skip.js";
 import {
   bumpShown,
   cleanupOldStates,
@@ -116,6 +116,7 @@ async function main(): Promise<void> {
       top_score: null,
       latency_ms_total: Date.now() - startedAt,
       dropped_dedup_count: 0,
+      dropped_scope_count: 0,
       status: "skipped",
       error: null,
     });
@@ -166,11 +167,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // 6) Score-floor filter.
+  // 6) Score-floor filter + Scope-Hard-Filter (#107): Hints aus fremden
+  //    Projekt-Scopes fliegen raus, außer sie sitzen im REQUIRED-Band —
+  //    ein starker recall_when-Match schlägt die Scope-Heuristik.
   const filteredHits: RecallHit[] = [];
+  let droppedScopeCount = 0;
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < SCORE_FLOOR) continue;
+      if (h.score < MUST_LOAD_SCORE && !isScopeCompatible(h.scope, project)) {
+        droppedScopeCount++;
+        continue;
+      }
       filteredHits.push(h);
     }
   }
@@ -259,6 +267,7 @@ async function main(): Promise<void> {
     top_score: topScore,
     latency_ms_total: totalMs,
     dropped_dedup_count: droppedDedupCount,
+    dropped_scope_count: droppedScopeCount,
     status,
     error: errMsg,
   });
@@ -390,6 +399,7 @@ interface HookCallTelemetry {
   top_score: number | null;
   latency_ms_total: number;
   dropped_dedup_count: number;
+  dropped_scope_count: number;
   status: HookStatus;
   error: string | null;
 }

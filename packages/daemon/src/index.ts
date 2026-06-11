@@ -65,6 +65,10 @@ import {
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { startBackgroundCheck } from "./update-check.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
+import { reapStaleForwarderProcesses } from "./reap-forwarders.js";
+import { prewarmOllamaModel, unloadOllamaModel } from "./ollama-lifecycle.js";
+import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
+import { spawnSync } from "node:child_process";
 
 // Triage Issue #24: Write-Tools sind Pro-Feature. Aktuelles Gate ist ein
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
@@ -139,11 +143,39 @@ async function main(): Promise<void> {
   // Hybrid-Recall: provider precedence env → cli-settings.json → API-key → none.
   // embeddingStatusLine logs the resolved mode on EVERY path including success —
   // the silent-success path was the root of #79.
-  const { provider, status: embeddingStatus } = await resolveEmbedding();
+  // Vor dem Embedding-Block konstruiert, weil Prewarm/Unload (#109) ihre
+  // Lifecycle-Events darüber loggen.
+  const telemetry = new Telemetry();
+
+  const { provider, status: embeddingStatus, ollama } = await resolveEmbedding();
   console.error(embeddingStatusLine(embeddingStatus));
+  // Für /health (#92): Runtime-Health des Index, nicht nur die Boot-Config.
+  let embIdxForHealth: EmbeddingIndex | null = null;
   if (provider) {
     const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
     const embIdx = new EmbeddingIndex(vault, provider, persistPath);
+    embIdxForHealth = embIdx;
+    // Wakeup (#78): Ollama-Server sicherstellen (Autostart, falls z.B. die
+    // Mac-App beendet wurde, die ihn hielt), dann das Modell parallel zum
+    // restlichen Boot laden — der erste Recall nach einem Cold-Start trifft
+    // ein warmes Modell. Fire-and-forget, blockiert weder Vault-Load noch
+    // /health.
+    if (ollama) {
+      void (async () => {
+        const auto = await ensureOllamaServerForDaemon(ollama.baseURL);
+        if (auto.detail !== "already running") {
+          console.error(`[bastra-recall] ollama autostart: ${auto.detail}`);
+        }
+        const ok = await prewarmOllamaModel(ollama.baseURL, ollama.model, ollama.keepAlive);
+        void telemetry.logOllamaLifecycle({
+          action: "prewarm",
+          model: ollama.model,
+          ok,
+          last_embed_age_ms: null,
+          embed_calls_since_boot: embIdx.providerCallCount(),
+        });
+      })();
+    }
     // Auto-Related-Enricher: pflegt frontmatter.related_via nach jedem Embed-
     // Batch. Threshold/topN über Env überschreibbar, sonst RelatedEnricher-
     // Defaults (top 5, cosine ≥ 0.7).
@@ -174,7 +206,11 @@ async function main(): Promise<void> {
   // Caches result on disk for 24h → no GitHub-API hit on every daemon restart.
   startBackgroundCheck(DAEMON_VERSION);
 
-  const telemetry = new Telemetry();
+  // Stale-Forwarder-Sweep (#80): Desktop-Zombies (toter Client, lebender
+  // disclaimer-Wrapper) beim Boot wegräumen. Verzögert + unref'd, damit der
+  // health-kritische Boot-Pfad (#78) keinen ps-Roundtrip zahlt.
+  setTimeout(() => reapStaleForwarderProcesses(), 5_000).unref();
+
   if (telemetry.isEnabled()) {
     console.error(`[bastra-recall] telemetry: enabled (log path: ${logDirFor()})`);
   } else {
@@ -215,6 +251,7 @@ async function main(): Promise<void> {
           documentWriteEnabled: DOCUMENT_WRITE_ENABLED,
           onActivity: markActivity,
           embedding: embeddingStatus,
+          embeddingHealth: () => embIdxForHealth?.runtimeHealth() ?? null,
         });
 
   const server = new Server(
@@ -398,7 +435,18 @@ async function main(): Promise<void> {
 
   // Idle watchdog — terminate after `idleShutdownMs` without activity.
   // `.unref()` so the timer itself never keeps the process alive.
-  if (idleShutdownMs > 0) {
+  //
+  // #78 Hebel C: Besitzt ein LaunchAgent (KeepAlive=true) den Daemon, ist
+  // Self-Terminate kontraproduktiv — launchd respawnt sofort, und jeder
+  // Zyklus reißt ein Cold-Start-Fenster auf (Desktop: "no access to MCP",
+  // weil der Forwarder-Health-Timeout während des Boots abläuft). Explizit
+  // gesetztes BASTRA_DAEMON_IDLE_SHUTDOWN_MS bleibt ein User-Override.
+  const idleEnvSet = (process.env.BASTRA_DAEMON_IDLE_SHUTDOWN_MS ?? "") !== "";
+  if (idleShutdownMs > 0 && !idleEnvSet && launchAgentOwnsDaemon()) {
+    console.error(
+      "[bastra-recall] LaunchAgent registered — idle self-shutdown disabled (launchd owns the lifecycle, #78)",
+    );
+  } else if (idleShutdownMs > 0) {
     const tick = Math.min(idleShutdownMs, 60_000);
     const idleLabel =
       idleShutdownMs >= 60_000
@@ -414,6 +462,52 @@ async function main(): Promise<void> {
     }, tick);
     idleTimer.unref();
   }
+
+  // Energie (#78): Embedding-Modell nach Embed-Idle aus dem Ollama-RAM
+  // entladen — der "Idle-Befehl". Greift in BEIDEN Daemon-Modi (LaunchAgent
+  // warm / forwarder-spawned): der Daemon bleibt reaktionsschnell, nur das
+  // ~600-MB-Modell verlässt den RAM; der nächste Embed (oder der SessionStart-
+  // Hook-Recall) lädt es in 1–2 s zurück. 0 disables. Default 10 min.
+  const ollamaUnloadMs = envInt("BASTRA_OLLAMA_IDLE_UNLOAD_MS", 10 * 60 * 1000);
+  if (ollama && ollamaUnloadMs > 0) {
+    const bootAt = Date.now();
+    let lastUnloadAt = 0;
+    const unloadTimer = setInterval(() => {
+      // Letzter erfolgreicher Provider-Call (search ODER Backfill-Batch);
+      // vor dem ersten Embed zählt der Boot (deckt das Prewarm-Load ab).
+      const lastUse = embIdxForHealth?.runtimeHealth().lastOkAt ?? bootAt;
+      if (lastUse > lastUnloadAt && Date.now() - lastUse >= ollamaUnloadMs) {
+        lastUnloadAt = Date.now();
+        void unloadOllamaModel(ollama.baseURL, ollama.model).then((ok) =>
+          telemetry.logOllamaLifecycle({
+            action: "unload",
+            model: ollama.model,
+            ok,
+            last_embed_age_ms: Date.now() - lastUse,
+            embed_calls_since_boot: embIdxForHealth?.providerCallCount() ?? null,
+          }),
+        );
+      }
+    }, 60_000);
+    unloadTimer.unref();
+  }
+}
+
+const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";
+
+/** true wenn der bastra-LaunchAgent in der gui-Domain registriert ist (#78). */
+function launchAgentOwnsDaemon(): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    const uid = process.getuid?.() ?? 0;
+    const r = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${LAUNCH_AGENT_LABEL}`], {
+      stdio: "ignore",
+      timeout: 5_000,
+    });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 function errorResult(msg: string) {
@@ -421,6 +515,12 @@ function errorResult(msg: string) {
     isError: true,
     content: [{ type: "text" as const, text: msg }],
   };
+}
+
+interface OllamaInfo {
+  baseURL: string;
+  model: string;
+  keepAlive: string | number;
 }
 
 /**
@@ -432,7 +532,11 @@ function errorResult(msg: string) {
  * Returns the provider instance (or null) plus a status used for /health + the
  * single user-facing log line.
  */
-async function resolveEmbedding(): Promise<{ provider: EmbeddingProvider | null; status: EmbeddingStatus }> {
+async function resolveEmbedding(): Promise<{
+  provider: EmbeddingProvider | null;
+  status: EmbeddingStatus;
+  ollama?: OllamaInfo;
+}> {
   const envProvider = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
   const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
 
@@ -461,7 +565,11 @@ async function resolveEmbedding(): Promise<{ provider: EmbeddingProvider | null;
   return offEmbedding("none");
 }
 
-function ollamaEmbedding(source: EmbeddingSource): { provider: EmbeddingProvider; status: EmbeddingStatus } {
+function ollamaEmbedding(source: EmbeddingSource): {
+  provider: EmbeddingProvider;
+  status: EmbeddingStatus;
+  ollama: OllamaInfo;
+} {
   const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
   const model = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
   const dimEnv = process.env.BASTRA_EMBEDDING_DIM;
@@ -469,8 +577,11 @@ function ollamaEmbedding(source: EmbeddingSource): { provider: EmbeddingProvider
   // Number.isFinite guard: `NaN ?? 768` keeps NaN (NaN isn't nullish), which
   // would poison the index dim. A non-numeric env value → fall back to default.
   const dim = parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
-  const provider = new OllamaEmbeddingProvider({ baseURL, model, dim });
-  return { provider, status: { on: true, providerId: provider.id, source } };
+  // keep_alive pro Embed-Request (#78 Power-Plan): hält das Modell während
+  // aktiver Arbeit warm, ohne es für immer im RAM zu pinnen.
+  const keepAlive = process.env.BASTRA_OLLAMA_KEEP_ALIVE ?? "10m";
+  const provider = new OllamaEmbeddingProvider({ baseURL, model, dim, keepAlive });
+  return { provider, status: { on: true, providerId: provider.id, source }, ollama: { baseURL, model, keepAlive } };
 }
 
 function openaiEmbedding(source: EmbeddingSource, apiKey: string): { provider: EmbeddingProvider; status: EmbeddingStatus } {

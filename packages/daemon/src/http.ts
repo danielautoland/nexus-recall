@@ -43,7 +43,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import type { Vault, SearchIndex, RecallStage, StageListener } from "@bastra-recall/core";
+import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import {
   recallHandler,
@@ -87,6 +87,10 @@ export interface HttpOptions {
   /** Resolved embedding mode — surfaced on /health so `bastra status` can show
    *  it (the daemon's own stderr is discarded when the forwarder spawns it). */
   embedding: EmbeddingStatus;
+  /** Runtime-Health des Embedding-Providers (#92). Getter, weil sich der
+   *  Zustand nach Boot ändert (Modell gelöscht, Ollama down → degraded;
+   *  nächster Erfolg → wieder ok). null = kein Index aktiv. */
+  embeddingHealth?: () => EmbeddingRuntimeHealth | null;
 }
 
 const MAX_BODY_BYTES = 256 * 1024; // 256 KiB — content excerpts are capped client-side
@@ -145,6 +149,22 @@ export function isLoopbackHost(
 }
 
 /**
+ * CORS allowlist from BASTRA_CORS_ORIGIN (#95). Unset/empty = EMPTY allowlist —
+ * no browser origin is allowed until the user opts in. "*" must be set
+ * explicitly (tunnel/dev); it is no longer the default, because together with
+ * a minted token it would let ANY website that obtains the token through.
+ * Local tools (CLI, forwarder — no Origin header) are unaffected either way.
+ * Exported for unit tests.
+ */
+export function corsAllowlistFromEnv(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * Which Origin to reflect in `Access-Control-Allow-Origin`. `null` = the origin
  * isn't allowed → emit no ACAO header and the browser blocks the response. "*"
  * in the allowlist is permissive (tunnel/dev): reflect the caller's origin, or
@@ -196,14 +216,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   // cli-settings.json. Empty = no token issued → browser clients are rejected.
   const apiToken = process.env.BASTRA_API_TOKEN || (await getApiToken()) || "";
   const loopbackSkip = (process.env.BASTRA_AUTH_LOOPBACK_SKIP ?? "1") !== "0";
-  // CORS-Allowlist (Komma-Liste). "*" = permissiv (Tunnel/Dev). Bei einer echten
-  // Liste wird die Request-Origin nur zurückgespiegelt, wenn sie erlaubt ist —
-  // sonst kein ACAO-Header und der Browser blockt die Response selbst. Browser-
+  // CORS-Allowlist (Komma-Liste). Default seit #95: LEER — Browser-Origins
+  // müssen explizit freigeschaltet werden (BASTRA_CORS_ORIGIN=https://your.host).
+  // "*" bleibt als explizites Opt-in für Tunnel/Dev. Bei einer echten Liste
+  // wird die Request-Origin nur zurückgespiegelt, wenn sie erlaubt ist — sonst
+  // kein ACAO-Header und der Browser blockt die Response selbst. Browser-
   // Requests (Origin gesetzt) müssen zusätzlich das Token tragen (siehe Gate).
-  const corsAllow = (process.env.BASTRA_CORS_ORIGIN ?? "*")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const corsAllow = corsAllowlistFromEnv(process.env.BASTRA_CORS_ORIGIN);
+  if (corsAllow.includes("*") && apiToken) {
+    console.error(
+      "[bastra-recall] WARNING: BASTRA_CORS_ORIGIN=* with a minted API token — ANY website that obtains the token can call /api/v1/* from the browser. Set an explicit allowlist: BASTRA_CORS_ORIGIN=https://your.host",
+    );
+  }
   // Zusätzliche Hosts für das Rebinding-Gate (Tunnel-Setups, die auch die
   // loopback-only Endpoints exposen wollen). /api/v1/* braucht das nicht —
   // dort schützt das Token.
@@ -239,15 +263,21 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     if (method === "GET" && url === "/health") {
       const updateState = getUpdateState();
+      // Runtime-degradation (#92): boot config said ON, but the last provider
+      // call failed (model deleted / Ollama died) → report "degraded" instead
+      // of advertising semantic recall that silently runs BM25-only.
+      const rt = opts.embeddingHealth?.() ?? null;
+      const degraded = opts.embedding.on && rt !== null && !rt.ok;
       sendJson(res, 200, {
         ok: true,
         vault_size: vault.size(),
         version,
         // Embedding mode — lets `bastra status` show whether semantic recall is
         // live without relying on the daemon's discarded stderr (#79).
-        semantic_recall: opts.embedding.on ? "on" : "off",
+        semantic_recall: opts.embedding.on ? (degraded ? "degraded" : "on") : "off",
         embedding_mode: opts.embedding.providerId ?? "disabled",
         embedding_source: opts.embedding.source,
+        ...(degraded ? { embedding_error: rt.lastError } : {}),
         update_available: updateState && updateState.hasUpdate
           ? {
               current: updateState.current,

@@ -113,9 +113,13 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
  *   brew install ollama
  *   ollama pull embeddinggemma   # ~200 MB, multilingual, 768 dim
  *
- * Ollama serviert OpenAI-kompatibles `/v1/embeddings`-Endpoint, daher
- * fast identische Wire-Logik zu OpenAIEmbeddingProvider — nur URL und
- * Auth-Header weg.
+ * Spricht das NATIVE `/api/embed`-Endpoint (nicht den OpenAI-compat-Layer
+ * `/v1/embeddings`): nur das native API versteht `keep_alive`, womit der
+ * Daemon das Lade-Fenster des Modells pro Request steuert — Kern des
+ * Energie-Designs (#78): Modell bleibt während aktiver Arbeit warm, wird
+ * bei Idle entladen statt dauerhaft RAM zu belegen (Laptop-Akku).
+ * Cosine ist skalierungsinvariant, daher bleiben persistierte Vektoren
+ * aus dem alten /v1-Pfad kompatibel (gleiches Modell, gleiche dim).
  *
  * Default-Modell: `embeddinggemma` (Google, 308M Params, multilingual,
  * MTEB-Best <500M). Daniels deutscher Vault profitiert vom multilingual-
@@ -127,11 +131,15 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly dim: number;
   private baseURL: string;
   private model: string;
+  private keepAlive?: string | number;
 
   constructor(opts: {
     baseURL?: string;
     model?: string;
     dim?: number;
+    /** Ollama keep_alive pro Embed-Request, z.B. "10m" oder Sekunden.
+     *  undefined = Feld weglassen → Server-Default (OLLAMA_KEEP_ALIVE, 5m). */
+    keepAlive?: string | number;
   }) {
     this.baseURL = opts.baseURL ?? "http://localhost:11434";
     this.model = opts.model ?? "embeddinggemma";
@@ -140,31 +148,32 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     // (siehe load(): dim/provider-Check).
     this.dim = opts.dim ?? 768;
     this.id = `ollama-${this.model}`;
+    this.keepAlive = opts.keepAlive;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
-    const url = this.baseURL.replace(/\/+$/, "") + "/v1/embeddings";
+    const url = this.baseURL.replace(/\/+$/, "") + "/api/embed";
+    const body: Record<string, unknown> = { model: this.model, input: texts };
+    if (this.keepAlive !== undefined) body.keep_alive = this.keepAlive;
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-        encoding_format: "float",
-      }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "<binary>");
+      const respBody = await resp.text().catch(() => "<binary>");
       throw new Error(
-        `Ollama embed HTTP ${resp.status} (${url}): ${body.slice(0, 200)}`,
+        `Ollama embed HTTP ${resp.status} (${url}): ${respBody.slice(0, 200)}`,
       );
     }
-    const json = (await resp.json()) as {
-      data: Array<{ embedding: number[]; index: number }>;
-    };
-    const sorted = [...json.data].sort((a, b) => a.index - b.index);
-    return sorted.map((d) => new Float32Array(d.embedding));
+    const json = (await resp.json()) as { embeddings: number[][] };
+    if (!Array.isArray(json.embeddings) || json.embeddings.length !== texts.length) {
+      throw new Error(
+        `Ollama embed: expected ${texts.length} embeddings, got ${Array.isArray(json.embeddings) ? json.embeddings.length : "none"}`,
+      );
+    }
+    return json.embeddings.map((e) => new Float32Array(e));
   }
 }
 
@@ -174,6 +183,16 @@ export interface EmbeddingHit {
   id: string;
   /** Cosine similarity, [-1, 1]. Higher = more relevant. */
   score: number;
+}
+
+/** Runtime-Gesundheit des Provider-Pfads (#92). `ok=false` heißt: der letzte
+ *  Provider-Call ist fehlgeschlagen und seitdem kam kein Erfolg — Recall läuft
+ *  gerade silent auf BM25-only, obwohl semantic recall konfiguriert ist. */
+export interface EmbeddingRuntimeHealth {
+  ok: boolean;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  lastOkAt: number | null;
 }
 
 // ─── Embedding Index ─────────────────────────────────────────────
@@ -194,6 +213,12 @@ export class EmbeddingIndex {
   private inFlight = 0;
   /** Content-Hash-Cache — skipt Re-Embed bei unverändertem Content. */
   private cache: EmbedCache;
+  /** Runtime-Health des Providers (#92): letzter Fehler / letzter Erfolg. */
+  private lastError: string | null = null;
+  private lastErrorAt: number | null = null;
+  private lastOkAt: number | null = null;
+  /** Provider-Calls seit Prozessstart (query + batch) — Energie-Telemetrie (#109). */
+  private providerCalls = 0;
 
   constructor(
     private readonly vault: Vault,
@@ -265,9 +290,11 @@ export class EmbeddingIndex {
     let q: Float32Array;
     try {
       const result = await this.provider.embed([query]);
+      this.markProviderOk();
       if (result.length === 0) return [];
       q = result[0];
     } catch (err) {
+      this.markProviderError(err);
       console.error("[bastra.embeddings] query embed error:", err);
       return [];
     }
@@ -400,6 +427,35 @@ export class EmbeddingIndex {
     return this.inFlight;
   }
 
+  /** Runtime-Health (#92) — der Daemon spiegelt das auf /health, damit ein
+   *  zur Laufzeit gestorbener Provider (Modell gelöscht, Server down) nicht
+   *  als semantic_recall=on weiterläuft. Fehler wird beim nächsten
+   *  erfolgreichen Provider-Call automatisch gecleart. */
+  runtimeHealth(): EmbeddingRuntimeHealth {
+    return {
+      ok: this.lastError === null,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+      lastOkAt: this.lastOkAt,
+    };
+  }
+
+  /** Anzahl Provider-Calls seit Prozessstart (#109). */
+  providerCallCount(): number {
+    return this.providerCalls;
+  }
+
+  private markProviderOk(): void {
+    this.lastError = null;
+    this.lastOkAt = Date.now();
+    this.providerCalls++;
+  }
+
+  private markProviderError(err: unknown): void {
+    this.lastError = err instanceof Error ? err.message : String(err);
+    this.lastErrorAt = Date.now();
+  }
+
   /** Cache-Hits zu Beobachtungszwecken (Tests). */
   cacheSize(): number {
     return this.cache.size();
@@ -462,6 +518,7 @@ export class EmbeddingIndex {
         const batchPromise = (async () => {
           try {
             const vectors = await this.provider.embed(texts);
+            this.markProviderOk();
             for (let i = 0; i < toEmbed.length; i++) {
               this.vectors.set(toEmbed[i].id, vectors[i]);
               this.cache.set(toEmbed[i].id, toEmbed[i].hash);
@@ -478,6 +535,7 @@ export class EmbeddingIndex {
               }
             }
           } catch (err) {
+            this.markProviderError(err);
             console.error("[bastra.embeddings] batch error, requeue:", err);
             // Bei Fehler: Items zurück in queue für Retry beim nächsten
             // Add-Event oder Restart; keine neuen Batches mehr starten,

@@ -310,6 +310,71 @@ test("save_memory save_quality does not surface private duplicate candidates by 
   }
 });
 
+test("save_quality (#108): trigger collisions apply the noise floor — weak grazing matches don't count, real recall_when overlaps do", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-collision-test-"));
+  try {
+    // 4 Memories, deren recall_when DENSELBEN spezifischen Trigger trägt →
+    // echte Kollision. 4 weitere streifen "flux" nur beiläufig in der summary.
+    const ts = new Date().toISOString();
+    const mk = (id: string, recallWhen: string, summary: string): string =>
+      [
+        "---",
+        `id: ${id}`,
+        `title: ${id} title`,
+        "type: lesson",
+        `summary: ${summary}`,
+        "topic_path:",
+        "  - test",
+        "tags:",
+        "  - test",
+        "scope: collision-test",
+        "recall_when:",
+        `  - ${recallWhen}`,
+        `created: ${ts}`,
+        `updated: ${ts}`,
+        "---",
+        "",
+        `Body for ${id}.`,
+        "",
+      ].join("\n");
+    for (let i = 0; i < 4; i++) {
+      await writeFile(join(dir, `strong${i}.md`), mk(`strong${i}`, "tuning the flux capacitor drift", `note ${i} about capacitor drift tuning`), "utf8");
+      await writeFile(join(dir, `weak${i}.md`), mk(`weak${i}`, `unrelated trigger number ${i} for sorting widgets`, `widget sorting note ${i} that mentions flux once`), "utf8");
+    }
+    const vault = new Vault(dir);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: dir };
+
+    // Precondition für den Bug-Repro: der schwache Trigger STREIFT ≥3 Memories
+    // unterhalb des Floors (genau die wurden vor #108 als Kollisionen gezählt).
+    const weakTrigger = "quantum blorbnik subsystem flux";
+    const rawWeak = search.recall(weakTrigger, { k: 20, scope: "collision-test" });
+    assert.ok(rawWeak.length >= 3, `precondition: weak trigger should graze >=3 memories, got ${rawWeak.length}`);
+    assert.ok(rawWeak.every((h) => h.score < 30), `precondition: grazing hits must sit below the floor, scores=${rawWeak.map((h) => h.score.toFixed(1)).join(",")}`);
+
+    const res = await saveMemoryHandler(deps, {
+      title: "flux capacitor drift compensation",
+      type: "lesson",
+      summary: "How to compensate flux capacitor drift before tuning.",
+      body: "Compensate drift before tuning.",
+      topic_path: ["test"],
+      tags: ["capacitor"],
+      scope: "collision-test",
+      recall_when: ["tuning the flux capacitor drift", weakTrigger],
+    });
+    const collidingTriggers = res.save_quality.trigger_collisions.map((c) => c.trigger);
+    assert.ok(collidingTriggers.includes("tuning the flux capacitor drift"), "real recall_when overlap must still be reported");
+    assert.ok(!collidingTriggers.includes(weakTrigger), "below-floor grazing matches must NOT count as collisions");
+
+    search.stop();
+    await vault.stop?.();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("save_memory returns high save_quality for specific anchored triggers", async () => {
   const { deps, close } = await makeDeps();
   try {

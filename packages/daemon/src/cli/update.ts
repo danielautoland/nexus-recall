@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cmdInstall } from "./commands.js";
+import { findExecutable, run } from "./exec.js";
 import type { ParsedArgs } from "./types.js";
 
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";
@@ -83,7 +84,7 @@ function hasGitAncestor(start: string): boolean {
 }
 
 function launchAgentPresent(uid: string): boolean {
-  const r = spawnSync("launchctl", ["print", `gui/${uid}/${LAUNCH_AGENT_LABEL}`], { stdio: "pipe" });
+  const r = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${LAUNCH_AGENT_LABEL}`], { stdio: "pipe", timeout: 15_000 });
   return r.status === 0;
 }
 
@@ -110,12 +111,22 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   }
 
   // 1. Update the binary itself
+  // Resolved absolute paths + hard timeouts (#91): the staged path runs
+  // unattended from the SessionStart hook (detached, stdio:"ignore"), so a
+  // bare-name spawn would inherit the stripped GUI PATH (the #79 root cause)
+  // and a network-stalled brew/npm would hang unbounded. ETIMEDOUT/ENOENT/
+  // signal all surface as failure via run() — never as silent success.
   if (mode.mode === "brew") {
     process.stdout.write(`→ ${mode.updateCommand}\n`);
     if (!args.dryRun) {
-      const r = spawnSync("brew", ["upgrade", "bastra-recall"], { stdio: "inherit" });
-      if (r.status !== 0 && r.status !== null) {
-        process.stdout.write("\n✗ brew upgrade failed — fix it manually, then re-run 'bastra update'\n");
+      const brewBin = findExecutable("brew");
+      if (!brewBin) {
+        process.stdout.write("\n✗ brew not found on a trusted PATH — run 'brew upgrade bastra-recall' manually\n");
+        return 1;
+      }
+      const r = run(brewBin, ["upgrade", "bastra-recall"], { timeoutMs: 300_000, showProgress: true });
+      if (!r.ok) {
+        process.stdout.write(`\n✗ brew upgrade failed (${r.detail}) — fix it manually, then re-run 'bastra update'\n`);
         return 1;
       }
     } else {
@@ -125,9 +136,14 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   } else if (mode.mode === "npm-global") {
     process.stdout.write(`→ ${mode.updateCommand}\n`);
     if (!args.dryRun) {
-      const r = spawnSync("npm", ["install", "-g", "@bastra-recall/daemon@latest"], { stdio: "inherit" });
-      if (r.status !== 0 && r.status !== null) {
-        process.stdout.write("\n✗ npm install failed — fix it manually, then re-run 'bastra update'\n");
+      const npmBin = findExecutable("npm");
+      if (!npmBin) {
+        process.stdout.write("\n✗ npm not found on a trusted PATH — run 'npm install -g @bastra-recall/daemon@latest' manually\n");
+        return 1;
+      }
+      const r = run(npmBin, ["install", "-g", "@bastra-recall/daemon@latest"], { timeoutMs: 300_000, showProgress: true });
+      if (!r.ok) {
+        process.stdout.write(`\n✗ npm install failed (${r.detail}) — fix it manually, then re-run 'bastra update'\n`);
         return 1;
       }
     } else {
@@ -172,8 +188,8 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   if (args.staged) {
     process.stdout.write("→ staged — daemon left running on old code (no restart mid-session)\n");
     process.stdout.write("  New code goes live on the next daemon restart:\n");
-    process.stdout.write("    · automatically after 30 min idle, or\n");
-    process.stdout.write("    · now — restart your AI clients (Claude Code, Desktop, Cursor)\n");
+    process.stdout.write("    · automatically after 30 min idle (forwarder mode — a LaunchAgent daemon stays warm, #78), or\n");
+    process.stdout.write("    · now — run 'bastra update' without --staged (kickstarts a LaunchAgent daemon), or restart your AI clients\n");
     return 0;
   }
 
@@ -184,9 +200,9 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
       process.stdout.write("  would kickstart LaunchAgent\n\n");
     } else {
       const kick = spawnSync(
-        "launchctl",
+        "/bin/launchctl",
         ["kickstart", "-k", `gui/${uid}/${LAUNCH_AGENT_LABEL}`],
-        { stdio: "inherit" },
+        { stdio: "inherit", timeout: 15_000 },
       );
       if (kick.status === 0) process.stdout.write("  ✓ LaunchAgent kicked — daemon restarted with new code\n\n");
       else process.stdout.write("  ✗ kickstart failed — restart the daemon manually\n\n");

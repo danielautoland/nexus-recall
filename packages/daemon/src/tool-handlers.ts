@@ -483,9 +483,14 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
 
   const triggerCollisions = input.recall_when
     .map((trigger) => {
+      // #108: ohne den Noise-Floor zählte das die rohe top-k-Liste — jeder
+      // Trigger meldete "matches 20 memories" (k-Cap, keine Kollisionen).
+      // Kollision = ein anderes Memory, das dieser Trigger ÜBER dem Floor
+      // hochspülen würde, exakt wie recall() selbst filtert.
       const hits = deps.search
         .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: false })
-        .filter((hit) => hit.id !== input.id);
+        .filter((hit) => hit.id !== input.id)
+        .filter((hit) => hit.score >= RECALL_FLOOR);
       return { trigger, count: hits.length, examples: hits.slice(0, 3).map((h) => h.id) };
     })
     .filter((collision) => collision.count >= 3);
