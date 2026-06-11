@@ -204,7 +204,14 @@ async function main(): Promise<void> {
 
   // Update-check (fire-and-forget, opt-out via BASTRA_UPDATE_CHECK=off).
   // Caches result on disk for 24h → no GitHub-API hit on every daemon restart.
-  startBackgroundCheck(DAEMON_VERSION);
+  // #81: in mode=auto staged der Daemon das Update selbst (Desktop hat keine
+  // Hook-Fläche); das Flag triggert unten den Idle-Restart im LaunchAgent-Mode.
+  let stagedRestartPending = false;
+  startBackgroundCheck(DAEMON_VERSION, {
+    onAutoStaged: () => {
+      stagedRestartPending = true;
+    },
+  });
 
   // Stale-Forwarder-Sweep (#80): Desktop-Zombies (toter Client, lebender
   // disclaimer-Wrapper) beim Boot wegräumen. Verzögert + unref'd, damit der
@@ -442,7 +449,8 @@ async function main(): Promise<void> {
   // weil der Forwarder-Health-Timeout während des Boots abläuft). Explizit
   // gesetztes BASTRA_DAEMON_IDLE_SHUTDOWN_MS bleibt ein User-Override.
   const idleEnvSet = (process.env.BASTRA_DAEMON_IDLE_SHUTDOWN_MS ?? "") !== "";
-  if (idleShutdownMs > 0 && !idleEnvSet && launchAgentOwnsDaemon()) {
+  const launchAgentOwned = launchAgentOwnsDaemon();
+  if (idleShutdownMs > 0 && !idleEnvSet && launchAgentOwned) {
     console.error(
       "[bastra-recall] LaunchAgent registered — idle self-shutdown disabled (launchd owns the lifecycle, #78)",
     );
@@ -461,6 +469,23 @@ async function main(): Promise<void> {
       }
     }, tick);
     idleTimer.unref();
+  }
+
+  // #81: Ein warmer LaunchAgent-Daemon restartet nie von selbst — ein
+  // auto-staged Update würde nie live gehen. Nach dem Stage: bei ≥15 min
+  // Inaktivität sauber beenden; launchd (KeepAlive) respawnt sofort mit dem
+  // neuen Code. Im Forwarder-Mode erledigt das der Idle-Self-Shutdown.
+  if (launchAgentOwned) {
+    const stagedRestartTimer = setInterval(() => {
+      if (stagedRestartPending && Date.now() - lastActivityMs >= 15 * 60 * 1000) {
+        stagedRestartPending = false;
+        console.error(
+          "[bastra-recall] staged update applied — idle restart to load the new code (#81); launchd respawns",
+        );
+        void shutdown();
+      }
+    }, 60_000);
+    stagedRestartTimer.unref();
   }
 
   // Energie (#78): Embedding-Modell nach Embed-Idle aus dem Ollama-RAM

@@ -20,15 +20,14 @@
  */
 import { detectProject } from "@bastra-recall/core";
 import { request } from "node:http";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { appendFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { effectiveUpdateMode } from "./settings.js";
 import { defaultLogDir } from "./telemetry.js";
+import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
+import { consumePendingSuggestions } from "./pending-suggestions.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -209,7 +208,24 @@ async function main(): Promise<void> {
     }
   }
 
-  const extras = taxonomyBlock + updateBlock;
+  // #48 Redesign: still abgelegte Stop-Hook-Vorschläge der LETZTEN Session
+  // einsammeln (consume-once, max 7 Tage alt) — der Agent sieht sie als
+  // additionalContext, der Chat bleibt sauber.
+  let pendingBlock = "";
+  try {
+    const pending = await consumePendingSuggestions();
+    if (pending.length > 0) {
+      pendingBlock =
+        `\n<pending-save-suggestions source="stop-hook">\n` +
+        `From earlier session(s) — evaluate silently, save via bastra-recall:save_memory only what genuinely qualifies:\n` +
+        pending.map((p) => p.blocks).join("\n") +
+        `\n</pending-save-suggestions>`;
+    }
+  } catch {
+    /* relay is best-effort */
+  }
+
+  const extras = taxonomyBlock + updateBlock + pendingBlock;
   // hint_tokens_est (#72): Token-Schätzung des injizierten Kontexts.
   let injected = "";
   if (top.length === 0 && extras === "") {
@@ -469,55 +485,9 @@ function probeHealth(baseUrl: string, timeoutMs: number): Promise<HealthResponse
   });
 }
 
-/**
- * Spawns a detached `bastra update --staged` so it outlives this short-lived
- * hook process (which exits within its wall-clock budget). The CLI lives next
- * to this file in dist/, so resolve it relative to import.meta.url. Detached +
- * unref + stdio:ignore → survives the parent's process.exit(0). Best-effort.
- */
-function spawnStagedUpdate(): void {
-  try {
-    const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
-    const child = spawn(process.execPath, [cliPath, "update", "--staged"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  } catch {
-    // Never let a failed spawn break session start.
-  }
-}
-
-function stagedMarkerPath(): string {
-  return join(homedir(), ".bastra", "update-staged.txt");
-}
-
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-}
-
-async function stagedToday(): Promise<boolean> {
-  try {
-    const raw = await readFile(stagedMarkerPath(), "utf8");
-    return raw.split("\n").some((line) => line.trim() === todayISO());
-  } catch {
-    return false;
-  }
-}
-
-async function markStagedToday(): Promise<void> {
-  try {
-    const path = stagedMarkerPath();
-    await mkdir(dirname(path), { recursive: true });
-    let existing = "";
-    try { existing = await readFile(path, "utf8"); } catch { /* may not exist */ }
-    const lines = existing.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-    if (!lines.includes(todayISO())) lines.push(todayISO());
-    await writeFile(path, lines.slice(-30).join("\n") + "\n", "utf8"); // bounded growth
-  } catch {
-    // Best-effort throttle — worst case we stage twice.
-  }
-}
+// spawnStagedUpdate / stagedToday / markStagedToday wohnen seit #81 in
+// update-check.ts — der Daemon-Self-Update-Pfad teilt denselben Tages-
+// Throttle, damit Hook und Daemon nicht am selben Tag doppelt stagen.
 
 interface SessionHookTelemetry {
   source: string | null;

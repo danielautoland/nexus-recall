@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   dropped recall to BM25.
 
 ### Changed
+- Stop hook redesigned to be silent (#48): save-eval suggestions are written
+  to `~/.bastra/pending-suggestions.json` and injected as additionalContext by
+  the next SessionStart (consume-once, 7-day expiry) instead of `systemMessage`
+  — which Claude Code rendered 1:1 into the chat as an undecipherable flood.
+  Injected transcript turns (skill body, system-reminders) no longer feed the
+  heuristics (the self-trigger defect). Still opt-in via
+  `bastra install --with-stop-hook`.
+- Daemon self-update (#81): with `update.mode=auto` the daemon stages updates
+  itself (shared once-per-day throttle with the SessionStart path) and
+  re-checks every 6 h — covers Claude Desktop, which has no hook surface. A
+  LaunchAgent-owned daemon restarts on ≥15 min idle after staging so the new
+  code actually goes live (launchd respawns it).
 - Honest v0.7 scoreboard: `recall_episode` carries a `surfaced` flag so direct
   loads without a preceding hint no longer pollute the `below_floor` USE-rate
   band (#77); `stats.ts` adds a net-context-ROI report (injected hint tokens

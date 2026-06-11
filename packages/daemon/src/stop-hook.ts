@@ -32,6 +32,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { writePendingSuggestion } from "./pending-suggestions.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_STOP_HOOK_TIMEOUT_MS", 1000);
 const HOOK_VERSION = "0.1.0";
@@ -92,19 +93,18 @@ async function main(): Promise<void> {
   if (suggestions.length === 0 && drift.length === 0) {
     emitEmpty();
   } else {
-    // Stop-Hook hat kein hookSpecificOutput im Claude-Code-Schema.
-    // Nur top-level Felder erlaubt: continue, suppressOutput, stopReason,
-    // decision, reason, systemMessage, terminalSequence, permissionDecision.
-    // → systemMessage trägt den <save-eval>-Block (sichtbar für den Agent).
+    // #48 Redesign: Stop-Hooks haben keinen stillen Output-Kanal — das
+    // einzige sichtbare Feld (systemMessage) rendert Claude Code 1:1 in den
+    // Chat (die „Zeichenflut", die den Hook deaktiviert hat). Stattdessen:
+    // Vorschläge in die Pending-Datei schreiben; der SessionStart-Hook der
+    // nächsten Session injiziert sie still als additionalContext. stdout
+    // bleibt IMMER leer.
     const blocks = [
       ...suggestions.map(formatSuggestion),
       ...(drift.length > 0 ? [formatDriftBlock(drift)] : []),
     ].join("\n");
-    process.stdout.write(
-      JSON.stringify({
-        systemMessage: blocks,
-      }),
-    );
+    await writePendingSuggestion(blocks);
+    emitEmpty();
   }
 
   const totalMs = Date.now() - startedAt;
@@ -266,8 +266,26 @@ function isToolResultContent(content: unknown): boolean {
   );
 }
 
+/**
+ * System-injizierte Turns, die im Transcript als role "user" auftauchen, aber
+ * keine getippte Prosa sind. Der Skill-Body (Prefix "Base directory for this
+ * skill:") dokumentiert die Frust-Trigger SELBST — ohne diesen Ausschluss
+ * triggert jede Session, die den bastra-Skill lädt, die frustration-Heuristik
+ * auf der eigenen Doku (der zweite strukturelle Defekt hinter #48).
+ */
+function isInjectedSystemContent(text: string): boolean {
+  const head = text.trimStart();
+  return (
+    head.startsWith("Base directory for this skill:") ||
+    head.startsWith("<system-reminder>") ||
+    head.startsWith("<command-name>") ||
+    head.startsWith("<local-command-caveat>")
+  );
+}
+
 function effectiveRole(role: string, content: unknown): string {
   if (role === "user" && isToolResultContent(content)) return "tool";
+  if (role === "user" && isInjectedSystemContent(stringifyContent(content))) return "system-injected";
   return role;
 }
 

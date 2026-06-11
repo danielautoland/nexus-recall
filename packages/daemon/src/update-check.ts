@@ -16,8 +16,10 @@
  */
 import { request as httpsRequest } from "node:https";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { effectiveUpdateMode } from "./settings.js";
 
 export const GITHUB_RELEASES_LATEST_URL =
@@ -287,14 +289,91 @@ export async function checkForUpdate(opts: CheckOptions): Promise<UpdateState | 
  * checks downstream. "notify" and "auto" both detect normally; the auto-apply
  * lives in the SessionStart hook, not here.
  */
-export function startBackgroundCheck(currentVersion: string): void {
-  void (async () => {
+export function startBackgroundCheck(
+  currentVersion: string,
+  opts?: {
+    /** Called after an auto-mode staged update was spawned (#81) — the daemon
+     *  uses it to schedule an idle self-restart so the new code goes live. */
+    onAutoStaged?: () => void;
+  },
+): void {
+  const runOnce = async (): Promise<void> => {
     if (isOptedOut()) return;
     const mode = await effectiveUpdateMode();
     if (mode === "off") return;
     const state = await checkForUpdate({ currentVersion });
     if (state) setUpdateState(state);
-  })().catch(() => {
+    // #81: Daemon-Self-Update — surface-agnostischer Auto-Trigger. Claude
+    // Desktop hat keine Hook-Fläche, also wendet der Daemon das staged
+    // Update selbst an (gleicher Tages-Throttle wie der SessionStart-Pfad,
+    // beide teilen den Marker — kein Doppel-Stage am selben Tag).
+    if (mode === "auto" && state?.hasUpdate && !(await stagedToday())) {
+      await markStagedToday();
+      console.error(
+        `[bastra-recall] update ${state.latest} available (mode=auto) — staging in background (#81)`,
+      );
+      spawnStagedUpdate();
+      opts?.onAutoStaged?.();
+    }
+  };
+  void runOnce().catch(() => {
     // Swallow — never crash the daemon over an update check.
   });
+  // Long-running daemons (LaunchAgent mode never idle-restarts, #78) need a
+  // periodic re-check — the boot-time check alone would freeze their world
+  // view. The 24h disk cache throttles actual GitHub hits.
+  const recheck = setInterval(() => {
+    void runOnce().catch(() => {});
+  }, 6 * 60 * 60 * 1000);
+  recheck.unref();
+}
+
+/**
+ * Spawns a detached `bastra update --staged` so it outlives the caller (a
+ * short-lived hook process or runs alongside the daemon). The CLI lives next
+ * to this file in dist/. Detached + unref + stdio:ignore. Best-effort.
+ */
+export function spawnStagedUpdate(): void {
+  try {
+    const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
+    const child = spawn(process.execPath, [cliPath, "update", "--staged"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch {
+    // Never let a failed spawn break the caller.
+  }
+}
+
+function stagedMarkerPath(): string {
+  return join(homedir(), ".bastra", "update-staged.txt");
+}
+
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+/** Shared once-per-day throttle for staged updates (SessionStart hook + daemon). */
+export async function stagedToday(): Promise<boolean> {
+  try {
+    const raw = await readFile(stagedMarkerPath(), "utf8");
+    return raw.split("\n").some((line) => line.trim() === todayISO());
+  } catch {
+    return false;
+  }
+}
+
+export async function markStagedToday(): Promise<void> {
+  try {
+    const path = stagedMarkerPath();
+    await mkdir(dirname(path), { recursive: true });
+    let existing = "";
+    try { existing = await readFile(path, "utf8"); } catch { /* may not exist */ }
+    const lines = existing.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    if (!lines.includes(todayISO())) lines.push(todayISO());
+    await writeFile(path, lines.slice(-30).join("\n") + "\n", "utf8"); // bounded growth
+  } catch {
+    // Best-effort throttle — worst case we stage twice.
+  }
 }
