@@ -375,6 +375,73 @@ test("save_quality (#108): trigger collisions apply the noise floor — weak gra
   }
 });
 
+test("commons fusion: recall merges read-only commons hits (scope commons, damped), personal id wins, load_memory falls back", async () => {
+  const dirP = await mkdtemp(join(tmpdir(), "bastra-commons-p-"));
+  const dirC = await mkdtemp(join(tmpdir(), "bastra-commons-c-"));
+  try {
+    const ts = new Date().toISOString();
+    const mk = (id: string, scope: string, recallWhen: string): string =>
+      [
+        "---",
+        `id: ${id}`,
+        `title: ${id} title`,
+        "type: lesson",
+        `summary: summary for ${id}`,
+        "topic_path:",
+        "  - test",
+        "tags:",
+        "  - test",
+        `scope: ${scope}`,
+        "recall_when:",
+        `  - ${recallWhen}`,
+        `created: ${ts}`,
+        `updated: ${ts}`,
+        "---",
+        "",
+        `Body for ${id}.`,
+        "",
+      ].join("\n");
+    await writeFile(join(dirP, "own.md"), mk("own-note", "personal", "flux compensator drift tuning"), "utf8");
+    await writeFile(join(dirC, "recipe.md"), mk("spinner-recipe", "commons", "button spinner clipped width jumps"), "utf8");
+    // ID-Kollision: gleiche ID in commons — der persönliche Treffer muss gewinnen.
+    await writeFile(join(dirC, "own-clone.md"), mk("own-note", "commons", "flux compensator drift tuning"), "utf8");
+
+    const vault = new Vault(dirP);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const commonsVault = new Vault(dirC);
+    await commonsVault.init();
+    const commonsSearch = new SearchIndex(commonsVault);
+    commonsSearch.start();
+    const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: dirP, commonsSearch };
+
+    // 1. Commons-Rezept wird gefunden und trägt scope "commons".
+    const res = await recallHandler(deps, { query: "button spinner clipped width jumps", k: 5 });
+    const recipeHit = res.hits.find((h) => h.id === "spinner-recipe");
+    assert.ok(recipeHit, "commons recipe must surface in fused recall");
+    assert.equal(recipeHit.scope, "commons");
+
+    // 2. ID-Kollision: nur EIN own-note-Hit, und zwar der persönliche.
+    const res2 = await recallHandler(deps, { query: "flux compensator drift tuning", k: 5 });
+    const ownHits = res2.hits.filter((h) => h.id === "own-note");
+    assert.equal(ownHits.length, 1, "id collision must not produce duplicates");
+    assert.equal(ownHits[0].scope, "personal", "personal memory wins the collision");
+
+    // 3. load_memory fällt für Commons-IDs auf den Commons-Index zurück.
+    const loaded = await loadMemoryHandler(deps, { id: "spinner-recipe" });
+    assert.equal(loaded.frontmatter.id, "spinner-recipe");
+
+    search.stop();
+    commonsSearch.stop();
+    await vault.stop?.();
+    await commonsVault.stop?.();
+  } finally {
+    await rm(dirP, { recursive: true, force: true });
+    await rm(dirC, { recursive: true, force: true });
+  }
+});
+
 test("save_memory returns high save_quality for specific anchored triggers", async () => {
   const { deps, close } = await makeDeps();
   try {

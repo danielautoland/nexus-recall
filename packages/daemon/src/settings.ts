@@ -41,6 +41,10 @@ export interface CliSettings {
   // are rejected (secure by default). Created on demand by `bastra token`; the
   // daemon reads it at startup as the Bearer the bastra.io web app must present.
   api?: { token: string };
+  // Bastra Commons (community recipe vault): undefined = disabled. Enabled via
+  // `bastra commons enable`; the daemon then loads the cloned repo as a
+  // read-only second BM25 index.
+  commons?: { enabled: boolean };
 }
 
 export function settingsFilePath(): string {
@@ -69,7 +73,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -99,6 +103,9 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.api?.token === "string" && data.api.token.length > 0) {
     settings.api = { token: data.api.token };
+  }
+  if (typeof data?.commons?.enabled === "boolean") {
+    settings.commons = { enabled: data.commons.enabled };
   }
   return settings;
 }
@@ -162,6 +169,16 @@ export async function getApiToken(path?: string): Promise<string | undefined> {
 }
 
 /** Persists an explicit API token atomically (merging into existing settings). */
+/** Bastra Commons enabled? Default false (opt-in). */
+export async function getCommonsEnabled(path?: string): Promise<boolean> {
+  return (await readSettings(path)).commons?.enabled ?? false;
+}
+
+export async function setCommonsEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, commons: { enabled: on } }, path);
+}
+
 export async function setApiToken(token: string, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, api: { token } }, path);

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Bastra Commons (beta)**: `bastra commons enable|update|disable|status`
+  git-syncs a community vault of verified engineering recipes to
+  `~/.bastra/commons` and the daemon loads it as a second, strictly read-only
+  BM25 index. `recall` fuses Commons hits (`scope: commons`) slightly below
+  personal memories; on id collisions the personal memory wins and
+  `load_memory` falls back to Commons. Best-practice status in the Commons is
+  earned through independent verification records, never declared — see the
+  wiki page "Bastra Commons".
 - Energy-aware Ollama model lifecycle (#78, #109): the daemon prewarms the
   embedding model on boot, sends a per-request `keep_alive`
   (`BASTRA_OLLAMA_KEEP_ALIVE`, default `10m`) via the native `/api/embed`

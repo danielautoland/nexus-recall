@@ -36,7 +36,9 @@ import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { getEmbeddingProvider } from "./settings.js";
+import { getEmbeddingProvider, getCommonsEnabled } from "./settings.js";
+import { commonsPath } from "./cli/commons.js";
+import { existsSync } from "node:fs";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -140,6 +142,28 @@ async function main(): Promise<void> {
   const search = new SearchIndex(vault);
   search.start();
 
+  // Bastra Commons: read-only Community-Rezept-Index. Bewusst BM25-only —
+  // kein Embedding-Backfill, kein RelatedEnricher: in das git-synchronisierte
+  // Verzeichnis wird NIE geschrieben (#104-Lektion: ein Schreiber weniger).
+  let commonsSearch: SearchIndex | null = null;
+  if (await getCommonsEnabled()) {
+    const recipesDir = path.join(commonsPath(), "recipes");
+    if (existsSync(recipesDir)) {
+      try {
+        const commonsVault = new Vault(recipesDir);
+        await commonsVault.init();
+        commonsSearch = new SearchIndex(commonsVault);
+        commonsSearch.start();
+        console.error(`[bastra-recall] commons: enabled (${commonsVault.size()} recipes from ${recipesDir})`);
+      } catch (err) {
+        console.error(`[bastra-recall] commons: failed to load (${(err as Error).message}) — continuing without`);
+        commonsSearch = null;
+      }
+    } else {
+      console.error(`[bastra-recall] commons: enabled but not cloned — run 'bastra commons enable'`);
+    }
+  }
+
   // Hybrid-Recall: provider precedence env → cli-settings.json → API-key → none.
   // embeddingStatusLine logs the resolved mode on EVERY path including success —
   // the silent-success path was the root of #79.
@@ -232,6 +256,7 @@ async function main(): Promise<void> {
     search,
     telemetry,
     vaultPath: VAULT_PATH!,
+    commonsSearch,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the

@@ -69,8 +69,9 @@ export function shouldSkipPath(filePath: string, _cwd?: string): boolean {
   return false;
 }
 
-/** Scopes, die in JEDEM Projekt-Kontext relevant sein können. */
-const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy"]);
+/** Scopes, die in JEDEM Projekt-Kontext relevant sein können. "commons" =
+ *  Bastra-Commons-Rezepte (projektunabhängiges Lösungswissen). */
+const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy", "commons"]);
 
 /**
  * Scope-Hard-Filter für Recall-Hints (#107, #110): bei erkanntem Projekt

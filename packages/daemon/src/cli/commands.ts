@@ -21,6 +21,9 @@ Commands:
   config set <key> <value>   Write a setting (update.mode = notify|auto|off)
   token [rotate]             Print the REST API token (mint on first use) for
                              browser/REST clients; 'rotate' issues a fresh one
+  commons <enable|update|disable|status>
+                             Bastra Commons: community-proven recipes as a
+                             read-only second recall index (git-synced)
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)

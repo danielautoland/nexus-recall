@@ -32,7 +32,15 @@ export interface ToolDeps {
   search: SearchIndex;
   telemetry: Telemetry;
   vaultPath: string;
+  /** Read-only Bastra-Commons-Index (BM25-only), wenn `bastra commons enable`
+   *  aktiv ist. Hits tragen scope "commons" aus ihrem Frontmatter — kein
+   *  eigenes source-Feld nötig. */
+  commonsSearch?: SearchIndex | null;
 }
+
+/** Dämpfung für Commons-Hits in der Fusion: eigene Memories schlagen
+ *  generische Community-Rezepte bei gleicher Relevanz. */
+const COMMONS_SCORE_FACTOR = 0.8;
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
 
@@ -198,9 +206,22 @@ export async function recallHandler(
     expand_hops: parsed.data.expand_hops as 0 | 1 | undefined,
     onStage: collector.listener,
   };
-  const rawHits = deps.search.hasEmbeddings()
+  let rawHits = deps.search.hasEmbeddings()
     ? await deps.search.recallHybrid(parsed.data.query, recallOpts)
     : deps.search.recall(parsed.data.query, recallOpts);
+
+  // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, gedämpft
+  // fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
+  // expliziter scope-Filter (außer "commons") überspringt die Fusion.
+  if (deps.commonsSearch && (!parsed.data.scope || parsed.data.scope === "commons")) {
+    const commonsHits = deps.commonsSearch
+      .recall(parsed.data.query, { k: recallOpts.k, type: parsed.data.type })
+      .map((h) => ({ ...h, score: h.score * COMMONS_SCORE_FACTOR }));
+    const ownIds = new Set(rawHits.map((h) => h.id));
+    rawHits = [...rawHits, ...commonsHits.filter((h) => !ownIds.has(h.id))]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, recallOpts.k ?? 5);
+  }
   const latencyMs = Date.now() - t0;
 
   // Prong 3 (#50 / #9): Sub-Floor-Rauschen gar nicht erst zurückgeben.
@@ -286,7 +307,9 @@ export async function loadMemoryHandler(
   const parsed = LoadMemoryArgs.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
 
-  const m = deps.search.loadFull(parsed.data.id);
+  // Commons-Fallback: persönlicher Vault gewinnt; nur wenn die ID dort
+  // nicht existiert, wird im read-only Commons-Index nachgeschlagen.
+  const m = deps.search.loadFull(parsed.data.id) ?? deps.commonsSearch?.loadFull(parsed.data.id);
   const hookHint = deps.telemetry.findHookHintFor(parsed.data.id);
   fireAndForget(
     deps.telemetry.logLoadMemory({
