@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `load_memory` falls back to Commons. Best-practice status in the Commons is
   earned through independent verification records, never declared — see the
   wiki page "Bastra Commons".
+- **Commons verify loop**: `bastra commons verify <recipe-id> <works|fails>
+  ["env note"]` writes an append-only verification record
+  (`verifications/<recipe>/<verifier>.json`, one per user+solution, history
+  via git) and submits it as a mini pull request. The daemon counts merged
+  records on boot and feeds them into the fusion ranking
+  (`commonsRankFactor`: independent works lift a recipe, fails sink it —
+  capped both ways). `load_memory` of a commons recipe returns the evidence
+  counts plus a `verify_hint`, so agents close the loop right where the
+  recipe was applied.
 - Energy-aware Ollama model lifecycle (#78, #109): the daemon prewarms the
   embedding model on boot, sends a per-request `keep_alive`
   (`BASTRA_OLLAMA_KEEP_ALIVE`, default `10m`) via the native `/api/embed`

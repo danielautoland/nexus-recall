@@ -44,7 +44,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     }
     case "config": return cmdConfig(args);
     case "token": return cmdToken({ sub: args.surface, json: args.json });
-    case "commons": return cmdCommons({ sub: args.surface });
+    case "commons": return cmdCommons({ sub: args.surface, positional: args.positional });
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
       return 2;

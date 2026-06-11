@@ -26,6 +26,7 @@ import {
 import { Telemetry, fireAndForget } from "./telemetry.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
+import { commonsRankFactor } from "./cli/commons.js";
 
 export interface ToolDeps {
   vault: Vault;
@@ -36,11 +37,10 @@ export interface ToolDeps {
    *  aktiv ist. Hits tragen scope "commons" aus ihrem Frontmatter — kein
    *  eigenes source-Feld nötig. */
   commonsSearch?: SearchIndex | null;
+  /** works/fails-Zählung aus den Verification-Records pro Rezept-ID — die
+   *  Evidenz, die das Fusion-Ranking hebt oder senkt (verify-Loop). */
+  commonsVerifications?: Map<string, { works: number; fails: number }> | null;
 }
-
-/** Dämpfung für Commons-Hits in der Fusion: eigene Memories schlagen
- *  generische Community-Rezepte bei gleicher Relevanz. */
-const COMMONS_SCORE_FACTOR = 0.8;
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
 
@@ -216,7 +216,10 @@ export async function recallHandler(
   if (deps.commonsSearch && (!parsed.data.scope || parsed.data.scope === "commons")) {
     const commonsHits = deps.commonsSearch
       .recall(parsed.data.query, { k: recallOpts.k, type: parsed.data.type })
-      .map((h) => ({ ...h, score: h.score * COMMONS_SCORE_FACTOR }));
+      .map((h) => {
+        const v = deps.commonsVerifications?.get(h.id) ?? { works: 0, fails: 0 };
+        return { ...h, score: h.score * commonsRankFactor(v.works, v.fails) };
+      });
     const ownIds = new Set(rawHits.map((h) => h.id));
     rawHits = [...rawHits, ...commonsHits.filter((h) => !ownIds.has(h.id))]
       .sort((a, b) => b.score - a.score)
@@ -267,6 +270,8 @@ export interface LoadMemoryResult {
   frontmatter: Record<string, unknown>;
   body: string;
   file_path: string;
+  /** Nur bei Commons-Rezepten: Evidenz-Zähler + verify-Aufforderung. */
+  commons?: { works: number; fails: number; verify_hint: string };
 }
 
 /** Frontmatter-Felder, die das Modell zum Anwenden eines Memorys braucht.
@@ -309,7 +314,9 @@ export async function loadMemoryHandler(
 
   // Commons-Fallback: persönlicher Vault gewinnt; nur wenn die ID dort
   // nicht existiert, wird im read-only Commons-Index nachgeschlagen.
-  const m = deps.search.loadFull(parsed.data.id) ?? deps.commonsSearch?.loadFull(parsed.data.id);
+  const own = deps.search.loadFull(parsed.data.id);
+  const m = own ?? deps.commonsSearch?.loadFull(parsed.data.id);
+  const fromCommons = !own && m !== undefined;
   const hookHint = deps.telemetry.findHookHintFor(parsed.data.id);
   fireAndForget(
     deps.telemetry.logLoadMemory({
@@ -353,11 +360,23 @@ export async function loadMemoryHandler(
   // Auto-Related-Block. `verbosity: "full"` liefert alles (Mac-App / Debug).
   const full = parsed.data.verbosity === "full";
   const fm = m.fm as unknown as Record<string, unknown>;
+  // verify-Loop: ein Commons-Rezept, das geladen (und gleich angewendet)
+  // wird, bringt seine Evidenz + die Aufforderung mit, das Ergebnis zu
+  // verewigen — der Agent schließt den Kreis am Ort des Geschehens.
+  const verifyBlock = fromCommons
+    ? {
+        commons: {
+          ...(deps.commonsVerifications?.get(m.fm.id) ?? { works: 0, fails: 0 }),
+          verify_hint: `After applying this recipe, record the outcome: bastra commons verify ${m.fm.id} works|fails ["env note"]`,
+        },
+      }
+    : {};
   return {
     id: m.fm.id,
     frontmatter: full ? fm : leanFrontmatter(fm),
     body: full ? m.body : bodyForTelemetry,
     file_path: m.filePath,
+    ...verifyBlock,
   };
 }
 

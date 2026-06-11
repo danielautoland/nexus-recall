@@ -37,7 +37,7 @@ import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { getEmbeddingProvider, getCommonsEnabled } from "./settings.js";
-import { commonsPath } from "./cli/commons.js";
+import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { existsSync } from "node:fs";
 import {
   recallHandler,
@@ -146,6 +146,7 @@ async function main(): Promise<void> {
   // kein Embedding-Backfill, kein RelatedEnricher: in das git-synchronisierte
   // Verzeichnis wird NIE geschrieben (#104-Lektion: ein Schreiber weniger).
   let commonsSearch: SearchIndex | null = null;
+  let commonsVerifications: Map<string, { works: number; fails: number }> | null = null;
   if (await getCommonsEnabled()) {
     const recipesDir = path.join(commonsPath(), "recipes");
     if (existsSync(recipesDir)) {
@@ -154,7 +155,10 @@ async function main(): Promise<void> {
         await commonsVault.init();
         commonsSearch = new SearchIndex(commonsVault);
         commonsSearch.start();
-        console.error(`[bastra-recall] commons: enabled (${commonsVault.size()} recipes from ${recipesDir})`);
+        // verify-Loop: Records einlesen — Evidenz fließt ins Fusion-Ranking.
+        commonsVerifications = loadVerificationCounts(commonsPath());
+        const verified = [...commonsVerifications.values()].reduce((s, v) => s + v.works + v.fails, 0);
+        console.error(`[bastra-recall] commons: enabled (${commonsVault.size()} recipes, ${verified} verification records from ${recipesDir})`);
       } catch (err) {
         console.error(`[bastra-recall] commons: failed to load (${(err as Error).message}) — continuing without`);
         commonsSearch = null;
@@ -257,6 +261,7 @@ async function main(): Promise<void> {
     telemetry,
     vaultPath: VAULT_PATH!,
     commonsSearch,
+    commonsVerifications,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the

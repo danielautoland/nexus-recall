@@ -16,12 +16,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex, AUTO_RELATED_START } from "@bastra-recall/core";
 import { Telemetry } from "../src/telemetry.js";
 import { recallHandler, loadMemoryHandler, saveMemoryHandler, truncateSummary, type ToolDeps } from "../src/tool-handlers.js";
+import { commonsRankFactor, buildVerificationRecord, verificationRecordPath, loadVerificationCounts } from "../src/cli/commons.js";
 
 const LONG_SUMMARY =
   "alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike november " +
@@ -464,5 +465,56 @@ test("save_memory returns high save_quality for specific anchored triggers", asy
     assert.deepEqual(res.save_quality.suggestions, []);
   } finally {
     await close();
+  }
+});
+
+test("verify-loop: rank factor follows evidence, records are counted, load_memory carries the verify hint", async () => {
+  // Pure Evidenz→Ranking-Kurve: works hebt (gekappt), fails senkt, geclampt.
+  assert.equal(commonsRankFactor(0, 0), 0.8);
+  assert.ok(commonsRankFactor(2, 0) > commonsRankFactor(0, 0), "works must lift");
+  assert.equal(commonsRankFactor(10, 0), 0.95, "lift is capped below personal hits");
+  assert.ok(commonsRankFactor(0, 3) < 0.8, "fails must sink");
+  assert.equal(commonsRankFactor(0, 99), 0.55, "sink is capped (0.8 − 0.25) — demotion, not censorship");
+
+  // Record bauen + zählen über das Dateilayout (ein Record pro Verifier+Rezept).
+  const root = await mkdtemp(join(tmpdir(), "bastra-verify-"));
+  try {
+    const rec = buildVerificationRecord("spinner-recipe", "works", "React 19", "abc123def456", "2026-06-11");
+    assert.equal(rec.result, "works");
+    assert.equal(rec.environment.note, "React 19");
+    const p = verificationRecordPath(root, "spinner-recipe", "abc123def456");
+    await mkdir(join(root, "verifications", "spinner-recipe"), { recursive: true });
+    await writeFile(p, JSON.stringify(rec), "utf8");
+    await writeFile(verificationRecordPath(root, "spinner-recipe", "ffff00001111"), JSON.stringify({ ...rec, verifier: "ffff00001111", result: "fails" }), "utf8");
+    const counts = loadVerificationCounts(root);
+    assert.deepEqual(counts.get("spinner-recipe"), { works: 1, fails: 1 });
+
+    // load_memory eines Commons-Rezepts trägt Evidenz + verify_hint.
+    const dirC = join(root, "recipes-vault");
+    await mkdir(dirC, { recursive: true });
+    const ts = new Date().toISOString();
+    await writeFile(join(dirC, "r.md"), ["---", "id: spinner-recipe", "title: t", "type: lesson", "summary: s", "topic_path:", "  - t", "tags:", "  - t", "scope: commons", "recall_when:", "  - w", `created: ${ts}`, `updated: ${ts}`, "---", "", "Body.", ""].join("\n"), "utf8");
+    const commonsVault = new Vault(dirC);
+    await commonsVault.init();
+    const commonsSearch = new SearchIndex(commonsVault);
+    commonsSearch.start();
+    const emptyVaultDir = join(root, "empty-vault");
+    await mkdir(emptyVaultDir, { recursive: true });
+    const vault = new Vault(emptyVaultDir);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: emptyVaultDir, commonsSearch, commonsVerifications: counts };
+    const loaded = await loadMemoryHandler(deps, { id: "spinner-recipe" });
+    assert.ok(loaded.commons, "commons block must be present for commons-sourced loads");
+    assert.equal(loaded.commons?.works, 1);
+    assert.equal(loaded.commons?.fails, 1);
+    assert.match(loaded.commons?.verify_hint ?? "", /bastra commons verify spinner-recipe/);
+    search.stop();
+    commonsSearch.stop();
+    await vault.stop?.();
+    await commonsVault.stop?.();
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
