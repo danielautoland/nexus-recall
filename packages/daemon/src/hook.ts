@@ -167,15 +167,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // 6) Score-floor filter + Scope-Hard-Filter (#107): Hints aus fremden
-  //    Projekt-Scopes fliegen raus, außer sie sitzen im REQUIRED-Band —
-  //    ein starker recall_when-Match schlägt die Scope-Heuristik.
+  // 6) Score-floor filter + Scope-Hard-Filter (#107, #110): Hints aus
+  //    fremden Projekt-Scopes fliegen raus — seit #110 auch im REQUIRED-
+  //    Band. Die ursprüngliche Ausnahme („starker recall_when-Match schlägt
+  //    die Scope-Heuristik") wurde noch am Einführungstag widerlegt: ein
+  //    bastra-io-Hint kam mit Score 159 bei einem bastra-recall-Edit durch.
   const filteredHits: RecallHit[] = [];
   let droppedScopeCount = 0;
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < SCORE_FLOOR) continue;
-      if (h.score < MUST_LOAD_SCORE && !isScopeCompatible(h.scope, project)) {
+      if (!isScopeCompatible(h.scope, project)) {
         droppedScopeCount++;
         continue;
       }

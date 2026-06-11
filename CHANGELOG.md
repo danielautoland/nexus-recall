@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   LaunchAgent owns its lifecycle.
 - Recall-hint hygiene: the same memory now appears in `<recall-hints>` at most
   once per session by default (`BASTRA_HOOK_MAX_SHOW`, #106), and hints from
-  foreign project scopes below the required band are hard-filtered (#107).
+  foreign project scopes are hard-filtered in all score bands (#107, #110).
 - `save_memory` quality advisory (#108): trigger-collision counting applies
   the recall noise floor instead of reporting the raw top-k for every trigger.
 
