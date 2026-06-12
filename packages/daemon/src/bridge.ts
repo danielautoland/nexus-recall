@@ -19,6 +19,8 @@
  *   load_memory({ id })                  -> { id, frontmatter, body, file_path } | null
  *   save_memory(SaveMemoryInput)         -> { id, file_path, created }
  *   delete_memory({ id })                -> { id, file_path, deleted }
+ *   docs_settings_get()                  -> { mode, language }
+ *   docs_settings_set({ mode?, language? }) -> { mode, language }
  */
 import {
   Vault,
@@ -37,6 +39,15 @@ import {
 } from "@bastra-recall/core";
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
+import {
+  getDocsMode,
+  setDocsMode,
+  getDocsLanguage,
+  setDocsLanguage,
+  isDocsMode,
+  isDocsLanguage,
+  DOCS_MODES,
+} from "./settings.js";
 import readline from "node:readline";
 import * as path from "node:path";
 
@@ -376,6 +387,37 @@ async function main(): Promise<void> {
           if (!filePath) throw new Error("file_path is required");
           vault.reindexFile(filePath)
             .then(() => send({ id, result: { reindexed: true, file_path: filePath } }))
+            .catch((err: Error) => send({ id, error: { message: err.message } }));
+          return;
+        }
+        // Produkt-Doku-Settings für die Options-Pane der Mac-App — dünne
+        // Wrapper über das OSS-Settings-File (~/.bastra/cli-settings.json),
+        // damit die App das File nie direkt anfasst.
+        case "docs_settings_get": {
+          Promise.all([getDocsMode(), getDocsLanguage()])
+            .then(([mode, language]) => send({ id, result: { mode, language } }))
+            .catch((err: Error) => send({ id, error: { message: err.message } }));
+          return;
+        }
+        case "docs_settings_set": {
+          const mode = params?.mode;
+          const language = params?.language;
+          (async () => {
+            if (mode !== undefined) {
+              if (!isDocsMode(mode)) {
+                throw new Error(`mode must be one of: ${DOCS_MODES.join(" | ")}`);
+              }
+              await setDocsMode(mode);
+            }
+            if (language !== undefined) {
+              if (!isDocsLanguage(language)) {
+                throw new Error("language must be a short tag like 'en', 'de', 'pt-br'");
+              }
+              await setDocsLanguage(language);
+            }
+            return { mode: await getDocsMode(), language: await getDocsLanguage() };
+          })()
+            .then((result) => send({ id, result }))
             .catch((err: Error) => send({ id, error: { message: err.message } }));
           return;
         }

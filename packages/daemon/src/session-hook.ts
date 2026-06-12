@@ -24,7 +24,8 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
-import { effectiveUpdateMode } from "./settings.js";
+import { effectiveUpdateMode, getDocsLanguage, getDocsMode } from "./settings.js";
+import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
@@ -225,7 +226,22 @@ async function main(): Promise<void> {
     /* relay is best-effort */
   }
 
-  const extras = taxonomyBlock + updateBlock + pendingBlock;
+  // Produkt-Doku (docs.mode): Anweisung nur injizieren, wenn das Feature
+  // eingeschaltet ist UND ein Projekt erkannt wurde (Doku ist per-project).
+  // Settings-Read ist ein lokaler File-Read — kein Daemon-Roundtrip nötig.
+  let dokuBlock = "";
+  if (project) {
+    try {
+      const docsMode = await getDocsMode();
+      if (docsMode !== "off") {
+        dokuBlock = formatDokuBlock(docsMode, await getDocsLanguage(), project);
+      }
+    } catch {
+      // Docs hint is best-effort — never block session start.
+    }
+  }
+
+  const extras = taxonomyBlock + updateBlock + pendingBlock + dokuBlock;
   // hint_tokens_est (#72): Token-Schätzung des injizierten Kontexts.
   let injected = "";
   if (top.length === 0 && extras === "") {

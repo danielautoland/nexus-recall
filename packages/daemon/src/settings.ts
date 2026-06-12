@@ -13,6 +13,12 @@
  *       env / API-key. This is the file half of the #79 fix.
  *   - ollama.autostart (optional): boolean (default true)
  *       Whether `bastra install` keeps a local `ollama serve` running at login.
+ *   - docs.mode (optional): "off" (default) | "suggest" | "auto"
+ *       Product-documentation capture: when a feature area is finished, the
+ *       agent updates the per-project product doc in dokumentationen/<scope>/.
+ *       "suggest" = propose first, "auto" = write without asking, "off" = the
+ *       session hook injects no docs instruction at all.
+ *   - docs.language (optional): doc language, e.g. "en" | "de" (default "en").
  *
  * The env var BASTRA_UPDATE_CHECK=off is a hard kill-switch over update.mode.
  * The env var BASTRA_EMBEDDING_PROVIDER wins over embedding.provider (the file).
@@ -31,6 +37,11 @@ export const DEFAULT_UPDATE_MODE: UpdateMode = "notify";
 export type EmbeddingProviderName = "ollama" | "openai" | "none";
 export const EMBEDDING_PROVIDERS: readonly EmbeddingProviderName[] = ["ollama", "openai", "none"];
 
+export type DocsMode = "off" | "suggest" | "auto";
+export const DOCS_MODES: readonly DocsMode[] = ["off", "suggest", "auto"];
+export const DEFAULT_DOCS_MODE: DocsMode = "off";
+export const DEFAULT_DOCS_LANGUAGE = "en";
+
 export interface CliSettings {
   update: { mode: UpdateMode };
   // undefined = "no opinion" → daemon falls through to env / API-key.
@@ -45,6 +56,10 @@ export interface CliSettings {
   // `bastra commons enable`; the daemon then loads the cloned repo as a
   // read-only second BM25 index.
   commons?: { enabled: boolean };
+  // Product-documentation capture: undefined = off. mode gates the session-hook
+  // instruction ("suggest" proposes, "auto" writes without asking); language is
+  // the language product docs are written in (free short tag, e.g. "de").
+  docs?: { mode?: DocsMode; language?: string };
 }
 
 export function settingsFilePath(): string {
@@ -53,6 +68,15 @@ export function settingsFilePath(): string {
 
 function isUpdateMode(v: unknown): v is UpdateMode {
   return typeof v === "string" && (UPDATE_MODES as readonly string[]).includes(v);
+}
+
+export function isDocsMode(v: unknown): v is DocsMode {
+  return typeof v === "string" && (DOCS_MODES as readonly string[]).includes(v);
+}
+
+/** Doc language is a free short tag ("en", "de", "pt-br") — not an enum. */
+export function isDocsLanguage(v: unknown): v is string {
+  return typeof v === "string" && /^[a-z]{2}(-[a-z]{2,4})?$/i.test(v.trim());
 }
 
 export function isEmbeddingProviderName(v: unknown): v is EmbeddingProviderName {
@@ -73,7 +97,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; docs?: { mode?: unknown; language?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -106,6 +130,23 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.commons?.enabled === "boolean") {
     settings.commons = { enabled: data.commons.enabled };
+  }
+  if (data?.docs !== undefined) {
+    // Invalid values drop to undefined (= defaults), same policy as embedding.
+    const docs: { mode?: DocsMode; language?: string } = {};
+    if (isDocsMode(data.docs.mode)) docs.mode = data.docs.mode;
+    else if (data.docs.mode !== undefined) {
+      process.stderr.write(
+        `[bastra-recall] cli-settings.json: ignoring invalid docs.mode ${JSON.stringify(data.docs.mode)}\n`,
+      );
+    }
+    if (isDocsLanguage(data.docs.language)) docs.language = data.docs.language.trim().toLowerCase();
+    else if (data.docs.language !== undefined) {
+      process.stderr.write(
+        `[bastra-recall] cli-settings.json: ignoring invalid docs.language ${JSON.stringify(data.docs.language)}\n`,
+      );
+    }
+    if (docs.mode !== undefined || docs.language !== undefined) settings.docs = docs;
   }
   return settings;
 }
@@ -177,6 +218,26 @@ export async function getCommonsEnabled(path?: string): Promise<boolean> {
 export async function setCommonsEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, commons: { enabled: on } }, path);
+}
+
+/** Product-docs capture mode. Default "off" (opt-in). */
+export async function getDocsMode(path?: string): Promise<DocsMode> {
+  return (await readSettings(path)).docs?.mode ?? DEFAULT_DOCS_MODE;
+}
+
+export async function setDocsMode(mode: DocsMode, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, docs: { ...current.docs, mode } }, path);
+}
+
+/** Language product docs are written in. Default "en". */
+export async function getDocsLanguage(path?: string): Promise<string> {
+  return (await readSettings(path)).docs?.language ?? DEFAULT_DOCS_LANGUAGE;
+}
+
+export async function setDocsLanguage(language: string, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, docs: { ...current.docs, language: language.trim().toLowerCase() } }, path);
 }
 
 export async function setApiToken(token: string, path: string = settingsFilePath()): Promise<void> {

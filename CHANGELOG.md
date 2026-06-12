@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Product docs (opt-in)**: living user-facing documentation per project in
+  `dokumentationen/<project>/` — one markdown file per feature area, written
+  update-in-place via the new `save_product_doc` MCP/REST tool (stable id
+  `doku-<project>-<area>`). Two settings drive it: `docs.mode`
+  (`off`|`suggest`|`auto`, default `off`) and `docs.language` (default `en`),
+  via `bastra config set`, the new loopback `GET/POST /settings/docs` endpoint
+  (for the Mac-app options pane), or the settings file. With mode set, the
+  SessionStart hook injects the capture instruction (`suggest` proposes first,
+  `auto` writes autonomously) and the stop hook's feature-completion suggestion
+  reminds about the doc. `type: doc` hits are damped (×0.5) in default `recall`
+  so doc bodies never crowd out lessons; `find_document` ranks them undamped.
+  The `bastra` panel shows the docs mode.
 - **Bastra Commons (beta)**: `bastra commons enable|update|disable|status`
   git-syncs a community vault of verified engineering recipes to
   `~/.bastra/commons` and the daemon loads it as a second, strictly read-only

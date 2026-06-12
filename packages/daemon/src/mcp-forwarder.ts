@@ -57,6 +57,7 @@ import {
 import { MEMORY_TOOL_DEFS } from "./tool-handlers.js";
 import { documentTools } from "./documents-handler.js";
 import { documentWriteTools } from "./documents-write-handler.js";
+import { productDocTools } from "./product-doc-handler.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import {
@@ -243,7 +244,7 @@ async function main(): Promise<void> {
     // Document-Write-Tools immer mitlisten — der Daemon entscheidet beim
     // Aufruf, ob BASTRA_DOCUMENT_WRITE=1 gesetzt ist und antwortet sonst
     // mit einer klaren Pro-Feature-Fehlermeldung.
-    tools: [...MEMORY_TOOL_DEFS, ...documentTools, ...documentWriteTools],
+    tools: [...MEMORY_TOOL_DEFS, ...documentTools, ...documentWriteTools, ...productDocTools],
   }));
 
   const banterMode = banterModeFromEnv(process.env);

@@ -1,27 +1,36 @@
 /**
  * `bastra config get|set <key> [value]` — settings access from the CLI.
  *
- * Keys: update.mode, embedding.provider, ollama.autostart. The store is the
- * OSS-owned ~/.bastra/cli-settings.json (never the Pro-app's config.json).
- * Browsing/editing memories stays in the Pro app — this is flags only.
+ * Keys: update.mode, embedding.provider, ollama.autostart, docs.mode,
+ * docs.language. The store is the OSS-owned ~/.bastra/cli-settings.json
+ * (never the Pro-app's config.json). Browsing/editing memories stays in
+ * the Pro app — this is flags only.
  */
 import {
   DEFAULT_UPDATE_MODE,
   UPDATE_MODES,
   EMBEDDING_PROVIDERS,
+  DOCS_MODES,
+  DEFAULT_DOCS_MODE,
   getUpdateMode,
   setUpdateMode,
   getEmbeddingProvider,
   setEmbeddingProvider,
   getOllamaAutostart,
   setOllamaAutostart,
+  getDocsMode,
+  setDocsMode,
+  getDocsLanguage,
+  setDocsLanguage,
   isEmbeddingProviderName,
+  isDocsMode,
+  isDocsLanguage,
   settingsFilePath,
   type UpdateMode,
 } from "../settings.js";
 import type { ParsedArgs } from "./types.js";
 
-const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart"] as const;
+const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language"] as const;
 type KnownKey = (typeof KNOWN_KEYS)[number];
 
 function isKnownKey(k: string | null): k is KnownKey {
@@ -63,6 +72,12 @@ async function cmdConfigGet(key: KnownKey): Promise<number> {
     }
     case "ollama.autostart":
       process.stdout.write(`${await getOllamaAutostart()}\n`);
+      return 0;
+    case "docs.mode":
+      process.stdout.write(`${await getDocsMode()}\n`);
+      return 0;
+    case "docs.language":
+      process.stdout.write(`${await getDocsLanguage()}\n`);
       return 0;
   }
 }
@@ -110,6 +125,32 @@ async function cmdConfigSet(key: KnownKey, value: string | null): Promise<number
       }
       await setOllamaAutostart(on);
       process.stdout.write(`✓ ollama.autostart = ${on}\n  stored in ${settingsFilePath()}\n`);
+      return 0;
+    }
+    case "docs.mode": {
+      if (!isDocsMode(value)) {
+        process.stderr.write(
+          `error: docs.mode must be one of: ${DOCS_MODES.join(" | ")} (default: ${DEFAULT_DOCS_MODE})\n`,
+        );
+        return 2;
+      }
+      await setDocsMode(value);
+      process.stdout.write(`✓ docs.mode = ${value}\n  stored in ${settingsFilePath()}\n`);
+      if (value !== "off") {
+        process.stdout.write(
+          `  product docs land in dokumentationen/<project>/ in your vault ` +
+            `(${value === "auto" ? "written autonomously on feature completion" : "proposed first, written after you agree"}).\n`,
+        );
+      }
+      return 0;
+    }
+    case "docs.language": {
+      if (!isDocsLanguage(value)) {
+        process.stderr.write("error: docs.language must be a short tag like 'en', 'de', 'pt-br'\n");
+        return 2;
+      }
+      await setDocsLanguage(value);
+      process.stdout.write(`✓ docs.language = ${value.trim().toLowerCase()}\n  stored in ${settingsFilePath()}\n`);
       return 0;
     }
   }

@@ -55,7 +55,8 @@ Vault (configurable, plain markdown + YAML frontmatter, Obsidian-compatible)
 bastra-recall daemon (TypeScript / Node 22+, single local process)
   - In-memory BM25 index (MiniSearch) — recall_when×5, title×4, tags×3
   - Hybrid recall: BM25 + embeddings (Ollama or OpenAI) via RRF fusion
-  - Tools: recall, load_memory, save_memory, find/read/save_document
+  - Tools: recall, load_memory, save_memory, find/read/save_document,
+    save_product_doc
   - Save path: validates frontmatter → writes file → force-reindexes
     (so a save and a recall in the same turn are consistent)
   - Transport: stdio MCP + HTTP REST (for non-MCP clients)
@@ -204,6 +205,18 @@ Manual: `brew install ollama && ollama pull embeddinggemma && bastra config set 
 
 Full details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (wiki).
 
+### Product docs (optional)
+
+Beyond memories, the vault can keep **living product documentation** per project — user-facing docs ("how do I use this?") in `dokumentationen/<project>/`, one markdown file per feature area, updated in place via the `save_product_doc` tool. Off by default; enable with:
+
+```bash
+bastra config set docs.mode suggest   # agent proposes a doc update when a feature area is finished
+bastra config set docs.mode auto      # agent updates the doc autonomously
+bastra config set docs.language de    # language the docs are written in (default: en)
+```
+
+With `docs.mode` set, the session hook injects the capture instruction: when a user-facing feature area is **completely finished** (works end-to-end, commit landed), the agent creates or refreshes that area's doc — written for the end user, no code internals. Developer-facing state (file maps, architecture) stays in `project-fact` memories. Docs are searchable via `find_document`; in the default `recall` they rank deliberately below memories so long doc bodies never crowd out lessons. Full details: **[Product Docs](https://github.com/n0mad-ai/bastra-recall/wiki/Product-Docs)** (wiki).
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -223,6 +236,9 @@ Endpoints (all `POST`, JSON body):
 | `/api/v1/save_memory` | save_memory |
 | `/api/v1/find_document` / `read_document` / `open_document` | document search |
 | `/api/v1/save_document` / `recategorize_document` / `move_document` | document write (Pro) |
+| `/api/v1/save_product_doc` | product docs |
+
+In addition, `GET`/`POST /settings/docs` reads/writes the product-docs settings (`{mode, language}`) — loopback-only like `/hook/*`, intended for local UIs such as the Bastra Mac app's options pane.
 
 Auth and CORS:
 
@@ -312,7 +328,8 @@ Vault (konfigurierbar, reines Markdown + YAML-Frontmatter, Obsidian-kompatibel)
 bastra-recall Daemon (TypeScript / Node 22+, ein lokaler Prozess)
   - In-Memory BM25-Index (MiniSearch) — recall_when×5, title×4, tags×3
   - Hybrid Recall: BM25 + Embeddings (Ollama oder OpenAI) via RRF-Fusion
-  - Tools: recall, load_memory, save_memory, find/read/save_document
+  - Tools: recall, load_memory, save_memory, find/read/save_document,
+    save_product_doc
   - Save-Path: validiert Frontmatter → schreibt Datei → erzwingt Reindex
     (sodass save und recall im selben Turn konsistent sind)
   - Transport: stdio-MCP + HTTP-REST (für Nicht-MCP-Clients)
@@ -461,6 +478,18 @@ Manuell: `brew install ollama && ollama pull embeddinggemma && bastra config set
 
 Details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (Wiki).
 
+### Produkt-Doku (optional)
+
+Neben Memories kann der Vault **lebende Produkt-Dokumentation** pro Projekt führen — User-facing Doku („wie benutze ich das?") in `dokumentationen/<projekt>/`, eine Markdown-Datei pro Feature-Bereich, in-place aktualisiert über das Tool `save_product_doc`. Standardmäßig aus; einschalten mit:
+
+```bash
+bastra config set docs.mode suggest   # Agent schlägt das Doku-Update vor, wenn ein Bereich fertig ist
+bastra config set docs.mode auto      # Agent aktualisiert die Doku selbstständig
+bastra config set docs.language de    # Sprache der Doku (Default: en)
+```
+
+Mit gesetztem `docs.mode` injiziert der Session-Hook die Capture-Anweisung: Wenn ein User-facing Feature-Bereich **komplett fertig** ist (läuft end-to-end, Commit gelandet), legt der Agent die Doku des Bereichs an bzw. frischt sie auf — geschrieben für den Endnutzer, keine Code-Interna. Entwickler-Stand (File-Maps, Architektur) bleibt in `project-fact`-Memories. Doku ist über `find_document` suchbar; im Default-`recall` rankt sie bewusst unter den Memories, damit lange Doku-Bodies keine Lessons verdrängen. Details: **[Product Docs](https://github.com/n0mad-ai/bastra-recall/wiki/Product-Docs)** (Wiki).
+
 ### Updates
 
 `bastra update` zieht den neuesten Release (npm oder Homebrew), registriert alle Surfaces neu und startet den Daemon neu. Für freihändige Updates `bastra config set update.mode auto` — bastra stagt dann am Session-Start eine neue Version, ohne eine laufende Session zu stören. `bastra` ohne Argument zeigt Version, Update-Status, Daemon-Health und Vault-Größe.
@@ -480,6 +509,9 @@ Endpoints (alle `POST`, JSON-Body):
 | `/api/v1/save_memory` | save_memory |
 | `/api/v1/find_document` / `read_document` / `open_document` | Document-Suche |
 | `/api/v1/save_document` / `recategorize_document` / `move_document` | Document-Schreiben (Pro) |
+| `/api/v1/save_product_doc` | Produkt-Doku |
+
+Zusätzlich liest/schreibt `GET`/`POST /settings/docs` die Produkt-Doku-Settings (`{mode, language}`) — loopback-only wie `/hook/*`, gedacht für lokale UIs wie die Options-Pane der Bastra Mac-App.
 
 Auth und CORS:
 

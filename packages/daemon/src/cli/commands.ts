@@ -18,7 +18,8 @@ Commands:
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
   config get <key>           Read a setting (e.g. update.mode)
-  config set <key> <value>   Write a setting (update.mode = notify|auto|off)
+  config set <key> <value>   Write a setting (update.mode = notify|auto|off,
+                             docs.mode = off|suggest|auto, docs.language = en|de|…)
   token [rotate]             Print the REST API token (mint on first use) for
                              browser/REST clients; 'rotate' issues a fresh one
   commons <enable|update|disable|status>

@@ -64,6 +64,7 @@ import {
   recategorizeDocument,
   moveDocument,
 } from "./documents-write-handler.js";
+import { productDocTools, saveProductDocHandler } from "./product-doc-handler.js";
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { startBackgroundCheck } from "./update-check.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
@@ -301,6 +302,7 @@ async function main(): Promise<void> {
       ...MEMORY_TOOL_DEFS,
       ...documentTools,
       ...(DOCUMENT_WRITE_ENABLED ? documentWriteTools : []),
+      ...productDocTools,
     ],
   }));
 
@@ -371,6 +373,17 @@ async function main(): Promise<void> {
     if (name === "save_memory") {
       try {
         const result = await saveMemoryHandler(toolDeps, args);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return errorResult((err as Error).message);
+      }
+    }
+
+    if (name === "save_product_doc") {
+      try {
+        const result = await saveProductDocHandler(toolDeps, args);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };

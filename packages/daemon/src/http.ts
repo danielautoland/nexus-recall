@@ -70,7 +70,17 @@ import {
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
-import { getApiToken } from "./settings.js";
+import {
+  getApiToken,
+  getDocsLanguage,
+  getDocsMode,
+  setDocsLanguage,
+  setDocsMode,
+  isDocsMode,
+  isDocsLanguage,
+  DOCS_MODES,
+} from "./settings.js";
+import { saveProductDocHandler } from "./product-doc-handler.js";
 import type { EmbeddingStatus } from "./embedding-status.js";
 
 export interface HttpOptions {
@@ -316,6 +326,41 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
     if (method === "GET" && url === "/hook/drift") {
       sendJson(res, 200, { clusters: detectTaxonomyDrift(vault) });
+      return;
+    }
+
+    // Produkt-Doku-Settings für die Mac-App-Options-Pane: GET liest, POST
+    // schreibt nach ~/.bastra/cli-settings.json (das OSS-owned Settings-File —
+    // die App fasst es so nie direkt an). Loopback-only wie /hook/* (Host-Gate
+    // oben); kein Token, weil dieselbe Maschine + derselbe User.
+    if (url === "/settings/docs") {
+      if (method === "GET") {
+        Promise.all([getDocsMode(), getDocsLanguage()])
+          .then(([mode, language]) => sendJson(res, 200, { mode, language }))
+          .catch((err: Error) => sendJson(res, 500, { error: err.message }));
+        return;
+      }
+      if (method === "POST") {
+        readJsonBody(req, MAX_BODY_BYTES)
+          .then(async (body) => {
+            const mode = body.mode;
+            const language = body.language;
+            if (mode !== undefined && !isDocsMode(mode)) {
+              sendJson(res, 400, { error: `mode must be one of: ${DOCS_MODES.join(" | ")}` });
+              return;
+            }
+            if (language !== undefined && !isDocsLanguage(language)) {
+              sendJson(res, 400, { error: "language must be a short tag like 'en', 'de', 'pt-br'" });
+              return;
+            }
+            if (isDocsMode(mode)) await setDocsMode(mode);
+            if (isDocsLanguage(language)) await setDocsLanguage(language);
+            sendJson(res, 200, { mode: await getDocsMode(), language: await getDocsLanguage() });
+          })
+          .catch((err: Error) => sendJson(res, 400, { error: err.message }));
+        return;
+      }
+      sendJson(res, 405, { error: "method not allowed" });
       return;
     }
 
@@ -617,6 +662,8 @@ async function dispatchApi(
       return await loadMemoryHandler(toolDeps, body, { sessionId: ctx.ccSessionId ?? null });
     case "save_memory":
       return await saveMemoryHandler(toolDeps, body);
+    case "save_product_doc":
+      return await saveProductDocHandler(toolDeps, body);
 
     case "find_document": {
       const parsed = FindDocumentArgs.safeParse(body);

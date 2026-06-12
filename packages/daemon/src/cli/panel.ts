@@ -7,7 +7,7 @@
  */
 import { request as httpRequest } from "node:http";
 import { VERSION } from "./helpers.js";
-import { getUpdateMode } from "../settings.js";
+import { getUpdateMode, getDocsMode, getDocsLanguage } from "../settings.js";
 import { envFirst } from "../env.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -78,11 +78,13 @@ function renderBox(title: string, rows: Array<[string, string]>): string {
 
 export async function cmdPanel(_args: ParsedArgs): Promise<number> {
   const port = daemonPort();
-  // Fresh count (reconciles index vs. disk) + health + mode, in parallel.
-  const [health, freshCount, mode] = await Promise.all([
+  // Fresh count (reconciles index vs. disk) + health + modes, in parallel.
+  const [health, freshCount, mode, docsMode, docsLanguage] = await Promise.all([
     probeHealth(port),
     probeCount(port),
     getUpdateMode(),
+    getDocsMode(),
+    getDocsLanguage(),
   ]);
 
   const liveVersion = health?.version ?? VERSION;
@@ -107,11 +109,13 @@ export async function cmdPanel(_args: ParsedArgs): Promise<number> {
     ["update", `mode: ${mode}`],
     ["daemon", daemonRow],
     ["vault", vaultRow],
+    ["docs", docsMode === "off" ? "off" : `${docsMode} (${docsLanguage})`],
   ]);
 
   process.stdout.write(box + "\n");
   process.stdout.write("  bastra help                       all commands\n");
   process.stdout.write("  bastra config set update.mode …   notify | auto | off\n");
+  process.stdout.write("  bastra config set docs.mode …     off | suggest | auto (product docs)\n");
   if (health?.update_available) {
     process.stdout.write(`  bastra update                     get ${health.update_available.latest} now\n`);
   }

@@ -221,7 +221,7 @@ export class SearchIndex {
     }
 
     const tStale = stage.start("staleness.rank");
-    const ranked = this.applyStaleness(withHops);
+    const ranked = this.applyStaleness(withHops, opts);
     stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
 
     this.storeQueryCache(cacheKey, ranked);
@@ -336,7 +336,7 @@ export class SearchIndex {
     }
 
     const tStale = stage.start("staleness.rank");
-    const ranked = this.applyStaleness(withHops);
+    const ranked = this.applyStaleness(withHops, opts);
     stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
 
     this.storeQueryCache(cacheKey, ranked);
@@ -452,8 +452,13 @@ export class SearchIndex {
    *
    * Behält die Sortier-Semantik von `applyStalenessMultiplier`: Direct-
    * vs 1-hop-Hits bleiben getrennt sortiert.
+   *
+   * Doc-Dämpfung: type="doc" (Document-Sidecars + Produkt-Doku) wird im
+   * Default-Recall (kein expliziter type-Filter) gedämpft — lange Doc-Bodies
+   * sollen Lessons/Decisions nicht verdrängen. `find_document` und jeder
+   * Recall mit type:"doc" ranken ungedämpft (das ist die dedizierte Lane).
    */
-  private applyStaleness(hits: RecallHit[], now: Date = new Date()): RecallHit[] {
+  private applyStaleness(hits: RecallHit[], opts: RecallOptions = {}, now: Date = new Date()): RecallHit[] {
     const nowMs = now.getTime();
     for (const h of hits) {
       const fm = this.vault.get(h.id)?.fm as Record<string, unknown> | undefined;
@@ -467,7 +472,8 @@ export class SearchIndex {
         entry = { touchTs, status, computedAt: nowMs };
         this.stalenessCache.set(h.id, entry);
       }
-      const mult = STALE_MULTIPLIERS[entry.status];
+      let mult = STALE_MULTIPLIERS[entry.status];
+      if (!opts.type && h.type === "doc") mult *= DOC_TYPE_DAMPING;
       if (mult !== 1.0) h.score = round(h.score * mult);
     }
     const direct = hits.filter((h) => h.hop !== "1-hop");
@@ -635,6 +641,15 @@ const STALE_MULTIPLIERS: Record<StaleStatus, number> = {
   stale: 0.5,
   expired: 0.2,
 };
+
+/**
+ * Dämpfung für type="doc"-Hits im Default-Recall (kein expliziter type-
+ * Filter). Docs altern nie (DEFAULT_EXPIRATION_DAYS: null) UND haben lange
+ * Bodies — ohne Dämpfung würden Produkt-Doku und Document-Sidecars Lessons
+ * aus den Top-k drängen. 0.5 = gleiche Liga wie "stale": auffindbar, aber
+ * hinter frischen Memories. Mit type:"doc" (= find_document) volle Scores.
+ */
+export const DOC_TYPE_DAMPING = 0.5;
 
 export function computeStaleness(
   fm: Record<string, unknown>,

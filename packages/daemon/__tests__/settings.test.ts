@@ -22,6 +22,10 @@ import {
   getEmbeddingProvider,
   setOllamaAutostart,
   getOllamaAutostart,
+  getDocsMode,
+  setDocsMode,
+  getDocsLanguage,
+  setDocsLanguage,
 } from "../src/settings.js";
 
 async function withTempFile<T>(fn: (path: string) => Promise<T>): Promise<T> {
@@ -163,5 +167,44 @@ test("concurrent writes leave valid JSON (atomic tmp+rename, random suffix)", as
     ]);
     const raw = await readFile(path, "utf8");
     assert.doesNotThrow(() => JSON.parse(raw), "file must never be a torn/garbage write");
+  });
+});
+
+test("docs: defaults are off/en, set-roundtrip preserves other settings", async () => {
+  await withTempFile(async (path) => {
+    assert.equal(await getDocsMode(path), "off");
+    assert.equal(await getDocsLanguage(path), "en");
+
+    await setUpdateMode("auto", path);
+    await setDocsMode("suggest", path);
+    await setDocsLanguage("DE", path);
+
+    assert.equal(await getDocsMode(path), "suggest");
+    assert.equal(await getDocsLanguage(path), "de", "language is normalized to lowercase");
+    const s = await readSettings(path);
+    assert.equal(s.update.mode, "auto", "docs writes must not clobber update.mode");
+  });
+});
+
+test("docs: setting one key keeps the other (merge, not replace)", async () => {
+  await withTempFile(async (path) => {
+    await setDocsLanguage("de", path);
+    await setDocsMode("auto", path);
+    assert.equal(await getDocsLanguage(path), "de");
+    assert.equal(await getDocsMode(path), "auto");
+  });
+});
+
+test("readSettings: invalid docs.mode/docs.language → dropped to defaults", async () => {
+  await withTempFile(async (path) => {
+    await writeFile(
+      path,
+      JSON.stringify({ update: { mode: "auto" }, docs: { mode: "loud", language: "deutsch!" } }),
+      "utf8",
+    );
+    const s = await readSettings(path);
+    assert.equal(s.docs, undefined);
+    assert.equal(await getDocsMode(path), "off");
+    assert.equal(await getDocsLanguage(path), "en");
   });
 });

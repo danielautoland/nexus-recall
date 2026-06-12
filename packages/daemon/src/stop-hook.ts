@@ -33,6 +33,7 @@ import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { writePendingSuggestion } from "./pending-suggestions.js";
+import { getDocsMode, type DocsMode } from "./settings.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_STOP_HOOK_TIMEOUT_MS", 1000);
 const HOOK_VERSION = "0.1.0";
@@ -84,6 +85,15 @@ async function main(): Promise<void> {
 
   const last30 = turns.slice(-30);
   const suggestions = evaluateHeuristics(last30, { cwd: payload.cwd });
+
+  // Produkt-Doku (docs.mode): feature-completion ist auch der Trigger für
+  // die Doku-Pflege — Hinweis an die Suggestion hängen, wenn eingeschaltet.
+  // Settings-Read ist lokal; Fehler → kein Hint, Hook läuft weiter.
+  try {
+    appendProductDocHint(suggestions, await getDocsMode());
+  } catch {
+    /* best-effort */
+  }
 
   // Drift-Detektor (#67): unabhängig vom Transcript — der Daemon prüft, ob
   // jüngste Memories ein wiederkehrendes Cluster ohne Taxonomie-Konvention
@@ -523,6 +533,21 @@ function detectArchitectureDecision(turns: TranscriptTurn[]): SaveSuggestion | n
   };
 }
 
+/**
+ * Hängt bei eingeschalteter Produkt-Doku (docs.mode != "off") den Doku-
+ * Pflege-Hinweis an die feature-completion-Suggestion. Mutiert in place;
+ * pure bzgl. I/O — der Settings-Read passiert beim Caller.
+ */
+function appendProductDocHint(suggestions: SaveSuggestion[], mode: DocsMode): void {
+  if (mode === "off") return;
+  const fc = suggestions.find((s) => s.heuristic === "feature-completion");
+  if (!fc) return;
+  fc.body +=
+    ` Product docs are enabled (docs.mode=${mode}): if this completed a USER-FACING feature area, ` +
+    `also create/update its product doc via save_product_doc (one doc per area, send the complete ` +
+    `updated markdown${mode === "suggest" ? "; propose to the user first" : ""}).`;
+}
+
 function formatSuggestion(s: SaveSuggestion): string {
   return [
     `<save-eval>`,
@@ -582,6 +607,7 @@ export {
   detectFrustration,
   detectFeatureCompletion,
   detectArchitectureDecision,
+  appendProductDocHint,
   formatSuggestion,
   parseTranscriptFile,
   normalizeTurns,

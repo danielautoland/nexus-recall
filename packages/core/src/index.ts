@@ -35,6 +35,7 @@ export {
   parseMemory,
   parseMemoryWith,
   NotAMemoryFile,
+  isPathSafeComponent,
 } from "./schema.js";
 export type { Memory, MemoryType, Frontmatter } from "./schema.js";
 

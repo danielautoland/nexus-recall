@@ -134,6 +134,16 @@ When you complete the **next** version of a feature you already have a topology 
 
 ---
 
+## Product docs — user-facing documentation (opt-in)
+
+Separate from topology: the vault can also hold **product documentation** — living, user-facing docs ("how do I use this?") per project, in `dokumentationen/<project>/`. This is OFF by default; when the user enables it (`bastra config set docs.mode suggest|auto`), the session hook injects a `<bastra-product-docs>` block with the active instructions — follow that block.
+
+The shape, in one breath: when a user-facing feature area is **completely finished**, create/update its doc via the `save_product_doc` tool — one doc per area, stable id, the body you send replaces the previous one (read the existing doc first, send the complete updated markdown). Written for the END USER: features, usage, tips, quirks — no code internals, no file paths. Developer state stays in `project-fact` memories.
+
+No injected block = the feature is off = don't write product docs on your own.
+
+---
+
 ## Self-learning taxonomy — let the vault grow its own structure
 
 The vault can teach itself new categories on the free axes (`folder`,
