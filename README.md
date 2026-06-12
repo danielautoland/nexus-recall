@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/github-banner.png" alt="Bastra — the open memory layer for AI assistants and agents" width="100%" />
+  <img src="./assets/github-banner.jpg" alt="Bastra — the open memory layer for AI assistants and agents" width="100%" />
 </p>
 
 # Bastra.Recall
