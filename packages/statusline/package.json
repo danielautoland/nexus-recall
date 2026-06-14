@@ -29,5 +29,6 @@
     "@types/node": "^22.19.20",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3"
-  }
+  },
+  "homepage": "https://bastra.io"
 }

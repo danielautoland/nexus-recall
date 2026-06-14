@@ -38,5 +38,6 @@
     "@types/node": "^22.19.20",
     "tsx": "^4.19.2",
     "typescript": "^6.0.3"
-  }
+  },
+  "homepage": "https://bastra.io"
 }
