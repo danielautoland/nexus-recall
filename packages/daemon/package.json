@@ -1,6 +1,6 @@
 {
   "name": "@bastra-recall/daemon",
-  "version": "0.6.6-beta.1",
+  "version": "0.7.0-beta.1",
   "description": "MCP server exposing recall + load_memory over a markdown vault.",
   "type": "module",
   "license": "MIT",
@@ -44,8 +44,8 @@
     "test:update": "tsx --test scripts/update-check.test.ts"
   },
   "dependencies": {
-    "@bastra-recall/core": "0.6.6-beta.1",
-    "@bastra-recall/statusline": "0.6.6-beta.1",
+    "@bastra-recall/core": "0.7.0-beta.1",
+    "@bastra-recall/statusline": "0.7.0-beta.1",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "zod": "^4.4.3"
   },
