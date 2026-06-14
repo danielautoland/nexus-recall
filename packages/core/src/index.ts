@@ -59,6 +59,8 @@ export {
   auditedRestore,
 } from "./audit-save.js";
 
+export { assertLocalOrOptIn } from "./ollama-egress.js";
+
 export {
   EmbeddingIndex,
   OpenAIEmbeddingProvider,
