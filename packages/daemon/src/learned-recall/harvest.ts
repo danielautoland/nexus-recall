@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { detectLanguage } from "./language.js";
 import { mintBridge, type Bridge } from "./bridges.js";
+import { rerank, type ChatFn, type RerankCandidate } from "./reranker.js";
 
 export interface TelemetryEvent {
   kind: string;
@@ -111,6 +112,87 @@ export function harvestBridges(reaches: Reach[], getMemoryTerms: (memoryId: stri
     else byId.set(b.id, b);
   }
   return { bridges: [...byId.values()], reaches: reaches.length, minted: byId.size };
+}
+
+// ─── Teacher 2: deep harvest over the far slice (#120 / #121) ────────────────
+
+/** A logged recall and the deeper candidate pool (#121) behind it. */
+export interface CandidatePoolEntry {
+  query: string;
+  pool: { id: string; score: number }[];
+  topScore: number;
+}
+
+/** Pull (query → deeper candidate pool) entries from recall/hook_recall events (#121). */
+export function extractCandidatePools(events: TelemetryEvent[]): CandidatePoolEntry[] {
+  const out: CandidatePoolEntry[] = [];
+  for (const e of events) {
+    if ((e.kind !== "recall" && e.kind !== "hook_recall") || typeof e.query !== "string" || !Array.isArray(e.candidate_pool)) {
+      continue;
+    }
+    const pool = (e.candidate_pool as { id?: unknown; score?: unknown }[])
+      .filter((p) => typeof p.id === "string" && typeof p.score === "number")
+      .map((p) => ({ id: p.id as string, score: p.score as number }));
+    if (pool.length === 0) continue;
+    const topScore = typeof e.top_score === "number" ? e.top_score : pool[0].score;
+    out.push({ query: e.query, pool, topScore });
+  }
+  return out;
+}
+
+export interface MemoryInfo {
+  /** Title + summary the reranker judges against the query. */
+  text: string;
+  /** Distinctive vocabulary that becomes a bridge's expansion terms. */
+  terms: string[];
+}
+
+export interface DeepHarvestResult extends HarvestResult {
+  /** How many far cases were actually sent to the reranker (LLM calls). */
+  judged: number;
+}
+
+/**
+ * Teacher 2: over the logged far slice, ask the reranker which pooled candidate truly
+ * answers each HARD query (one whose top hit was weaker than `maxScore` — the unsure
+ * cases). When the reranker rescues a LOW-ranked candidate (chosenRank > 1), that is a
+ * genuine far→near pair, so mint a bridge from it. Confidence gate: the reranker must
+ * pick a specific candidate (not "none"); `maxJudge` caps LLM work per run.
+ */
+export async function harvestFarBridges(
+  pools: CandidatePoolEntry[],
+  getMemoryInfo: (id: string) => MemoryInfo | null,
+  chat: ChatFn,
+  opts: { maxScore?: number; maxJudge?: number; date?: string; onProgress?: (done: number, total: number) => void } = {},
+): Promise<DeepHarvestResult> {
+  const maxScore = opts.maxScore ?? 100; // only cases without a strong (REQUIRED-band) hit
+  const maxJudge = opts.maxJudge ?? 50;
+  const byId = new Map<string, Bridge>();
+  let judged = 0;
+  for (const entry of pools) {
+    if (judged >= maxJudge) break;
+    if (entry.topScore >= maxScore) continue; // already a confident hit → not a far case
+    const lang = detectLanguage(entry.query).lang;
+    if (!lang) continue;
+    const candidates: RerankCandidate[] = [];
+    for (const p of entry.pool) {
+      const info = getMemoryInfo(p.id);
+      if (info) candidates.push({ id: p.id, text: info.text });
+    }
+    if (candidates.length < 2) continue;
+    judged++;
+    opts.onProgress?.(judged, Math.min(maxJudge, pools.length));
+    const { bestId, chosenRank } = await rerank(entry.query, candidates, chat);
+    if (!bestId || chosenRank === null || chosenRank <= 1) continue; // none, or top already → no rescue
+    const info = getMemoryInfo(bestId);
+    if (!info) continue;
+    const b = mintBridge(entry.query, info.terms, lang, opts.date);
+    if (!b) continue;
+    const existing = byId.get(b.id);
+    if (existing) existing.evidence += 1;
+    else byId.set(b.id, b);
+  }
+  return { bridges: [...byId.values()], reaches: pools.length, minted: byId.size, judged };
 }
 
 /** Atomically write each bridge to <root>/bridges/<lang>/<id>.json. Returns count written. */

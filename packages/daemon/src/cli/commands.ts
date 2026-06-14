@@ -25,10 +25,11 @@ Commands:
   commons <enable|update|disable|status>
                              Bastra Commons: community-proven recipes as a
                              read-only second recall index (git-synced)
-  bridges <enable|disable|status|language|mint>
+  bridges <enable|disable|status|language|mint|harvest>
                              Shared learned-recall: opt-in, language-partitioned
                              vocabulary bridges that widen recall (off by default).
-                             'mint' harvests bridges from your telemetry history.
+                             'mint' = bridges from acted-on reaches; 'harvest' =
+                             deep far-slice pass with the local reranker (Teacher 2).
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)

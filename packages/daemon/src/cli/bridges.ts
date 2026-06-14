@@ -27,7 +27,8 @@ import {
 import { envFirst } from "../env.js";
 import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
 import { BridgePool, distinctiveTerms } from "../learned-recall/bridges.js";
-import { readEventLog, reconstructReaches, harvestBridges, writeBridges } from "../learned-recall/harvest.js";
+import { readEventLog, reconstructReaches, harvestBridges, writeBridges, extractCandidatePools, harvestFarBridges } from "../learned-recall/harvest.js";
+import { ollamaChat, DEFAULT_RERANK_MODEL } from "../learned-recall/reranker.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "../learned-recall/language.js";
 
 /** Bridges share the Commons clone. Env override kept for tests/relocation. */
@@ -113,6 +114,43 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       );
       return 0;
     }
+    case "harvest": {
+      // Teacher 2: deep harvest over the #121 far slice using the local reranker.
+      const daysArg = opts.positional?.[2];
+      const days = daysArg ? parseInt(daysArg, 10) : null;
+      const events = await readEventLog(undefined, days != null && Number.isFinite(days) ? days : null);
+      const pools = extractCandidatePools(events);
+      if (pools.length === 0) {
+        process.stdout.write("no candidate pools in telemetry yet (needs #121 logging + some recalls) — nothing to harvest\n");
+        return 0;
+      }
+      const vaultPath = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
+      if (!vaultPath) {
+        process.stderr.write("✗ BASTRA_VAULT_PATH not set — cannot read memory vocabulary\n");
+        return 1;
+      }
+      const vault = new Vault(vaultPath);
+      await vault.init();
+      const getMemoryInfo = (id: string): { text: string; terms: string[] } | null => {
+        const m = vault.get(id);
+        if (!m) return null;
+        return {
+          text: `${m.fm.title} — ${m.fm.summary}`,
+          terms: distinctiveTerms([m.fm.title, m.fm.summary, ...m.fm.recall_when, ...m.fm.tags, m.body].join(" ")),
+        };
+      };
+      const model = process.env.BASTRA_RERANK_MODEL ?? DEFAULT_RERANK_MODEL;
+      process.stdout.write(`harvesting far slice with local reranker (${model}) over ${pools.length} pools…\n`);
+      const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat(), {
+        onProgress: (done, total) => process.stderr.write(`  judged ${done}/${total}\r`),
+      });
+      const written = await writeBridges(bridgesPath(), result.bridges);
+      process.stdout.write(
+        `\n✓ judged ${result.judged} far case(s) → minted ${result.minted} bridge(s) — ${written} written to ${join(bridgesPath(), "bridges")}\n` +
+          "  restart the daemon to load them\n",
+      );
+      return 0;
+    }
     case "contribute": {
       // Bridges are minted locally from successful recalls and contributed to the
       // Commons repo via PR (same flow as `bastra commons verify`). Deliberately
@@ -140,7 +178,7 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       return 0;
     }
     default:
-      process.stderr.write(`unknown bridges subcommand '${sub}' — use enable|disable|status|language|mint|update|contribute\n`);
+      process.stderr.write(`unknown bridges subcommand '${sub}' — use enable|disable|status|language|mint|harvest|update|contribute\n`);
       return 2;
   }
 }
