@@ -556,10 +556,15 @@ function handleHookRecall(
       const expansion = expandQuery(query, learnedBridges, {
         configuredLang: sharedRecallLang ?? null,
       });
+      // #121: capture the deeper candidate pool (incl. below-floor) for the far slice.
+      let candidatePool: { id: string; score: number }[] = [];
+      const onCandidatePool = (pool: { id: string; score: number }[]): void => {
+        candidatePool = pool.map((h) => ({ id: h.id, score: h.score }));
+      };
       const tRecall0 = Date.now();
       const hits = search.hasEmbeddings()
-        ? await search.recallHybrid(expansion.query, { k, scope, type, expand_hops, onStage })
-        : search.recall(expansion.query, { k, scope, type, expand_hops, onStage });
+        ? await search.recallHybrid(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool })
+        : search.recall(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool });
       const recallLatencyMs = Date.now() - tRecall0;
       const totalLatencyMs = Date.now() - t0;
       const recallId = telemetry.newRecallId();
@@ -599,6 +604,7 @@ function handleHookRecall(
           recall_stages: stageTimings,
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
+          candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
         }),
       );
 

@@ -47,6 +47,13 @@ export interface RecallOptions {
    * direkt `done`. Null-Overhead, wenn nicht gesetzt.
    */
   onStage?: StageListener;
+  /**
+   * #121: receives the DEEPER candidate pool (before the top-k slice / score floor),
+   * so the "far slice" — relevant memories that ranked below the returned k or below
+   * the floor and would otherwise be dropped from telemetry — becomes observable for
+   * offline bridge harvesting. Null-overhead when unset.
+   */
+  onCandidatePool?: (pool: RecallHit[]) => void;
 }
 
 interface IndexDoc {
@@ -208,6 +215,8 @@ export class SearchIndex {
       mode: "bm25" as const,
       hop: "direct" as const,
     }));
+    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
+    opts.onCandidatePool?.(directFull);
     const direct = directFull.slice(0, k);
 
     let withHops: RecallHit[];
@@ -323,6 +332,9 @@ export class SearchIndex {
       });
     }
     stage.end("rrf.fuse", tFuse, { fused_count: outFull.length });
+
+    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
+    opts.onCandidatePool?.(outFull);
 
     const out = outFull.slice(0, k);
     let withHops: RecallHit[];

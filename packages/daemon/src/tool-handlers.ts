@@ -207,6 +207,8 @@ export async function recallHandler(
 
   const t0 = Date.now();
   const collector = makeStageCollector(options.onStage);
+  // #121: capture the deeper candidate pool (incl. below-floor) for the far slice.
+  let candidatePool: { id: string; score: number }[] = [];
   const recallOpts = {
     k: parsed.data.k,
     scope: parsed.data.scope,
@@ -214,6 +216,9 @@ export async function recallHandler(
     allow_private: parsed.data.allow_private ?? false,
     expand_hops: parsed.data.expand_hops as 0 | 1 | undefined,
     onStage: collector.listener,
+    onCandidatePool: (pool: RecallHit[]) => {
+      candidatePool = pool.map((h) => ({ id: h.id, score: h.score }));
+    },
   };
   // Shared learned-recall (#120): widen the query with language-matched bridge
   // expansion terms before searching. No-op when the layer is off (null pool) or
@@ -265,6 +270,7 @@ export async function recallHandler(
       dropped_below_floor: droppedBelowFloor,
       bridge_expansion:
         expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
+      candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
     }),
   );
 

@@ -78,6 +78,9 @@ export interface RecallEvent extends BaseEvent {
   dropped_below_floor?: number;
   /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
   bridge_expansion?: BridgeExpansion;
+  /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall,
+   *  so the far slice is observable for offline harvesting. Lean {id, score} only. */
+  candidate_pool?: { id: string; score: number }[];
 }
 
 export interface LoadMemoryEvent extends BaseEvent {
@@ -155,6 +158,8 @@ export interface HookRecallEvent extends BaseEvent {
   };
   /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
   bridge_expansion?: BridgeExpansion;
+  /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */
+  candidate_pool?: { id: string; score: number }[];
 }
 
 /** Hook CLI invocation (client-side view: total wall-clock incl. network). */
