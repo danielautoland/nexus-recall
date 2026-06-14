@@ -25,6 +25,9 @@ Commands:
   commons <enable|update|disable|status>
                              Bastra Commons: community-proven recipes as a
                              read-only second recall index (git-synced)
+  bridges <enable|disable|status|language|update>
+                             Shared learned-recall: opt-in, language-partitioned
+                             vocabulary bridges that widen recall (off by default)
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)

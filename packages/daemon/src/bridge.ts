@@ -47,7 +47,12 @@ import {
   isDocsMode,
   isDocsLanguage,
   DOCS_MODES,
+  getSharedRecallEnabled,
+  getSharedRecallLanguage,
 } from "./settings.js";
+import { expandQuery, BridgePool } from "./learned-recall/bridges.js";
+import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
+import { bridgesPath } from "./cli/bridges.js";
 import readline from "node:readline";
 import * as path from "node:path";
 
@@ -204,6 +209,21 @@ async function main(): Promise<void> {
   search.start();
   const auditLog = new AuditLog(VAULT_PATH!);
 
+  // Shared learned-recall (#120): load the bridge pool so the Mac-app recall
+  // surface widens queries consistently with the MCP + hook paths. Same gate as
+  // index.ts — off ⇒ null pool ⇒ expandQuery is a no-op. Degrades to raw query.
+  let learnedBridges: BridgePool | null = null;
+  let sharedRecallLang: SupportedLanguage | null = null;
+  if (await getSharedRecallEnabled()) {
+    try {
+      learnedBridges = BridgePool.load(bridgesPath());
+      const lang = await getSharedRecallLanguage();
+      sharedRecallLang = isSupportedLanguage(lang) ? lang : null;
+    } catch {
+      learnedBridges = null;
+    }
+  }
+
   // Optional: Embedding-Index für semantische Recall-Suche. Provider wird per
   // BASTRA_EMBEDDING_PROVIDER gewählt (ollama|openai|none) und mit BM25 via RRF
   // gefused. Ohne expliziten Provider aktiviert ein vorhandener OPENAI_API_KEY
@@ -254,14 +274,17 @@ async function main(): Promise<void> {
             allow_private: true,
             expand_hops: (params?.expand_hops === 1 ? 1 : 0) as 0 | 1,
           };
+          const recallQuery = expandQuery(String(params?.query ?? ""), learnedBridges, {
+            configuredLang: sharedRecallLang,
+          }).query;
           if (search.hasEmbeddings()) {
             search
-              .recallHybrid(String(params?.query ?? ""), opts)
+              .recallHybrid(recallQuery, opts)
               .then((hits) => send({ id, result: hits }))
               .catch((err: Error) => send({ id, error: { message: err.message } }));
             return;
           }
-          result = search.recall(String(params?.query ?? ""), opts);
+          result = search.recall(recallQuery, opts);
           break;
         }
         case "list_memorys": {

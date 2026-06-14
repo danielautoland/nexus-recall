@@ -27,6 +27,8 @@ import { Telemetry, fireAndForget } from "./telemetry.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
+import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
+import { type SupportedLanguage } from "./learned-recall/language.js";
 
 export interface ToolDeps {
   vault: Vault;
@@ -40,6 +42,13 @@ export interface ToolDeps {
   /** works/fails-Zählung aus den Verification-Records pro Rezept-ID — die
    *  Evidenz, die das Fusion-Ranking hebt oder senkt (verify-Loop). */
   commonsVerifications?: Map<string, { works: number; fails: number }> | null;
+  /** Read-only, language-partitioned learned-recall bridge pool (#120), present
+   *  only when `bastra bridges enable` is active. Used to widen the recall query;
+   *  null/absent = feature off, query untouched (local-first guarantee). */
+  learnedBridges?: BridgePool | null;
+  /** Optional query-language override for the bridge pool (sharedRecall.language);
+   *  null/absent = auto-detect the query language per recall. */
+  sharedRecallLang?: SupportedLanguage | null;
 }
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
@@ -206,9 +215,15 @@ export async function recallHandler(
     expand_hops: parsed.data.expand_hops as 0 | 1 | undefined,
     onStage: collector.listener,
   };
+  // Shared learned-recall (#120): widen the query with language-matched bridge
+  // expansion terms before searching. No-op when the layer is off (null pool) or
+  // the query language abstains. Telemetry below still logs the ORIGINAL query.
+  const searchQuery = expandQuery(parsed.data.query, deps.learnedBridges, {
+    configuredLang: deps.sharedRecallLang ?? null,
+  }).query;
   let rawHits = deps.search.hasEmbeddings()
-    ? await deps.search.recallHybrid(parsed.data.query, recallOpts)
-    : deps.search.recall(parsed.data.query, recallOpts);
+    ? await deps.search.recallHybrid(searchQuery, recallOpts)
+    : deps.search.recall(searchQuery, recallOpts);
 
   // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, gedämpft
   // fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein

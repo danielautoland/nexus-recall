@@ -26,6 +26,11 @@ import {
   setDocsMode,
   getDocsLanguage,
   setDocsLanguage,
+  getSharedRecallEnabled,
+  setSharedRecallEnabled,
+  getSharedRecallLanguage,
+  setSharedRecallLanguage,
+  clearSharedRecallLanguage,
 } from "../src/settings.js";
 
 async function withTempFile<T>(fn: (path: string) => Promise<T>): Promise<T> {
@@ -206,5 +211,75 @@ test("readSettings: invalid docs.mode/docs.language → dropped to defaults", as
     assert.equal(s.docs, undefined);
     assert.equal(await getDocsMode(path), "off");
     assert.equal(await getDocsLanguage(path), "en");
+  });
+});
+
+test("sharedRecall: default off, no language override", async () => {
+  await withTempFile(async (path) => {
+    assert.equal(await getSharedRecallEnabled(path), false, "opt-in: default off");
+    assert.equal(await getSharedRecallLanguage(path), undefined, "default = auto-detect");
+  });
+});
+
+test("sharedRecall: enable persists and is independent of language override", async () => {
+  await withTempFile(async (path) => {
+    await setSharedRecallEnabled(true, path);
+    assert.equal(await getSharedRecallEnabled(path), true);
+    await setSharedRecallLanguage("de", path);
+    assert.equal(await getSharedRecallLanguage(path), "de");
+    // setting language must not clobber the enabled flag
+    assert.equal(await getSharedRecallEnabled(path), true);
+    // disabling keeps the language override around but reports disabled
+    await setSharedRecallEnabled(false, path);
+    assert.equal(await getSharedRecallEnabled(path), false);
+    assert.equal(await getSharedRecallLanguage(path), "de");
+  });
+});
+
+test("sharedRecall: language is lowercased and invalid values are dropped", async () => {
+  await withTempFile(async (path) => {
+    await setSharedRecallLanguage("DE", path);
+    assert.equal(await getSharedRecallLanguage(path), "de");
+    await writeFile(
+      path,
+      JSON.stringify({ update: { mode: "auto" }, sharedRecall: { enabled: true, language: "klingon!" } }),
+      "utf8",
+    );
+    assert.equal(await getSharedRecallEnabled(path), true, "valid enabled kept");
+    assert.equal(await getSharedRecallLanguage(path), undefined, "invalid language dropped");
+  });
+});
+
+test("sharedRecall: a regex-valid but UNSUPPORTED hand-edited language (fr) is dropped on read", async () => {
+  await withTempFile(async (path) => {
+    // "fr" passes the loose docs-language regex but is not a supported pool language.
+    // The file-read validator must agree with the boot gate and drop it.
+    await writeFile(
+      path,
+      JSON.stringify({ update: { mode: "notify" }, sharedRecall: { enabled: true, language: "fr" } }),
+      "utf8",
+    );
+    assert.equal(await getSharedRecallEnabled(path), true);
+    assert.equal(await getSharedRecallLanguage(path), undefined, "unsupported language must not persist into the daemon");
+  });
+});
+
+test("sharedRecall: non-boolean enabled is ignored", async () => {
+  await withTempFile(async (path) => {
+    await writeFile(path, JSON.stringify({ update: { mode: "notify" }, sharedRecall: { enabled: "yes" } }), "utf8");
+    assert.equal(await getSharedRecallEnabled(path), false);
+  });
+});
+
+test("sharedRecall: clearSharedRecallLanguage actually removes the override (not just rewrites enabled)", async () => {
+  await withTempFile(async (path) => {
+    await setSharedRecallEnabled(true, path);
+    await setSharedRecallLanguage("de", path);
+    assert.equal(await getSharedRecallLanguage(path), "de");
+    // The bug: setSharedRecallEnabled spreads the block and preserves language.
+    // clearSharedRecallLanguage must drop the key while keeping enabled.
+    await clearSharedRecallLanguage(path);
+    assert.equal(await getSharedRecallLanguage(path), undefined, "language override must be gone → auto-detect");
+    assert.equal(await getSharedRecallEnabled(path), true, "enabled flag must survive the clear");
   });
 });

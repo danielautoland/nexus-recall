@@ -52,6 +52,8 @@ import {
   toLeanHit,
   type ToolDeps,
 } from "./tool-handlers.js";
+import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
+import { type SupportedLanguage } from "./learned-recall/language.js";
 import {
   FindDocumentArgs,
   ReadDocumentArgs,
@@ -313,7 +315,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
 
     if (method === "POST" && url === "/hook/recall") {
-      handleHookRecall(req, res, t0, vault, search, telemetry);
+      handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang);
       return;
     }
 
@@ -473,6 +475,8 @@ function handleHookRecall(
   vault: Vault,
   search: SearchIndex,
   telemetry: Telemetry,
+  learnedBridges?: BridgePool | null,
+  sharedRecallLang?: SupportedLanguage | null,
 ): void {
   // SSE-Branch (#38): wenn der Caller `Accept: text/event-stream`
   // sendet, streamen wir Stages live. Default-JSON-Response bleibt
@@ -546,10 +550,16 @@ function handleHookRecall(
         }
       };
 
+      // Shared learned-recall (#120): widen the hook query with language-matched
+      // bridge terms. No-op when the layer is off. This is the highest-volume
+      // recall surface, so the bridge boost must reach it too — not just MCP recall.
+      const searchQuery = expandQuery(query, learnedBridges, {
+        configuredLang: sharedRecallLang ?? null,
+      }).query;
       const tRecall0 = Date.now();
       const hits = search.hasEmbeddings()
-        ? await search.recallHybrid(query, { k, scope, type, expand_hops, onStage })
-        : search.recall(query, { k, scope, type, expand_hops, onStage });
+        ? await search.recallHybrid(searchQuery, { k, scope, type, expand_hops, onStage })
+        : search.recall(searchQuery, { k, scope, type, expand_hops, onStage });
       const recallLatencyMs = Date.now() - tRecall0;
       const totalLatencyMs = Date.now() - t0;
       const recallId = telemetry.newRecallId();

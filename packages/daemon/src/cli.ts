@@ -22,6 +22,7 @@ import { cmdUpdate } from "./cli/update.js";
 import { cmdConfig } from "./cli/config-cmd.js";
 import { cmdToken } from "./cli/token.js";
 import { cmdCommons } from "./cli/commons.js";
+import { cmdBridges } from "./cli/bridges.js";
 import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
@@ -45,6 +46,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "config": return cmdConfig(args);
     case "token": return cmdToken({ sub: args.surface, json: args.json });
     case "commons": return cmdCommons({ sub: args.surface, positional: args.positional });
+    case "bridges": return cmdBridges({ sub: args.surface, positional: args.positional });
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
       return 2;

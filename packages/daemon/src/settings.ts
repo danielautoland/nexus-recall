@@ -27,6 +27,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { isSupportedLanguage } from "./learned-recall/language.js";
 
 export type UpdateMode = "notify" | "auto" | "off";
 export const UPDATE_MODES: readonly UpdateMode[] = ["notify", "auto", "off"];
@@ -56,6 +57,12 @@ export interface CliSettings {
   // `bastra commons enable`; the daemon then loads the cloned repo as a
   // read-only second BM25 index.
   commons?: { enabled: boolean };
+  // Shared learned-recall bridges (#120): undefined = disabled (opt-in,
+  // privacy-respecting). Enabled via `bastra bridges enable`; the daemon then
+  // loads a git-synced, language-partitioned bridge pool and uses it to widen
+  // recall queries. `language` is an optional override for the auto-detected
+  // query language (e.g. force "de" when you always search in German).
+  sharedRecall?: { enabled: boolean; language?: string };
   // Product-documentation capture: undefined = off. mode gates the session-hook
   // instruction ("suggest" proposes, "auto" writes without asking); language is
   // the language product docs are written in (free short tag, e.g. "de").
@@ -97,7 +104,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; docs?: { mode?: unknown; language?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -130,6 +137,20 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.commons?.enabled === "boolean") {
     settings.commons = { enabled: data.commons.enabled };
+  }
+  if (typeof data?.sharedRecall?.enabled === "boolean") {
+    const sr: { enabled: boolean; language?: string } = { enabled: data.sharedRecall.enabled };
+    // Validate against the supported pool languages (de/en) — the SAME set the boot
+    // gate enforces — not the loose docs-language regex, so the file, CLI, and daemon
+    // agree on what a valid override is.
+    const lng = typeof data.sharedRecall.language === "string" ? data.sharedRecall.language.trim().toLowerCase() : data.sharedRecall.language;
+    if (isSupportedLanguage(lng)) sr.language = lng;
+    else if (data.sharedRecall.language !== undefined) {
+      process.stderr.write(
+        `[bastra-recall] cli-settings.json: ignoring unsupported sharedRecall.language ${JSON.stringify(data.sharedRecall.language)}\n`,
+      );
+    }
+    settings.sharedRecall = sr;
   }
   if (data?.docs !== undefined) {
     // Invalid values drop to undefined (= defaults), same policy as embedding.
@@ -218,6 +239,35 @@ export async function getCommonsEnabled(path?: string): Promise<boolean> {
 export async function setCommonsEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, commons: { enabled: on } }, path);
+}
+
+/** Shared learned-recall bridges enabled? Default false (opt-in, privacy-respecting). */
+export async function getSharedRecallEnabled(path?: string): Promise<boolean> {
+  return (await readSettings(path)).sharedRecall?.enabled ?? false;
+}
+
+export async function setSharedRecallEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, sharedRecall: { ...current.sharedRecall, enabled: on } }, path);
+}
+
+/** Optional override for the auto-detected query language (e.g. "de"). undefined = auto-detect per query. */
+export async function getSharedRecallLanguage(path?: string): Promise<string | undefined> {
+  return (await readSettings(path)).sharedRecall?.language;
+}
+
+export async function setSharedRecallLanguage(language: string, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  const enabled = current.sharedRecall?.enabled ?? false;
+  await writeSettings({ ...current, sharedRecall: { enabled, language: language.trim().toLowerCase() } }, path);
+}
+
+/** Clears the query-language override, restoring per-query auto-detection. Writes
+ *  the sharedRecall block WITHOUT a `language` key (a plain spread would preserve it). */
+export async function clearSharedRecallLanguage(path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  const enabled = current.sharedRecall?.enabled ?? false;
+  await writeSettings({ ...current, sharedRecall: { enabled } }, path);
 }
 
 /** Product-docs capture mode. Default "off" (opt-in). */

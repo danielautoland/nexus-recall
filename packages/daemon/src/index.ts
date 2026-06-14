@@ -36,8 +36,11 @@ import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { getEmbeddingProvider, getCommonsEnabled } from "./settings.js";
+import { getEmbeddingProvider, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
+import { bridgesPath } from "./cli/bridges.js";
+import { BridgePool } from "./learned-recall/bridges.js";
+import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
 import { existsSync } from "node:fs";
 import {
   recallHandler,
@@ -169,6 +172,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // Shared learned-recall bridges (#120): read-only, language-partitioned pool
+  // that widens recall queries. Same discipline as Commons — never written, only
+  // loaded when opted in. Off = pool stays null and nothing is constructed or
+  // contacted (local-first). The optional language override skips per-query detection.
+  let learnedBridges: BridgePool | null = null;
+  let sharedRecallLang: SupportedLanguage | null = null;
+  if (await getSharedRecallEnabled()) {
+    try {
+      learnedBridges = BridgePool.load(bridgesPath());
+      const lang = await getSharedRecallLanguage();
+      sharedRecallLang = isSupportedLanguage(lang) ? lang : null;
+      console.error(
+        `[bastra-recall] shared learned-recall: enabled (${learnedBridges.size()} bridges across ${learnedBridges.languages().join(", ") || "no"} languages, query-language ${sharedRecallLang ?? "auto-detect"})`,
+      );
+    } catch (err) {
+      console.error(`[bastra-recall] shared learned-recall: failed to load (${(err as Error).message}) — continuing without`);
+      learnedBridges = null;
+    }
+  }
+
   // Hybrid-Recall: provider precedence env → cli-settings.json → API-key → none.
   // embeddingStatusLine logs the resolved mode on EVERY path including success —
   // the silent-success path was the root of #79.
@@ -263,6 +286,8 @@ async function main(): Promise<void> {
     vaultPath: VAULT_PATH!,
     commonsSearch,
     commonsVerifications,
+    learnedBridges,
+    sharedRecallLang,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
