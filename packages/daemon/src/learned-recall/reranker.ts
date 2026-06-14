@@ -27,9 +27,34 @@ export type ChatFn = (prompt: string) => Promise<string>;
 
 export const DEFAULT_RERANK_MODEL = "qwen3-vl:4b";
 
+/**
+ * The reranker sends candidate memory text to the chat endpoint, so a non-loopback
+ * `baseURL` means that text leaves the machine. The header contract is "no egress" —
+ * this enforces it: stay on loopback by default, reach a remote endpoint only when the
+ * operator opts in explicitly (BASTRA_ALLOW_REMOTE_OLLAMA=1). Guards against a mistyped
+ * or injected BASTRA_OLLAMA_URL silently shipping memory off-box. Malformed URLs fall
+ * through so the existing fetch path reports them as before. Exported for tests.
+ */
+export function assertLocalOrOptIn(rawUrl: string): void {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return; // not a parseable URL — let fetch fail normally, behaviour unchanged
+  }
+  const isLoopback =
+    host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
+  if (isLoopback || process.env.BASTRA_ALLOW_REMOTE_OLLAMA === "1") return;
+  throw new Error(
+    `bastra-recall: refusing non-loopback Ollama endpoint "${host}" — the reranker would ` +
+      `send memory text off-box. Set BASTRA_ALLOW_REMOTE_OLLAMA=1 to use a remote endpoint on purpose.`,
+  );
+}
+
 /** A live Ollama chat client (POST /api/chat, non-streaming). */
 export function ollamaChat(opts: { baseURL?: string; model?: string; timeoutMs?: number } = {}): ChatFn {
   const baseURL = (opts.baseURL ?? process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434").replace(/\/+$/, "");
+  assertLocalOrOptIn(baseURL);
   const model = opts.model ?? process.env.BASTRA_RERANK_MODEL ?? DEFAULT_RERANK_MODEL;
   const timeoutMs = opts.timeoutMs ?? 30_000;
   return async (prompt: string): Promise<string> => {
