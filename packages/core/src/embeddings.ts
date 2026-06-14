@@ -20,6 +20,7 @@ import * as path from "node:path";
 import type { Memory } from "./schema.js";
 import type { Vault, VaultEvent } from "./vault.js";
 import { EmbedCache, hashEmbedContent } from "./embed-cache.js";
+import { assertLocalOrOptIn } from "./ollama-egress.js";
 
 // ─── Tunables (env-overridable für load-tests / large-vault-bursts) ──
 
@@ -142,6 +143,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     keepAlive?: string | number;
   }) {
     this.baseURL = opts.baseURL ?? "http://localhost:11434";
+    // Embedding text (query + memory) is POSTed to this endpoint. Enforce the
+    // same "no egress" contract the reranker does (#124/#125): loopback by
+    // default, remote only with BASTRA_ALLOW_REMOTE_OLLAMA=1. Fail fast at
+    // construction rather than silently shipping text off-box on first embed.
+    assertLocalOrOptIn(this.baseURL);
     this.model = opts.model ?? "embeddinggemma";
     // EmbeddingGemma default 768, andere Modelle abweichend — via opts
     // override-bar. Bei Mismatch wird der Index automatisch invalidiert
