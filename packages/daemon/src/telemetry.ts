@@ -78,6 +78,14 @@ export interface LoadMemoryEvent extends BaseEvent {
   from_hook_recall: string | null;
   /** Rank (1-based) at which this id appeared in that hook_recall's hits[]. */
   hook_hint_rank: number | null;
+  /**
+   * Score this id carried in that hook_recall's pool (#121). Crucial for the far
+   * slice: a load whose hook_hint_score is BELOW floor is a below-floor would-be
+   * terminal pick — observable here even though the hint was never surfaced to the
+   * agent (the hook filters score<floor before showing). Without this field the
+   * far slice can only be recovered by re-joining to HookRecallEvent.hits[].
+   */
+  hook_hint_score: number | null;
 }
 
 export type RecallBand = "required" | "optional" | "below_floor";
@@ -126,6 +134,13 @@ export interface HookRecallEvent extends BaseEvent {
   hit_count: number;
   top_score: number | null;
   hits: { id: string; score: number; type: string }[];
+  /**
+   * Count of candidates in the recall pool that scored below SCORE_FLOOR
+   * (#121 far slice). hits[] already retains the raw below-floor pool
+   * server-side; this is a cheap-to-query convenience count. Optional —
+   * old hook_recall events predate the field.
+   */
+  below_floor_count?: number;
   latency_ms_recall: number;
   latency_ms_total: number;
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
@@ -220,6 +235,16 @@ function bandForScore(score: number | null): RecallBand {
   if (score >= MUST_LOAD_SCORE) return "required";
   if (score >= SCORE_FLOOR) return "optional";
   return "below_floor";
+}
+
+/**
+ * Count hits in a recall pool that fell below SCORE_FLOOR (#121 far slice).
+ * Floor lives here so callers (e.g. the hook_recall logger) don't redefine it.
+ */
+export function countBelowFloor(hits: Array<{ score: number }>): number {
+  let n = 0;
+  for (const h of hits) if (h.score < SCORE_FLOOR) n++;
+  return n;
 }
 
 function tokenize(text: string): Set<string> {

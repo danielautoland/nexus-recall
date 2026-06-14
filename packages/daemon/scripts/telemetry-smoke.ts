@@ -40,7 +40,14 @@ async function main(): Promise<void> {
   const followup = t.recentRecallId();
   assert(followup === recallId, "recentRecallId should return the just-created id");
 
-  await t.logLoadMemory({ id: "foo", found: true, follows_recall: followup });
+  await t.logLoadMemory({
+    id: "foo",
+    found: true,
+    follows_recall: followup,
+    from_hook_recall: null,
+    hook_hint_rank: null,
+    hook_hint_score: null,
+  });
   await t.logSaveMemory({
     id: "bar",
     type: "lesson",

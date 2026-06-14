@@ -44,7 +44,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { Vault, SearchIndex, RecallStage, StageListener } from "@bastra-recall/core";
-import { fireAndForget, type Telemetry } from "./telemetry.js";
+import { countBelowFloor, fireAndForget, type Telemetry } from "./telemetry.js";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -498,6 +498,7 @@ function handleHookRecall(
           hit_count: hits.length,
           top_score: hits[0]?.score ?? null,
           hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
+          below_floor_count: countBelowFloor(hits),
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,

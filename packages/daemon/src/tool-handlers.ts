@@ -292,6 +292,7 @@ export async function loadMemoryHandler(
       follows_recall: deps.telemetry.recentRecallId(),
       from_hook_recall: hookHint?.recall_id ?? null,
       hook_hint_rank: hookHint?.rank ?? null,
+      hook_hint_score: hookHint?.score ?? null,
     }),
   );
 
