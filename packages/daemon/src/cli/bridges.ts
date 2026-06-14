@@ -16,6 +16,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Vault } from "@bastra-recall/core";
 import {
   getSharedRecallEnabled,
   setSharedRecallEnabled,
@@ -23,8 +24,10 @@ import {
   setSharedRecallLanguage,
   clearSharedRecallLanguage,
 } from "../settings.js";
+import { envFirst } from "../env.js";
 import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
-import { BridgePool } from "../learned-recall/bridges.js";
+import { BridgePool, distinctiveTerms } from "../learned-recall/bridges.js";
+import { readEventLog, reconstructReaches, harvestBridges, writeBridges } from "../learned-recall/harvest.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "../learned-recall/language.js";
 
 /** Bridges share the Commons clone. Env override kept for tests/relocation. */
@@ -79,6 +82,37 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       process.stdout.write(`✓ query-language override set to '${lang.toLowerCase()}'\n`);
       return 0;
     }
+    case "mint": {
+      // Offline harvest: reconstruct (far query → acted-on memory) reaches from the
+      // telemetry log and mint bridges from them. Optional [days] limits the window.
+      const daysArg = opts.positional?.[2];
+      const days = daysArg ? parseInt(daysArg, 10) : null;
+      const events = await readEventLog(undefined, days != null && Number.isFinite(days) ? days : null);
+      const reaches = reconstructReaches(events);
+      if (reaches.length === 0) {
+        process.stdout.write("no acted-on reaches found in telemetry — nothing to mint yet\n");
+        return 0;
+      }
+      const vaultPath = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
+      if (!vaultPath) {
+        process.stderr.write("✗ BASTRA_VAULT_PATH not set — cannot read memory vocabulary to mint bridges\n");
+        return 1;
+      }
+      const vault = new Vault(vaultPath);
+      await vault.init();
+      const getMemoryTerms = (id: string): string[] => {
+        const m = vault.get(id);
+        if (!m) return [];
+        return distinctiveTerms([m.fm.title, m.fm.summary, ...m.fm.recall_when, ...m.fm.tags, m.body].join(" "));
+      };
+      const result = harvestBridges(reaches, getMemoryTerms);
+      const written = await writeBridges(bridgesPath(), result.bridges);
+      process.stdout.write(
+        `✓ minted ${result.minted} bridge(s) from ${result.reaches} acted-on reach(es) — ${written} written to ${join(bridgesPath(), "bridges")}\n` +
+          "  restart the daemon to load them\n",
+      );
+      return 0;
+    }
     case "contribute": {
       // Bridges are minted locally from successful recalls and contributed to the
       // Commons repo via PR (same flow as `bastra commons verify`). Deliberately
@@ -106,7 +140,7 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       return 0;
     }
     default:
-      process.stderr.write(`unknown bridges subcommand '${sub}' — use enable|disable|update|language|status|contribute\n`);
+      process.stderr.write(`unknown bridges subcommand '${sub}' — use enable|disable|status|language|mint|update|contribute\n`);
       return 2;
   }
 }

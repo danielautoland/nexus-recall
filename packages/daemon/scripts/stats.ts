@@ -404,6 +404,35 @@ function summarizeOllamaLifecycle(events: AnyEvent[]): void {
   }
 }
 
+function summarizeBridges(events: AnyEvent[]): void {
+  const recalls = events.filter((e) => e.kind === "recall" || e.kind === "hook_recall");
+  if (recalls.length === 0) return;
+  const expanded = recalls.filter((e) => e.bridge_expansion && typeof e.bridge_expansion === "object");
+  if (expanded.length === 0) return; // layer off or no bridge fired — stay quiet
+
+  const byLang = new Map<string, number>();
+  const termCounts = new Map<string, number>();
+  let totalAdded = 0;
+  for (const e of expanded) {
+    const be = e.bridge_expansion as { lang?: string; added?: string[] };
+    byLang.set(be.lang ?? "?", (byLang.get(be.lang ?? "?") ?? 0) + 1);
+    if (Array.isArray(be.added)) {
+      totalAdded += be.added.length;
+      for (const t of be.added) termCounts.set(t, (termCounts.get(t) ?? 0) + 1);
+    }
+  }
+
+  console.log(`\n## Learned-recall bridges  (#120 — did bridges widen queries?)`);
+  console.log(`  recalls with a bridge expansion:  ${expanded.length} of ${recalls.length}  (${pct(expanded.length, recalls.length)})`);
+  console.log(`  by query language:                ${[...byLang.entries()].map(([l, n]) => `${l}:${n}`).join("  ")}`);
+  console.log(`  avg terms added per expansion:    ${(totalAdded / expanded.length).toFixed(1)}`);
+  const top = [...termCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (top.length > 0) {
+    console.log(`  most-added expansion terms:`);
+    for (const [t, n] of top) console.log(`     ${t.padEnd(22)} ${n}`);
+  }
+}
+
 async function main(): Promise<void> {
   const events = await loadEvents();
   if (events.length === 0) {
@@ -421,6 +450,7 @@ async function main(): Promise<void> {
   summarizeFollowThrough(events);
   summarizeUseRate(events);
   summarizeContextROI(events);
+  summarizeBridges(events);
   summarizeOllamaLifecycle(events);
   topProjects(events);
   topHints(events);
