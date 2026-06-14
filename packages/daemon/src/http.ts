@@ -553,13 +553,13 @@ function handleHookRecall(
       // Shared learned-recall (#120): widen the hook query with language-matched
       // bridge terms. No-op when the layer is off. This is the highest-volume
       // recall surface, so the bridge boost must reach it too — not just MCP recall.
-      const searchQuery = expandQuery(query, learnedBridges, {
+      const expansion = expandQuery(query, learnedBridges, {
         configuredLang: sharedRecallLang ?? null,
-      }).query;
+      });
       const tRecall0 = Date.now();
       const hits = search.hasEmbeddings()
-        ? await search.recallHybrid(searchQuery, { k, scope, type, expand_hops, onStage })
-        : search.recall(searchQuery, { k, scope, type, expand_hops, onStage });
+        ? await search.recallHybrid(expansion.query, { k, scope, type, expand_hops, onStage })
+        : search.recall(expansion.query, { k, scope, type, expand_hops, onStage });
       const recallLatencyMs = Date.now() - tRecall0;
       const totalLatencyMs = Date.now() - t0;
       const recallId = telemetry.newRecallId();
@@ -597,6 +597,8 @@ function handleHookRecall(
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,
+          bridge_expansion:
+            expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
         }),
       );
 

@@ -217,13 +217,14 @@ export async function recallHandler(
   };
   // Shared learned-recall (#120): widen the query with language-matched bridge
   // expansion terms before searching. No-op when the layer is off (null pool) or
-  // the query language abstains. Telemetry below still logs the ORIGINAL query.
-  const searchQuery = expandQuery(parsed.data.query, deps.learnedBridges, {
+  // the query language abstains. Telemetry below still logs the ORIGINAL query;
+  // the expansion is recorded separately so its effect is measurable.
+  const expansion = expandQuery(parsed.data.query, deps.learnedBridges, {
     configuredLang: deps.sharedRecallLang ?? null,
-  }).query;
+  });
   let rawHits = deps.search.hasEmbeddings()
-    ? await deps.search.recallHybrid(searchQuery, recallOpts)
-    : deps.search.recall(searchQuery, recallOpts);
+    ? await deps.search.recallHybrid(expansion.query, recallOpts)
+    : deps.search.recall(expansion.query, recallOpts);
 
   // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, gedämpft
   // fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
@@ -262,6 +263,8 @@ export async function recallHandler(
       latency_ms: latencyMs,
       recall_stages: collector.timings,
       dropped_below_floor: droppedBelowFloor,
+      bridge_expansion:
+        expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
     }),
   );
 

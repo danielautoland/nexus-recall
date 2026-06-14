@@ -1,18 +1,20 @@
 /**
  * `bastra bridges` — the shared learned-recall layer (#120).
  *
- * Mirrors `bastra commons`: opt-in, git-synced, PR-gated, pseudonymous. A bridge
- * is a language-tagged vocabulary-expansion rule (see learned-recall/bridges.ts);
- * the daemon loads a language-partitioned, read-only pool from ~/.bastra/learned-recall
- * and uses it to widen recall queries. It is NEVER written by the daemon; sharing
- * goes through PRs.
+ * Bridges live IN the Bastra Commons repo (alongside recipes/ and verifications/),
+ * under bridges/<lang>/*.json. So they share the Commons clone, sync, and PR-gated
+ * contribution model — `bastra commons enable` clones the repo; `bastra bridges enable`
+ * just flips the separate sharedRecall toggle so the daemon loads the bridge pool
+ * from that clone and uses it to widen recall queries. The daemon NEVER writes the
+ * synced repo; sharing goes through PRs.
  *
- * Safety/local-first: the contribution remote is UNSET by default
- * (BASTRA_BRIDGES_REPO). With no remote, `enable` still works (local pool only,
- * nothing leaves the machine) and `contribute` refuses — there is no auto-egress.
+ * A bridge is a language-tagged vocabulary-expansion rule {lang, trigger_terms,
+ * expansion_terms} — no memory id or vault content (see learned-recall/bridges.ts).
+ *
+ * Local-first: toggle off ⇒ the daemon never builds the pool; nothing leaves the
+ * machine. Contribution is opt-in and PR-only — there is no auto-egress.
  */
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   getSharedRecallEnabled,
@@ -21,52 +23,39 @@ import {
   setSharedRecallLanguage,
   clearSharedRecallLanguage,
 } from "../settings.js";
-import { findExecutable, run } from "./exec.js";
+import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
 import { BridgePool } from "../learned-recall/bridges.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "../learned-recall/language.js";
 
-/** Contribution remote. UNSET by default — the shared repo is not public yet, and
- *  an unset remote guarantees `enable` does zero network I/O. */
-export const BRIDGES_REPO_URL = process.env.BASTRA_BRIDGES_REPO ?? "";
-
+/** Bridges share the Commons clone. Env override kept for tests/relocation. */
 export function bridgesPath(): string {
-  return process.env.BASTRA_BRIDGES_PATH ?? join(homedir(), ".bastra", "learned-recall");
+  return process.env.BASTRA_BRIDGES_PATH ?? commonsPath();
 }
 
 export async function cmdBridges(opts: { sub: string | null; positional?: string[] }): Promise<number> {
   const sub = opts.sub ?? "status";
   switch (sub) {
     case "enable": {
-      // If a remote is configured, sync it; otherwise enable the local-only pool.
-      if (BRIDGES_REPO_URL) {
-        const rc = await cloneOrPull();
-        if (rc !== 0) {
-          process.stderr.write("→ enable continues with the local pool; fix the remote and run 'bastra bridges update'\n");
-        }
-      }
       await setSharedRecallEnabled(true);
+      const cloned = existsSync(join(commonsPath(), ".git"));
       const hasPool = existsSync(join(bridgesPath(), "bridges"));
-      process.stdout.write(
-        `✓ shared learned-recall enabled — restart the daemon to load it\n` +
-          (hasPool ? "" : "  note: the bridge pool is empty until a bridges repo is cloned; recall is unchanged for now\n"),
-      );
+      process.stdout.write("✓ shared learned-recall enabled — restart the daemon to load it\n");
+      if (!cloned) {
+        process.stdout.write("  note: bridges live in the Commons repo — run 'bastra commons enable' to clone it first\n");
+      } else if (!hasPool) {
+        process.stdout.write("  note: the Commons repo has no bridges/ yet; the pool is empty (recall unchanged) until bridges are added\n");
+      }
       return 0;
     }
     case "disable": {
       await setSharedRecallEnabled(false);
-      process.stdout.write("✓ shared learned-recall disabled (local pool kept at " + bridgesPath() + ") — restart the daemon to apply\n");
+      process.stdout.write("✓ shared learned-recall disabled — restart the daemon to apply\n");
       return 0;
     }
     case "update": {
-      if (!BRIDGES_REPO_URL) {
-        process.stdout.write("no contribution remote configured (set BASTRA_BRIDGES_REPO) — nothing to update\n");
-        return 0;
-      }
-      if (!existsSync(join(bridgesPath(), ".git"))) {
-        process.stdout.write("bridges repo not cloned yet — run 'bastra bridges enable' first\n");
-        return 1;
-      }
-      return await cloneOrPull();
+      // Bridges sync with the Commons repo; there is no separate remote to pull.
+      process.stdout.write("bridges sync with the Commons repo — run 'bastra commons update' to pull the latest\n");
+      return 0;
     }
     case "language": {
       const lang = opts.positional?.[2] ?? null;
@@ -76,7 +65,6 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
         return 0;
       }
       if (lang === "auto") {
-        // Remove the language key entirely (a plain enabled-rewrite would keep it).
         await clearSharedRecallLanguage();
         process.stdout.write("✓ query-language override cleared — auto-detect per query\n");
         return 0;
@@ -92,16 +80,14 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       return 0;
     }
     case "contribute": {
-      if (!BRIDGES_REPO_URL) {
-        process.stderr.write(
-          "✗ no contribution remote configured — set BASTRA_BRIDGES_REPO. Contribution is opt-in and PR-gated; nothing is shared automatically.\n",
-        );
-        return 1;
-      }
-      // The scrub + PR submission flow lands here once the shared repo is live.
-      // Deliberately not wired to auto-run: bridges are mined locally and only
-      // leave the machine through an explicit, reviewed PR.
-      process.stderr.write("contribute: not yet available — the shared bridges repo is not public yet\n");
+      // Bridges are minted locally from successful recalls and contributed to the
+      // Commons repo via PR (same flow as `bastra commons verify`). Deliberately
+      // not auto-run: nothing leaves the machine without an explicit, reviewed PR.
+      // Not yet wired — minting depends on #121 (the below-floor far slice is not
+      // logged yet), so there is no harvested material to contribute.
+      process.stderr.write(
+        `contribute: not yet available — bridge minting depends on #121. Bridges will be contributed to ${COMMONS_REPO_URL.replace(/\.git$/, "")} via PR once harvesting is wired.\n`,
+      );
       return 1;
     }
     case "status": {
@@ -115,7 +101,7 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
         : "(not loaded — disabled)";
       process.stdout.write(
         `shared learned-recall: ${enabled ? "enabled" : "disabled"} · language: ${langOverride ?? "auto"} · ` +
-          `pool: ${poolStr} · path: ${bridgesPath()} · remote: ${BRIDGES_REPO_URL || "(none)"}\n`,
+          `pool: ${poolStr} · repo: ${join(bridgesPath(), "bridges")}\n`,
       );
       return 0;
     }
@@ -123,30 +109,4 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       process.stderr.write(`unknown bridges subcommand '${sub}' — use enable|disable|update|language|status|contribute\n`);
       return 2;
   }
-}
-
-async function cloneOrPull(): Promise<number> {
-  const git = findExecutable("git");
-  if (!git) {
-    process.stderr.write("✗ git not found on a trusted PATH\n");
-    return 1;
-  }
-  const path = bridgesPath();
-  if (existsSync(join(path, ".git"))) {
-    process.stdout.write(`→ updating bridges (${path})\n`);
-    const r = run(git, ["-C", path, "pull", "--ff-only"], { timeoutMs: 120_000, showProgress: true });
-    if (!r.ok) {
-      process.stderr.write(`✗ git pull failed (${r.detail})\n`);
-      return 1;
-    }
-  } else {
-    process.stdout.write(`→ cloning ${BRIDGES_REPO_URL} → ${path}\n`);
-    const r = run(git, ["clone", "--depth", "1", BRIDGES_REPO_URL, path], { timeoutMs: 300_000, showProgress: true });
-    if (!r.ok) {
-      process.stderr.write(`✗ git clone failed (${r.detail}) — is the repo reachable for your account?\n`);
-      return 1;
-    }
-  }
-  process.stdout.write("✓ bridges up to date\n");
-  return 0;
 }

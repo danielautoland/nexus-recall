@@ -36,6 +36,14 @@ interface BaseEvent {
   session_id: string;
 }
 
+/** Shared learned-recall (#120): the bridge expansion applied to a recall query.
+ *  Absent when the layer is off or no bridge matched — so its presence and the
+ *  `added` count are the metric for how often and how much bridges fired. */
+export interface BridgeExpansion {
+  lang: string;
+  added: string[];
+}
+
 export interface RecallEvent extends BaseEvent {
   kind: "recall";
   recall_id: string;
@@ -68,6 +76,8 @@ export interface RecallEvent extends BaseEvent {
    * alte Events ohne Floor-Logik haben das Feld nicht.
    */
   dropped_below_floor?: number;
+  /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
+  bridge_expansion?: BridgeExpansion;
 }
 
 export interface LoadMemoryEvent extends BaseEvent {
@@ -143,6 +153,8 @@ export interface HookRecallEvent extends BaseEvent {
     staleness_rank_ms?: number;
     cache_hit?: boolean;
   };
+  /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
+  bridge_expansion?: BridgeExpansion;
 }
 
 /** Hook CLI invocation (client-side view: total wall-clock incl. network). */
