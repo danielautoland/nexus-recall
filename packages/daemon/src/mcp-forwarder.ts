@@ -54,10 +54,7 @@ import {
   RECALL_STAGE_ORDER,
   type RecallStage,
 } from "@bastra-recall/core";
-import { MEMORY_TOOL_DEFS } from "./tool-handlers.js";
-import { documentTools } from "./documents-handler.js";
-import { documentWriteTools } from "./documents-write-handler.js";
-import { productDocTools } from "./product-doc-handler.js";
+import { ALL_TOOL_DEFS } from "./tool-defs.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import {
@@ -240,12 +237,37 @@ async function main(): Promise<void> {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, () => ({
-    // Document-Write-Tools immer mitlisten — der Daemon entscheidet beim
-    // Aufruf, ob BASTRA_DOCUMENT_WRITE=1 gesetzt ist und antwortet sonst
-    // mit einer klaren Pro-Feature-Fehlermeldung.
-    tools: [...MEMORY_TOOL_DEFS, ...documentTools, ...documentWriteTools, ...productDocTools],
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Fetch the tool schemas from the DAEMON (#132), so the schema the client
+    // is told always matches what the daemon actually validates. The forwarder
+    // used to ship its own static copy: with a long-lived shared daemon running
+    // older code in RAM, the client could be told a schema the daemon didn't
+    // validate (→ "argument arrives undefined"). ALL_TOOL_DEFS is the fallback
+    // when the daemon isn't reachable yet (or is too old to expose /tools); the
+    // first CallTool spawns it and every call thereafter hits it regardless.
+    // Document-Write-Tools are always listed — the daemon decides per call
+    // whether BASTRA_DOCUMENT_WRITE=1 and otherwise returns a clear Pro-feature
+    // error.
+    //
+    // Wait for the daemon boot first (the same gate CallTool uses) so the schema
+    // comes from the RUNNING daemon, not the bundled fallback — otherwise a slow
+    // cold start would serve ALL_TOOL_DEFS and reintroduce the very forwarder↔
+    // daemon skew this fixes. The fallback then only applies if the daemon is
+    // genuinely unreachable after boot.
+    await daemonReady.catch(() => false);
+    try {
+      const resp = await fetchWithTimeout(`${DAEMON_URL}/tools`, {}, 2000);
+      if (resp.ok) {
+        const body = (await resp.json()) as { tools?: unknown[] };
+        if (Array.isArray(body.tools) && body.tools.length > 0) {
+          return { tools: body.tools };
+        }
+      }
+    } catch {
+      // daemon down / old daemon without /tools → fall back to the bundled defs
+    }
+    return { tools: ALL_TOOL_DEFS };
+  });
 
   const banterMode = banterModeFromEnv(process.env);
   const banterLang = (process.env.BASTRA_BANTER_LANG ?? "en").toLowerCase() === "de" ? "de" : "en";

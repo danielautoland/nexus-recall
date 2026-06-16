@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **doc2query trigger expansion (#117)**: a local Ollama model paraphrases each
+  memory's `title`/`summary`/`recall_when` into *different* words at write time
+  and indexes them (new `recall_when_expanded` frontmatter field, BM25 weight 2
+  vs `recall_when`'s 5), so a reworded ("far") query weeks later still fires on
+  the lexical layer with zero query-time model cost. The new `TriggerExpander`
+  runs in the background (on every embed + a one-shot backfill sweep over
+  existing memories), keeps only paraphrases that retrieve their own memory in a
+  semantic self-test, and is loop-guarded by a source hash. On by default when
+  Ollama is the embedding provider; `BASTRA_TRIGGER_EXPAND=0` disables it,
+  `BASTRA_EXPAND_MODEL` overrides the model.
+- **`bastra token clear` (#97)**: removes the stored REST API token (browser/REST
+  clients are locked out on the next daemon restart). `bastra` (the status panel)
+  and `bastra status` now show whether a token is set, without printing it.
 - **Product docs (opt-in)**: living user-facing documentation per project in
   `dokumentationen/<project>/` — one markdown file per feature area, written
   update-in-place via the new `save_product_doc` MCP/REST tool (stable id
@@ -88,6 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   timeouts; a spawn killed by signal/timeout no longer counts as success (#91).
 
 ### Fixed
+- **`save_memory` tool-schema skew (#132)**: the stdio forwarder shipped its own
+  static copy of the tool definitions, so the schema a client was told came from
+  the forwarder's build while validation happened at the daemon. A long-lived
+  shared daemon running older code in RAM (it deliberately doesn't restart on a
+  `dist` rebuild) could then validate against a schema that differed from what
+  the client saw — surfacing as a required argument arriving `undefined`. The
+  forwarder now fetches the schemas from the daemon via a new token-free
+  loopback `GET /tools` endpoint (single source of truth: `ALL_TOOL_DEFS`), so
+  the client schema always matches the validator. Falls back to the bundled
+  defs when the daemon isn't reachable yet.
 - Zombie `mcp-forwarder` processes from Claude Desktop's `disclaimer` wrapper
   are now reaped — the forwarder detects the dead grandparent, the daemon
   sweeps stale forwarders on boot (#80).

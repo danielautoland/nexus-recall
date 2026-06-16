@@ -83,6 +83,7 @@ import {
   DOCS_MODES,
 } from "./settings.js";
 import { saveProductDocHandler } from "./product-doc-handler.js";
+import { ALL_TOOL_DEFS } from "./tool-defs.js";
 import type { EmbeddingStatus } from "./embedding-status.js";
 
 export interface HttpOptions {
@@ -299,6 +300,16 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
             }
           : null,
       });
+      return;
+    }
+
+    // The daemon's own tool definitions (#132): the stdio forwarder fetches
+    // these so the schema a client is told always matches what THIS daemon
+    // validates — no skew when a forwarder build is newer than the daemon code
+    // in RAM. Loopback-only + token-free like /health (the Host-gate above
+    // covers it; this is non-/api/v1).
+    if (method === "GET" && url === "/tools") {
+      sendJson(res, 200, { tools: ALL_TOOL_DEFS });
       return;
     }
 
