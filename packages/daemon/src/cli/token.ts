@@ -6,20 +6,39 @@
  * with the Origin-gate + CORS-allowlist in http.ts it's what lets a hosted site
  * talk to 127.0.0.1 safely: a stray website can't guess the token and isn't on
  * the allowlist. `bastra token rotate` issues a fresh token (the old one stops
- * working). The daemon reads the token at startup, so restart it after issuing
- * or rotating — the next recall respawns it.
+ * working); `bastra token clear` removes it entirely (browser/REST clients are
+ * locked out). The daemon reads the token at startup, so restart it after
+ * issuing, rotating, or clearing — the next recall respawns it.
  *
  * stdout = the bare token (script-friendly); stderr = the human hint.
  */
-import { ensureApiToken } from "../settings.js";
+import { ensureApiToken, clearApiToken } from "../settings.js";
 
 export async function cmdToken(args: { sub: string | null; json: boolean }): Promise<number> {
-  if (args.sub && args.sub !== "rotate" && args.sub !== "show") {
+  if (args.sub && args.sub !== "rotate" && args.sub !== "show" && args.sub !== "clear") {
     process.stderr.write(
-      `error: unknown 'token' subcommand '${args.sub}' — use 'bastra token' or 'bastra token rotate'\n`,
+      `error: unknown 'token' subcommand '${args.sub}' — use 'bastra token', 'bastra token rotate', or 'bastra token clear'\n`,
     );
     return 2;
   }
+
+  if (args.sub === "clear") {
+    const cleared = await clearApiToken();
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ cleared }) + "\n");
+      return 0;
+    }
+    if (cleared) {
+      process.stdout.write("✗ token cleared — browser/REST clients are now locked out.\n");
+      process.stderr.write(
+        "Restart the daemon so it drops the token (the next recall respawns it): bastra update\n",
+      );
+    } else {
+      process.stdout.write("no token was set — nothing to clear.\n");
+    }
+    return 0;
+  }
+
   const rotate = args.sub === "rotate";
   const token = await ensureApiToken({ rotate });
 

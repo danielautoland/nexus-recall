@@ -20,8 +20,9 @@ Commands:
   config get <key>           Read a setting (e.g. update.mode)
   config set <key> <value>   Write a setting (update.mode = notify|auto|off,
                              docs.mode = off|suggest|auto, docs.language = en|de|…)
-  token [rotate]             Print the REST API token (mint on first use) for
-                             browser/REST clients; 'rotate' issues a fresh one
+  token [rotate|clear]       Print the REST API token (mint on first use) for
+                             browser/REST clients; 'rotate' issues a fresh one,
+                             'clear' removes it (locks out browser/REST clients)
   commons <enable|update|disable|status>
                              Bastra Commons: community-proven recipes as a
                              read-only second recall index (git-synced)

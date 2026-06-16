@@ -1,7 +1,7 @@
 import { probeDaemon, formatStatus, type DaemonProbe } from "./helpers.js";
 import { ADAPTERS } from "./registry.js";
 import { probeOllama } from "./ollama.js";
-import { getEmbeddingProvider, type EmbeddingProviderName } from "../settings.js";
+import { getEmbeddingProvider, getApiToken, type EmbeddingProviderName } from "../settings.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -11,6 +11,7 @@ interface StatusOptions {
 interface StatusResult {
   daemon: { status: string; message: string };
   semanticRecall: { configured: string; active: string; detail: string };
+  apiToken: { set: boolean };
   surfaces: Record<string, { status: string; message: string }>;
 }
 
@@ -24,6 +25,7 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
   const statusResult: StatusResult = {
     daemon: { status: "unknown", message: "" },
     semanticRecall: { configured: "unset", active: "unknown", detail: "" },
+    apiToken: { set: false },
     surfaces: {},
   };
 
@@ -52,6 +54,17 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
   };
   if (!options.quiet && !options.json) {
     printLine(`${"semantic recall".padEnd(15)} ${srDetail}`);
+  }
+
+  // REST API token — local setting, never shows the token itself. "not set" is
+  // the secure default (loopback-only); a set token enables browser/REST clients.
+  // Never flips the exit code.
+  const tokenSet = (await getApiToken()) !== undefined;
+  statusResult.apiToken = { set: tokenSet };
+  if (!options.quiet && !options.json) {
+    printLine(
+      `${"api token".padEnd(15)} ${tokenSet ? "✓ set (browser/REST enabled)" : "· not set (loopback only)"}`,
+    );
   }
 
   for (const [name, adapter] of Object.entries(ADAPTERS)) {

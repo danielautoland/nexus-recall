@@ -7,7 +7,7 @@
  */
 import { request as httpRequest } from "node:http";
 import { VERSION } from "./helpers.js";
-import { getUpdateMode, getDocsMode, getDocsLanguage } from "../settings.js";
+import { getUpdateMode, getDocsMode, getDocsLanguage, getApiToken } from "../settings.js";
 import { envFirst } from "../env.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -79,12 +79,13 @@ function renderBox(title: string, rows: Array<[string, string]>): string {
 export async function cmdPanel(_args: ParsedArgs): Promise<number> {
   const port = daemonPort();
   // Fresh count (reconciles index vs. disk) + health + modes, in parallel.
-  const [health, freshCount, mode, docsMode, docsLanguage] = await Promise.all([
+  const [health, freshCount, mode, docsMode, docsLanguage, apiToken] = await Promise.all([
     probeHealth(port),
     probeCount(port),
     getUpdateMode(),
     getDocsMode(),
     getDocsLanguage(),
+    getApiToken(),
   ]);
 
   const liveVersion = health?.version ?? VERSION;
@@ -110,6 +111,7 @@ export async function cmdPanel(_args: ParsedArgs): Promise<number> {
     ["daemon", daemonRow],
     ["vault", vaultRow],
     ["docs", docsMode === "off" ? "off" : `${docsMode} (${docsLanguage})`],
+    ["api token", apiToken ? "set (browser/REST enabled)" : "not set (loopback only)"],
   ]);
 
   process.stdout.write(box + "\n");

@@ -14,6 +14,7 @@ import {
   ensureApiToken,
   getApiToken,
   setApiToken,
+  clearApiToken,
   readSettings,
   setUpdateMode,
 } from "../src/settings.js";
@@ -63,6 +64,34 @@ test("setApiToken/ensureApiToken merge: other settings survive", async () => {
     const s = await readSettings(path);
     assert.equal(s.update.mode, "auto", "token write must not clobber update.mode");
     assert.ok(s.api?.token);
+  });
+});
+
+test("clearApiToken: removes a set token and reports it removed", async () => {
+  await withTempSettings(async (path) => {
+    await ensureApiToken({}, path);
+    assert.ok(await getApiToken(path), "precondition: token exists");
+    const removed = await clearApiToken(path);
+    assert.equal(removed, true);
+    assert.equal(await getApiToken(path), undefined);
+  });
+});
+
+test("clearApiToken: returns false when no token was set", async () => {
+  await withTempSettings(async (path) => {
+    assert.equal(await clearApiToken(path), false);
+    assert.equal(await getApiToken(path), undefined);
+  });
+});
+
+test("clearApiToken: other settings survive the clear", async () => {
+  await withTempSettings(async (path) => {
+    await setUpdateMode("auto", path);
+    await ensureApiToken({}, path);
+    await clearApiToken(path);
+    const s = await readSettings(path);
+    assert.equal(s.update.mode, "auto", "clearing the token must not clobber update.mode");
+    assert.equal(s.api, undefined, "the api block is gone");
   });
 });
 

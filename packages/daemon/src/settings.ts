@@ -310,3 +310,17 @@ export async function ensureApiToken(
   await writeSettings({ ...current, api: { token } }, path);
   return token;
 }
+
+/**
+ * Removes the stored REST API token. After a daemon restart, browser/REST
+ * clients that send an Origin are rejected again (back to secure-by-default).
+ * Returns true if a token was actually removed, false if none was set.
+ */
+export async function clearApiToken(path: string = settingsFilePath()): Promise<boolean> {
+  const current = await readSettings(path);
+  if (!current.api?.token) return false;
+  const next = { ...current };
+  delete next.api;
+  await writeSettings(next, path);
+  return true;
+}
