@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   existing memories), keeps only paraphrases that retrieve their own memory in a
   semantic self-test, and is loop-guarded by a source hash. On by default when
   Ollama is the embedding provider; `BASTRA_TRIGGER_EXPAND=0` disables it,
-  `BASTRA_EXPAND_MODEL` overrides the model.
+  `BASTRA_EXPAND_MODEL` overrides the model, and `BASTRA_EXPAND_TIMEOUT_MS`
+  (default 120000) sizes the generation timeout — doc2query generation is far
+  slower than a rerank judgment, so it gets its own generous timeout and the
+  background expansion is hardened so a chat timeout can never crash the daemon.
 - **`bastra token clear` (#97)**: removes the stored REST API token (browser/REST
   clients are locked out on the next daemon restart). `bastra` (the status panel)
   and `bastra status` now show whether a token is set, without printing it.

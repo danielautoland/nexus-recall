@@ -187,6 +187,27 @@ test("writeGate=false suppresses the write (single-writer)", async () => {
   }
 });
 
+test("start: a rejecting expand via onEmbed is swallowed (crash guard, fix A)", async () => {
+  // Without the .catch on `void this.expand(id)`, a chat that throws (Ollama
+  // timeout/abort) becomes an unhandled rejection — node:test would fail the
+  // test, just as it crashed the daemon. The .catch must absorb it.
+  const { dir, vault } = await vaultWith(["a"]);
+  try {
+    let fire: ((id: string) => void) | null = null;
+    const emb = { onEmbed(l: (id: string) => void) { fire = l; return () => {}; } } as unknown as EmbeddingIndex;
+    const expander = new TriggerExpander(vault, emb, {
+      chat: async () => { throw new Error("ollama aborted"); },
+      backfillOnStart: false,
+    });
+    expander.start();
+    assert.ok(fire, "onEmbed listener registered");
+    fire!("a"); // triggers expand → chat throws → must be swallowed, not unhandled
+    await new Promise((r) => setTimeout(r, 20)); // let the rejection settle
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("backfill expands every un-expanded memory, then is idempotent", async () => {
   const { dir, vault } = await vaultWith(["a", "b", "c"]);
   try {

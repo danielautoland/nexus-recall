@@ -88,9 +88,12 @@ export class TriggerExpander {
   start(): void {
     if (this.detach) return;
     this.detach = this.embeddings.onEmbed((id) => {
-      void this.expand(id);
+      // expand() can reject — the Ollama chat may time out / abort. Swallow it
+      // here so a failed expansion never becomes an unhandled promise rejection
+      // that crashes the whole daemon. (The backfill path has its own catch.)
+      void this.expand(id).catch(() => {});
     });
-    if (this.backfillOnStart) void this.backfill();
+    if (this.backfillOnStart) void this.backfill().catch(() => {});
   }
 
   stop(): void {

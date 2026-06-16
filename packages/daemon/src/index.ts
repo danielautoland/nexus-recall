@@ -255,8 +255,13 @@ async function main(): Promise<void> {
         // aber die wertvollen far-Paraphrasen (semantisch, nicht lexikalisch).
         if (ollama && envBool("BASTRA_TRIGGER_EXPAND", true)) {
           const expandModel = envFirst("BASTRA_EXPAND_MODEL") ?? DEFAULT_RERANK_MODEL;
+          // doc2query generation is far slower than a rerank judgment (a 4B model
+          // writing 3-5 phrases takes ~30-90s, more on a cold start), so it gets
+          // its own generous timeout instead of the reranker's 30s default —
+          // otherwise every gen aborts and the backfill writes nothing.
+          const expandTimeoutMs = envInt("BASTRA_EXPAND_TIMEOUT_MS", 120_000);
           const expander = new TriggerExpander(vault, embIdx, {
-            chat: ollamaChat({ baseURL: ollama.baseURL, model: expandModel }),
+            chat: ollamaChat({ baseURL: ollama.baseURL, model: expandModel, timeoutMs: expandTimeoutMs }),
             selfTest: async (phrase, id) => {
               const hits = await search.recallHybrid(phrase, { k: 10, allow_private: true });
               return hits.some((h) => h.id === id);
