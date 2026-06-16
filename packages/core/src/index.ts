@@ -74,3 +74,6 @@ export type { EmbedCacheEntry, EmbedCacheFile } from "./embed-cache.js";
 
 export { RelatedEnricher } from "./related-enrich.js";
 export type { RelatedEnricherOptions } from "./related-enrich.js";
+
+export { TriggerExpander, buildExpandPrompt, parseExpansions, sourceHash } from "./trigger-expand.js";
+export type { TriggerExpanderOptions, ChatFn, SelfTestFn } from "./trigger-expand.js";

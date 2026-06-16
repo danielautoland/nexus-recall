@@ -62,6 +62,7 @@ interface IndexDoc {
   summary: string;
   tags_flat: string;
   recall_when_flat: string;
+  recall_when_expanded_flat: string;
   topic_path_flat: string;
   body: string;
   // not searched, just stored
@@ -109,6 +110,7 @@ export class SearchIndex {
         "summary",
         "tags_flat",
         "recall_when_flat",
+        "recall_when_expanded_flat",
         "topic_path_flat",
         "body",
       ],
@@ -129,6 +131,10 @@ export class SearchIndex {
           recall_when_flat: 5,
           title: 4,
           tags_flat: 3,
+          // doc2query paraphrases (#117): machine-generated, so weighted below
+          // the hand-written triggers and tags but above plain body — they widen
+          // far recall without outranking the author's own words.
+          recall_when_expanded_flat: 2,
           topic_path_flat: 2,
           summary: 2,
           body: 1,
@@ -538,6 +544,7 @@ export class SearchIndex {
       summary: fm.summary,
       tags_flat: fm.tags.join(" "),
       recall_when_flat: fm.recall_when.join(" \n "),
+      recall_when_expanded_flat: (fm.recall_when_expanded ?? []).join(" \n "),
       topic_path_flat: fm.topic_path.join(" "),
       body: m.body,
       type: fm.type,

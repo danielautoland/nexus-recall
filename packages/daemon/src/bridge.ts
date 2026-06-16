@@ -99,6 +99,11 @@ async function attachEmbeddings(search: SearchIndex, vault: Vault): Promise<void
       `[bastra-recall.bridge] auto-related: enabled (top ${envInt("BASTRA_RELATED_TOP_N", 5)} ≥ ${envFloat("BASTRA_RELATED_THRESHOLD", 0.7)}, defers to daemon)\n`,
     );
   }
+  // doc2query Trigger-Expander (#117) läuft bewusst NUR im Daemon (index.ts),
+  // nicht hier: die App-only-Bridge hat ihren eigenen Ollama-Lifecycle, und
+  // LLM-Gen-Last pro Embed ist anders gelagert als das billige Cosine des
+  // RelatedEnrichers. App-only-Setups bekommen Trigger-Expansion beim nächsten
+  // Daemon-Lauf (der Backfill-Sweep holt dann alles Unexpandierte nach).
 }
 
 // ─── Single-Writer-Probe ─────────────────────────────────────────

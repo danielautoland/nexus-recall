@@ -71,6 +71,17 @@ export const FrontmatterSchema = z.object({
   tags: z.array(z.string()).min(1),
   scope: z.string().min(1),
   recall_when: z.array(z.string()).min(1),
+  /**
+   * doc2query write-time trigger expansion (#117): LLM-generated paraphrases of
+   * title/summary/recall_when in *different* words than the author used, so a
+   * reworded ("far") query weeks later still fires. Indexed at a lower BM25
+   * weight than the hand-written `recall_when`. `recall_when_expanded_src` is a
+   * short hash of the source fields — the expander regenerates only when it
+   * changes, which also breaks the reindex→re-embed loop. Both written by the
+   * TriggerExpander background service; absent on memories not yet expanded.
+   */
+  recall_when_expanded: z.array(z.string()).optional(),
+  recall_when_expanded_src: z.string().optional(),
   related: z.array(z.string()).default([]),
   /**
    * Memory-Graph (#30 / #49): LLM-erkannte Beziehungen zu anderen Memories.

@@ -54,8 +54,10 @@ Vault (configurable, plain markdown + YAML frontmatter, Obsidian-compatible)
           │  chokidar (auto-polls on cloud-storage mounts)
           ▼
 bastra-recall daemon (TypeScript / Node 22+, single local process)
-  - In-memory BM25 index (MiniSearch) — recall_when×5, title×4, tags×3
+  - In-memory BM25 index (MiniSearch) — recall_when×5, title×4, tags×3, doc2query×2
   - Hybrid recall: BM25 + embeddings (Ollama or OpenAI) via RRF fusion
+  - doc2query (#117): offline Ollama paraphrases triggers at write time → far
+    recall, query path unchanged (off via BASTRA_TRIGGER_EXPAND=0)
   - Tools: recall, load_memory, save_memory, find/read/save_document,
     save_product_doc
   - Save path: validates frontmatter → writes file → force-reindexes
@@ -327,8 +329,10 @@ Vault (konfigurierbar, reines Markdown + YAML-Frontmatter, Obsidian-kompatibel)
           │  chokidar (Auto-Polling auf Cloud-Storage-Mounts)
           ▼
 bastra-recall Daemon (TypeScript / Node 22+, ein lokaler Prozess)
-  - In-Memory BM25-Index (MiniSearch) — recall_when×5, title×4, tags×3
+  - In-Memory BM25-Index (MiniSearch) — recall_when×5, title×4, tags×3, doc2query×2
   - Hybrid Recall: BM25 + Embeddings (Ollama oder OpenAI) via RRF-Fusion
+  - doc2query (#117): offline Ollama paraphrasiert Trigger zur Schreibzeit → far
+    Recall, Query-Pfad unverändert (aus via BASTRA_TRIGGER_EXPAND=0)
   - Tools: recall, load_memory, save_memory, find/read/save_document,
     save_product_doc
   - Save-Path: validiert Frontmatter → schreibt Datei → erzwingt Reindex

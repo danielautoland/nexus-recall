@@ -71,6 +71,8 @@ The markdown body follows the frontmatter. For lessons, lead with the rule, then
 | `tags` | yes | Flat retrieval tags. At least one. |
 | `scope` | yes | Applicability boundary, e.g. `all-projects`, `user-preference`, or a project name. |
 | `recall_when` | yes | Concrete future contexts where this memory should surface. |
+| `recall_when_expanded` | no | Machine-generated doc2query paraphrases of the triggers (#117), indexed at a lower weight. Written by the `TriggerExpander`; absent until expanded. |
+| `recall_when_expanded_src` | no | Short hash of the source fields the paraphrases were derived from; the expander regenerates only when it changes. |
 | `related` | no | Manual related memory ids. Body wikilinks are mirrored here by the save path. |
 | `related_via` | no | Automatic related edges from embedding similarity. Defaults to `[]`. |
 | `sensitivity` | no | `private`, `team`, or `public`. Defaults to `team`. |
@@ -99,6 +101,8 @@ Recognized `type` values:
 ## Recall Fields
 
 `recall_when` is the most important retrieval field. It is boosted above title, tags, topic path, summary, and body in the MiniSearch index. If embeddings are enabled, the same authored text also contributes to semantic recall because it is included in the embedding text.
+
+`recall_when_expanded` (doc2query, #117) holds LLM-generated paraphrases of the triggers in *different* words, so a reworded query weeks later still fires on the lexical layer without any query-time model cost. A local Ollama model generates them offline at write time (and backfills existing memories); only paraphrases that retrieve their own memory in a self-test are kept. They are indexed below the hand-written `recall_when` (weight 2 vs 5). The feature is on by default when Ollama is the embedding provider; set `BASTRA_TRIGGER_EXPAND=0` to disable it.
 
 Good values describe future actions:
 

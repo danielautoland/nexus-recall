@@ -24,6 +24,7 @@ import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
   RelatedEnricher,
+  TriggerExpander,
   pickPhrase,
   banterModeFromEnv,
   progressIndexFor,
@@ -41,6 +42,7 @@ import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
+import { ollamaChat, DEFAULT_RERANK_MODEL } from "./learned-recall/reranker.js";
 import { existsSync } from "node:fs";
 import {
   recallHandler,
@@ -244,6 +246,24 @@ async function main(): Promise<void> {
           console.error(
             `[bastra-recall] auto-related: enabled (top ${envInt("BASTRA_RELATED_TOP_N", 5)} ≥ ${envFloat("BASTRA_RELATED_THRESHOLD", 0.7)})`,
           );
+        }
+        // doc2query Trigger-Expander (#117): paraphrasiert recall_when offline
+        // nach jedem Embed + backfillt bestehende Memories. Braucht ein lokales
+        // Ollama-Chat-Modell, also nur wenn Ollama der Embedding-Provider ist
+        // (dann läuft der Server). BASTRA_TRIGGER_EXPAND=0 schaltet die Last ab.
+        // Self-Test gegen recallHybrid filtert halluzinierte Paraphrasen, behält
+        // aber die wertvollen far-Paraphrasen (semantisch, nicht lexikalisch).
+        if (ollama && envBool("BASTRA_TRIGGER_EXPAND", true)) {
+          const expandModel = envFirst("BASTRA_EXPAND_MODEL") ?? DEFAULT_RERANK_MODEL;
+          const expander = new TriggerExpander(vault, embIdx, {
+            chat: ollamaChat({ baseURL: ollama.baseURL, model: expandModel }),
+            selfTest: async (phrase, id) => {
+              const hits = await search.recallHybrid(phrase, { k: 10, allow_private: true });
+              return hits.some((h) => h.id === id);
+            },
+          });
+          expander.start();
+          console.error(`[bastra-recall] trigger-expand: enabled (doc2query, model ${expandModel})`);
         }
         console.error(
           `[bastra-recall] embeddings ready provider=${provider.id} (${embIdx.size()} vectors, ${embIdx.pendingSize()} pending)`,
