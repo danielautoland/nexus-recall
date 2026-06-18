@@ -72,6 +72,44 @@ embedder doesn't certify a gate that runs on another until it clears null under 
 production embedder too (e.g. `gap`-AUC e5 0.838 → embeddinggemma 0.930 — both
 clear null, but magnitude is not cross-embedder comparable, so trust the sign).
 
+## Where signal is born (capability side)
+
+The measurement axis has a dual: the same RANK regions, read for *where a training
+label can be born* and *what can move a gold into the labelable region*. The two
+sides are coupled, and the coupling is why the region error recurs.
+
+**Where a label is born:**
+
+- **Teacher 1 (behavioral)** labels what *surfaced and was acted on* (terminal
+  selection = +, re-query = −). A give-up — gold never surfaced (`>P`) — is a
+  *coverage flare, not a label*. → NEAR + FAR-IN-POOL.
+- **Teacher 2 (offline cross-encoder)** reranks the *already-pooled* `hits[]`;
+  rescues only what is in the pool. → FAR-IN-POOL (reorder). Doesn't crack
+  zero-overlap.
+- **No mechanism produces a label in `>P`.** You cannot certify a gold that recall
+  never surfaced. Both teachers are blind out-of-pool — the capability root the
+  measurement side has to police.
+
+**What moves a gold into the pool (so it can be labeled / served):**
+
+- **Index side** — enrich the anchor so the bi-encoder surfaces it: write-time
+  doc2query paraphrase (#117) + real paraphrases harvested off the wire.
+- **Query side** — bridges: expand the query with trigger terms. Minted from an
+  in-pool `(S,P]` rescue but *mandated* to serve `>P` — the transfer the #129 gate
+  must certify, not the reorder it was born from. (`>P` itself splits:
+  surface/typos owned by the lexical arm vs oblique/semantic owned by
+  anchor-enrichment + bridges — so measuring it needs the #130 stratifier, not a
+  naive far set.)
+
+**The duality (why the error recurs):** the label is born in-pool, so a naive
+measurement *defaults* in-pool too — you mean `>P` and measure `(S,P]`. And the
+structural tension it exposes: the bridge layer's training signal (in-pool
+rescues) and its mandate (`>P` transfer) live in different regions, so the #129
+gate certifies a transfer the training never directly optimized — which is exactly
+why the gate, not the harvest, is the load-bearing part.
+
+Credit: this capability map is from @zzallirog (#137).
+
 ## One wire to check it works
 
 Pick any past thread, draw its axis + cuts, locate the test cases' gold. If it's
