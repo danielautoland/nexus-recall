@@ -12,6 +12,7 @@
     "lift": "tsx src/marginal-lift.ts",
     "personas": "tsx src/persona-lift.ts",
     "bridge-transfer": "tsx src/bridge-transfer.ts",
+    "doc2query-lift": "tsx src/doc2query-lift.ts",
     "check:types": "tsc --noEmit"
   },
   "dependencies": {
