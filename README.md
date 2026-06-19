@@ -8,6 +8,7 @@
 > Ein persistentes Teammate-Gedächtnis für jeden AI-Assistenten — über jede Oberfläche hinweg.
 
 [![Website](https://img.shields.io/badge/website-bastra.io-2563eb)](https://bastra.io)
+[![Discord](https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/5yNaXsRhWB)
 [![License: MIT](https://img.shields.io/github/license/n0mad-ai/bastra-recall?color=blue)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/n0mad-ai/bastra-recall?style=flat&color=yellow)](https://github.com/n0mad-ai/bastra-recall/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/n0mad-ai/bastra-recall)](https://github.com/n0mad-ai/bastra-recall/issues)
