@@ -389,12 +389,14 @@ async function main(): Promise<void> {
   const foreignArm = armRow((r) => r.foreign);
 
   // ── Verdict ─────────────────────────────────────────────────────────────────
+  // null-relative NEAR rule (#129): charge a lever for NEAR-regression only above
+  // what the FOREIGN null also pays — lever-specific harm, not generic churn.
   const ownShowsLift = ownArm.crossedIn > 0 || ownArm.meanDeltaRank < 0;
-  const noNearRegression = !(ownArm.nearRegression > 0);
+  const nearWithinNull = ownArm.nearRegression <= foreignArm.nearRegression;
   const beatsForeignCrossed = ownArm.crossedIn > foreignArm.crossedIn;
   const beatsForeignDelta = ownArm.meanDeltaRank < foreignArm.meanDeltaRank;
   const beatsForeign = beatsForeignCrossed && beatsForeignDelta;
-  const promote = ownShowsLift && noNearRegression && beatsForeign;
+  const promote = ownShowsLift && nearWithinNull && beatsForeign;
 
   // ── Print ──────────────────────────────────────────────────────────────────
   const pct = (x: number): string => (Number.isNaN(x) ? "n/a" : `${(x * 100).toFixed(1)}%`);
@@ -462,7 +464,7 @@ async function main(): Promise<void> {
   console.log("");
   console.log("  ── VERDICT (#117) ─────────────────────────────────────────────────");
   console.log(`    own shows OOP lift           : ${ownShowsLift ? "yes" : "no"}`);
-  console.log(`    no near-regression           : ${noNearRegression ? "yes" : "no"}`);
+  console.log(`    near-reg ≤ null              : ${nearWithinNull ? "yes" : "no"} (own ${pct(ownArm.nearRegression)} vs null ${pct(foreignArm.nearRegression)})`);
   console.log(`    own beats foreign (crossed-in): ${beatsForeignCrossed ? "yes" : "no"} (own ${pct(ownArm.crossedIn)} vs foreign ${pct(foreignArm.crossedIn)})`);
   console.log(`    own beats foreign (meanΔrank) : ${beatsForeignDelta ? "yes" : "no"} (own ${num(ownArm.meanDeltaRank)} vs foreign ${num(foreignArm.meanDeltaRank)})`);
   console.log("");

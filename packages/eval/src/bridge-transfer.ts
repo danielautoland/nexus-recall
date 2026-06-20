@@ -406,15 +406,16 @@ async function main(): Promise<void> {
 
   // ── Verdict (#129) ─────────────────────────────────────────────────────────
   // promote iff the on-arm shows OOP far-lift (crossedIn > 0 OR meanΔrank < 0)
-  // AND no near-regression — but ONLY if the on-arm clears the FOREIGN null on
-  // the same metric (own crossedIn > foreign crossedIn AND own meanΔrank <
-  // foreign meanΔrank). Otherwise the lift is non-specific.
+  // AND its NEAR-regression does not exceed the FOREIGN null's (null-relative:
+  // charge lever-specific harm only, not the generic cost a random expansion also
+  // pays — #129) — but ONLY if the on-arm also clears the FOREIGN null on the far
+  // metric (own crossedIn > foreign crossedIn AND own meanΔrank < foreign meanΔrank).
   const onShowsLift = (onArm.crossedIn > 0 || onArm.meanDeltaRank < 0);
-  const noNearRegression = !(onArm.nearRegression > 0);
+  const nearWithinNull = onArm.nearRegression <= foreignArm.nearRegression;
   const beatsForeignCrossed = onArm.crossedIn > foreignArm.crossedIn;
   const beatsForeignDelta = onArm.meanDeltaRank < foreignArm.meanDeltaRank;
   const beatsForeign = beatsForeignCrossed && beatsForeignDelta;
-  const promote = onShowsLift && noNearRegression && beatsForeign;
+  const promote = onShowsLift && nearWithinNull && beatsForeign;
 
   // ── Print ──────────────────────────────────────────────────────────────────
   const pct = (x: number): string => (Number.isNaN(x) ? "n/a" : `${(x * 100).toFixed(1)}%`);
@@ -478,7 +479,7 @@ async function main(): Promise<void> {
   console.log("");
   console.log("  ── VERDICT (#129) ─────────────────────────────────────────────────");
   console.log(`    on-arm shows OOP lift        : ${onShowsLift ? "yes" : "no"}`);
-  console.log(`    no near-regression           : ${noNearRegression ? "yes" : "no"}`);
+  console.log(`    near-reg ≤ null              : ${nearWithinNull ? "yes" : "no"} (own ${pct(onArm.nearRegression)} vs null ${pct(foreignArm.nearRegression)})`);
   console.log(`    on beats foreign (crossed-in): ${beatsForeignCrossed ? "yes" : "no"} (own ${pct(onArm.crossedIn)} vs foreign ${pct(foreignArm.crossedIn)})`);
   console.log(`    on beats foreign (meanΔrank) : ${beatsForeignDelta ? "yes" : "no"} (own ${num(onArm.meanDeltaRank)} vs foreign ${num(foreignArm.meanDeltaRank)})`);
   console.log("");
