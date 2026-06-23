@@ -1,6 +1,10 @@
 name: Publish npm
 
 on:
+  # Auto-publish: creating a GitHub Release (gh release create vX.Y.Z) fires this.
+  release:
+    types: [published]
+  # Manual fallback / dry-run rehearsal.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -11,6 +15,10 @@ on:
         options:
           - "true"
           - "false"
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -39,18 +47,18 @@ jobs:
       - run: npm run pack:check
 
       - name: Publish core
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ github.event_name == 'release' || inputs.dry_run == 'false' }}
         run: npm publish --workspace=@bastra-recall/core --access public --provenance --tag latest
 
       - name: Publish statusline
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ github.event_name == 'release' || inputs.dry_run == 'false' }}
         run: npm publish --workspace=@bastra-recall/statusline --access public --provenance --tag latest
 
       - name: Publish daemon
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ github.event_name == 'release' || inputs.dry_run == 'false' }}
         run: npm publish --workspace=@bastra-recall/daemon --access public --provenance --tag latest
 
       - name: Publish bastra-recall (unscoped wrapper)
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ github.event_name == 'release' || inputs.dry_run == 'false' }}
         run: npm publish --workspace=bastra-recall --access public --provenance --tag latest
 
