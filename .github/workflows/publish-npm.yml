@@ -50,3 +50,7 @@ jobs:
         if: ${{ inputs.dry_run == 'false' }}
         run: npm publish --workspace=@bastra-recall/daemon --access public --provenance
 
+      - name: Publish bastra-recall (unscoped wrapper)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: npm publish --workspace=bastra-recall --access public --provenance
+

@@ -4,6 +4,11 @@
   "description": "bastra-recall statusline for Claude Code. Statusline engine: owloops/claude-powerline (MIT), with the bastra-status segment built in.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/n0mad-ai/bastra-recall.git",
+    "directory": "packages/statusline"
+  },
   "publishConfig": {
     "access": "public"
   },

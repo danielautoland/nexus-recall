@@ -156,7 +156,14 @@ Adapter status:
 
 Every write is **idempotent** (re-runs are no-ops), **atomic** (tmp file + rename), **backed up** (timestamped `.bak-…` next to the original), and **parse-safe** (broken JSON aborts the run instead of corrupting it). Vault path resolves in this order: `--vault <path>` flag → `BASTRA_VAULT_PATH` env → auto-detect from an existing registration in `~/.claude.json` or `claude_desktop_config.json`. The CLI bails with a clear message if none of those produce a path.
 
-Once installed through Homebrew or npm, this collapses to `bastra install all`.
+Once installed through Homebrew or npm, this collapses to `bastra install all`. From the first npm release on:
+
+```bash
+npx bastra-recall install all       # zero-install, one-off
+# or install the CLI globally:
+npm install -g bastra-recall
+bastra install all
+```
 
 #### C) Fully manual — fallback
 
@@ -431,7 +438,14 @@ Adapter-Status:
 
 Jeder Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-File + Rename), **gesichert** (timestamped `.bak-…` neben dem Original) und **parse-safe** (kaputtes JSON bricht den Lauf ab statt es zu zerstören). Vault-Pfad-Auflösung in dieser Reihenfolge: `--vault <pfad>`-Flag → `BASTRA_VAULT_PATH`-ENV → Auto-Detect aus bestehender Registrierung in `~/.claude.json` oder `claude_desktop_config.json`. Wenn nichts greift, bricht die CLI mit klarer Meldung ab.
 
-Sobald über Homebrew oder npm installiert, verkürzt sich das zu `bastra install all`.
+Sobald über Homebrew oder npm installiert, verkürzt sich das zu `bastra install all`. Ab dem ersten npm-Release:
+
+```bash
+npx bastra-recall install all       # ohne Installation, einmalig
+# oder die CLI global installieren:
+npm install -g bastra-recall
+bastra install all
+```
 
 #### C) Komplett manuell — Fallback
 

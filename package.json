@@ -11,6 +11,7 @@
     "packages/core",
     "packages/daemon",
     "packages/statusline",
+    "packages/bastra-recall",
     "packages/eval"
   ],
   "scripts": {
@@ -21,7 +22,7 @@
     "test:update": "npm run test:update --workspace=@bastra-recall/daemon",
     "smoke": "npm run smoke --workspace=@bastra-recall/daemon",
     "smoke:telemetry": "npm run smoke:telemetry --workspace=@bastra-recall/daemon",
-    "pack:check": "npm pack --dry-run --workspace=@bastra-recall/core && npm pack --dry-run --workspace=@bastra-recall/statusline && npm pack --dry-run --workspace=@bastra-recall/daemon"
+    "pack:check": "npm pack --dry-run --workspace=@bastra-recall/core && npm pack --dry-run --workspace=@bastra-recall/statusline && npm pack --dry-run --workspace=@bastra-recall/daemon && npm pack --dry-run --workspace=bastra-recall"
   },
   "devDependencies": {
     "typescript": "^6.0.3"

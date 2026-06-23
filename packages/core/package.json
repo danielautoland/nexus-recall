@@ -4,6 +4,11 @@
   "description": "Reusable core library: vault loader, BM25 index, save_memory. Used by the daemon and the Mac-app.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/n0mad-ai/bastra-recall.git",
+    "directory": "packages/core"
+  },
   "publishConfig": {
     "access": "public"
   },

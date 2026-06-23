@@ -4,6 +4,11 @@
   "description": "MCP server exposing recall + load_memory over a markdown vault.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/n0mad-ai/bastra-recall.git",
+    "directory": "packages/daemon"
+  },
   "publishConfig": {
     "access": "public"
   },
