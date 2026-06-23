@@ -22,7 +22,8 @@
     "test:update": "npm run test:update --workspace=@bastra-recall/daemon",
     "smoke": "npm run smoke --workspace=@bastra-recall/daemon",
     "smoke:telemetry": "npm run smoke:telemetry --workspace=@bastra-recall/daemon",
-    "pack:check": "npm pack --dry-run --workspace=@bastra-recall/core && npm pack --dry-run --workspace=@bastra-recall/statusline && npm pack --dry-run --workspace=@bastra-recall/daemon && npm pack --dry-run --workspace=bastra-recall"
+    "pack:check": "npm pack --dry-run --workspace=@bastra-recall/core && npm pack --dry-run --workspace=@bastra-recall/statusline && npm pack --dry-run --workspace=@bastra-recall/daemon && npm pack --dry-run --workspace=bastra-recall",
+    "release:version": "node scripts/bump.mjs"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
