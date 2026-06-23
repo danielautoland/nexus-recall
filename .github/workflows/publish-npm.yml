@@ -40,17 +40,17 @@ jobs:
 
       - name: Publish core
         if: ${{ inputs.dry_run == 'false' }}
-        run: npm publish --workspace=@bastra-recall/core --access public --provenance
+        run: npm publish --workspace=@bastra-recall/core --access public --provenance --tag latest
 
       - name: Publish statusline
         if: ${{ inputs.dry_run == 'false' }}
-        run: npm publish --workspace=@bastra-recall/statusline --access public --provenance
+        run: npm publish --workspace=@bastra-recall/statusline --access public --provenance --tag latest
 
       - name: Publish daemon
         if: ${{ inputs.dry_run == 'false' }}
-        run: npm publish --workspace=@bastra-recall/daemon --access public --provenance
+        run: npm publish --workspace=@bastra-recall/daemon --access public --provenance --tag latest
 
       - name: Publish bastra-recall (unscoped wrapper)
         if: ${{ inputs.dry_run == 'false' }}
-        run: npm publish --workspace=bastra-recall --access public --provenance
+        run: npm publish --workspace=bastra-recall --access public --provenance --tag latest
 
