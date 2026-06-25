@@ -187,7 +187,7 @@ file new items into it from the start. To establish one:
 ### People — one canonical memo per person, content links in by id
 
 A person has exactly **one** canonical memo: `save_memory` with `folder:
-memories/people`, `topic_path: [people, <handle>]`, `type: reference`, tag
+memories/people`, `topic_path: [people, <handle>]`, `type: project-fact`, tag
 `person`. Set `id: <handle>` explicitly — the body wikilinks below resolve
 against the memory **id**, so the id must be the handle, not the slugified
 title. Pass `folder` explicitly so it routes there regardless of active scope.

@@ -21,7 +21,7 @@ The goal: Daniel never has to say *"merk dir das"*. Claude detects memory-worthy
 | User corrects a recurring tendency | *"du denkst zu kompliziert bei CSS"*, *"halt einfacher"* | `meta-working` |
 | Architectural decision is finalized after weighing options | *"ok, dann nehmen wir Drizzle"* | `decision` |
 | User confirms a workflow step works | *"super, lass uns das immer so machen"* | `workflow` |
-| User introduces a person / states a durable personal fact about someone | *"mein Kollege X"*, a contributor/peer/contact shows up | `reference`, one memo per person in `memories/people` (`folder: memories/people`, `topic_path: [people, <handle>]`, `id: <handle>`, tag `person`); project content links back via `[[<handle>]]` |
+| User introduces a person / states a durable personal fact about someone | *"mein Kollege X"*, a contributor/peer/contact shows up | `project-fact`, one memo per person in `memories/people` (`folder: memories/people`, `topic_path: [people, <handle>]`, `id: <handle>`, tag `person`); project content links back via `[[<handle>]]` |
 | User has a substantive exchange with a person/contributor | *a multi-step back-and-forth (Discord, dev.to, GitHub thread) — not one-liners or acks* | split: identity → `people/`, content+decisions → `project-fact` linking the person via `[[<handle>]]` |
 
 These should fire `save_memory` **without further confirmation** — the user gets a 1-line ack only.
@@ -72,7 +72,7 @@ The ack is short, single-line, prefixed with `→` so it's visually distinct. Da
 
 When a substantive exchange with a contributor happens (Discord, dev.to, GitHub thread — not trivial acks), save it autonomously without being asked, on **two rails**:
 
-- **Identity rail** — the person's overview / personal facts update the canonical `people/<handle>` memo (one memory per person, `folder: memories/people`, `id: <handle>`, `type: reference`, tag `person` — per the People convention).
+- **Identity rail** — the person's overview / personal facts update the canonical `people/<handle>` memo (one memory per person, `folder: memories/people`, `id: <handle>`, `type: project-fact`, tag `person` — per the People convention).
 - **Content rail** — the exchange's substance and any decisions go into a topic `project-fact` under `memories/projects/<project>/`, which links the person via `[[<handle>]]`.
 
 Before quoting any code claim a contributor makes, **verify it against HEAD** — don't propagate an unverified assertion into memory. Fires `save_memory` as a strong signal (`trigger="autonomous-conversation"`); the user gets a 1-line ack only.
