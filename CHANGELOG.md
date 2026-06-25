@@ -95,6 +95,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   foreign project scopes are hard-filtered in all score bands (#107, #110).
 - `save_memory` quality advisory (#108): trigger-collision counting applies
   the recall noise floor instead of reporting the raw top-k for every trigger.
+- Memory-storage conventions moved into the shipped skill
+  (`packages/skill/SKILL.md`), so every MCP surface gets them instead of them
+  living in one vault: **people** store as one canonical memo per person under
+  `memories/people/` (`id: <handle>`, `type: project-fact`, tag `person`), with
+  project content linking in via `[[<handle>]]`; **contributor conversations**
+  are captured autonomously on two rails (identity → `people/`, content →
+  `project-fact`); and the self-learning taxonomy now establishes cluster homes
+  proactively from **conversation context** (e.g. a stack of scanned invoices →
+  a `buchhaltung/` home), not only when a vault cluster recurs three times. A
+  new `docs/commons.md` documents the Commons sharing model end to end (opt-in,
+  default-off, PR-gated, scrubbed-bridges-only, no auto-egress).
 
 ### Security
 - CORS is deny-by-default (#95): with `BASTRA_CORS_ORIGIN` unset no browser
