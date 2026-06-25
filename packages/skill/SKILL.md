@@ -61,6 +61,9 @@ Skipping straight to `conversation_search` or `web_search` on a "find my …" qu
 | Workflow confirmation | "super, lass uns das immer so machen" | `workflow` |
 | Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too, not just the fix) |
 | **Feature / coding block completion** (multi-file feature done, sub-system stabilized, refactor finalized, issue closed with code) | — | `project-fact` (see Project topology below) |
+| **Substantive exchange with a person/contributor** (Discord / dev.to / GitHub thread — not one-liners or acks) | — | split: identity → `memories/people`, content → `project-fact` |
+
+After a real back-and-forth with a contributor lands (not a trivial reply): memorize it autonomously on **two rails**. (1) **Identity** — update the person's canonical memo: one memory per handle, `folder: memories/people`, deduped with `[[wikilinks]]` (the People convention below). (2) **Content** — save the exchange's substance + any decisions as a `project-fact` (a project-scoped fact routes to `memories/projects/<project>/` by default) that links the person via `[[handle]]`. Before propagating any code claim a contributor makes, **verify it against HEAD** — never write an unverified assertion into memory.
 
 ### ANTI-signals — do NOT save
 
@@ -161,8 +164,14 @@ Never invent variant tags for a covered cluster; that fragments recall.
 
 ### Establish (when a cluster recurs without a home)
 
-When you notice the same ad-hoc cluster for the third time — or the stop hook
-surfaces a `<taxonomy-drift>` suggestion — establish a convention:
+Establish a convention the moment a recurring cluster becomes clear — the same
+ad-hoc cluster for the third time, a `<taxonomy-drift>` suggestion from the stop
+hook, **or the conversation itself signalling a recurring domain** (the user
+scans a stack of invoices → an `accounting`/`buchhaltung` home; introduces
+several people → `people`; collects recipes, places, contracts → their own
+homes). Don't wait for the look-alike memories to pile up unfiled: when the
+context signals a recurring kind, create the home folder **proactively** and
+file new items into it from the start. To establish one:
 
 1. `save_memory` with `scope: "taxonomy"`, `type: "workflow"`, tags
    `["convention", "<cluster-key>"]`, body = the rule (folder, topic_path
@@ -175,9 +184,39 @@ surfaces a `<taxonomy-drift>` suggestion — establish a convention:
    while you're at it, and link them with `[[wikilinks]]` instead of
    restating their story.
 
+### People — one canonical memo per person, content links in by id
+
+A person has exactly **one** canonical memo: `save_memory` with `folder:
+memories/people`, `topic_path: [people, <handle>]`, `type: reference`, tag
+`person`. Set `id: <handle>` explicitly — the body wikilinks below resolve
+against the memory **id**, so the id must be the handle, not the slugified
+title. Pass `folder` explicitly so it routes there regardless of active scope.
+That memo holds **identity only**: handle, real name, role/relationship,
+contacts/handles, first-seen, trust signals, a high-level interaction overview.
+
+Content lives elsewhere. Technical conversations, decisions, measurements go
+under the project's scope and link back with `[[<handle>]]` (which mirrors into
+`related[]`) — they never restate who the person is.
+
+A **second** person memo is justified only when the person holds a distinct
+standing role across projects (architecture peer in one, partnership candidate
+in another): the project memo links **up** to the canonical `memories/people`
+memo via `[[<handle>]]` and carries only the project-specific relationship.
+Identity stays in the one canonical memo.
+
 Conventions are living rules: refresh with `overwrite=true`, never fork a
 `-v2`. For bulk re-filing (>5 memories at once), tell the user what you're
 about to move first.
+
+---
+
+## Commons — sharing memories beyond your vault (opt-in)
+
+Bastra Commons is a separate, **opt-in, default-OFF**, PR-gated public Git repo of community-proven engineering recipes — **not** your private vault. `bastra commons enable` clones it read-only to `~/.bastra/commons`; the daemon then fuses its hits into `recall` under `scope: commons`, ranked just **below** your personal memories (on an id collision the personal hit wins). The daemon **never writes** the clone — all sharing is via reviewed PRs, never auto-egress.
+
+Your memories never leave the machine. The only things ever shared are deliberately-authored recipes, your `works`/`fails` verification records, and (when enabled, `bastra bridges enable`) **scrubbed bridges** — language-tagged `trigger_terms → expansion_terms` lists that carry **no memory id, no body, no vault content**. The scrub drops digits, paths, emails, snake_case and hashes; the PR review gate is the real privacy guarantee.
+
+Never `save_memory` into the commons and never treat a `scope: commons` recipe as your own state. Details: `docs/commons.md`.
 
 ---
 
