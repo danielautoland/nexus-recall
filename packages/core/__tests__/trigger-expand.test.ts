@@ -16,6 +16,7 @@ import type { Memory } from "../src/schema.js";
 import {
   TriggerExpander,
   buildExpandPrompt,
+  isSlugChain,
   parseExpansions,
   sourceHash,
 } from "../src/trigger-expand.js";
@@ -101,6 +102,51 @@ test("parseExpansions drops empties + over-long lines and caps at max", () => {
   const raw = ["a", "", "   ", "x".repeat(200), "b", "c", "d"].join("\n");
   const out = parseExpansions(raw, [], 3);
   assert.deepEqual(out, ["a", "b", "c"]);
+});
+
+test("isSlugChain flags multi-segment / mixed-delimiter glue, keeps real search tokens", () => {
+  // slug-chains the model emits despite the prompt — must be dropped
+  for (const slug of [
+    "panel-close-fix",
+    "Bastra-Branding-finalisierung-von-nexus-recall",
+    "min-width-zero-effect",
+    "api-load-distribution-changes",
+    "timestamps-store-utc",
+    "some_id_token",
+    "path/to/file.md",
+  ]) {
+    assert.equal(isSlugChain(slug), true, `should flag slug: ${slug}`);
+  }
+  // real single-token search terms — must be kept (regression: a length filter
+  // can't tell these from slugs; an over-eager "any hyphen" filter eats them)
+  for (const term of [
+    "fenster",
+    "z-index",
+    "min-width",
+    "ci/cd",
+    "gpt-4",
+    "read-only",
+    "doc2query",
+  ]) {
+    assert.equal(isSlugChain(term), false, `should keep term: ${term}`);
+  }
+  // any whitespace → a real query, never a slug
+  assert.equal(isSlugChain("why does my panel close by itself"), false);
+});
+
+test("parseExpansions drops slug-chains but keeps clean phrases and legit hyphen terms", () => {
+  const raw = [
+    "why does my panel close by itself", // keep: real phrase
+    "panel-close-fix", // drop: slug-chain
+    "z-index", // keep: 2-segment term
+    "min-width-zero-effect", // drop: slug-chain
+    "fenster schließt sich von selbst", // keep: real phrase
+  ].join("\n");
+  assert.deepEqual(parseExpansions(raw, [], 5), [
+    "why does my panel close by itself",
+    "z-index",
+    "fenster schließt sich von selbst",
+  ]);
 });
 
 test("sourceHash is stable and changes when recall_when/title/summary change", () => {

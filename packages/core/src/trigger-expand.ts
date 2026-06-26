@@ -194,10 +194,30 @@ export function buildExpandPrompt(m: Memory): string {
 }
 
 /**
+ * A slug/tag/id/filename chain — a single whitespace-free token glued by 2+
+ * delimiters, or by mixed delimiters. The prompt forbids these ("NOT a slug ...
+ * like panel-close-fix"), but a small local model emits them anyway, and a
+ * length filter can't catch them (a slug is short). They poison the BM25 index
+ * with noise terms, so they're dropped structurally rather than trusted to the
+ * prompt.
+ *
+ * Deliberately keeps real single-token search terms: a clean word ("fenster"),
+ * a 2-segment term ("z-index", "min-width", "ci/cd"), a version ("gpt-4"). Only
+ * 3+-segment or mixed-delimiter glue reads as a slug. (A phrase with any
+ * whitespace is a real query and never a slug.)
+ */
+export function isSlugChain(phrase: string): boolean {
+  if (/\s/.test(phrase)) return false;
+  const delims = phrase.match(/[-_/.]/g) ?? [];
+  return delims.length >= 2 || new Set(delims).size >= 2;
+}
+
+/**
  * Parse the model's reply into clean phrases: split on lines, strip bullets/
- * numbering/quotes, drop empties and over-long lines, dedupe (case-insensitive)
- * against each other AND the existing triggers (a paraphrase that just repeats a
- * trigger is dead weight), cap at `max`.
+ * numbering/quotes, drop empties, over-long lines, and slug-chains (see
+ * isSlugChain), dedupe (case-insensitive) against each other AND the existing
+ * triggers (a paraphrase that just repeats a trigger is dead weight), cap at
+ * `max`.
  */
 export function parseExpansions(raw: string, existing: string[], max: number): string[] {
   const seen = new Set(existing.map((t) => t.trim().toLowerCase()));
@@ -207,7 +227,7 @@ export function parseExpansions(raw: string, existing: string[], max: number): s
       .replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "") // bullet / "1." / "1)"
       .replace(/^["'`]|["'`]$/g, "") // wrapping quotes
       .trim();
-    if (!phrase || phrase.length > MAX_PHRASE_LEN) continue;
+    if (!phrase || phrase.length > MAX_PHRASE_LEN || isSlugChain(phrase)) continue;
     const key = phrase.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
