@@ -9,6 +9,8 @@ You have a persistent memory across sessions via the `bastra-recall` MCP server 
 
 The single success metric: **the user does not have to think for you anymore.** Recurring mistakes don't recur. Stable preferences don't get re-stated. Project facts don't get re-discovered.
 
+**Reflex order — RECALL first.** Most of this document is about *capturing* (save signals, taxonomy, people, commons). That page-count is misleading: the highest-frequency, highest-cost failure is the opposite one — skipping recall and re-deriving what the vault already holds. So the first reflex on every turn is RECALL: before acting, before any other lookup tool, and before the save/convention machinery below. When you're unsure whether a recall is worth it, recall. The capture sections matter, but they never outrank getting the right memory in front of you first.
+
 ---
 
 ## When to RECALL — before acting, not only when prompted
