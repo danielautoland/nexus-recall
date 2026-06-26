@@ -1,9 +1,24 @@
-import { test } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Telemetry } from "../src/telemetry.js";
+
+// Der Telemetry-Konstruktor liest jetzt join-state.json (Boot-Restore). Jeder
+// Test bekommt ein frisches, isoliertes Log-Dir, damit `new Telemetry()` nie
+// fremden (echten Daemon-) State lädt und Tests sich nicht gegenseitig sehen.
+let testDir: string;
+beforeEach(async () => {
+  testDir = await mkdtemp(join(tmpdir(), "bastra-telemetry-"));
+  process.env.BASTRA_LOG_PATH = testDir;
+  process.env.BASTRA_TELEMETRY = "on";
+});
+afterEach(async () => {
+  delete process.env.BASTRA_LOG_PATH;
+  delete process.env.BASTRA_TELEMETRY;
+  await rm(testDir, { recursive: true, force: true });
+});
 
 test("recall_episode closes a loaded memory with acted_on=true without logging raw tokens", async () => {
   const dir = await mkdtemp(join(tmpdir(), "bastra-acted-on-"));
@@ -138,6 +153,89 @@ test("ensureTurn (#74): MCP loads join the real session turn; parallel sessions 
   });
   assert.equal(epA3.length, 1);
   assert.notEqual(epA3[0].turn_id, epA[0].turn_id, "new turn key must rotate");
+});
+
+test("join-state persists across a daemon boot (Audit 26.6.)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-join-"));
+  const prevPath = process.env.BASTRA_LOG_PATH;
+  const prevTelemetry = process.env.BASTRA_TELEMETRY;
+  process.env.BASTRA_LOG_PATH = dir;
+  process.env.BASTRA_TELEMETRY = "on";
+
+  try {
+    // Boot A: ein recall + ein Hook-Hint + ein geladenes Memory.
+    const a = new Telemetry();
+    const recallId = a.newRecallId();
+    a.recordHookHints(recallId, [{ id: "mem-x", score: 140 }]);
+    a.rotateTurn("sess-x");
+    a.recordLoadedMemory({
+      memory_id: "mem-x",
+      distinctive_tokens: ["persistedalpha", "persistedbeta"],
+      hook_hint: { recall_id: recallId, score: 140 },
+      session_id: "sess-x",
+    });
+    await a.flushNow();
+
+    // Boot B: frische Instanz, gleicher Log-Pfad = simulierter Idle-Respawn.
+    const b = new Telemetry();
+    assert.equal(b.recentRecallId(), recallId, "follows_recall must survive the boot");
+    assert.equal(
+      b.findHookHintFor("mem-x")?.recall_id,
+      recallId,
+      "from_hook_recall must survive the boot",
+    );
+
+    // recall_episode entsteht jetzt boot-übergreifend — das war der Wurzeldefekt.
+    const episodes = b.matchLoadedMemories({
+      tool_name: "Edit",
+      tool_input_excerpt: "edit touching persistedalpha and persistedbeta",
+      session_id: "sess-x",
+    });
+    assert.equal(episodes.length, 1, "loaded memory must survive the boot and still close");
+    assert.equal(episodes[0].memory_id, "mem-x");
+    assert.equal(episodes[0].acted_on, true);
+  } finally {
+    if (prevPath === undefined) delete process.env.BASTRA_LOG_PATH;
+    else process.env.BASTRA_LOG_PATH = prevPath;
+    if (prevTelemetry === undefined) delete process.env.BASTRA_TELEMETRY;
+    else process.env.BASTRA_TELEMETRY = prevTelemetry;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("join-state restore drops entries past their follow-up window", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-join-ttl-"));
+  const prevPath = process.env.BASTRA_LOG_PATH;
+  const prevTelemetry = process.env.BASTRA_TELEMETRY;
+  process.env.BASTRA_LOG_PATH = dir;
+  process.env.BASTRA_TELEMETRY = "on";
+
+  try {
+    const old = Date.now() - 60 * 60 * 1000; // 1h alt — weit jenseits aller Fenster
+    await writeFile(
+      join(dir, "join-state.json"),
+      JSON.stringify({
+        version: 1,
+        lastRecall: { id: "stale-recall", ts: old },
+        hookHints: [["mem-old", { recall_id: "stale", rank: 1, score: 100, ts: old }]],
+        turns: [],
+        latestTurn: null,
+        adoptedTurnKeys: [],
+        loadedMemories: [],
+      }),
+      "utf8",
+    );
+
+    const t = new Telemetry();
+    assert.equal(t.recentRecallId(), null, "stale lastRecall must be dropped on restore");
+    assert.equal(t.findHookHintFor("mem-old"), null, "stale hook hint must be dropped on restore");
+  } finally {
+    if (prevPath === undefined) delete process.env.BASTRA_LOG_PATH;
+    else process.env.BASTRA_LOG_PATH = prevPath;
+    if (prevTelemetry === undefined) delete process.env.BASTRA_TELEMETRY;
+    else process.env.BASTRA_TELEMETRY = prevTelemetry;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("recall_episode (#77): direct load without a hint is marked surfaced=false", () => {

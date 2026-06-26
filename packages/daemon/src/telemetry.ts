@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
+import { readJoinStateSync, writeJoinState } from "./telemetry-join-store.js";
 
 /**
  * Migration-aware default log directory: prefer `~/.bastra/logs`, aber
@@ -21,14 +22,18 @@ function defaultLogDir(): string {
   return next;
 }
 
+// Nur die Events, die DIESE Klasse via write() schreibt. Die Hook-CLIs
+// (hook_call, session_hook_call, prompt_hook_call, bash_hook_call,
+// bash_fail_hook_call, todo_hook_call, save_eval_call) sind eigene Prozesse
+// und schreiben mit ihren eigenen lokalen Telemetry-Interfaces direkt ins
+// JSONL — sie gehören NICHT in diese Union (sonst täuscht sie einen Producer
+// vor, den es hier nicht gibt). Reader (stats.ts, harvest.ts) parsen roh.
 export type TelemetryEvent =
   | RecallEvent
   | LoadMemoryEvent
   | SaveMemoryEvent
   | HookRecallEvent
   | RecallEpisodeEvent
-  | HookCallEvent
-  | SessionHookCallEvent
   | OllamaLifecycleEvent;
 
 interface BaseEvent {
@@ -162,22 +167,6 @@ export interface HookRecallEvent extends BaseEvent {
   candidate_pool?: { id: string; score: number }[];
 }
 
-/** Hook CLI invocation (client-side view: total wall-clock incl. network). */
-export interface HookCallEvent extends BaseEvent {
-  kind: "hook_call";
-  tool_name: string;
-  file_path: string | null;
-  topics: string[];
-  query_chars: number;
-  daemon_url: string;
-  daemon_reachable: boolean;
-  hint_count: number;
-  top_score: number | null;
-  latency_ms_total: number;
-  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
-  error: string | null;
-}
-
 /**
  * Ollama-Modell-Lifecycle (#109): prewarm (Boot-Wakeup) und idle-unload.
  * Aus den Paaren prewarm→unload lässt sich die RAM-Residenz des Embedding-
@@ -194,25 +183,6 @@ export interface OllamaLifecycleEvent extends BaseEvent {
   embed_calls_since_boot: number | null;
 }
 
-/**
- * SessionStart hook CLI invocation. Fires once per Claude Code session
- * (also after /clear, /resume, and auto-compact via the `source` field).
- * Logged client-side because the session hook makes 2-3 sub-recalls and
- * we want one row per session, not per scope.
- */
-export interface SessionHookCallEvent extends BaseEvent {
-  kind: "session_hook_call";
-  source: string | null;
-  project: string | null;
-  queries: number;
-  daemon_url: string;
-  daemon_reachable: boolean;
-  hint_count: number;
-  top_score: number | null;
-  latency_ms_total: number;
-  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
-  error: string | null;
-}
 
 const RECALL_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
 /**
@@ -249,7 +219,11 @@ interface LoadedMemoryTrace {
   closed: boolean;
 }
 
-const ACTED_ON_WINDOW_MS = envInt("BASTRA_ACTED_ON_WINDOW_MS", 180_000);
+// Fenster, in dem ein geladenes Memory für eine acted_on-Episode offen
+// bleibt. 180s war zu kurz für die reale Load→Edit-Kadenz: an recall-
+// lastigen Tagen fiel KEIN einziger Load in das Fenster (Audit 26.6.). 600s
+// = 10 min, konsistent mit HOOK_HINT_WINDOW_MS; env-tunbar.
+const ACTED_ON_WINDOW_MS = envInt("BASTRA_ACTED_ON_WINDOW_MS", 600_000);
 const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
 const MUST_LOAD_SCORE = envInt("BASTRA_MUST_LOAD_SCORE", 100);
 
@@ -264,6 +238,24 @@ function tokenize(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? []);
 }
 
+/** Bump bei inkompatibler Snapshot-Shape — alte Snapshots werden dann verworfen. */
+const JOIN_STATE_VERSION = 1;
+/** Debounce-Fenster für den Disk-Flush des Korrelations-States. */
+const JOIN_FLUSH_DEBOUNCE_MS = 1000;
+
+/** Disk-serialisierbare Form des In-Memory-Join-States (Maps/Sets → Arrays). */
+interface JoinStateSnapshot {
+  version: number;
+  lastRecall: { id: string; ts: number } | null;
+  hookHints: Array<[string, HookHintTrace]>;
+  turns: Array<[string, TurnTrace]>;
+  latestTurn: TurnTrace | null;
+  adoptedTurnKeys: Array<[string, number]>;
+  loadedMemories: Array<
+    Omit<LoadedMemoryTrace, "distinctive_tokens"> & { distinctive_tokens: string[] }
+  >;
+}
+
 export class Telemetry {
   private readonly enabled: boolean;
   private readonly logDir: string;
@@ -275,6 +267,8 @@ export class Telemetry {
   private latestTurn: TurnTrace | null = null;
   private loadedMemories: LoadedMemoryTrace[] = [];
   private initPromise: Promise<void> | null = null;
+  private readonly joinStatePath: string;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.enabled =
@@ -285,6 +279,12 @@ export class Telemetry {
       envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ??
       defaultLogDir();
     this.sessionId = randomUUID();
+    // Korrelations-State boot-übergreifend wiederherstellen (Audit 26.6.):
+    // ohne das gehen follows_recall/from_hook_recall/recall_episode bei jedem
+    // Idle-Respawn verloren. `events-*.jsonl` matcht join-state.json nicht,
+    // stats.ts ignoriert es also.
+    this.joinStatePath = join(this.logDir, "join-state.json");
+    if (this.enabled) this.restoreFromDisk();
   }
 
   isEnabled(): boolean {
@@ -294,6 +294,7 @@ export class Telemetry {
   newRecallId(): string {
     const id = randomUUID();
     this.lastRecall = { id, ts: Date.now() };
+    this.scheduleFlush();
     return id;
   }
 
@@ -321,6 +322,7 @@ export class Telemetry {
         ts,
       });
     }
+    this.scheduleFlush();
   }
 
   /**
@@ -346,6 +348,7 @@ export class Telemetry {
     };
     this.turns.set(sessionId, trace);
     this.latestTurn = trace;
+    this.scheduleFlush();
     return trace.turn_id;
   }
 
@@ -402,6 +405,7 @@ export class Telemetry {
       ts: now,
       closed: false,
     });
+    this.scheduleFlush();
   }
 
   matchLoadedMemories(payload: {
@@ -444,6 +448,7 @@ export class Telemetry {
     this.loadedMemories = this.loadedMemories.filter(
       (entry) => !entry.closed && now - entry.ts <= ACTED_ON_WINDOW_MS,
     );
+    this.scheduleFlush();
     return episodes;
   }
 
@@ -505,18 +510,6 @@ export class Telemetry {
     });
   }
 
-  async logHookCall(
-    payload: Omit<HookCallEvent, "kind" | "ts" | "session_id">,
-  ): Promise<void> {
-    if (!this.enabled) return;
-    await this.write({
-      kind: "hook_call",
-      ts: new Date().toISOString(),
-      session_id: this.sessionId,
-      ...payload,
-    });
-  }
-
   async logOllamaLifecycle(
     payload: Omit<OllamaLifecycleEvent, "kind" | "ts" | "session_id">,
   ): Promise<void> {
@@ -527,6 +520,88 @@ export class Telemetry {
       session_id: this.sessionId,
       ...payload,
     });
+  }
+
+  // ─── Join-State-Persistenz (Audit 26.6.) ──────────────────────────
+
+  /** Serialisiert den In-Memory-Join-State in eine Disk-taugliche Form. */
+  private snapshot(): JoinStateSnapshot {
+    return {
+      version: JOIN_STATE_VERSION,
+      lastRecall: this.lastRecall,
+      hookHints: [...this.hookHints.entries()],
+      turns: [...this.turns.entries()],
+      latestTurn: this.latestTurn,
+      adoptedTurnKeys: [...this.adoptedTurnKeys.entries()],
+      loadedMemories: this.loadedMemories.map((m) => ({
+        ...m,
+        distinctive_tokens: [...m.distinctive_tokens],
+      })),
+    };
+  }
+
+  /**
+   * Lädt einen persistierten Snapshot beim Boot und filtert jeden Eintrag auf
+   * sein Follow-up-Fenster — abgelaufene/geschlossene Spuren werden verworfen,
+   * damit ein alter Snapshot keine veralteten Joins wiederbelebt.
+   */
+  private restoreFromDisk(): void {
+    const raw = readJoinStateSync(this.joinStatePath);
+    if (!raw || typeof raw !== "object") return;
+    const snap = raw as Partial<JoinStateSnapshot>;
+    if (snap.version !== JOIN_STATE_VERSION) return;
+    const now = Date.now();
+
+    if (snap.lastRecall && now - snap.lastRecall.ts <= RECALL_FOLLOWUP_WINDOW_MS) {
+      this.lastRecall = snap.lastRecall;
+    }
+    if (Array.isArray(snap.hookHints)) {
+      for (const [id, trace] of snap.hookHints) {
+        if (trace && now - trace.ts <= HOOK_HINT_WINDOW_MS) this.hookHints.set(id, trace);
+      }
+    }
+    if (Array.isArray(snap.loadedMemories)) {
+      for (const m of snap.loadedMemories) {
+        if (!m || m.closed || now - m.ts > ACTED_ON_WINDOW_MS) continue;
+        this.loadedMemories.push({ ...m, distinctive_tokens: new Set(m.distinctive_tokens) });
+      }
+    }
+    // turns/latestTurn/adoptedTurnKeys hängen an den loadedMemories-/hint-
+    // Spuren; großzügig auf das längste Follow-up-Fenster filtern.
+    const turnTtl = Math.max(HOOK_HINT_WINDOW_MS, ACTED_ON_WINDOW_MS);
+    if (Array.isArray(snap.turns)) {
+      for (const [sid, t] of snap.turns) {
+        if (t && now - t.started_at <= turnTtl) this.turns.set(sid, t);
+      }
+    }
+    if (snap.latestTurn && now - snap.latestTurn.started_at <= turnTtl) {
+      this.latestTurn = snap.latestTurn;
+    }
+    if (Array.isArray(snap.adoptedTurnKeys)) {
+      for (const [sid, key] of snap.adoptedTurnKeys) {
+        if (this.turns.has(sid)) this.adoptedTurnKeys.set(sid, key);
+      }
+    }
+  }
+
+  /** Debounced Disk-Flush — fasst mehrere Mutationen zu einem Write zusammen. */
+  private scheduleFlush(): void {
+    if (!this.enabled || this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      fireAndForget(writeJoinState(this.joinStatePath, this.snapshot()));
+    }, JOIN_FLUSH_DEBOUNCE_MS);
+    this.flushTimer.unref();
+  }
+
+  /** Sofortiger Flush (graceful shutdown + Tests) — umgeht den Debounce. */
+  async flushNow(): Promise<void> {
+    if (!this.enabled) return;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    await writeJoinState(this.joinStatePath, this.snapshot());
   }
 
   private async ensureDir(): Promise<void> {

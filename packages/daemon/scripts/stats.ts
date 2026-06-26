@@ -22,6 +22,13 @@ function defaultLogDir(): string {
 const LOG_DIR =
   process.env.BASTRA_LOG_PATH ?? process.env.NEXUS_LOG_PATH ?? defaultLogDir();
 
+// Band-Schwellen müssen mit telemetry.ts (bandForScore) übereinstimmen — sonst
+// werden surfaced-Bänder (hier aus hits[].score) und loaded/acted-Bänder
+// (episode.band, daemon-seitig env-getrieben) auf verschiedenen Cut-Points
+// berechnet und die USE-rate-Tabelle vergleicht still falsche Bänder.
+const MUST_LOAD_SCORE = Number(process.env.BASTRA_MUST_LOAD_SCORE ?? 100);
+const SCORE_FLOOR = Number(process.env.BASTRA_RECALL_FLOOR ?? 30);
+
 const daysArg = process.argv.indexOf("--days");
 const DAYS: number | null =
   daysArg >= 0 && process.argv[daysArg + 1] ? parseInt(process.argv[daysArg + 1], 10) : null;
@@ -119,7 +126,7 @@ function summarizeHook(events: AnyEvent[]): void {
   console.log(`  hook latency_ms_total:   median ${median(totalLatencies).toFixed(0).padStart(4)}   p95 ${p95(totalLatencies).toFixed(0).padStart(4)}`);
   console.log(`  daemon latency_ms_recall: median ${median(recallLatencies).toFixed(0).padStart(4)}   p95 ${p95(recallLatencies).toFixed(0).padStart(4)}`);
   console.log(`  daemon latency_ms_total: median ${median(httpLatencies).toFixed(0).padStart(4)}   p95 ${p95(httpLatencies).toFixed(0).padStart(4)}`);
-  console.log(`  top-score distribution (only calls with hits):`);
+  console.log(`  top-score distribution (top candidate per reachable call, pre-dedup — a high score with 0 hints = deduped/scope-filtered):`);
   console.log(`     ≥ 100:  ${above100.toString().padStart(4)}  (${pct(above100, topScores.length)})`);
   console.log(`     50-99:  ${above50.toString().padStart(4)}  (${pct(above50, topScores.length)})`);
   console.log(`     30-49:  ${above30.toString().padStart(4)}  (${pct(above30, topScores.length)})`);
@@ -223,7 +230,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
     const hits = r.hits as Array<{ score?: number }>;
     for (const h of hits) {
       const score = Number(h.score ?? 0);
-      const band = score >= 100 ? "required" : score >= 30 ? "optional" : "below_floor";
+      const band = score >= MUST_LOAD_SCORE ? "required" : score >= SCORE_FLOOR ? "optional" : "below_floor";
       surfaced.set(band, (surfaced.get(band) ?? 0) + 1);
     }
   }
@@ -241,7 +248,11 @@ function summarizeUseRate(events: AnyEvent[]): void {
     const s = surfaced.get(band) ?? 0;
     const l = loaded.get(band) ?? 0;
     const a = acted.get(band) ?? 0;
-    console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
+    // acted_on/surfaced ist der Funnel-Endpunkt (von Repeat-Resurfacing
+    // verwässert); acted_on/loaded ist die EHRLICHE USE-rate, die die
+    // Header-Frage „haben geladene Hints den nächsten Input beeinflusst?"
+    // beantwortet — sonst liest man pct(a,s)≈0 als „wirkt nicht".
+    console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)}  (${pct(a, l)} of loaded · ${pct(a, s)} of surfaced)`);
   }
   if (directLoads > 0) {
     console.log(`  (excluded: ${directLoads} direct load(s) with no preceding hint — not part of any band quota)`);
