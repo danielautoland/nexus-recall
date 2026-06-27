@@ -193,6 +193,10 @@ export function buildExpandPrompt(m: Memory): string {
   ].join("\n");
 }
 
+// Function words that sit in the seam of an idiomatic multi-part term
+// (left-to-right, end-to-end, state-of-the-art). A slug glues only content words.
+const SEAM_WORDS = new Set(["to", "of", "the", "and", "or", "in", "on", "by", "for", "vs"]);
+
 /**
  * A slug/tag/id/filename chain — a single whitespace-free token glued by 2+
  * delimiters, or by mixed delimiters. The prompt forbids these ("NOT a slug ...
@@ -205,11 +209,22 @@ export function buildExpandPrompt(m: Memory): string {
  * a 2-segment term ("z-index", "min-width", "ci/cd"), a version ("gpt-4"). Only
  * 3+-segment or mixed-delimiter glue reads as a slug. (A phrase with any
  * whitespace is a real query and never a slug.)
+ *
+ * Exception: a hyphen-only chain with a function word in an inner segment is an
+ * idiomatic term (left-to-right, end-to-end, state-of-the-art), not a slug — a
+ * slug glues only content words (panel-close-fix). The hyphen-only guard keeps
+ * "path/to/file.md" (also contains "to") a slug: only pure "-" chains get the
+ * exception, so paths and mixed-delimiter junk still drop.
  */
 export function isSlugChain(phrase: string): boolean {
   if (/\s/.test(phrase)) return false;
   const delims = phrase.match(/[-_/.]/g) ?? [];
-  return delims.length >= 2 || new Set(delims).size >= 2;
+  if (delims.length < 2 && new Set(delims).size < 2) return false;
+  if (delims.every((d) => d === "-")) {
+    const segs = phrase.toLowerCase().split("-").filter(Boolean);
+    if (segs.slice(1, -1).some((s) => SEAM_WORDS.has(s))) return false;
+  }
+  return true;
 }
 
 /**

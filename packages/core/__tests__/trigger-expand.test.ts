@@ -130,6 +130,10 @@ test("isSlugChain flags multi-segment / mixed-delimiter glue, keeps real search 
   ]) {
     assert.equal(isSlugChain(term), false, `should keep term: ${term}`);
   }
+  // idiomatic multi-hyphen terms: a function word in the seam → kept, not a slug
+  for (const term of ["left-to-right", "end-to-end", "state-of-the-art"]) {
+    assert.equal(isSlugChain(term), false, `should keep idiom: ${term}`);
+  }
   // any whitespace → a real query, never a slug
   assert.equal(isSlugChain("why does my panel close by itself"), false);
 });
