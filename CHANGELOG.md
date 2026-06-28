@@ -6,7 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0-beta.2] — 2026-06-28
+
 ### Added
+- **doc2query slug-filter + corpus prune (#145, #143)**: a structural
+  `isSlugChain` gate (plus a sharpened write-time prompt) drops slug-chains
+  (`panel-close-fix`) and hallucinated tag-strings from `recall_when_expanded`
+  before they reach the BM25 index — a small local model emits them despite the
+  prompt, and they poison recall with noise terms. The gate keeps real search
+  tokens (`z-index`, `gpt-4`, and idioms like `left-to-right` via a function-word
+  seam heuristic). The new `prune-slug-expansions` maintenance script applies the
+  same gate to *existing* expansions (340 slug entries removed across the vault,
+  the good paraphrases and the clean files left untouched), so the stored corpus
+  matches what new writes get.
 - **doc2query trigger expansion (#117)**: a local Ollama model paraphrases each
   memory's `title`/`summary`/`recall_when` into *different* words at write time
   and indexes them (new `recall_when_expanded` frontmatter field, BM25 weight 2
@@ -106,6 +118,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a `buchhaltung/` home), not only when a vault cluster recurs three times. A
   new `docs/commons.md` documents the Commons sharing model end to end (opt-in,
   default-off, PR-gated, scrubbed-bridges-only, no auto-egress).
+- The shipped skill re-anchors the **RECALL-first reflex** above the grown
+  capture/convention sections, so the agent reaches for the vault before acting
+  instead of being pulled toward the save machinery first.
 
 ### Security
 - CORS is deny-by-default (#95): with `BASTRA_CORS_ORIGIN` unset no browser
@@ -115,6 +130,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   timeouts; a spawn killed by signal/timeout no longer counts as success (#91).
 
 ### Fixed
+- **Telemetry join-state across daemon boots**: the recall→action correlation
+  state lived only in memory and reset on every daemon restart, skewing the
+  `recall_episode`/USE-rate join. It now persists across boots, so the acted-on
+  numbers are honest rather than truncated at each restart.
 - **`save_memory` tool-schema skew (#132)**: the stdio forwarder shipped its own
   static copy of the tool definitions, so the schema a client was told came from
   the forwarder's build while validation happened at the daemon. A long-lived
