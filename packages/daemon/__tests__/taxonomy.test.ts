@@ -240,6 +240,33 @@ test("save_memory: overwrite with a changed folder MOVES (old file trashed)", as
   }
 });
 
+test("save_memory: overwrite WITHOUT folder keeps the file in place (no silent relocate)", async () => {
+  const { deps, dir, close } = await makeDeps();
+  try {
+    // Memo lives deliberately in memories/people/ (set via explicit folder).
+    const created = await saveMemoryHandler(deps, { ...PERSON_INPUT, folder: "memories/people" });
+    assert.equal(created.file_path, join(dir, "memories/people/caio-ribeiro.md"));
+
+    // Update WITHOUT folder (only the content changed) must NOT re-route to the
+    // scope/type default (memories/projects/bastra-recall) — otherwise the memo
+    // vanishes from the people/ vault and the original gets trashed.
+    const updated = await saveMemoryHandler(deps, {
+      ...PERSON_INPUT,
+      summary: "person memo, updated",
+      overwrite: true,
+    });
+    assert.equal(updated.file_path, created.file_path, "update stays in place");
+    await access(created.file_path); // same file, still present
+    await assert.rejects(
+      access(join(dir, ".bastra/trash/caio-ribeiro.md")),
+      "nothing should have been trashed on an in-place update",
+    );
+    assert.equal(deps.vault.get("caio-ribeiro")?.filePath, created.file_path);
+  } finally {
+    await close();
+  }
+});
+
 test("save_memory: traversal folder is rejected", async () => {
   const { deps, close } = await makeDeps();
   try {

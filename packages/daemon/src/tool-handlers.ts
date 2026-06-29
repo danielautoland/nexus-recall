@@ -9,6 +9,7 @@
  * Damit teilen sich beide Pfade dieselbe Validierung, Telemetry und
  * Vault-Mutation — kein doppelter Code, kein Drift.
  */
+import { relative, dirname } from "node:path";
 import { z } from "zod";
 import {
   saveMemory,
@@ -604,7 +605,17 @@ export async function saveMemoryHandler(
     );
   }
 
-  const result = await saveMemory(deps.vaultPath, parsed.data);
+  // In-place update: overwriting an existing memory WITHOUT an explicit folder
+  // must keep it where it already lives. Otherwise the scope/type default
+  // routing silently relocates it on any edit (and trashes the original) — e.g.
+  // a memories/people/ memo updated without folder gets re-routed to
+  // memories/projects/<scope>/. An explicit folder still moves it (#64 re-filing).
+  const input =
+    previous && !parsed.data.folder
+      ? { ...parsed.data, folder: relative(deps.vaultPath, dirname(previous.filePath)) }
+      : parsed.data;
+
+  const result = await saveMemory(deps.vaultPath, input);
   if (previous && previous.filePath !== result.file_path) {
     try {
       await moveToTrash(deps.vaultPath, previous.filePath, finalId);
