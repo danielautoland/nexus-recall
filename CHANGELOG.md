@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Survival substrate invariant (#146)**: a memory's id keeps resolving after
+  demote (score-only, file byte-identical) and soft-delete (append-only trash +
+  audit entry, recoverable via restore) — the one guarantee the pin/floor
+  lifecycle (#142) and any future citation layer both build on. Pinned by a CI
+  regression test (`packages/core/__tests__/survival-by-id.test.ts`) that goes
+  red if either operation starts *evaporating* the cell instead of demoting /
+  trashing it, and documented as a citable contract in `docs/survival.md`. The
+  retire/unpin arm waits on the #142 floor (left as `test.todo`).
+
 ## [0.7.0-beta.2] — 2026-06-28
 
 ### Added

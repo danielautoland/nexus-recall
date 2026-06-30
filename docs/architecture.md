@@ -53,6 +53,8 @@ The scanner is recursive, so older flat vaults and hand-organized Obsidian folde
 
 The watcher uses `chokidar`. On paths that look like cloud-storage mounts (`CloudStorage`, `Dropbox`, `iCloud`), it switches to polling because native file events are unreliable there. Write paths call `vault.reindexFile(...)` after known writes so a save and a recall in the same turn stay consistent.
 
+A memory's **id survives** the engine's lifecycle operations: demote changes score only, soft-delete moves the file to append-only `.bastra/trash/` (recoverable), and only a hard delete removes a cell. This is the substrate guarantee the pin/floor lifecycle and any citation layer build on — pinned by a CI regression test. Details: [docs/survival.md](./docs/survival.md).
+
 ## Search And Recall
 
 The current index is in-memory MiniSearch BM25, not SQLite/FTS5. The searched fields are:
