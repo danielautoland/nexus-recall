@@ -621,9 +621,11 @@ function handleHookRecall(
 
       // Lean projection (#50): the hook CLI only consumes lean fields, so we
       // never need to send matched_terms/mode/hop/topic_path over the wire.
-      // Telemetry above already logged the full hits.
+      // Telemetry above already logged the full hits. #148: the hook scope
+      // filter needs the one extra bit `matched_recall_when` (kept here only,
+      // not in the shared toLeanHit — MCP recall stays the documented lean shape).
       const payload = {
-        hits: hits.map(toLeanHit),
+        hits: hits.map((h) => ({ ...toLeanHit(h), matched_recall_when: h.matched_recall_when ?? false })),
         vault_size: vault.size(),
         latency_ms: totalLatencyMs,
         recall_id: recallId,

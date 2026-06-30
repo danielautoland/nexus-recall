@@ -89,3 +89,31 @@ export function isScopeCompatible(scope: string, project: string | null): boolea
   if (scope === project) return true;
   return project.startsWith(scope + "-") || scope.startsWith(project + "-");
 }
+
+/**
+ * Scope-Filter-Entscheidung pro Hint (#148): lässt einen starken, ABSICHTLICHEN
+ * Cross-Scope-Hit durch die #110-Hard-Filter, ohne den tag/topic-Noise-Fall
+ * wieder zu öffnen.
+ *
+ * Kompatible Scopes passieren immer (`isScopeCompatible`). Ein FREMDER
+ * Projekt-Scope passiert nur, wenn beides gilt:
+ *   - der Hit matchte auf seinem HAND-geschriebenen `recall_when`
+ *     (`matched_recall_when` — deliberate Cross-Project-Relevanz, nicht bloß
+ *     thematische tag/topic-Überlappung), UND
+ *   - er sitzt im REQUIRED-Band (`score ≥ mustLoadScore`).
+ *
+ * Warum nicht Score allein: der ursprüngliche #107-Bypass ließ jeden Hit mit
+ * `score ≥ 100` durch, in der Annahme „hoher Score ≈ starker recall_when-Match".
+ * Das wurde am Einführungstag widerlegt (#110) — ein bastra-io-Hint kam mit
+ * Score 159 über reinen tag/topic-Overlap durch. Das echte
+ * `matched_recall_when`-Signal trennt die beiden Fälle: der 159er-Noise-Hit
+ * hätte es nie gesetzt, der absichtliche Cross-Scope-Treffer schon.
+ */
+export function passesScopeFilter(
+  hit: { scope: string; score: number; matched_recall_when?: boolean },
+  project: string | null,
+  mustLoadScore: number,
+): boolean {
+  if (isScopeCompatible(hit.scope, project)) return true;
+  return hit.matched_recall_when === true && hit.score >= mustLoadScore;
+}

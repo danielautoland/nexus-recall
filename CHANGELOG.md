@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   trashing it, and documented as a citable contract in `docs/survival.md`. The
   retire/unpin arm waits on the #142 floor (left as `test.todo`).
 
+### Fixed
+- **Strong cross-scope recall hints (#148)**: the #110 foreign-scope hard-filter
+  dropped hints from other project scopes in *all* score bands, so genuinely
+  cross-project work surfaced no auto-hints at all (a `bastra-io`-scoped "read the
+  Discord #dev channel" memory never fired during `bastra-recall` work). A hit now
+  passes the foreign-scope filter only when it matched its **hand-written**
+  `recall_when` *and* sits in the REQUIRED band — deliberate cross-project
+  relevance gets through, while the original #110 tag/topic-overlap noise (a high
+  score with no recall_when match) stays filtered. New `matched_recall_when` hit
+  signal in core, gated in `passesScopeFilter`.
+
 ## [0.7.0-beta.2] — 2026-06-28
 
 ### Added

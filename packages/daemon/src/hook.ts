@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
-import { shouldSkipPath, isScopeCompatible } from "./hook-skip.js";
+import { shouldSkipPath, passesScopeFilter } from "./hook-skip.js";
 import {
   bumpShown,
   cleanupOldStates,
@@ -64,6 +64,9 @@ interface RecallHit {
   scope: string;
   summary: string;
   score: number;
+  /** #148: matchte der Hit auf seinem hand-geschriebenen `recall_when`?
+   *  Lässt starke, absichtliche Cross-Scope-Hits durch den #110-Filter. */
+  matched_recall_when?: boolean;
 }
 
 interface RecallResponse {
@@ -169,17 +172,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // 6) Score-floor filter + Scope-Hard-Filter (#107, #110): Hints aus
-  //    fremden Projekt-Scopes fliegen raus — seit #110 auch im REQUIRED-
-  //    Band. Die ursprüngliche Ausnahme („starker recall_when-Match schlägt
-  //    die Scope-Heuristik") wurde noch am Einführungstag widerlegt: ein
-  //    bastra-io-Hint kam mit Score 159 bei einem bastra-recall-Edit durch.
+  // 6) Score-floor filter + Scope-Hard-Filter (#107, #110, #148): Hints aus
+  //    fremden Projekt-Scopes fliegen raus — seit #110 auch im REQUIRED-Band.
+  //    Die ursprüngliche Ausnahme („starker recall_when-Match schlägt die
+  //    Scope-Heuristik") war ein reiner Score-Bypass und wurde am Einführungstag
+  //    widerlegt (bastra-io-Hint mit Score 159 über tag/topic-Overlap). #148
+  //    bringt sie korrekt zurück: nur ein Hit, der auf seinem HAND-geschriebenen
+  //    recall_when matchte UND im REQUIRED-Band sitzt, passiert cross-scope
+  //    (siehe passesScopeFilter).
   const filteredHits: RecallHit[] = [];
   let droppedScopeCount = 0;
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < SCORE_FLOOR) continue;
-      if (!isScopeCompatible(h.scope, project)) {
+      if (!passesScopeFilter(h, project, MUST_LOAD_SCORE)) {
         droppedScopeCount++;
         continue;
       }

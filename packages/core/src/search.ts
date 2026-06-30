@@ -19,6 +19,25 @@ export interface RecallHit {
   /** „direct" | „1-hop" — bei Multi-Hop-Recall: ob das Memory ein direkter
    *  Match war oder ein Nachbar über `related_via`. UI kann das anders rendern. */
   hop?: "direct" | "1-hop";
+  /** true wenn ein Query-Term auf dem HAND-geschriebenen `recall_when` matchte
+   *  (nicht `recall_when_expanded`, nicht title/tags/topic/body). Signal für
+   *  einen „deliberate" Treffer — der Autor hat genau diesen Kontext als Trigger
+   *  deklariert. Genutzt vom Hook-Scope-Filter (#148), um starke, absichtliche
+   *  Cross-Scope-Hits durchzulassen ohne den tag/topic-Noise (#110) zu öffnen. */
+  matched_recall_when?: boolean;
+}
+
+/** Hat ein Query-Term auf dem hand-geschriebenen `recall_when_flat` gematcht?
+ *  MiniSearch `match` ist `{ term: fields[] }`. `recall_when_expanded_flat`
+ *  zählt bewusst NICHT — das ist doc2query-generiert, nicht vom Autor als
+ *  Trigger deklariert (#148: nur „deliberate" Cross-Scope-Relevanz). */
+function matchedRecallWhen(r: { match?: Record<string, string[]> }): boolean {
+  const match = r.match;
+  if (!match) return false;
+  for (const fields of Object.values(match)) {
+    if (fields.includes("recall_when_flat")) return true;
+  }
+  return false;
 }
 
 export interface RecallOptions {
@@ -218,6 +237,7 @@ export class SearchIndex {
       topic_path: r.topic_path as string[],
       score: round(r.score),
       matched_terms: r.terms ?? [],
+      matched_recall_when: matchedRecallWhen(r),
       mode: "bm25" as const,
       hop: "direct" as const,
     }));
@@ -333,6 +353,9 @@ export class SearchIndex {
         // BM25-Scores ~5–500, RRF ist 0.005–0.04 → *5000 mappt grob.
         score: round(fusedScore * 5000),
         matched_terms: bm?.terms ?? [],
+        // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
+        // lexikalisches recall_when-Match → false.
+        matched_recall_when: bm ? matchedRecallWhen(bm) : false,
         mode: inBoth ? "hybrid" : bm ? "bm25" : "vector",
         hop: "direct" as const,
       });
