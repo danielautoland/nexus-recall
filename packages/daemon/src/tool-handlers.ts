@@ -426,6 +426,8 @@ export interface SaveMemoryResult {
   save_quality: SaveQualityResult;
   /** Present only when saveMemory auto-truncated an over-long summary. */
   summary_note?: string;
+  /** #150: terminal success marker — tells the model not to re-issue the save. */
+  note?: string;
 }
 
 export const GENERIC_TRIGGER_WORDS = new Set([
@@ -602,7 +604,57 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
   };
 }
 
+// ─── #150: anti-thrash — consecutive-failure cap on save_memory ─────────
+// A repeatedly failing save (schema retry loop, path issue) must never eat
+// the turn: after SAVE_FAILURE_CAP consecutive failures the error turns
+// terminal ("STOP retrying") until a save succeeds or the window expires.
+// Deliberately daemon-global rather than per-session: this is a local
+// single-user daemon, the CC session id does not reach this handler, and the
+// time window bounds any cross-session bleed.
+export const SAVE_FAILURE_CAP = 3;
+export const SAVE_FAILURE_WINDOW_MS = 10 * 60_000;
+let saveFailureCount = 0;
+let saveFailureLastAt = 0;
+
+export function noteSaveFailure(now: number = Date.now()): number {
+  if (now - saveFailureLastAt > SAVE_FAILURE_WINDOW_MS) saveFailureCount = 0;
+  saveFailureLastAt = now;
+  saveFailureCount += 1;
+  return saveFailureCount;
+}
+
+export function resetSaveFailures(): void {
+  saveFailureCount = 0;
+  saveFailureLastAt = 0;
+}
+
 export async function saveMemoryHandler(
+  deps: ToolDeps,
+  rawArgs: unknown,
+): Promise<SaveMemoryResult> {
+  let result: SaveMemoryResult;
+  try {
+    result = await saveMemoryInner(deps, rawArgs);
+  } catch (err) {
+    const failures = noteSaveFailure();
+    if (failures >= SAVE_FAILURE_CAP) {
+      // No reset here: every further attempt stays terminal until a success
+      // or the window expiry clears the streak.
+      throw new Error(
+        `save_memory failed ${failures} times in a row — STOP retrying this save. ` +
+          `Continue with the user's actual task and report the failed save in your reply instead. ` +
+          `(last error: ${(err as Error).message})`,
+      );
+    }
+    throw err;
+  }
+  resetSaveFailures();
+  // Terminal success marker: no state echo beyond the advisory — a re-issued
+  // identical save is thrash, not diligence.
+  return { ...result, note: "Save complete — do not repeat this save_memory call." };
+}
+
+async function saveMemoryInner(
   deps: ToolDeps,
   rawArgs: unknown,
 ): Promise<SaveMemoryResult> {
