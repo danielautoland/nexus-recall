@@ -13,6 +13,9 @@
  *         · scope=<project>        k=3   query="<project> active context"
  *         · scope=all-projects     k=2   query="cross-project working rules"
  *     → merge by score, drop dups, format as <session-context>…</session-context>
+ *     → GET /hook/floors (#141/#142): floored memories as a <pinned-memories>
+ *       block BEFORE the score-gated hints — push-by-state, never relevance-
+ *       gated, never dropped by any dedup
  *     → stdout: {"hookSpecificOutput": { hookEventName, additionalContext }}
  *
  * Discipline mirrors hook.ts: hard wall-clock budget, fail-silent on every
@@ -30,10 +33,11 @@ import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
+import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
-const HOOK_VERSION = "0.2.0";
+const HOOK_VERSION = "0.3.0";
 const SCORE_FLOOR = 30;
 const MUST_LOAD_SCORE = 100;
 const TOTAL_HINTS_CAP = 7;
@@ -152,7 +156,27 @@ async function main(): Promise<void> {
     }
   }
   merged.sort((a, b) => b.score - a.score);
-  const top = merged.slice(0, TOTAL_HINTS_CAP);
+
+  // Floor-Registry (#141/#142): gepinnte Memories — push-by-state, bewusst
+  // NICHT score-gated (gleiches Muster wie der Taxonomie-Block: dedizierter
+  // Listen-Endpoint statt Recall-Suche; ein Constraint darf nicht am Floor
+  // sterben, dessen Job es ist, präsent zu sein, wenn der Turn ihn nicht für
+  // relevant hält). Dedup-Verifikation: der Session-Hook wendet KEINEN
+  // session-state-Dedup an (shouldDropHit lebt ausschließlich im PreToolUse-
+  // Hook, hook.ts) — gepinnte Einträge können hier also nie weggededupt
+  // werden. Der einzige Dedup läuft in die GEGENrichtung: dropPinnedFromRanked
+  // entfernt ranked-Duplikate, damit die Hint-Liste kein Budget doppelt auf
+  // bereits garantierte Einträge ausgibt.
+  let pinned: PinnedFloorLean[] = [];
+  if (responses.some((r) => r.resp !== null)) {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    pinned = await fetchFloors(url, project, Math.min(150, remainingMs));
+    // Ohne erkanntes Projekt injizieren nur globale (unscoped) Floors —
+    // fremd-gescopte Einträge wären in einer projektlosen Session Rauschen.
+    if (!project) pinned = pinned.filter((e) => !e.scope);
+  }
+  const pinnedBlock = formatPinnedBlock(pinned);
+  const top = dropPinnedFromRanked(merged, pinned).slice(0, TOTAL_HINTS_CAP);
 
   // Taxonomie-Konventionen (#66): bindende, selbst-gelernte Struktur-Regeln
   // des Vaults. Dedizierter Listen-Endpoint statt Recall-Suche — Konventionen
@@ -243,14 +267,17 @@ async function main(): Promise<void> {
   }
 
   const extras = taxonomyBlock + updateBlock + pendingBlock + dokuBlock;
+  // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
+  // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
+  const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";
   // hint_tokens_est (#72): Token-Schätzung des injizierten Kontexts.
   let injected = "";
-  if (top.length === 0 && extras === "") {
+  if (top.length === 0 && pinnedBlock === "" && extras === "") {
     if (status === "ok") status = "no-hits";
     emitEmpty();
   } else if (top.length === 0) {
-    // Only conventions and/or an update banner, no recall hits.
-    injected = extras.trimStart();
+    // Only pinned entries, conventions and/or an update banner, no recall hits.
+    injected = (pinnedBlock + extras).trimStart();
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
@@ -260,7 +287,7 @@ async function main(): Promise<void> {
       }),
     );
   } else {
-    injected = formatBlock(top, project, payload.source ?? null) + extras;
+    injected = pinnedHead + formatBlock(top, project, payload.source ?? null) + extras;
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
@@ -279,6 +306,7 @@ async function main(): Promise<void> {
     daemon_reachable: responses.some((r) => r.resp !== null),
     hint_count: top.length,
     convention_count: conventions.length,
+    pinned_count: pinned.length,
     top_score: top[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     hint_tokens_est: Math.ceil(injected.length / 4),
@@ -466,6 +494,58 @@ function fetchTaxonomy(baseUrl: string, timeoutMs: number): Promise<ConventionLe
   });
 }
 
+interface FloorsResponse {
+  floors: PinnedFloorLean[];
+}
+
+/**
+ * Floor-Registry-Fetch (#141/#142). Gleiche Disziplin wie fetchTaxonomy:
+ * fail-silent, ein GET, hartes Timeout — der Daemon joint id→title/summary
+ * bereits serverseitig (/hook/floors), die Hook-CLI bleibt dumm. Mit Projekt
+ * wird scope=<project> angefragt (Daemon liefert scoped + unscoped).
+ */
+function fetchFloors(baseUrl: string, project: string | null, timeoutMs: number): Promise<PinnedFloorLean[]> {
+  return new Promise((resolve_) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/floors", baseUrl);
+      if (project) url.searchParams.set("scope", project);
+    } catch {
+      resolve_([]);
+      return;
+    }
+    const req = request(
+      {
+        method: "GET",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname + url.search,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString("utf8")) as FloorsResponse;
+            if ((res.statusCode ?? 500) === 200 && Array.isArray(data.floors)) {
+              resolve_(data.floors);
+              return;
+            }
+          } catch { /* fallthrough */ }
+          resolve_([]);
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve_([]);
+    });
+    req.on("error", () => resolve_([]));
+    req.end();
+  });
+}
+
 function probeHealth(baseUrl: string, timeoutMs: number): Promise<HealthResponse | null> {
   return new Promise((resolve_) => {
     let url: URL;
@@ -516,6 +596,8 @@ interface SessionHookTelemetry {
   daemon_reachable: boolean;
   hint_count: number;
   convention_count: number;
+  /** Gepinnte Floor-Einträge im <pinned-memories>-Block (#141/#142). */
+  pinned_count: number;
   top_score: number | null;
   latency_ms_total: number;
   /** Geschätzte Tokens des injizierten Session-Kontexts (#72). */

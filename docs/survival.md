@@ -24,7 +24,7 @@ That is why it is pinned by a regression test (see *Enforcement*).
 |---|---|---|
 | **Read / rank** | none | resolves |
 | **Demote** (staleness aging) | recall **score** only — the file is byte-identical | resolves |
-| **Unpin / retire** (#142 floor expiry) | drops to *ranked* — never deletes | resolves |
+| **Unpin / retire** (#142 floor release) | drops to *ranked* — never deletes; file byte-identical, ranking identical | resolves |
 | **Soft-delete** | file moves to append-only `.bastra/trash/` + a `delete` audit entry is appended | leaves the **active** index; recoverable via restore |
 | **Restore** | trash file returns to the vault; the `delete` record stays (append-only) | resolves again |
 | **Hard-delete** | the cell is gone | does not resolve — the only operation that ends survival |
@@ -34,7 +34,7 @@ Concretely:
 - **Stable ids.** `Vault.get(id)` resolves a memory by its frontmatter `id`, independent of file path or score.
 - **Demote = score only.** `computeStaleness(...)` returns a multiplier (`fresh` → `stale` → `expired`); aging touches the recall score, never the file and never by-id resolution.
 - **Soft-delete = trash + audit, not erase.** `auditedSoftDelete(...)` moves the file under `.bastra/trash/` and appends a `delete` entry to the `AuditLog`. The active index drops the id (`vault.get(id) → undefined`), but the trash file and the audit record persist. `auditedRestore(...)` reindexes it and the id resolves again; the original `delete` record survives the restore because the log is append-only.
-- **Unpin ≠ delete.** When the #142 floor lifecycle lands, an expired floor returns the memory to ordinary ranked retrieval. It removes a *guarantee* (always-present), not the *memory*.
+- **Unpin ≠ delete.** The #142 floor is **injection-layer-only**: a daemon-side registry (`packages/daemon/src/floors.ts`, persisted at `~/.bastra/floors.json`) decides what the session hook injects as `<pinned-memories>`; the engine score and the vault file are untouched by construction. `release(condition)` returns the memory to ordinary ranked retrieval — it removes a *guarantee* (always-present), not the *memory*. A citation still resolves against it, nothing evaporates; it just stops spending guaranteed context.
 
 ## Enforcement
 
@@ -42,18 +42,21 @@ The invariant is a CI gate, not a courtesy:
 
 ```
 packages/core/__tests__/survival-by-id.test.ts
+packages/daemon/__tests__/floors.test.ts   (retire/unpin arm)
 ```
 
 - `demote` arm — a 200-day-old lesson is demoted (score multiplier `< 1`), yet `vault.get(id)` still resolves and the file is byte-identical.
 - `soft-delete` arm — after `auditedSoftDelete`, the id leaves the active index but the trash file + append-only `delete`/`restore` records persist, and a restore brings the id back.
+- `retire/unpin` arm — pinned by `packages/daemon/__tests__/floors.test.ts`
+  (it lives in the daemon suite because the #142 floor registry is daemon-side
+  state and core does not import daemon): floor + `release(condition)` leave the
+  vault file **byte-identical** and the engine ranking **identical**
+  before/during/after flooring, and `vault.get(id)` resolves throughout —
+  drop-to-ranked, never delete. The core file keeps a `test.todo` signpost
+  pointing there.
 
-The day either operation starts *evaporating* the cell instead of demoting /
-trashing it, the test goes red.
-
-The **retire / unpin** arm is currently `test.todo`: the #142 pin/floor primitive
-(`last_affirmed`, drop-to-ranked on expiry) is not implemented yet, so there is no
-real code to assert against. It is left as a todo on purpose — prove the property,
-don't claim it. When #142 lands, that arm becomes a real test.
+The day any of these operations starts *evaporating* the cell instead of
+demoting / unpinning / trashing it, the tests go red.
 
 ## Provenance
 

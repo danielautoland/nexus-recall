@@ -18,10 +18,14 @@
  * The day either operation starts evaporating the cell instead of demoting /
  * trashing it, this test goes red.
  *
- * NOTE: the #142 pin/floor primitive (retire / unpin / drop-to-ranked on expiry,
- * last_affirmed) is NOT implemented yet, so its survival arm has no real code to
- * assert against — left as test.todo below rather than a green test against
- * absent behaviour (prove the property, don't claim it).
+ * NOTE: the #142 pin/floor primitive is implemented as DAEMON-side state
+ * (packages/daemon/src/floors.ts — injection-layer-only, the engine score and
+ * vault files are untouched by construction). Its survival arm is therefore
+ * pinned next to the module, in the daemon suite (core must not import daemon;
+ * cross-package imports in this repo only run daemon → core):
+ *   packages/daemon/__tests__/floors.test.ts
+ *   ("survival-by-id: retire/unpin drops to ranked without delete …")
+ * The test.todo below stays as a signpost only.
  *
  * Runner: node --import tsx --test packages/core/__tests__/survival-by-id.test.ts
  */
@@ -172,8 +176,12 @@ test("survival-by-id: soft-delete trashes append-only — id leaves the active i
   }
 });
 
-// The #142 pin/floor primitive (retire / unpin / drop-to-ranked on expiry,
-// last_affirmed) is not implemented yet — so the "retire" arm of the invariant
-// has no real code to assert against. Left as a todo on purpose rather than a
-// green test against absent behaviour.
-test.todo("survival-by-id: retire/unpin drops to ranked without delete (#142 floor — not yet implemented)");
+// The #142 pin/floor primitive landed as daemon-side state (floors.ts), so the
+// "retire" arm of the invariant lives in the daemon suite next to the module —
+// packages/daemon/__tests__/floors.test.ts pins: floor + release leave the
+// vault file BYTE-IDENTICAL and the engine ranking IDENTICAL before/during/
+// after flooring (drop-to-ranked, never delete). Signpost only; core does not
+// import daemon.
+test.todo(
+  "survival-by-id: retire/unpin drops to ranked without delete — pinned in packages/daemon/__tests__/floors.test.ts (#142/#153)",
+);
