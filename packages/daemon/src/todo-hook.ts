@@ -19,6 +19,7 @@
  *     its own CLI entry (`bastra-recall-todo-hook`) to avoid merge friction.
  */
 import { detectProject } from "@bastra-recall/core";
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -303,7 +304,7 @@ export function formatHintBlock(
     for (const h of optional) sections.push(formatHintLine(h));
   }
 
-  return [head, ...sections, tail].join("\n");
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
 function escapeAttr(s: string): string {

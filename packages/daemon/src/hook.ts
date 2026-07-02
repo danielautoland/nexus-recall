@@ -27,6 +27,10 @@ import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+// #152: subpath import loads ONLY the dependency-free scrub leaf — the full
+// @bastra-recall/core stays lazy-imported (#28), the cheap skip-gate path is
+// unaffected.
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { shouldSkipPath, passesScopeFilter } from "./hook-skip.js";
@@ -324,7 +328,9 @@ function formatHintBlock(required: RecallHit[], optional: RecallHit[], project: 
     for (const h of optional) sections.push(formatHintLine(h));
   }
 
-  return [head, ...sections, tail].join("\n");
+  // #152: reference-only frame + anti-spoof — vault-derived text (titles,
+  // summaries) must not carry marker fragments that break out of the block.
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
 function escapeAttr(s: string): string {

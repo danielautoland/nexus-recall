@@ -19,6 +19,7 @@
  * error path, telemetry best-effort.
  */
 import { detectProject } from "@bastra-recall/core";
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -319,7 +320,7 @@ function formatBlock(hits: RecallHit[], project: string | null, source: string |
     for (const h of optional) sections.push(formatHintLine(h));
   }
 
-  return [head, ...sections, tail].join("\n");
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
 function formatHintLine(h: RecallHit): string {
@@ -409,9 +410,11 @@ function postRecall(
  */
 function formatTaxonomyBlock(conventions: ConventionLean[]): string {
   if (conventions.length === 0) return "";
+  // #152: anti-spoof strip only — deliberately NO reference-only note here,
+  // conventions are meant to be BINDING instructions.
   const lines = conventions
     .slice(0, 6)
-    .map((c) => `- [${c.id}] ${c.title}: ${c.summary}`);
+    .map((c) => stripFenceMarkers(`- [${c.id}] ${c.title}: ${c.summary}`));
   return (
     `\n<vault-taxonomy>\n` +
     `Self-learned vault conventions — BINDING when saving memories in these clusters. ` +
