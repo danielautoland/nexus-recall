@@ -30,6 +30,7 @@ import { request } from "node:http";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { scrubInjectedBlocks } from "@bastra-recall/core";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { writePendingSuggestion } from "./pending-suggestions.js";
@@ -307,21 +308,32 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
     const directRole = obj.role;
     const directContent = obj.content;
     if (typeof directRole === "string") {
-      out.push({ role: effectiveRole(directRole, directContent), content: stringifyContent(directContent) });
+      out.push({ role: effectiveRole(directRole, directContent), content: scrubTurnContent(stringifyContent(directContent)) });
       continue;
     }
     const msg = obj.message;
     if (msg && typeof msg === "object") {
       const m = msg as Record<string, unknown>;
       const role = typeof m.role === "string" ? m.role : "unknown";
-      out.push({ role: effectiveRole(role, m.content), content: stringifyContent(m.content) });
+      out.push({ role: effectiveRole(role, m.content), content: scrubTurnContent(stringifyContent(m.content)) });
       continue;
     }
     if (typeof obj.text === "string") {
-      out.push({ role: "unknown", content: obj.text });
+      out.push({ role: "unknown", content: scrubTurnContent(obj.text) });
     }
   }
   return out;
+}
+
+// #149: our own hook injections (<recall-hints>, <session-context>, …) quote
+// file paths and trigger vocabulary. Embedded mid-turn they survive the
+// prefix-based role reclassification above, and detectFeatureCompletion scans
+// EVERY role's text for file tokens — so recalled context could count toward
+// its own re-capture. Scrub complete blocks AFTER role classification (the
+// prefix match in effectiveRole needs the raw text) so every heuristic sees
+// clean prose.
+function scrubTurnContent(text: string): string {
+  return scrubInjectedBlocks(text).text;
 }
 
 function stringifyContent(content: unknown): string {

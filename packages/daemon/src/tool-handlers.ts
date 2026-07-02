@@ -18,6 +18,7 @@ import {
   truncateSummaryTo,
   SaveMemoryInput,
   stripAutoRelatedSection,
+  containsInjectedBlock,
   type Vault,
   type SearchIndex,
   type StageListener,
@@ -537,6 +538,25 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
     issues.push(`generic tags: ${genericTags.join(", ")}`);
     suggestions.push("add at least one project/component/outcome tag so future matches are narrower");
     score -= Math.min(24, genericTags.length * 12);
+  }
+
+  // #149: a complete hook/context block quoted in memory content is
+  // conversation scaffolding, not memory — it re-enters the index via body
+  // search and (title/summary) doc2query. Advisory only: save content is never
+  // silently rewritten; the agent removes the block and re-saves.
+  const injectedTags = Array.from(
+    new Set([
+      ...containsInjectedBlock(input.title),
+      ...containsInjectedBlock(input.summary),
+      ...containsInjectedBlock(input.body),
+    ]),
+  );
+  if (injectedTags.length > 0) {
+    issues.push(`injected context blocks in content: <${injectedTags.join(">, <")}>`);
+    suggestions.push(
+      "remove quoted hook/context blocks (<recall-hints>, <session-context>, <system-reminder>, …) — they are conversation scaffolding, not memory content",
+    );
+    score -= 20;
   }
 
   const duplicateQuery = [input.title, input.summary, ...input.recall_when, ...input.tags].join(" ");

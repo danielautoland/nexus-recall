@@ -272,3 +272,47 @@ describe("stop-hook: parseTranscriptFile", () => {
     assert.deepEqual(parseTranscriptFile("not json at all"), []);
   });
 });
+
+describe("stop-hook: #149 injected-context scrubbing in normalizeTurns", () => {
+  const HINT_BLOCK =
+    '<recall-hints surface="claude-code" trigger="todo-plan">\n' +
+    `- lesson foo: edited ${FIVE_SOURCE_FILES}\n` +
+    "</recall-hints>";
+
+  it("strips embedded injected blocks but keeps surrounding prose", () => {
+    const items = [{ role: "user", content: `kurze frage\n${HINT_BLOCK}\nund noch text` }];
+    const turns = normalizeTurns(items);
+    assert.equal(turns[0].role, "user");
+    assert.match(turns[0].content, /kurze frage/);
+    assert.match(turns[0].content, /und noch text/);
+    assert.ok(!turns[0].content.includes("recall-hints"));
+    assert.ok(!turns[0].content.includes("stop-hook.ts"), "file tokens inside the block must be gone");
+  });
+
+  it("feature-completion does not count file tokens quoted inside injected blocks", () => {
+    // Without the scrub this fires: user confirms a commit and an injected
+    // hint block carries 5 repo-relative source paths.
+    const items = [
+      { role: "user", content: "ok, bitte git commit machen" },
+      { role: "user", content: HINT_BLOCK },
+    ];
+    const turns = normalizeTurns(items);
+    assert.equal(detectFeatureCompletion(turns, ALL_EXIST), null);
+  });
+
+  it("feature-completion still fires when the same files appear as real prose", () => {
+    const items = [
+      { role: "user", content: "ok, bitte git commit machen" },
+      { role: "assistant", content: FIVE_SOURCE_FILES },
+    ];
+    const turns = normalizeTurns(items);
+    assert.ok(detectFeatureCompletion(turns, ALL_EXIST));
+  });
+
+  it("prefix-injected turns keep their system-injected role (scrub runs after classification)", () => {
+    const items = [{ role: "user", content: "<system-reminder>\nwieder wieder wieder wieder\n</system-reminder>" }];
+    const turns = normalizeTurns(items);
+    assert.equal(turns[0].role, "system-injected");
+    assert.ok(!turns[0].content.includes("system-reminder"));
+  });
+});

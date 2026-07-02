@@ -41,6 +41,9 @@ export type { Memory, MemoryType, Frontmatter } from "./schema.js";
 
 export { truncateSummaryTo, clampSummary, SUMMARY_MAX } from "./summary.js";
 
+export { scrubInjectedBlocks, containsInjectedBlock, INJECTED_BLOCK_TAGS } from "./scrub.js";
+export type { ScrubResult, InjectedBlockTag } from "./scrub.js";
+
 export { detectTopics, detectProject, extractContentExcerpt } from "./topics.js";
 export type { ToolIntent, TopicResult } from "./topics.js";
 

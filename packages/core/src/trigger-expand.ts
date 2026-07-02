@@ -32,6 +32,7 @@ import matter from "gray-matter";
 import type { Vault } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
 import type { Memory } from "./schema.js";
+import { scrubInjectedBlocks } from "./scrub.js";
 
 /** Injected chat function: prompt in, raw model reply out (same shape the
  *  learned-recall reranker uses, so the daemon can pass `ollamaChat`). */
@@ -170,8 +171,12 @@ export function sourceHash(m: Memory): string {
 }
 
 /** Build the doc2query prompt: ask for short, reworded search phrases in the
- *  vault's bilingual register, deliberately avoiding the existing trigger words. */
+ *  vault's bilingual register, deliberately avoiding the existing trigger words.
+ *  Source fields are scrubbed of injected context blocks (#149) so quoted hook
+ *  scaffolding never seeds paraphrases; sourceHash stays on the RAW fields —
+ *  re-expansion keys on author edits, not on scrub behavior. */
 export function buildExpandPrompt(m: Memory): string {
+  const clean = (s: string) => scrubInjectedBlocks(s).text;
   return [
     "A user saved this personal memory. Write 3-5 alternative search queries they",
     "might type WEEKS LATER to find it again, using DIFFERENT words than the memory",
@@ -187,9 +192,9 @@ export function buildExpandPrompt(m: Memory): string {
     "- Mix German and English naturally (the vault is bilingual).",
     "- One query per line. No numbering, no quotes, no commentary, no headings.",
     "",
-    `Title: ${m.fm.title}`,
-    `Summary: ${m.fm.summary}`,
-    `Existing triggers: ${m.fm.recall_when.join(" | ")}`,
+    `Title: ${clean(m.fm.title)}`,
+    `Summary: ${clean(m.fm.summary)}`,
+    `Existing triggers: ${m.fm.recall_when.map(clean).join(" | ")}`,
   ].join("\n");
 }
 
