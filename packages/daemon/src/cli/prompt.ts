@@ -13,15 +13,18 @@ export function isInteractive(): boolean {
 }
 
 /**
- * y/N confirmation, default No. Returns false in any non-interactive context
- * and on EOF / Ctrl-C during the prompt. Never throws.
+ * y/N confirmation, default No — or Y/n (default Yes) with `defaultYes`, where
+ * a plain Enter accepts. Returns false in any non-interactive context and on
+ * EOF / Ctrl-C during the prompt (even with defaultYes: silence is never
+ * consent to a download). Never throws.
  */
-export async function confirm(question: string): Promise<boolean> {
+export async function confirm(question: string, opts: { defaultYes?: boolean } = {}): Promise<boolean> {
   if (!isInteractive()) return false;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const answer = await rl.question(`${question} [y/N] `);
-    return /^y(es)?$/i.test(answer.trim());
+    const answer = (await rl.question(`${question} ${opts.defaultYes ? "[Y/n]" : "[y/N]"} `)).trim();
+    if (answer === "") return Boolean(opts.defaultYes);
+    return /^y(es)?$/i.test(answer);
   } catch {
     // SIGINT (Ctrl-C) rejects the pending question() — treat as "no".
     return false;

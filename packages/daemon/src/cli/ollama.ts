@@ -1,21 +1,24 @@
 /**
- * Ollama provisioning for `bastra install` (#79).
+ * Ollama provisioning for `bastra embeddings on` and `bastra install` (#79).
  *
- * OSS-side, autonomous: detect Ollama + the embeddinggemma model, and — when
- * the user opts in — install it via Homebrew, start it, pull the model, and
- * persist `embedding.provider=ollama` into ~/.bastra/cli-settings.json. We
- * delegate the *install* to Homebrew (we bundle no binary — that stays Pro);
- * we own the *lifecycle* so semantic recall works without the Mac app.
+ * OSS-side, autonomous: detect Ollama + the embeddinggemma model, install it
+ * via Homebrew (if missing), start it, pull the model, and persist
+ * `embedding.provider=ollama` into ~/.bastra/cli-settings.json. We delegate
+ * the *install* to Homebrew (we bundle no binary — that stays Pro); we own
+ * the *lifecycle* so semantic recall works without the Mac app.
+ *
+ * Consent lives with the CALLERS (`bastra embeddings on` is the consent; the
+ * install-end prompt asks before calling) — this module never prompts.
  *
  * Safety contract: never throws, never exits, never hangs. Every external
  * command has a timeout and a closed stdin (so a sudo prompt fails fast instead
- * of blocking a non-interactive run). The provider is persisted only after the
- * model is verified present.
+ * of blocking a non-interactive run). ensureOllama persists the provider only
+ * after the model is verified present (enableSemanticRecall persists upfront —
+ * see there).
  */
 import { spawn } from "node:child_process";
 import { findExecutable, run } from "./exec.js";
-import { confirm, isInteractive } from "./prompt.js";
-import { getEmbeddingProvider, getOllamaAutostart, setEmbeddingProvider } from "../settings.js";
+import { getOllamaAutostart, setEmbeddingProvider } from "../settings.js";
 
 const OLLAMA_URL = (process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434").replace(/\/+$/, "");
 const EMBED_MODEL = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
@@ -26,8 +29,6 @@ export interface EnsureResult {
     | "unsupported"
     | "env-override"
     | "already-active"
-    | "detected"
-    | "declined"
     | "would-install"
     | "activated"
     | "error";
@@ -35,13 +36,15 @@ export interface EnsureResult {
   activated: boolean;
 }
 
-export async function ensureOllama(opts: { dryRun: boolean; mode: "auto" | "skip" | null }): Promise<EnsureResult> {
+// mode is deliberately NOT nullable: "auto" acts without asking, so every
+// caller must have collected consent (flag, prompt, or the subcommand itself).
+export async function ensureOllama(opts: { dryRun: boolean; mode: "auto" | "skip" }): Promise<EnsureResult> {
   try {
     if (opts.mode === "skip") {
       return { status: "skipped", activated: false, message: "skipped (--no-ollama) — semantic recall uses BM25 keyword search" };
     }
-    // env wins over the file at runtime — don't burn a 600 MB download on a
-    // choice the daemon will shadow. Checked before the platform gate: the
+    // env wins over the file at runtime — don't burn a 620 MB download on a
+    // choice the daemon will shadow. Checked before everything else: the
     // explicit user override outranks "unsupported here" on every OS.
     const envProvider = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
     if (envProvider && envProvider !== "ollama") {
@@ -52,64 +55,42 @@ export async function ensureOllama(opts: { dryRun: boolean; mode: "auto" | "skip
       };
     }
 
-    if (process.platform !== "darwin") {
-      return {
-        status: "unsupported",
-        activated: false,
-        message:
-          "automatic Ollama setup is macOS-only today (Windows: #84). Manual: install Ollama, then `bastra config set embedding.provider ollama`",
-      };
-    }
-
     const ollamaBin = findExecutable("ollama");
     const serverUp = ollamaBin ? await serverVersion() : null;
     const hasModel = serverUp ? await modelPresent() : false;
     const fullyReady = Boolean(ollamaBin && serverUp && hasModel);
 
-    const settingsProvider = await getEmbeddingProvider();
-    const alreadyOptedIn = settingsProvider === "ollama" || envProvider === "ollama";
-
-    // Everything already present → activation is cheap (no download). But don't
-    // flip the setting as a silent side effect of an unrelated install: require
-    // an explicit opt-in (already chose ollama, --ollama, or an interactive yes).
+    // Everything already present → activation is cheap (no download, works on
+    // every OS — the platform gate below only guards the brew-install path).
     if (fullyReady) {
-      const optIn = alreadyOptedIn || opts.mode === "auto" || (isInteractive() && (await confirm("Ollama + embeddinggemma are ready. Use them for semantic recall?")));
-      if (optIn) {
-        if (!opts.dryRun) await setEmbeddingProvider("ollama");
-        return {
-          status: "already-active",
-          activated: !opts.dryRun,
-          message: `Ollama ready (${serverUp})${opts.dryRun ? "; would enable semantic recall" : "; semantic recall ON"}`,
-        };
-      }
+      if (!opts.dryRun) await setEmbeddingProvider("ollama");
       return {
-        status: "detected",
-        activated: false,
-        message: "Ollama detected but not activated — run `bastra config set embedding.provider ollama` to use it",
+        status: "already-active",
+        activated: !opts.dryRun,
+        message: `Ollama ready (${serverUp})${opts.dryRun ? "; would enable semantic recall" : "; semantic recall ON"}`,
       };
     }
 
-    // Something is missing → may need brew install / serve / pull.
-    const act =
-      opts.mode === "auto" ||
-      (isInteractive() &&
-        (await confirm(
-          "Set up Ollama for semantic recall? Installs Ollama via Homebrew (if missing), downloads the embeddinggemma model (~600 MB), and runs a local Ollama login service (disable later: bastra config set ollama.autostart off).",
-        )));
-    if (!act) {
-      return { status: "declined", activated: false, message: missingHint(ollamaBin, serverUp, hasModel) };
+    // Something is missing → needs brew install / serve / pull (macOS-only today).
+    if (process.platform !== "darwin") {
+      return {
+        status: "unsupported",
+        activated: false,
+        message:
+          "automatic Ollama setup is macOS-only today (Windows: #84). Manual: install + start Ollama (https://ollama.com), pull the embeddinggemma model, then re-run: bastra embeddings on",
+      };
     }
     if (opts.dryRun) {
       return {
         status: "would-install",
         activated: false,
-        message: "would: brew install ollama (if missing) → start service → pull embeddinggemma (~600 MB) → activate",
+        message: "would: brew install ollama (if missing) → start service → pull embeddinggemma (~620 MB) → activate",
       };
     }
 
-    // Cost disclosure on the acting path — also covers --ollama / non-TTY auto,
-    // where confirm() never ran.
-    process.stdout.write("  → setting up Ollama: Homebrew install (if needed) + ~600 MB model + local login service\n");
+    // Cost disclosure on the acting path (the caller's prompt already named
+    // the download; this line marks the moment work actually starts).
+    process.stdout.write("  → setting up Ollama: Homebrew install (if needed) + ~620 MB model + local login service\n");
 
     const autostart = await getOllamaAutostart();
     const brewBin = findExecutable("brew");
@@ -139,7 +120,7 @@ export async function ensureOllama(opts: { dryRun: boolean; mode: "auto" | "skip
     // 3. model
     if (!(await modelPresent())) {
       const r = run(ollamaPath, ["pull", EMBED_MODEL], { timeoutMs: 1_800_000, showProgress: true });
-      if (r.signal) return err(`model download was interrupted — re-run \`bastra install --ollama\` when ready`);
+      if (r.signal) return err(`model download was interrupted — re-run \`bastra embeddings on\` when ready`);
       if (!r.ok) return err(`\`ollama pull ${EMBED_MODEL}\` failed (${r.detail})`);
       // Interrupted pulls can exit 0 with an incomplete model — verify.
       if (!(await modelPresent())) return err(`model not present after pull — re-run \`ollama pull ${EMBED_MODEL}\``);
@@ -161,13 +142,27 @@ function err(message: string): EnsureResult {
   return { status: "error", activated: false, message: `${message} — semantic recall stays OFF (BM25 keyword search still works)` };
 }
 
-function missingHint(bin: string | null, server: string | null, model: boolean): string {
-  const steps: string[] = [];
-  if (!bin) steps.push("brew install ollama");
-  if (!server) steps.push("brew services start ollama  (or: ollama serve)");
-  if (!model) steps.push(`ollama pull ${EMBED_MODEL}`);
-  steps.push("bastra config set embedding.provider ollama");
-  return `semantic recall stays OFF (BM25 keyword search works). To enable: ${steps.join("  &&  ")}`;
+/**
+ * The `bastra embeddings on` core, shared with the install-end prompt (#79):
+ * persist embedding.provider=ollama FIRST (the user's choice must survive a
+ * flaky download — status/doctor then show "configured but model missing"
+ * instead of silent none), then run the provisioning path. `settingsPath` is
+ * injectable for tests only.
+ */
+export async function enableSemanticRecall(
+  opts: { dryRun: boolean },
+  settingsPath?: string,
+): Promise<EnsureResult & { persisted: boolean }> {
+  let persisted = false;
+  if (!opts.dryRun) {
+    // Exception: an env override shadows the file at runtime — still persist
+    // (it's the user's declared intent; doctor explains the override), but
+    // ensureOllama will refuse to download for a shadowed choice.
+    await setEmbeddingProvider("ollama", settingsPath);
+    persisted = true;
+  }
+  const result = await ensureOllama({ dryRun: opts.dryRun, mode: "auto" });
+  return { ...result, persisted };
 }
 
 // ── Ollama HTTP probes ───────────────────────────────────────────────────────

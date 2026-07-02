@@ -8,9 +8,10 @@
  * Keys:
  *   - update.mode      : "notify" (default) | "auto" | "off"  (see #39)
  *   - embedding.provider (optional): "ollama" | "openai" | "none"
- *       Written by `bastra install` after the user opts into Ollama, or by
- *       `bastra config set`. Absent = "no opinion" → the daemon falls through to
- *       env / API-key. This is the file half of the #79 fix.
+ *       Written by `bastra embeddings on|off`, by the `bastra install` end
+ *       prompt, or by `bastra config set`. Absent = "no opinion" → the daemon
+ *       falls through to env / API-key. This is the file half of the #79 fix;
+ *       resolveEmbeddingChoice below is the ONE resolution everyone shares.
  *   - ollama.autostart (optional): boolean (default true)
  *       Whether `bastra install` keeps a local `ollama serve` running at login.
  *   - docs.mode (optional): "off" (default) | "suggest" | "auto"
@@ -28,6 +29,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { isSupportedLanguage } from "./learned-recall/language.js";
+import type { EmbeddingSource } from "./embedding-status.js";
 
 export type UpdateMode = "notify" | "auto" | "off";
 export const UPDATE_MODES: readonly UpdateMode[] = ["notify", "auto", "off"];
@@ -206,6 +208,69 @@ export async function setUpdateMode(mode: UpdateMode, path: string = settingsFil
 /** The stored embedding provider, or undefined when unset (no opinion). */
 export async function getEmbeddingProvider(path?: string): Promise<EmbeddingProviderName | undefined> {
   return (await readSettings(path)).embedding?.provider;
+}
+
+/**
+ * The ONE embedding-provider resolution, shared by the OSS daemon (index.ts),
+ * the Pro bridge (bridge.ts) and the CLI (embeddings/doctor/status) so the
+ * precedence can never drift between them (#79):
+ *
+ *   1. env BASTRA_EMBEDDING_PROVIDER — always wins (none | ollama | openai)
+ *   2. cli-settings.json embedding.provider — when env is unset/invalid
+ *   3. backwards-compat — an API key present with no explicit choice → openai
+ *   4. none → BM25 keyword search only
+ *
+ * `provider` is the EFFECTIVE choice (what the daemon will run); `requested`
+ * keeps what env/file asked for when it could not be honoured (today: openai
+ * without an API key → provider "none", requested "openai") so status/doctor
+ * can explain the gap instead of reporting a silent "none".
+ */
+export interface EmbeddingChoice {
+  provider: EmbeddingProviderName;
+  source: EmbeddingSource;
+  requested?: EmbeddingProviderName;
+}
+
+export async function resolveEmbeddingChoice(
+  opts: {
+    path?: string;
+    env?: Record<string, string | undefined>;
+    /** Called with the raw value when BASTRA_EMBEDDING_PROVIDER is set but invalid (typo). */
+    onInvalidEnv?: (raw: string) => void;
+  } = {},
+): Promise<EmbeddingChoice> {
+  const env = opts.env ?? process.env;
+  const envRaw = env.BASTRA_EMBEDDING_PROVIDER ?? "";
+  const envProvider = envRaw.toLowerCase();
+  const hasApiKey = Boolean(env.OPENAI_API_KEY ?? env.BASTRA_EMBEDDING_KEY);
+
+  // Tier 1: explicit env wins over the file.
+  if (envProvider === "none") return { provider: "none", source: "env" };
+  if (envProvider === "ollama") return { provider: "ollama", source: "env" };
+  if (envProvider === "openai") {
+    return hasApiKey
+      ? { provider: "openai", source: "env" }
+      : { provider: "none", source: "env", requested: "openai" };
+  }
+  // A typo'd env value must NOT silently disable embeddings and shadow a valid
+  // file choice — surface it and fall through (treat as "no opinion").
+  if (envProvider) opts.onInvalidEnv?.(envRaw);
+
+  // Tier 2: cli-settings.json (env unset or invalid → no opinion).
+  const fileProvider = await getEmbeddingProvider(opts.path);
+  if (fileProvider === "none") return { provider: "none", source: "cli-settings" };
+  if (fileProvider === "ollama") return { provider: "ollama", source: "cli-settings" };
+  if (fileProvider === "openai") {
+    return hasApiKey
+      ? { provider: "openai", source: "cli-settings" }
+      : { provider: "none", source: "cli-settings", requested: "openai" };
+  }
+
+  // Tier 3: backwards-compat — key present, no explicit choice anywhere.
+  if (hasApiKey) return { provider: "openai", source: "api-key" };
+
+  // Tier 4: nothing requested.
+  return { provider: "none", source: "none" };
 }
 
 /** Persists the embedding provider atomically, merging into existing settings. */

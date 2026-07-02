@@ -1,6 +1,6 @@
 import { ADAPTERS, resolveTargets } from "./registry.js";
 import { VERSION, formatStatus } from "./helpers.js";
-import { ensureOllama } from "./ollama.js";
+import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
 import { getEmbeddingProvider } from "../settings.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
 
@@ -17,6 +17,11 @@ Commands:
   uninstall <surface|all>    Remove the registration (skill is kept; it's shared)
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
+  embeddings <on|off|status> Semantic recall (multilingual vector search):
+                             'on' sets up Ollama + the embeddinggemma model
+                             (~620 MB) and persists the choice; 'off' returns
+                             to BM25 keyword-only; 'status' shows the effective
+                             provider and how it was resolved
   config get <key>           Read a setting (e.g. update.mode)
   config set <key> <value>   Write a setting (update.mode = notify|auto|off,
                              docs.mode = off|suggest|auto, docs.language = en|de|…)
@@ -49,7 +54,7 @@ Options:
   --json                     Output status in JSON format (status command only)
   -q, --quiet                Suppress output, return exit code only (status command only)
   --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
-  --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~600 MB)
+  --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~620 MB)
   --no-ollama                Skip the Ollama setup (semantic recall uses BM25 keyword search)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --with-stop-hook           Install optional Stop save-eval hook
@@ -131,12 +136,6 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
     return 2;
   }
 
-  // Ollama is a global concern (one daemon, one embedding engine), so it runs
-  // once here — not per surface. An Ollama failure never fails the install:
-  // surface registration is the job; semantic recall is an enhancement.
-  const ollama = await ensureOllama({ dryRun: args.dryRun, mode: args.ollama });
-  process.stdout.write(`→ semantic recall: ${ollama.message}\n\n`);
-
   const vaultPath = resolveVaultPath(args.vaultPath);
   const opts: InstallOpts = {
     dryRun: args.dryRun,
@@ -160,7 +159,14 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
     }
     process.stdout.write("\n");
   }
-  return hadError ? 1 : 0;
+  if (hadError) return 1;
+
+  // Semantic recall is a global concern (one daemon, one embedding engine), so
+  // it runs ONCE at the end of a successful install — not per surface (#79).
+  // Prompts only on a TTY without --yes and only when no provider is effective;
+  // an Ollama failure never fails the install: surface registration is the job.
+  await installSemanticRecallStep({ dryRun: args.dryRun, yes: args.yes, ollama: args.ollama });
+  return 0;
 }
 
 export async function cmdUninstall(args: ParsedArgs): Promise<number> {
@@ -192,7 +198,7 @@ export async function cmdUninstall(args: ParsedArgs): Promise<number> {
   if (args.surface === "all" && (await getEmbeddingProvider()) === "ollama") {
     process.stdout.write(
       "→ semantic recall: Ollama stays configured and its login service may still run.\n" +
-        "  Disable recall: bastra config set embedding.provider none\n" +
+        "  Disable recall: bastra embeddings off\n" +
         "  Stop the service: brew services stop ollama\n\n",
     );
   }
@@ -241,5 +247,11 @@ export async function cmdDoctor(args: ParsedArgs): Promise<number> {
     }
     process.stdout.write("\n");
   }
+
+  // Semantic recall is global, not a surface — reported as a NOTE (or an
+  // actionable ⚠), never as a failure: BM25-only recall is degraded, not
+  // broken, so it never flips doctor's exit code (#79).
+  await printEmbeddingDoctorNote();
+
   return hadBroken ? 1 : 0;
 }

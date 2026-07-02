@@ -25,5 +25,5 @@ export function embeddingStatusLine(s: EmbeddingStatus, prefix = "[bastra-recall
   if (s.on && s.providerId) {
     return `${prefix} semantic recall: ON via ${s.providerId} (source: ${s.source})`;
   }
-  return `${prefix} semantic recall: OFF — BM25 keyword search only. Enable it: bastra install --ollama`;
+  return `${prefix} semantic recall: OFF — BM25 keyword search only. Enable it: bastra embeddings on`;
 }

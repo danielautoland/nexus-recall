@@ -113,7 +113,7 @@ async function cmdConfigSet(key: KnownKey, value: string | null): Promise<number
       }
       process.stdout.write("  restart the daemon to apply (activates on next boot).\n");
       if (value === "ollama") {
-        process.stdout.write("  needs Ollama + the embeddinggemma model — run `bastra install --ollama` if not set up.\n");
+        process.stdout.write("  needs Ollama + the embeddinggemma model — run `bastra embeddings on` if not set up.\n");
       }
       return 0;
     }

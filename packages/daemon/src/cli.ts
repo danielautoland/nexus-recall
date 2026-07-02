@@ -20,6 +20,7 @@ import {
 import { cmdStatus } from "./cli/status.js";
 import { cmdUpdate } from "./cli/update.js";
 import { cmdConfig } from "./cli/config-cmd.js";
+import { cmdEmbeddings } from "./cli/embeddings-cmd.js";
 import { cmdToken } from "./cli/token.js";
 import { cmdCommons } from "./cli/commons.js";
 import { cmdBridges } from "./cli/bridges.js";
@@ -44,6 +45,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
       return rc;
     }
     case "config": return cmdConfig(args);
+    case "embeddings": return cmdEmbeddings({ sub: args.surface });
     case "token": return cmdToken({ sub: args.surface, json: args.json });
     case "commons": return cmdCommons({ sub: args.surface, positional: args.positional });
     case "bridges": return cmdBridges({ sub: args.surface, positional: args.positional });
