@@ -206,6 +206,19 @@ function summarizeFollowThrough(events: AnyEvent[]): void {
   }
 }
 
+// #144: PostToolUse:Bash act-signals — the widened acted_on measuring surface.
+// Every completed Bash command pings /hook/act; matched_episodes > 0 means the
+// signal closed episodes that were previously structurally invisible.
+function summarizeActSignals(events: AnyEvent[]): void {
+  const acts = events.filter((e) => e.kind === "hook_act");
+  if (acts.length === 0) return;
+  const matched = acts.reduce((sum, e) => sum + Number(e.matched_episodes ?? 0), 0);
+  const success = acts.filter((e) => Number(e.exit_code ?? -1) === 0).length;
+  console.log(`\n## Act-signals  (#144 — PostToolUse Bash pings closing episodes)`);
+  console.log(`  pings:            ${acts.length}  (${success} from successful commands)`);
+  console.log(`  episodes closed:  ${matched}`);
+}
+
 function summarizeUseRate(events: AnyEvent[]): void {
   const hookRecalls = events.filter((e) => e.kind === "hook_recall" && Array.isArray(e.hits));
   const episodes = events.filter((e) => e.kind === "recall_episode");
@@ -460,6 +473,7 @@ async function main(): Promise<void> {
   summarizeMcp(events);
   summarizeFollowThrough(events);
   summarizeUseRate(events);
+  summarizeActSignals(events);
   summarizeContextROI(events);
   summarizeBridges(events);
   summarizeOllamaLifecycle(events);

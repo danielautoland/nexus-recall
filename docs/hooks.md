@@ -35,7 +35,7 @@ After `npm run build` the daemon package exposes these bin entries:
 | `bastra-recall-prompt-hook`       | `UserPromptSubmit` | — (every user message)                    | Lookup-mode reflex (#33)                                  |
 | `bastra-recall-todo-hook`         | `PreToolUse`       | `TodoWrite`                               | Topology recall before multi-step plans (#36)             |
 | `bastra-recall-bash-pre-hook`     | `PreToolUse`       | `Bash` (destructive/risky)                | Safety recall before destructive shell ops (#34)          |
-| `bastra-recall-bash-fail-hook`    | `PostToolUse`      | `Bash` (non-zero exit)                    | Lesson recall when a Bash command fails (#37)             |
+| `bastra-recall-bash-fail-hook`    | `PostToolUse`      | `Bash` (every completed command)          | Act-signal for acted_on (#144); lesson recall on failure (#37) |
 | `bastra-recall-stop-hook`         | `Stop`             | —                                         | Optional autonomous save-eval at end of session (#35)      |
 
 ## Activation snippet for `~/.claude/settings.json`
@@ -147,19 +147,27 @@ Does **not** block. The agent decides whether to proceed.
 Telemetry: `bash_hook_call` with `matched_pattern, severity, hit_count,
 top_score, status`.
 
-### `bastra-recall-bash-fail-hook` (#37)
+### `bastra-recall-bash-fail-hook` (#37, #144)
 
-Fires on `PostToolUse` for Bash when `exit_code !== 0` (excluding 130 =
-Ctrl-C). Extracts the command head + last interesting error lines, recalls
-similar failure-mode memories, and emits
-`<recall-hints surface="claude-code" trigger="bash-fail">`.
+Fires on `PostToolUse` for every completed Bash command (excluding 130 =
+Ctrl-C) and does two jobs:
 
-Throttled to one hint per 30 s per session (marker file in
-`$TMPDIR/bastra-hook/fail-throttle-<session>.ts`). Skips its own
-`bastra-recall-*` invocations to avoid loops.
+1. **Act-signal (#144), every command — success and failure.** Sends the
+   command text as a lightweight telemetry-only ping to `POST /hook/act`;
+   the daemon matches it against open loaded-memory episodes so shell-driven
+   applications of a memory can score `acted_on`. No recall, no injection,
+   never throttled; failures are swallowed within a ≤120 ms budget.
+2. **Fail-recall (#37), `exit_code !== 0` only.** Extracts the command head +
+   last interesting error lines, recalls similar failure-mode memories, and
+   emits `<recall-hints surface="claude-code" trigger="bash-fail">`.
+
+The fail-recall is throttled to one hint per 30 s per session (marker file in
+`$TMPDIR/bastra-hook/fail-throttle-<session>.ts`); the act-signal is not.
+Skips its own `bastra-recall-*` invocations to avoid loops.
 
 Telemetry: `bash_fail_hook_call` with `exit_code, command_head, hit_count,
-top_score, status`.
+top_score, status` (hook side) and `hook_act` with `tool_name, excerpt_chars,
+matched_episodes, exit_code` (daemon side).
 
 ### `bastra-recall-stop-hook` (#35, opt-in)
 
