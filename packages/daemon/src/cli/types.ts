@@ -53,7 +53,8 @@ export interface ParsedArgs {
   // SessionStart auto-update path so a running session is never disrupted.
   staged: boolean;
   // `install --ollama` → "auto" (provision without asking); `--no-ollama`
-  // → "skip"; null → ask interactively on a TTY, default-skip otherwise.
+  // → "skip"; null → ask ONCE at the end of a successful install (TTY only,
+  // never with --yes/--dry-run; non-TTY prints the `bastra embeddings on` hint).
   ollama: "auto" | "skip" | null;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.

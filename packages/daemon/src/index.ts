@@ -37,7 +37,7 @@ import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { getEmbeddingProvider, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage } from "./settings.js";
+import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
@@ -642,45 +642,29 @@ interface OllamaInfo {
 }
 
 /**
- * Resolve the embedding provider with explicit precedence:
- *   1. env BASTRA_EMBEDDING_PROVIDER  — wins over the file (none|ollama|openai)
- *   2. cli-settings.json embedding.provider — only when env is unset
- *   3. backwards-compat — OPENAI_API_KEY present, no explicit choice → openai
- *   4. none → BM25 only
- * Returns the provider instance (or null) plus a status used for /health + the
- * single user-facing log line.
+ * Resolve the embedding provider. The PRECEDENCE (env > cli-settings >
+ * API-key > none) lives in ONE shared place — resolveEmbeddingChoice in
+ * settings.ts, also used by bridge.ts and the CLI (#79) — this function only
+ * turns the resolved name into a provider instance + /health status.
  */
 async function resolveEmbedding(): Promise<{
   provider: EmbeddingProvider | null;
   status: EmbeddingStatus;
   ollama?: OllamaInfo;
 }> {
-  const envProvider = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
-  const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
-
-  // Tier 1: explicit env wins over the file.
-  if (envProvider === "none") return offEmbedding("env");
-  if (envProvider === "ollama") return ollamaEmbedding("env");
-  if (envProvider === "openai") return apiKey ? openaiEmbedding("env", apiKey) : offEmbedding("env");
-  if (envProvider) {
-    // A typo'd env value must NOT silently disable embeddings and shadow a valid
-    // file choice — warn and fall through (treat as "no opinion"), like the file path.
-    console.error(
-      `[bastra-recall] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(process.env.BASTRA_EMBEDDING_PROVIDER)} — falling through to cli-settings / API-key`,
-    );
+  const choice = await resolveEmbeddingChoice({
+    onInvalidEnv: (raw) =>
+      console.error(
+        `[bastra-recall] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(raw)} — falling through to cli-settings / API-key`,
+      ),
+  });
+  if (choice.provider === "ollama") return ollamaEmbedding(choice.source);
+  if (choice.provider === "openai") {
+    // provider "openai" implies the resolver saw a key — re-read it for the ctor.
+    const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
+    if (apiKey) return openaiEmbedding(choice.source, apiKey);
   }
-
-  // Tier 2: cli-settings.json (env unset or invalid → treat as no opinion).
-  const fileProvider = await getEmbeddingProvider();
-  if (fileProvider === "none") return offEmbedding("cli-settings");
-  if (fileProvider === "ollama") return ollamaEmbedding("cli-settings");
-  if (fileProvider === "openai") return apiKey ? openaiEmbedding("cli-settings", apiKey) : offEmbedding("cli-settings");
-
-  // Tier 3: backwards-compat — key present, no explicit choice anywhere.
-  if (apiKey) return openaiEmbedding("api-key", apiKey);
-
-  // Tier 4: nothing requested.
-  return offEmbedding("none");
+  return offEmbedding(choice.source);
 }
 
 function ollamaEmbedding(source: EmbeddingSource): {

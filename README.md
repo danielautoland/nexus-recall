@@ -204,15 +204,21 @@ bash packages/skill/install-hook.sh   # registers the 6 default reflex-layer hoo
 
 ### Semantic recall (optional)
 
-Recall is hybrid: BM25 keyword search always works, and a semantic layer kicks in once an embedding provider is set up. On macOS, `bastra install` detects Ollama and — if it's missing — offers to install it via Homebrew, pull the `embeddinggemma` model (~600 MB), and start it as a local login service. Use `--ollama` to set it up non-interactively, `--no-ollama` to skip; the login service is a toggle (`bastra config set ollama.autostart off`). The daemon also re-starts a stopped local Ollama on boot (probe-first, loopback only, honours the same toggle). Without Ollama, recall stays on BM25 — nothing breaks. `bastra status` shows the active mode.
+Recall is hybrid: BM25 keyword search is the always-on default, and a semantic layer — an optional, configurable second pass — kicks in once an embedding provider is set up. Enabling it is one command:
+
+```bash
+bastra embeddings on       # installs Ollama via Homebrew (if missing), pulls embeddinggemma (~620 MB), persists the choice
+bastra embeddings status   # effective provider + how it was resolved (env / cli-settings / default) + model presence
+bastra embeddings off      # back to BM25 keyword-only
+```
+
+At the end of a successful `bastra install`, bastra asks once whether to enable semantic recall (interactive terminals only — never with `--yes` or `--dry-run`, and never in scripts; those print the `bastra embeddings on` hint instead of hanging). `--ollama` sets it up without asking, `--no-ollama` skips. The Ollama login service is a toggle (`bastra config set ollama.autostart off`); the daemon also re-starts a stopped local Ollama on boot (probe-first, loopback only, honours the same toggle). Without an embedding provider, recall stays on BM25 — nothing breaks. `bastra status` shows the active mode, and `bastra doctor` says explicitly when semantic recall is off or the model is missing.
+
+Manual (no Homebrew): install + start [Ollama](https://ollama.com), `ollama pull embeddinggemma`, then `bastra embeddings on`. Note: `--yes` does **not** trigger the Ollama download (use `--ollama`). Homebrew and the model come from third parties (Homebrew core, ollama.com). Full details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (wiki).
 
 ### Bastra Commons (beta)
 
 `bastra commons enable` adds a second, read-only recall source: [Bastra Commons](https://github.com/n0mad-ai/bastra-commons), a community vault of **verified engineering recipes** — solutions with their failed paths, proven by use, where best-practice status is *earned through independent verification records, never declared*. Commons hits surface in `recall` with `scope: commons`, ranked just below your personal memories; the clone is git-synced (`bastra commons update`) and the daemon never writes into it. (The Commons repository opens to the public with its launch — see the [wiki page](../../wiki/Bastra-Commons) for the model.)
-
-Manual: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Note: `--yes` does **not** trigger the Ollama download (use `--ollama`). Homebrew and the model come from third parties (Homebrew core, ollama.com).
-
-Full details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (wiki).
 
 ### Product docs (optional)
 
@@ -486,15 +492,21 @@ bash packages/skill/install-hook.sh   # registriert die 6 Standard-Reflex-Layer-
 
 ### Semantischer Recall (optional)
 
-Recall ist hybrid: BM25-Stichwortsuche funktioniert immer, eine semantische Schicht kommt dazu, sobald ein Embedding-Provider eingerichtet ist. Auf macOS erkennt `bastra install` Ollama und bietet — falls es fehlt — an, es via Homebrew zu installieren, das Modell `embeddinggemma` (~600 MB) zu ziehen und als lokalen Login-Service zu starten. `--ollama` richtet ohne Nachfrage ein, `--no-ollama` überspringt; der Login-Service ist abschaltbar (`bastra config set ollama.autostart off`). Der Daemon startet ein gestopptes lokales Ollama beim Boot auch selbst neu (probe-first, nur Loopback, respektiert denselben Toggle). Ohne Ollama bleibt Recall bei BM25 — nichts bricht. `bastra status` zeigt den aktiven Modus.
+Recall ist hybrid: BM25-Stichwortsuche ist der immer aktive Default, eine semantische Schicht — ein optionaler, konfigurierbarer zweiter Pass — kommt dazu, sobald ein Embedding-Provider eingerichtet ist. Einschalten ist ein Befehl:
+
+```bash
+bastra embeddings on       # installiert Ollama via Homebrew (falls nötig), zieht embeddinggemma (~620 MB), persistiert die Wahl
+bastra embeddings status   # effektiver Provider + Auflösungsweg (env / cli-settings / Default) + Modell-Präsenz
+bastra embeddings off      # zurück zu reiner BM25-Stichwortsuche
+```
+
+Am Ende eines erfolgreichen `bastra install` fragt bastra einmal, ob semantischer Recall aktiviert werden soll (nur in interaktiven Terminals — nie mit `--yes` oder `--dry-run` und nie in Skripten; dort erscheint statt einer hängenden Abfrage der Hinweis auf `bastra embeddings on`). `--ollama` richtet ohne Nachfrage ein, `--no-ollama` überspringt. Der Ollama-Login-Service ist abschaltbar (`bastra config set ollama.autostart off`); der Daemon startet ein gestopptes lokales Ollama beim Boot auch selbst neu (probe-first, nur Loopback, respektiert denselben Toggle). Ohne Embedding-Provider bleibt Recall bei BM25 — nichts bricht. `bastra status` zeigt den aktiven Modus, und `bastra doctor` sagt explizit, wenn semantischer Recall aus ist oder das Modell fehlt.
+
+Manuell (ohne Homebrew): [Ollama](https://ollama.com) installieren + starten, `ollama pull embeddinggemma`, dann `bastra embeddings on`. Hinweis: `--yes` löst den Ollama-Download **nicht** aus (dafür `--ollama`). Homebrew und das Modell kommen von Dritten (Homebrew Core, ollama.com). Details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (Wiki).
 
 ### Bastra Commons (Beta)
 
 `bastra commons enable` fügt eine zweite, schreibgeschützte Recall-Quelle hinzu: [Bastra Commons](https://github.com/n0mad-ai/bastra-commons), ein Community-Vault **verifizierter Engineering-Rezepte** — Lösungen samt ihrer Irrwege, durch Anwendung bewiesen. Best-Practice-Status wird dort *durch unabhängige Verifikations-Records verdient, nie erklärt*. Commons-Treffer erscheinen in `recall` mit `scope: commons`, leicht unter den persönlichen Memories gerankt; der Clone wird per git aktualisiert (`bastra commons update`), der Daemon schreibt nie hinein. (Das Commons-Repository wird mit seinem Launch öffentlich — Modell siehe [Wiki-Seite](../../wiki/Bastra-Commons).)
-
-Manuell: `brew install ollama && ollama pull embeddinggemma && bastra config set embedding.provider ollama`. Hinweis: `--yes` löst den Ollama-Download **nicht** aus (dafür `--ollama`). Homebrew und das Modell kommen von Dritten (Homebrew Core, ollama.com).
-
-Details: **[System Requirements](https://github.com/n0mad-ai/bastra-recall/wiki/System-Requirements)** (Wiki).
 
 ### Produkt-Doku (optional)
 

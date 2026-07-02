@@ -49,6 +49,7 @@ import {
   DOCS_MODES,
   getSharedRecallEnabled,
   getSharedRecallLanguage,
+  resolveEmbeddingChoice,
 } from "./settings.js";
 import { expandQuery, BridgePool } from "./learned-recall/bridges.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
@@ -57,19 +58,18 @@ import readline from "node:readline";
 import * as path from "node:path";
 
 /**
- * Aktiviert Embeddings basierend auf BASTRA_EMBEDDING_PROVIDER:
- *   - "ollama": Lokal via Ollama (Standard für neue Setups). Optional
- *               BASTRA_OLLAMA_URL und BASTRA_EMBEDDING_MODEL.
- *   - "openai": Cloud via OpenAI. Braucht OPENAI_API_KEY oder BASTRA_EMBEDDING_KEY.
- *   - "none" / unset: Embeddings disabled (Recall fällt auf reines BM25).
+ * Aktiviert Embeddings über die EINE geteilte Auflösung (settings.ts,
+ * resolveEmbeddingChoice — dieselbe wie index.ts und die CLI, #79):
+ *   env BASTRA_EMBEDDING_PROVIDER > cli-settings.json embedding.provider >
+ *   API-Key (Backwards-Compat) > none (Recall fällt auf reines BM25).
  *
- * Default-Verhalten (kein BASTRA_EMBEDDING_PROVIDER gesetzt):
- *   Wenn ein OpenAI-Key gesetzt ist → openai (Backwards-Compat).
- *   Sonst disabled. Wer auf Ollama umstellen will, setzt explizit
- *   BASTRA_EMBEDDING_PROVIDER=ollama.
+ * Env gewinnt immer — die Pro-App gibt ihre Wahl im Spawn-Env mit und wird
+ * von der Datei nie überstimmt. Setzt die App KEIN Env, greift die per
+ * `bastra embeddings on` persistierte Wahl, damit semantischer Recall den
+ * Daemon unabhängig vom spawnenden Client erreicht.
  */
 async function attachEmbeddings(search: SearchIndex, vault: Vault): Promise<void> {
-  const { provider, status } = resolveEmbedding();
+  const { provider, status } = await resolveEmbedding();
   // Same wording as the daemon (index.ts) via the shared helper; bridge keeps
   // its own tag. Logged on every path including success (the silence was #79).
   process.stderr.write(embeddingStatusLine(status, "[bastra-recall.bridge]") + "\n");
@@ -142,26 +142,26 @@ async function probeDaemonHealth(): Promise<boolean> {
 }
 
 /**
- * Env-only provider resolution for the bridge (the Pro app passes the choice in
- * the spawn env). Deliberately does NOT read cli-settings.json — that file is
- * the OSS CLI's; mixing it in could make the app and CLI disagree. Env always
- * wins, so OSS activation never silently overrides the app on a shared machine.
+ * Provider resolution via the shared resolveEmbeddingChoice (settings.ts) —
+ * identical precedence to index.ts and the CLI: env > cli-settings.json >
+ * API-key > none. Env always wins, so the Pro app's spawn-env choice is never
+ * overridden by the file; the file only fills the gap when no env is set
+ * (owner decision on #79: the persisted setting reaches the daemon regardless
+ * of which client spawned it).
  */
-function resolveEmbedding(): { provider: EmbeddingProvider | null; status: EmbeddingStatus } {
-  const requested = (process.env.BASTRA_EMBEDDING_PROVIDER ?? "").toLowerCase();
-  const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
-
-  if (requested === "none") return offE("env");
-  if (requested === "ollama") return ollamaE("env");
-  if (requested === "openai") return apiKey ? openaiE("env", apiKey) : offE("env");
-  if (requested) {
-    process.stderr.write(
-      `[bastra-recall.bridge] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(process.env.BASTRA_EMBEDDING_PROVIDER)} — falling back to API-key / BM25\n`,
-    );
+async function resolveEmbedding(): Promise<{ provider: EmbeddingProvider | null; status: EmbeddingStatus }> {
+  const choice = await resolveEmbeddingChoice({
+    onInvalidEnv: (raw) =>
+      process.stderr.write(
+        `[bastra-recall.bridge] ignoring invalid BASTRA_EMBEDDING_PROVIDER ${JSON.stringify(raw)} — falling through to cli-settings / API-key\n`,
+      ),
+  });
+  if (choice.provider === "ollama") return ollamaE(choice.source);
+  if (choice.provider === "openai") {
+    const apiKey = process.env.OPENAI_API_KEY ?? process.env.BASTRA_EMBEDDING_KEY;
+    if (apiKey) return openaiE(choice.source, apiKey);
   }
-  // Backwards-compat: no explicit provider but an API key is present.
-  if (apiKey) return openaiE("api-key", apiKey);
-  return offE("none");
+  return offE(choice.source);
 }
 
 function ollamaE(source: EmbeddingSource): { provider: EmbeddingProvider; status: EmbeddingStatus } {

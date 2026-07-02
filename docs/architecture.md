@@ -77,15 +77,16 @@ It then applies staleness reranking based on lifecycle fields such as `valid_unt
 
 ### Hybrid Recall
 
-Embeddings are optional. `BASTRA_EMBEDDING_PROVIDER` controls the provider:
+Embeddings are an optional, configurable second pass; BM25 keyword search is the default. The provider is resolved in one shared place (`resolveEmbeddingChoice` in `packages/daemon/src/settings.ts`, used by the daemon, the bridge, and the CLI) with the precedence env > cli-settings > API-key > none:
 
-| Value | Behavior |
-|---|---|
-| `none` | disable embeddings |
-| `ollama` | use local Ollama `/v1/embeddings` |
-| `openai` | use OpenAI embeddings with `OPENAI_API_KEY` or `BASTRA_EMBEDDING_KEY` |
-| unset + API key | use OpenAI for backwards compatibility |
-| unset + no API key | BM25 only |
+| Source | Value | Behavior |
+|---|---|---|
+| env `BASTRA_EMBEDDING_PROVIDER` | `none` / `ollama` / `openai` | always wins over the settings file |
+| `~/.bastra/cli-settings.json` `embedding.provider` | `none` / `ollama` / `openai` | written by `bastra embeddings on\|off` (or the `bastra install` end prompt); used when no env is set |
+| unset + API key (`OPENAI_API_KEY` / `BASTRA_EMBEDDING_KEY`) | — | use OpenAI for backwards compatibility |
+| unset + no API key | — | BM25 only |
+
+`ollama` uses local Ollama `/v1/embeddings`; `openai` requires an API key. `bastra embeddings status` shows the effective provider and which source decided it.
 
 When an `EmbeddingIndex` is attached, `recallHybrid(...)` combines BM25 and vector rankings with Reciprocal Rank Fusion. Vectors are stored as base64-encoded floats in `<vault>/.bastra/embeddings.json`.
 

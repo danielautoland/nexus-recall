@@ -110,7 +110,7 @@ async function formatSemanticRecall(configured: EmbeddingProviderName | undefine
     // it directly so "installed but daemon down" vs "model missing" is visible.
     if (configured === "ollama") {
       const o = await probeOllama();
-      const detail = o.ok ? (o.hasModel ? "ollama ready" : "model embeddinggemma MISSING — run: ollama pull embeddinggemma") : o.detail;
+      const detail = o.ok ? (o.hasModel ? "ollama ready" : "model embeddinggemma MISSING — fix: bastra embeddings on") : o.detail;
       return `· daemon not reachable; configured=ollama (${detail})`;
     }
     return `· daemon not reachable; configured=${configured ?? "unset"}`;
@@ -124,7 +124,7 @@ async function formatSemanticRecall(configured: EmbeddingProviderName | undefine
     if ((d.embeddingMode ?? "").startsWith("ollama")) {
       const o = await probeOllama();
       if (o.ok && !o.hasModel) {
-        return `⚠ on (${d.embeddingMode}) but the embeddinggemma model is MISSING — recall falls back to BM25. Fix: ollama pull embeddinggemma`;
+        return `⚠ on (${d.embeddingMode}) but the embeddinggemma model is MISSING — recall falls back to BM25. Fix: bastra embeddings on`;
       }
       if (!o.ok) {
         return `⚠ on (${d.embeddingMode}) but Ollama is unreachable (${o.detail}) — recall falls back to BM25`;
@@ -145,5 +145,5 @@ async function formatSemanticRecall(configured: EmbeddingProviderName | undefine
     }
     return "· off — configured=ollama, daemon hasn't picked it up yet; restart pending (restart your AI client, or auto after idle)";
   }
-  return "· off — BM25 keyword search only. Enable: bastra install --ollama";
+  return "· off — BM25 keyword search only. Enable: bastra embeddings on";
 }
