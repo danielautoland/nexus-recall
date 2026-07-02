@@ -10,6 +10,9 @@ recall_when:
   - query ignores the index I created
   - seq scan despite an index
   - why is my index not used
+recall_when_expanded:
+  - planner picks a full table walk over the btree
+  - EXPLAIN shows no index usage because the literal type differs
 related: []
 related_via: []
 sensitivity: public

@@ -94,10 +94,12 @@ instinct for an **independent** probe. But for this product it is ecologically
 backwards: **nobody hand-writes the memories** (the AI saves them) **or
 hand-phrases the recall query** (the AI forms it). Production is model-mediated
 on *both* ends, so simulated queries are the faithful test; hand-written ones
-test a path that never happens. The retriever is lexical BM25 (no embedding
-space), so the only contamination risk from LLM-authored queries is
+test a path that never happens. The default retriever arm is lexical BM25 (no
+embedding space), so the only contamination risk from LLM-authored queries is
 **trigger-vocabulary leakage** — and the overlap score measures that directly,
-per query. Two guards keep it honest (see `__tests__/persona-diversity.test.ts`):
+per query. Since #103 the harness also runs a **hybrid arm** (production
+`recallHybrid` with per-arm dense embeddings) and an **expanded arm** (BM25 +
+write-time `recall_when_expanded`, #117) via `--arms lexical,hybrid,expanded`. Two guards keep it honest (see `__tests__/persona-diversity.test.ts`):
 the personas must be **distinct voices** (no mode collapse) and must **span the
 near↔far axis** (the gradient is emergent, not hand-binned).
 

@@ -33,9 +33,33 @@
  * Why simulated, not hand-written paraphrases? In production NOBODY hand-writes
  * the memories (the AI saves them) OR hand-phrases the recall query (the AI
  * forms it). Both ends are model-mediated, so simulated queries are the
- * ecologically faithful test. The retriever is lexical BM25 (no embedding
- * space), so the only contamination risk is trigger-vocabulary leakage — which
- * the overlap score measures directly. See README for the full rationale.
+ * ecologically faithful test. The default retriever is lexical BM25 (no
+ * embedding space), so the only contamination risk is trigger-vocabulary
+ * leakage — which the overlap score measures directly. See README.
+ *
+ * ── THREE ARMS (#103) — attribute the far-null to the right missing lever ──
+ * `--arms lexical,hybrid,expanded` runs up to three control/treatment pairs
+ * over the same persona queries. Every control strips BOTH trigger fields
+ * (recall_when AND recall_when_expanded); the arms differ ONLY in what the
+ * treatment adds back:
+ *
+ *   lexical  : BM25, treatment indexes recall_when at ×boost — the original
+ *              harness (default; exact legacy behavior + output).
+ *   hybrid   : production `recallHybrid` (BM25 + Ollama dense leg + RRF).
+ *              Control strips recall_when from BOTH legs — see hybrid-arm.ts.
+ *              Needs a reachable Ollama (BASTRA_OLLAMA_URL /
+ *              BASTRA_EMBEDDING_MODEL / BASTRA_EMBEDDING_DIM /
+ *              BASTRA_OLLAMA_KEEP_ALIVE, same envs doc2query-lift uses).
+ *   expanded : BM25, treatment ADDITIONALLY indexes the #117 write-time
+ *              expansions (recall_when_expanded) at the production ×2 boost.
+ *
+ * ── FAR-SPLIT (#103, per @zzallirog discussion #105) ──
+ * Every far query is also classified by WHERE the gold sat: `in-pool` (anywhere
+ * in the first-stage candidate pool — retrieved but possibly mis-ranked, a
+ * precision problem) vs `not-retrieved` (a recall-bound miss, the case an
+ * index-side lever must fix). Both slices are reported per arm together with a
+ * precision signal (mean gold rank among in-pool fars) so the two failure modes
+ * don't average into one number.
  *
  * IMPORTANT — read before citing a number:
  *   The bundled `fixtures/personas.json` runs against the tiny SYNTHETIC
@@ -46,6 +70,7 @@
  * Usage:
  *   npm run personas                          # bundled synthetic vault + personas
  *   npm run personas -- --k 3 --near 0.30     # tune @k and the near/far cut
+ *   npm run personas -- --arms lexical,hybrid,expanded   # three-arm (#103)
  *   BASTRA_VAULT_PATH=/v npm run personas -- --personas p.json --out survival.json
  *
  * Exit code: 0 always (a measurement, not a pass/fail gate).
@@ -53,8 +78,14 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Vault } from "@bastra-recall/core";
-import type { Memory } from "@bastra-recall/core";
-import { buildIndex, rankOf, TREATMENT_RECALL_WHEN_BOOST } from "./index-config.js";
+import type { Memory, RecallHit, SearchIndex } from "@bastra-recall/core";
+import {
+  buildIndex,
+  rankOf,
+  TREATMENT_RECALL_WHEN_BOOST,
+  EXPANDED_RECALL_WHEN_BOOST,
+} from "./index-config.js";
+import { buildHybridArmPair } from "./hybrid-arm.js";
 
 // ── Persona fixtures ───────────────────────────────────────────
 
@@ -65,6 +96,9 @@ interface PersonaFile {
 
 // ── CLI ────────────────────────────────────────────────────────
 
+const ARM_NAMES = ["lexical", "hybrid", "expanded"] as const;
+type ArmName = (typeof ARM_NAMES)[number];
+
 interface Args {
   vault: string;
   personas: string;
@@ -72,6 +106,7 @@ interface Args {
   boost: number;
   k: number;
   near: number;
+  arms: ArmName[];
 }
 
 const DEFAULT_VAULT = resolve(import.meta.dirname, "../fixtures/eval-vault");
@@ -85,6 +120,7 @@ function parseArgs(argv: string[]): Args {
     boost: TREATMENT_RECALL_WHEN_BOOST,
     k: 3,
     near: 0.3,
+    arms: ["lexical"],
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -94,12 +130,16 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--boost") args.boost = num(argv[++i], "--boost");
     else if (a === "--k") args.k = num(argv[++i], "--k");
     else if (a === "--near") args.near = num(argv[++i], "--near");
+    else if (a === "--arms") args.arms = parseArms(req(argv[++i], "--arms"));
     else if (a === "-h" || a === "--help") {
       console.log(
         "persona-lift — simulated-user survival of recall_when\n" +
           "  --vault <path>     vault to index (or BASTRA_VAULT_PATH)\n" +
           "  --personas <path>  personas JSON ({personas:{label:{id:query}}})\n" +
-          "  --boost <n>        treatment recall_when weight (default 5)\n" +
+          "  --arms <list>      comma list of lexical,hybrid,expanded (default: lexical;\n" +
+          "                     hybrid needs a reachable Ollama, see BASTRA_OLLAMA_URL)\n" +
+          "  --boost <n>        treatment recall_when weight (default 5; lexical/expanded\n" +
+          "                     arms only — hybrid always runs production weights)\n" +
           "  --k <n>            Recall@k (default 3)\n" +
           "  --near <0..1>      query↔trigger overlap cut for near/far (default 0.30)\n" +
           "  --out <path>       also write a JSON report",
@@ -108,6 +148,18 @@ function parseArgs(argv: string[]): Args {
     } else throw new Error(`unknown flag: ${a}`);
   }
   return args;
+}
+
+function parseArms(spec: string): ArmName[] {
+  const out: ArmName[] = [];
+  for (const raw of spec.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (!(ARM_NAMES as readonly string[]).includes(raw)) {
+      throw new Error(`--arms: unknown arm "${raw}" (valid: ${ARM_NAMES.join(", ")})`);
+    }
+    if (!out.includes(raw as ArmName)) out.push(raw as ArmName);
+  }
+  if (out.length === 0) throw new Error("--arms needs at least one arm");
+  return out;
 }
 
 function req(v: string | undefined, flag: string): string {
@@ -164,6 +216,86 @@ const recallK = (r: Run): number => (r.total ? r.hitK / r.total : 0);
 const pct = (x: number): string => `${(x * 100).toFixed(1)}%`;
 const signed = (x: number): string => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)} pp`;
 
+// ── Far-split counters (#103 / discussion #105) ────────────────
+// Over FAR queries only: was the gold anywhere in the first-stage candidate
+// pool (`in-pool` = mis-ranking territory) or absent (`not-retrieved` = a
+// recall-bound miss)? goldRankSum/inPool is the precision signal.
+
+interface FarSplit {
+  inPool: number;
+  notRetrieved: number;
+  goldRankSum: number;
+}
+const emptySplit = (): FarSplit => ({ inPool: 0, notRetrieved: 0, goldRankSum: 0 });
+function recordFar(split: FarSplit, rank: number): void {
+  if (rank >= 1) {
+    split.inPool++;
+    split.goldRankSum += rank;
+  } else {
+    split.notRetrieved++;
+  }
+}
+const meanGoldRank = (s: FarSplit): number => (s.inPool ? s.goldRankSum / s.inPool : NaN);
+
+// ── Arm plumbing (#103) ────────────────────────────────────────
+// Every rank is the gold's 1-based position in the arm's FIRST-STAGE candidate
+// pool; 0 = not retrieved. For the BM25-only arms the pool mirrors core
+// recall()'s HOP_SEED_POOL = max(k*4, 20) (search.ts) — exactly the pool
+// onCandidatePool exposes (#121). For hybrid we capture that pool directly.
+
+type BmIndex = ReturnType<typeof buildIndex>;
+
+interface ArmRunner {
+  rank(side: "control" | "treatment", query: string, goldId: string): Promise<number> | number;
+  close?(): Promise<void>;
+}
+
+interface ArmCounters {
+  overallC: Run;
+  overallT: Run;
+  nearC: Run;
+  nearT: Run;
+  farC: Run;
+  farT: Run;
+  farSplitC: FarSplit;
+  farSplitT: FarSplit;
+  perPersonaT: Map<string, Run>;
+}
+const emptyCounters = (): ArmCounters => ({
+  overallC: emptyRun(),
+  overallT: emptyRun(),
+  nearC: emptyRun(),
+  nearT: emptyRun(),
+  farC: emptyRun(),
+  farT: emptyRun(),
+  farSplitC: emptySplit(),
+  farSplitT: emptySplit(),
+  perPersonaT: new Map(),
+});
+
+function bm25PoolRank(index: BmIndex, query: string, goldId: string, poolCap: number): number {
+  return rankOf(index.search(query).slice(0, poolCap), goldId);
+}
+
+/** Run production recallHybrid, capture the #121 pool, return the gold's pool rank. */
+async function hybridPoolRank(
+  search: SearchIndex,
+  query: string,
+  goldId: string,
+  k: number,
+): Promise<number> {
+  let captured: RecallHit[] = [];
+  await search.recallHybrid(query, {
+    k,
+    allow_private: true,
+    onCandidatePool: (pool) => {
+      captured = pool;
+    },
+  });
+  const idx = captured.findIndex((h) => h.id === goldId);
+  return idx === -1 ? 0 : idx + 1;
+}
+
 // ── Main ───────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -182,41 +314,92 @@ async function main(): Promise<void> {
     triggerToks.set(m.fm.id, t);
   }
 
-  const control = buildIndex(memories, { kind: "control" });
-  const treatment = buildIndex(memories, { kind: "treatment", boost: args.boost });
+  // First-stage pool cap for the BM25-only arms (see comment on bm25PoolRank).
+  const poolCap = Math.max(args.k * 4, 20);
 
-  const overallC = emptyRun(), overallT = emptyRun();
-  const nearC = emptyRun(), nearT = emptyRun();
-  const farC = emptyRun(), farT = emptyRun();
-  const perPersonaT = new Map<string, Run>();
+  // Every control strips BOTH trigger fields (buildIndex control indexes
+  // neither), so lexical + expanded share one control index.
+  const control = buildIndex(memories, { kind: "control" });
+  const runners = new Map<ArmName, ArmRunner>();
+  if (args.arms.includes("lexical")) {
+    const treatment = buildIndex(memories, { kind: "treatment", boost: args.boost });
+    runners.set("lexical", {
+      rank: (side, q, id) => bm25PoolRank(side === "control" ? control : treatment, q, id, poolCap),
+    });
+  }
+  if (args.arms.includes("expanded")) {
+    const withExpansions = memories.filter(
+      (m) => (m.fm.recall_when_expanded ?? []).length > 0,
+    ).length;
+    if (withExpansions === 0) {
+      console.error(
+        "⚠ expanded arm: no memory carries recall_when_expanded — treatment degenerates to lexical (#117 expansions missing on this vault)",
+      );
+    }
+    const treatment = buildIndex(memories, {
+      kind: "treatment",
+      boost: args.boost,
+      expandedBoost: EXPANDED_RECALL_WHEN_BOOST,
+    });
+    runners.set("expanded", {
+      rank: (side, q, id) => bm25PoolRank(side === "control" ? control : treatment, q, id, poolCap),
+    });
+  }
+  if (args.arms.includes("hybrid")) {
+    if (args.boost !== TREATMENT_RECALL_WHEN_BOOST) {
+      console.error(
+        `⚠ hybrid arm always runs production weights (recall_when ×${TREATMENT_RECALL_WHEN_BOOST}); --boost ${args.boost} only affects lexical/expanded arms`,
+      );
+    }
+    const pair = await buildHybridArmPair(args.vault);
+    runners.set("hybrid", {
+      rank: (side, q, id) =>
+        hybridPoolRank(side === "control" ? pair.control.search : pair.treatment.search, q, id, args.k),
+      close: pair.cleanup,
+    });
+  }
+
+  const counters = new Map<ArmName, ArmCounters>();
+  for (const arm of args.arms) counters.set(arm, emptyCounters());
   const unknownIds = new Set<string>();
   let totalQueries = 0;
 
   for (const [label, byMemory] of Object.entries(file.personas)) {
-    const pRun = emptyRun();
+    for (const arm of args.arms) counters.get(arm)!.perPersonaT.set(label, emptyRun());
     for (const [id, query] of Object.entries(byMemory)) {
       if (!known.has(id)) {
         unknownIds.add(id);
         continue;
       }
       totalQueries++;
-      const cRank = rankOf(control.search(query), id);
-      const tRank = rankOf(treatment.search(query), id);
       const cov = coverage(query, triggerToks.get(id) ?? new Set());
       const isNear = cov >= args.near;
-      record(overallC, cRank, args.k);
-      record(overallT, tRank, args.k);
-      record(isNear ? nearC : farC, cRank, args.k);
-      record(isNear ? nearT : farT, tRank, args.k);
-      record(pRun, tRank, args.k);
+      for (const arm of args.arms) {
+        const c = counters.get(arm)!;
+        const runner = runners.get(arm)!;
+        const cRank = await runner.rank("control", query, id);
+        const tRank = await runner.rank("treatment", query, id);
+        record(c.overallC, cRank, args.k);
+        record(c.overallT, tRank, args.k);
+        record(isNear ? c.nearC : c.farC, cRank, args.k);
+        record(isNear ? c.nearT : c.farT, tRank, args.k);
+        if (!isNear) {
+          recordFar(c.farSplitC, cRank);
+          recordFar(c.farSplitT, tRank);
+        }
+        record(c.perPersonaT.get(label)!, tRank, args.k);
+      }
     }
-    perPersonaT.set(label, pRun);
   }
+  for (const runner of runners.values()) await runner.close?.();
 
-  const liftAll = recallK(overallT) - recallK(overallC);
-  const liftNear = recallK(nearT) - recallK(nearC);
-  const liftFar = recallK(farT) - recallK(farC);
-  const survival = liftNear > 0 ? liftFar / liftNear : NaN;
+  const liftAllOf = (c: ArmCounters): number => recallK(c.overallT) - recallK(c.overallC);
+  const liftNearOf = (c: ArmCounters): number => recallK(c.nearT) - recallK(c.nearC);
+  const liftFarOf = (c: ArmCounters): number => recallK(c.farT) - recallK(c.farC);
+  const survivalOf = (c: ArmCounters): number => {
+    const near = liftNearOf(c);
+    return near > 0 ? liftFarOf(c) / near : NaN;
+  };
 
   // persona-diversity sanity (mean pairwise query Jaccard across shared ids)
   const labels = Object.keys(file.personas);
@@ -233,42 +416,119 @@ async function main(): Promise<void> {
   const meanSim = pairSims.length ? pairSims.reduce((a, b) => a + b, 0) / pairSims.length : 0;
 
   // ── report ──
+  // Single lexical arm → the exact legacy report + JSON (backward compatible,
+  // byte-for-byte). Anything else → the multi-arm report with the far-split.
+  const legacyOnly = args.arms.length === 1 && args.arms[0] === "lexical";
   const L: string[] = [];
-  L.push("# recall_when — Simulated-User Survival\n");
-  L.push(
-    `Vault: **${loaded}** memorys  ·  personas: **${labels.length}**  ·  ` +
-      `queries: **${totalQueries}**  ·  boost: **×${args.boost}**  ·  k = **${args.k}**  ·  ` +
-      `near/far cut: **${args.near}**\n`,
-  );
 
-  L.push("## Lift by recall-time vocabulary drift\n");
-  L.push("| query↔trigger | n | control R@" + args.k + " | treatment R@" + args.k + " | marginal lift |");
-  L.push("|---|---|---|---|---|");
-  L.push(`| **all** | ${overallT.total} | ${pct(recallK(overallC))} | ${pct(recallK(overallT))} | **${signed(liftAll)}** |`);
-  L.push(`| near (≥${args.near}) | ${nearT.total} | ${pct(recallK(nearC))} | ${pct(recallK(nearT))} | ${signed(liftNear)} |`);
-  L.push(`| far (<${args.near}) | ${farT.total} | ${pct(recallK(farC))} | ${pct(recallK(farT))} | ${signed(liftFar)} |`);
-  L.push("");
-  L.push(
-    `**survival = lift(far) / lift(near) = ${Number.isFinite(survival) ? survival.toFixed(2) : "n/a"}** — ` +
-      `the fraction of recall_when's benefit that holds when the recall-time query ` +
-      `drifts off the save-time trigger wording.\n`,
-  );
+  if (legacyOnly) {
+    const c = counters.get("lexical")!;
+    const { overallC, overallT, nearC, nearT, farC, farT, perPersonaT } = c;
+    const liftAll = liftAllOf(c);
+    const liftNear = liftNearOf(c);
+    const liftFar = liftFarOf(c);
+    const survival = survivalOf(c);
 
-  L.push("## Robustness envelope across user personas\n");
-  L.push(`Recall@${args.k} (treatment) per simulated user — the spread is the envelope:\n`);
-  L.push("| persona | queries | Recall@" + args.k + " |");
-  L.push("|---|---|---|");
-  const persRecalls: number[] = [];
-  for (const [label, r] of perPersonaT) {
-    persRecalls.push(recallK(r));
-    L.push(`| ${label} | ${r.total} | ${pct(recallK(r))} |`);
-  }
-  if (persRecalls.length) {
+    L.push("# recall_when — Simulated-User Survival\n");
+    L.push(
+      `Vault: **${loaded}** memorys  ·  personas: **${labels.length}**  ·  ` +
+        `queries: **${totalQueries}**  ·  boost: **×${args.boost}**  ·  k = **${args.k}**  ·  ` +
+        `near/far cut: **${args.near}**\n`,
+    );
+
+    L.push("## Lift by recall-time vocabulary drift\n");
+    L.push("| query↔trigger | n | control R@" + args.k + " | treatment R@" + args.k + " | marginal lift |");
+    L.push("|---|---|---|---|---|");
+    L.push(`| **all** | ${overallT.total} | ${pct(recallK(overallC))} | ${pct(recallK(overallT))} | **${signed(liftAll)}** |`);
+    L.push(`| near (≥${args.near}) | ${nearT.total} | ${pct(recallK(nearC))} | ${pct(recallK(nearT))} | ${signed(liftNear)} |`);
+    L.push(`| far (<${args.near}) | ${farT.total} | ${pct(recallK(farC))} | ${pct(recallK(farT))} | ${signed(liftFar)} |`);
     L.push("");
     L.push(
-      `Envelope: **${pct(Math.min(...persRecalls))} – ${pct(Math.max(...persRecalls))}** ` +
-        `across ${persRecalls.length} user styles.\n`,
+      `**survival = lift(far) / lift(near) = ${Number.isFinite(survival) ? survival.toFixed(2) : "n/a"}** — ` +
+        `the fraction of recall_when's benefit that holds when the recall-time query ` +
+        `drifts off the save-time trigger wording.\n`,
     );
+
+    L.push("## Robustness envelope across user personas\n");
+    L.push(`Recall@${args.k} (treatment) per simulated user — the spread is the envelope:\n`);
+    L.push("| persona | queries | Recall@" + args.k + " |");
+    L.push("|---|---|---|");
+    const persRecalls: number[] = [];
+    for (const [label, r] of perPersonaT) {
+      persRecalls.push(recallK(r));
+      L.push(`| ${label} | ${r.total} | ${pct(recallK(r))} |`);
+    }
+    if (persRecalls.length) {
+      L.push("");
+      L.push(
+        `Envelope: **${pct(Math.min(...persRecalls))} – ${pct(Math.max(...persRecalls))}** ` +
+          `across ${persRecalls.length} user styles.\n`,
+      );
+    }
+  } else {
+    L.push("# recall_when — Simulated-User Survival (multi-arm, #103)\n");
+    L.push(
+      `Vault: **${loaded}** memorys  ·  personas: **${labels.length}**  ·  ` +
+        `queries: **${totalQueries}**  ·  boost: **×${args.boost}**  ·  k = **${args.k}**  ·  ` +
+        `near/far cut: **${args.near}**  ·  arms: **${args.arms.join(", ")}**\n`,
+    );
+
+    L.push("## Lift by recall-time vocabulary drift — per arm\n");
+    L.push("| arm | query↔trigger | n | control R@" + args.k + " | treatment R@" + args.k + " | marginal lift |");
+    L.push("|---|---|---|---|---|---|");
+    for (const arm of args.arms) {
+      const c = counters.get(arm)!;
+      L.push(`| ${arm} | **all** | ${c.overallT.total} | ${pct(recallK(c.overallC))} | ${pct(recallK(c.overallT))} | **${signed(liftAllOf(c))}** |`);
+      L.push(`| ${arm} | near (≥${args.near}) | ${c.nearT.total} | ${pct(recallK(c.nearC))} | ${pct(recallK(c.nearT))} | ${signed(liftNearOf(c))} |`);
+      L.push(`| ${arm} | far (<${args.near}) | ${c.farT.total} | ${pct(recallK(c.farC))} | ${pct(recallK(c.farT))} | ${signed(liftFarOf(c))} |`);
+    }
+    L.push("");
+    L.push("**survival = lift(far) / lift(near)** per arm:\n");
+    for (const arm of args.arms) {
+      const s = survivalOf(counters.get(arm)!);
+      L.push(`- ${arm}: **${Number.isFinite(s) ? s.toFixed(2) : "n/a"}**`);
+    }
+    L.push("");
+
+    L.push("## Far slice — in-pool vs not-retrieved (per @zzallirog, #105)\n");
+    L.push(
+      `Where the gold sat on far queries. \`in-pool\` = somewhere in the first-stage ` +
+        `candidate pool (retrieved but possibly mis-ranked — a precision problem); ` +
+        `\`not-retrieved\` = a recall-bound miss (what an index-side lever must fix). ` +
+        `Pool = max(k·4, 20) = ${poolCap}, core's #121 candidate pool. Precision signal: ` +
+        `mean gold rank among in-pool fars (lower = better).\n`,
+    );
+    L.push("| arm | side | far n | in-pool | not-retrieved | mean gold rank (in-pool) |");
+    L.push("|---|---|---|---|---|---|");
+    for (const arm of args.arms) {
+      const c = counters.get(arm)!;
+      for (const [side, split] of [["control", c.farSplitC], ["treatment", c.farSplitT]] as const) {
+        const mgr = meanGoldRank(split);
+        L.push(
+          `| ${arm} | ${side} | ${split.inPool + split.notRetrieved} | ${split.inPool} | ` +
+            `${split.notRetrieved} | ${Number.isFinite(mgr) ? mgr.toFixed(2) : "n/a"} |`,
+        );
+      }
+    }
+    L.push("");
+
+    L.push("## Robustness envelope across user personas\n");
+    L.push(`Recall@${args.k} (treatment) per simulated user — the spread is the envelope:\n`);
+    L.push("| persona | queries | " + args.arms.join(" | ") + " |");
+    L.push("|---|---|" + args.arms.map(() => "---|").join(""));
+    for (const label of labels) {
+      const cells = args.arms.map((arm) => pct(recallK(counters.get(arm)!.perPersonaT.get(label)!)));
+      const n = counters.get(args.arms[0])!.perPersonaT.get(label)!.total;
+      L.push(`| ${label} | ${n} | ${cells.join(" | ")} |`);
+    }
+    L.push("");
+    for (const arm of args.arms) {
+      const rs = [...counters.get(arm)!.perPersonaT.values()].map(recallK);
+      if (rs.length) {
+        L.push(`- ${arm} envelope: **${pct(Math.min(...rs))} – ${pct(Math.max(...rs))}** across ${rs.length} user styles.`);
+      }
+    }
+    L.push("");
   }
 
   L.push("## Persona-diversity check\n");
@@ -285,21 +545,69 @@ async function main(): Promise<void> {
   console.log(report);
 
   if (args.out) {
-    const json = {
-      vault: args.vault,
-      vaultSize: loaded,
-      boost: args.boost,
-      k: args.k,
-      nearCut: args.near,
-      queries: totalQueries,
-      liftAll,
-      liftNear,
-      liftFar,
-      survival,
-      personaRecall: Object.fromEntries([...perPersonaT].map(([l, r]) => [l, recallK(r)])),
-      meanPairwiseSimilarity: meanSim,
-      unknownIds: [...unknownIds],
-    };
+    let json: Record<string, unknown>;
+    if (legacyOnly) {
+      const c = counters.get("lexical")!;
+      json = {
+        vault: args.vault,
+        vaultSize: loaded,
+        boost: args.boost,
+        k: args.k,
+        nearCut: args.near,
+        queries: totalQueries,
+        liftAll: liftAllOf(c),
+        liftNear: liftNearOf(c),
+        liftFar: liftFarOf(c),
+        survival: survivalOf(c),
+        personaRecall: Object.fromEntries([...c.perPersonaT].map(([l, r]) => [l, recallK(r)])),
+        meanPairwiseSimilarity: meanSim,
+        unknownIds: [...unknownIds],
+      };
+    } else {
+      const sliceJson = (cRun: Run, tRun: Run): Record<string, unknown> => ({
+        n: tRun.total,
+        control: recallK(cRun),
+        treatment: recallK(tRun),
+        lift: recallK(tRun) - recallK(cRun),
+      });
+      const splitJson = (s: FarSplit): Record<string, unknown> => ({
+        inPool: s.inPool,
+        notRetrieved: s.notRetrieved,
+        meanGoldRank: meanGoldRank(s), // NaN → null in JSON
+      });
+      json = {
+        vault: args.vault,
+        vaultSize: loaded,
+        boost: args.boost,
+        k: args.k,
+        nearCut: args.near,
+        poolCap,
+        queries: totalQueries,
+        arms: Object.fromEntries(
+          args.arms.map((arm) => {
+            const c = counters.get(arm)!;
+            return [
+              arm,
+              {
+                slices: {
+                  all: sliceJson(c.overallC, c.overallT),
+                  near: sliceJson(c.nearC, c.nearT),
+                  far: sliceJson(c.farC, c.farT),
+                },
+                survival: survivalOf(c), // NaN → null in JSON
+                farSplit: {
+                  control: splitJson(c.farSplitC),
+                  treatment: splitJson(c.farSplitT),
+                },
+                personaRecall: Object.fromEntries([...c.perPersonaT].map(([l, r]) => [l, recallK(r)])),
+              },
+            ];
+          }),
+        ),
+        meanPairwiseSimilarity: meanSim,
+        unknownIds: [...unknownIds],
+      };
+    }
     writeFileSync(args.out, JSON.stringify(json, null, 2));
     console.error(`\n[persona-lift] JSON written to ${args.out}`);
   }

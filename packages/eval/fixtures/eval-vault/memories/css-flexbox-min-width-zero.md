@@ -10,6 +10,9 @@ recall_when:
   - text not truncating inside a flex row
   - child stretches container instead of ellipsis
   - overflow ignored in flex layout
+recall_when_expanded:
+  - long label refuses to clip inside a flexible column
+  - content forces its box wider than the layout allows
 related: []
 related_via: []
 sensitivity: public
