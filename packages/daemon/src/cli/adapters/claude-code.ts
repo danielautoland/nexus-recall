@@ -50,7 +50,7 @@ function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
     { event: "PreToolUse", matcher: "Write|Edit|MultiEdit|NotebookEdit", bin: PRE_TOOL_HOOK_BIN, timeout: 2, note: "bastra-recall PreToolUse hook" },
     { event: "PreToolUse", matcher: "TodoWrite", bin: TODO_HOOK_BIN, timeout: 2, note: "bastra-recall TodoWrite hook (topology-recall, #36)" },
     { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)" },
-    { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-fail hook (lesson recall on fail, #37)" },
+    { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash post hook (act-signal #144 + lesson recall on fail #37)" },
   ];
   if (opts.includeStop) {
     defs.push({ event: "Stop", bin: STOP_HOOK_BIN, timeout: 3, note: "bastra-recall Stop hook (optional autonomous save-eval, #35)" });

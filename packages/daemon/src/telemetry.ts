@@ -33,6 +33,7 @@ export type TelemetryEvent =
   | LoadMemoryEvent
   | SaveMemoryEvent
   | HookRecallEvent
+  | HookActEvent
   | RecallEpisodeEvent
   | OllamaLifecycleEvent;
 
@@ -131,6 +132,18 @@ export interface SaveMemoryEvent extends BaseEvent {
   overwrite: boolean;
   created: boolean;
   follows_recall: string | null;
+}
+
+/** #144: lightweight act-signal from the PostToolUse:Bash hook — no recall,
+ *  no injection; only widens the acted_on measuring surface so shell-driven
+ *  applications of a memory can close their recall_episode. */
+export interface HookActEvent extends BaseEvent {
+  kind: "hook_act";
+  tool_name: string | null;
+  excerpt_chars: number;
+  /** How many open loadedMemories episodes this act-signal closed. */
+  matched_episodes: number;
+  exit_code: number | null;
 }
 
 /** Recall served from the HTTP /hook/recall endpoint (server-side view). */
@@ -412,7 +425,14 @@ export class Telemetry {
     tool_name: string | null;
     tool_input_excerpt: string;
     session_id?: string | null;
+    /** #144: when false, a non-matching entry stays OPEN instead of closing
+     *  with acted_on=false. The high-frequency Bash act-signal must not let
+     *  an unrelated `git status` kill an episode before the real application
+     *  arrives; the low-frequency file-edit path keeps the historical
+     *  close-on-miss semantics ("the next tool input decides"). */
+    closeOnMiss?: boolean;
   }): Omit<RecallEpisodeEvent, "kind" | "ts" | "session_id">[] {
+    const closeOnMiss = payload.closeOnMiss !== false;
     const now = Date.now();
     const current = this.currentTurn(payload.session_id ?? null);
     const inputTokens = tokenize(payload.tool_input_excerpt);
@@ -430,6 +450,7 @@ export class Telemetry {
       for (const token of entry.distinctive_tokens) {
         if (inputTokens.has(token)) matchStrength++;
       }
+      if (!closeOnMiss && matchStrength < 2) continue; // stays open (#144)
       entry.closed = true;
       episodes.push({
         turn_id: entry.turn_id,
@@ -504,6 +525,18 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "hook_recall",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  async logHookAct(
+    payload: Omit<HookActEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "hook_act",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

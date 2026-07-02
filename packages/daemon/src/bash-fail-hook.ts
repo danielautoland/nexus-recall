@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   // `tool_response` have both been observed. Accept either.
   const result = (payload.tool_result ?? payload.tool_response ?? {}) as Record<string, unknown>;
   const exitCode = readExitCode(result);
-  if (exitCode === null || exitCode === 0) return emitEmpty();
+  if (exitCode === null) return emitEmpty();
   if (exitCode === 130) return emitEmpty(); // SIGINT — user Ctrl-C
 
   const toolInput = (payload.tool_input ?? {}) as Record<string, unknown>;
@@ -90,6 +90,30 @@ async function main(): Promise<void> {
   // No loop on our own binaries.
   if (/\bbastra-recall(?:-[a-z-]+)?\b/.test(command)) return emitEmpty();
 
+  const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
+  const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
+  const url = httpURL ?? `http://127.0.0.1:${httpPort}`;
+
+  // #144: act-signal for EVERY completed Bash command (success AND failure).
+  // Telemetry-only — no recall, no injection, never throttled: the daemon
+  // matches the command text against open loadedMemories episodes so
+  // shell-driven applications of a memory can score acted_on. Failures are
+  // swallowed; the signal must never delay the fail-recall below.
+  await postAct(
+    url,
+    {
+      tool_name: "Bash",
+      tool_input_excerpt: command.slice(0, 1000),
+      exit_code: exitCode,
+      session_id: typeof payload.session_id === "string" ? payload.session_id : null,
+    },
+    Math.min(120, Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt))),
+  );
+
+  // Success path ends here — the act-signal was the only job. The daemon-side
+  // hook_act event is the telemetry record; no hint, no local log line.
+  if (exitCode === 0) return emitEmpty();
+
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "default";
   if (await isThrottled(sessionId)) return emitEmpty();
 
@@ -98,9 +122,6 @@ async function main(): Promise<void> {
   const errKeywords = extractErrorKeywords(errorContext);
   const query = `${commandHead} ${errKeywords}`.trim().slice(0, 300);
 
-  const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
-  const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
-  const url = httpURL ?? `http://127.0.0.1:${httpPort}`;
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
 
   let resp: RecallResponse | null = null;
@@ -334,6 +355,50 @@ function postRecall(
       req.destroy(new Error("timeout"));
     });
     req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** #144: fire the act-signal at /hook/act. Best-effort — resolves on any
+ *  outcome (error, timeout, non-2xx); the act-signal must never break or
+ *  delay the hook's main job. */
+function postAct(
+  baseUrl: string,
+  body: { tool_name: string; tool_input_excerpt: string; exit_code: number; session_id: string | null },
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/act", baseUrl);
+    } catch {
+      resolve();
+      return;
+    }
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+    const req = request(
+      {
+        method: "POST",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Length": payload.byteLength.toString(),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        res.resume(); // drain — response content is irrelevant
+        res.on("end", () => resolve());
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve();
+    });
+    req.on("error", () => resolve());
     req.write(payload);
     req.end();
   });

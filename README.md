@@ -23,7 +23,7 @@
 
 **What it is** — A long-term memory for any AI assistant or agent: Claude (Code, Desktop, Web), ChatGPT (via Custom GPT Actions), Cursor, and anything else that speaks MCP or HTTP. Whenever you correct it, state a rule, or commit to a decision, it gets saved as a small note. In your next chat — days or weeks later, in any tool — the AI pulls those notes back automatically. No more repeating yourself. Everything stays on your own Mac as plain Markdown files (Obsidian-compatible). All your AI tools share the same memory at the same time.
 
-**Status** — 🟢 Early beta. M0 (eval) and M1 (read path) done, M2 (save path) functional, and the Claude Code reflex layer ships with hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse` file edits / todos / bash safety, `PostToolUse` bash failures, plus optional `Stop` save-eval. Distribution and multi-surface hardening are active. See [PLAN.md](./PLAN.md).
+**Status** — 🟢 Early beta. M0 (eval) and M1 (read path) done, M2 (save path) functional, and the Claude Code reflex layer ships with hooks for `SessionStart`, `UserPromptSubmit`, `PreToolUse` file edits / todos / bash safety, `PostToolUse` bash act-signals + failure recall, plus optional `Stop` save-eval. Distribution and multi-surface hardening are active. See [PLAN.md](./PLAN.md).
 
 ### Why
 
@@ -305,7 +305,7 @@ Built by [@n0mad-ai](https://github.com/n0mad-ai).
 
 **Was es ist** — Ein Langzeit-Gedächtnis für jeden AI-Assistenten oder Agent: Claude (Code, Desktop, Web), ChatGPT (via Custom GPT Actions), Cursor und alles andere, was MCP oder HTTP spricht. Sobald du etwas korrigierst, eine Regel aufstellst oder eine Entscheidung triffst, wird das als kleine Notiz gespeichert. In der nächsten Sitzung — Tage oder Wochen später, in jedem Tool — holt die AI diese Notizen automatisch wieder hervor. Schluss mit ewigem Wiederholen. Alles bleibt lokal auf deinem Mac als reine Markdown-Dateien (Obsidian-kompatibel). Alle deine AI-Tools teilen sich dasselbe Gedächtnis gleichzeitig.
 
-**Status** — 🟢 Frühe Beta. M0 (Eval) und M1 (Read-Path) fertig, M2 (Save-Path) funktional, und der Claude-Code-Reflex-Layer liefert Hooks für `SessionStart`, `UserPromptSubmit`, `PreToolUse` (Datei-Edits / Todos / Bash-Safety), `PostToolUse` (Bash-Fehler) plus optionalen `Stop` Save-Eval. Distribution und Multi-Surface-Hardening laufen. Siehe [PLAN.md](./PLAN.md).
+**Status** — 🟢 Frühe Beta. M0 (Eval) und M1 (Read-Path) fertig, M2 (Save-Path) funktional, und der Claude-Code-Reflex-Layer liefert Hooks für `SessionStart`, `UserPromptSubmit`, `PreToolUse` (Datei-Edits / Todos / Bash-Safety), `PostToolUse` (Bash Act-Signal + Fehler-Recall) plus optionalen `Stop` Save-Eval. Distribution und Multi-Surface-Hardening laufen. Siehe [PLAN.md](./PLAN.md).
 
 ### Warum
 
