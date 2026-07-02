@@ -273,3 +273,15 @@ test("backfill expands every un-expanded memory, then is idempotent", async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("buildExpandPrompt scrubs injected context blocks from source fields (#149)", () => {
+  const p = buildExpandPrompt(
+    fakeMemory({
+      summary:
+        'resignKey observer must respect attachedSheet <session-context surface="claude-code">- hint: packages/daemon/src/hook.ts</session-context>',
+    }),
+  );
+  assert.match(p, /resignKey observer must respect attachedSheet/);
+  assert.ok(!p.includes("session-context"), "scaffolding tag must not seed paraphrases");
+  assert.ok(!p.includes("packages/daemon/src/hook.ts"), "block content must not seed paraphrases");
+});
