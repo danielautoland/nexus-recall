@@ -10,6 +10,9 @@ recall_when:
   - times shift after deploy to another region
   - daylight saving breaks scheduling
   - wrong hour shown to users abroad
+recall_when_expanded:
+  - meeting times off by an hour after the clock change
+  - normalize instants to one reference zone before saving
 related: []
 related_via: []
 sensitivity: public

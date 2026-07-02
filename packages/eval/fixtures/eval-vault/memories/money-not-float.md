@@ -10,6 +10,9 @@ recall_when:
   - rounding errors adding prices
   - 0.1 plus 0.2 problem in totals
   - cents off by one in invoices
+recall_when_expanded:
+  - currency totals drift by fractions of a cent
+  - store prices as whole minor units instead of doubles
 related: []
 related_via: []
 sensitivity: public

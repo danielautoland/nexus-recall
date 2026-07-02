@@ -20,6 +20,9 @@ export const BASE_BOOST = {
 /** core's production weight for the dedicated trigger field. */
 export const TREATMENT_RECALL_WHEN_BOOST = 5;
 
+/** core's production weight for the doc2query expansions (#117). */
+export const EXPANDED_RECALL_WHEN_BOOST = 2;
+
 /** Search options pinned to core so the ablation is apples-to-apples. */
 const SEARCH_OPTIONS = {
   fuzzy: 0.2,
@@ -33,6 +36,7 @@ interface IndexDoc {
   summary: string;
   tags_flat: string;
   recall_when_flat: string;
+  recall_when_expanded_flat: string;
   topic_path_flat: string;
   body: string;
 }
@@ -46,6 +50,7 @@ function toDoc(m: Memory): IndexDoc {
     summary: fm.summary,
     tags_flat: fm.tags.join(" "),
     recall_when_flat: fm.recall_when.join(" \n "),
+    recall_when_expanded_flat: (fm.recall_when_expanded ?? []).join(" \n "),
     topic_path_flat: fm.topic_path.join(" "),
     body: m.body,
   };
@@ -53,15 +58,20 @@ function toDoc(m: Memory): IndexDoc {
 
 export type Arm =
   | { kind: "control" } // recall_when removed from the searchable fields
-  | { kind: "treatment"; boost: number }; // recall_when indexed at `boost`
+  // recall_when indexed at `boost`; when `expandedBoost` is set the #117
+  // doc2query field `recall_when_expanded` is ALSO indexed at that weight
+  // (core uses 2) — that's the persona-lift "expanded" arm's treatment.
+  | { kind: "treatment"; boost: number; expandedBoost?: number };
 
 /**
  * Build a BM25 index over `memories`.
  *
- * - control:   `recall_when` is NOT a searchable field at all (stripped). A
- *   query term that lives only in recall_when cannot retrieve the doc.
+ * - control:   `recall_when` is NOT a searchable field at all (stripped), and
+ *   neither is `recall_when_expanded`. A query term that lives only in the
+ *   trigger fields cannot retrieve the doc.
  * - treatment: `recall_when` indexed and boosted at `boost` (core uses 5),
- *   every other field weight identical to control.
+ *   every other field weight identical to control. With `expandedBoost` the
+ *   doc2query expansions are indexed too (core uses 2).
  *
  * Stripping the field outright (rather than zero-weighting it) avoids the
  * MiniSearch quirk where a boost of 0 still lets the doc surface at score 0.
@@ -72,6 +82,10 @@ export function buildIndex(memories: Memory[], arm: Arm): MiniSearch<IndexDoc> {
   if (arm.kind === "treatment") {
     fields.push("recall_when_flat");
     boost.recall_when_flat = arm.boost;
+    if (arm.expandedBoost !== undefined) {
+      fields.push("recall_when_expanded_flat");
+      boost.recall_when_expanded_flat = arm.expandedBoost;
+    }
   }
 
   const mini = new MiniSearch<IndexDoc>({

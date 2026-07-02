@@ -10,6 +10,9 @@ recall_when:
   - api key accidentally pushed to git
   - rotating a leaked token
   - where to put credentials safely
+recall_when_expanded:
+  - credential leaked into version control history
+  - revoke and reissue a token that escaped
 related: []
 related_via: []
 sensitivity: public

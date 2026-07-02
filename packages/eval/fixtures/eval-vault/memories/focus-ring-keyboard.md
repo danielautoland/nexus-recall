@@ -10,6 +10,9 @@ recall_when:
   - removed outline and keyboard nav disappeared
   - tab navigation has no visible indicator
   - accessibility focus state missing
+recall_when_expanded:
+  - tabbing through the form gives no visual cue where you are
+  - outline removal broke assistive navigation
 related: []
 related_via: []
 sensitivity: public

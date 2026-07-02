@@ -10,6 +10,9 @@ recall_when:
   - docker reinstalls deps on every build
   - slow image rebuilds after a code change
   - layer cache keeps invalidating
+recall_when_expanded:
+  - image rebuild repeats the dependency install unnecessarily
+  - order COPY steps to keep cached layers warm
 related: []
 related_via: []
 sensitivity: public

@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BASE_BOOST, TREATMENT_RECALL_WHEN_BOOST } from "../src/index-config.js";
+import {
+  BASE_BOOST,
+  TREATMENT_RECALL_WHEN_BOOST,
+  EXPANDED_RECALL_WHEN_BOOST,
+} from "../src/index-config.js";
 
 /**
  * Drift guard. The ablation mirrors core's field weights by hand (the
@@ -19,6 +23,7 @@ const searchSrc = readFileSync(
 test("ablation field weights stay in sync with core SearchIndex", () => {
   const expected: Record<string, number> = {
     recall_when_flat: TREATMENT_RECALL_WHEN_BOOST,
+    recall_when_expanded_flat: EXPANDED_RECALL_WHEN_BOOST,
     title: BASE_BOOST.title,
     tags_flat: BASE_BOOST.tags_flat,
     topic_path_flat: BASE_BOOST.topic_path_flat,

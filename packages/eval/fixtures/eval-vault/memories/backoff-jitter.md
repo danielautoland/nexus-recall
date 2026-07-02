@@ -10,6 +10,9 @@ recall_when:
   - thundering herd when a service recovers
   - all clients retry at the same instant
   - retries hammer the API in sync
+recall_when_expanded:
+  - connection stampede after an outage ends
+  - spread reconnect attempts out randomly
 related: []
 related_via: []
 sensitivity: public

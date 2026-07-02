@@ -10,6 +10,9 @@ recall_when:
   - cleaning up commits before merge
   - squashing review feedback into the right commit
   - messy history before a PR
+recall_when_expanded:
+  - fold review corrections into their original changesets
+  - tidy a branch history before merging
 related: []
 related_via: []
 sensitivity: public

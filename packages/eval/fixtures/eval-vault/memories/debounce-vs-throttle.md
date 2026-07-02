@@ -10,6 +10,9 @@ recall_when:
   - search box fires too many requests while typing
   - scroll handler runs too often
   - limit how often a callback runs
+recall_when_expanded:
+  - delay firing until the user stops interacting
+  - cap how frequently an expensive listener executes
 related: []
 related_via: []
 sensitivity: public
