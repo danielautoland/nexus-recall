@@ -128,8 +128,6 @@ Three paths, in order of friction. bastra-recall is self-contained: the daemon, 
 
 The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and runs `bastra install all` — no terminal knowledge required.
 
-> Until the Homebrew tap (`n0mad-ai/tap`) is published and the `.command` asset is attached to a release ([#3](https://github.com/n0mad-ai/bastra-recall/issues/3)), use path B.
-
 #### B) One command — for developers
 
 Pre-requisites: Node 22+, Git.
@@ -274,7 +272,7 @@ Milestone-based, not phase-based. Each gate is a hard pass/fail.
 | **M2** | Save path + autonomous-save triggers | 🟡 **Functional** — `save_memory` MCP tool live with force-reindex. Trigger discipline shipped as a Skill. False-save / missed-save metrics not yet collected. |
 | **M0.5** | Stress-test recall (paraphrased / cross-memory / anti-hallucination) | ⏳ Open — see issues. |
 | **M3** | Reflex layer: hooks for `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` plus opt-in `Stop` | 🟡 **Functional** — six quiet Claude Code hooks are installed by default; `Stop` save-eval is available behind `--with-stop-hook`. |
-| **Distribution** | Homebrew tap, `bastra` CLI, `Install Bastra.command`, npm package | 🟢 **npm live** — published to npm: `npx bastra-recall install all` / `npm i -g bastra-recall` work today; releases auto-publish on GitHub Release via OIDC trusted publishing. `bastra` CLI ships adapters for every surface. Homebrew tap + double-click `.command` still pending ([#3](https://github.com/n0mad-ai/bastra-recall/issues/3)). |
+| **Distribution** | Homebrew tap, `bastra` CLI, `Install Bastra.command`, npm package | 🟢 **npm live** — published to npm: `npx bastra-recall install all` / `npm i -g bastra-recall` work today; releases auto-publish on GitHub Release via OIDC trusted publishing. `bastra` CLI ships adapters for every surface. Homebrew tap `n0mad-ai/tap` is live (formula tracks the latest release) and the `.command` asset ships with each GitHub release. |
 | **Multi-surface** | One install per AI client (MCP + Skill + Hooks where applicable) + REST gateway for non-MCP clients | 🟡 **Functional** — `bastra install` covers Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP). REST `/api/v1/*` exposes every tool over HTTPS + tunnel for non-MCP clients. Open: ChatGPT Custom GPT Actions (not working end-to-end yet), Claude.ai web Custom Connector registration (#7). |
 
 Out of v0: **multi-device sync**. See [PLAN.md](./PLAN.md).
@@ -410,7 +408,7 @@ Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-S
 
 Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und führt `bastra install all` aus — kein Terminal-Wissen nötig.
 
-> **Status (heute):** `distribution/Install Bastra.command` liegt im Repo. Der Homebrew-Tap (`n0mad-ai/tap`), den das Skript erwartet, wird mit Schließen von [#3](https://github.com/n0mad-ai/bastra-recall/issues/3) veröffentlicht. Bis dahin Pfad B nutzen.
+> **Status:** Tap `n0mad-ai/tap` ist live; das `.command`-Asset hängt an jedem GitHub-Release.
 
 #### B) Ein Befehl — für Entwickler
 
@@ -556,7 +554,7 @@ Milestone-basiert, nicht Phasen-basiert. Jedes Gate ist hartes Pass/Fail.
 | **M2** | Save-Path + autonome Save-Trigger | 🟡 **Funktional** — `save_memory` MCP-Tool live mit Force-Reindex. Trigger-Disziplin als Skill ausgeliefert. False-Save- / Missed-Save-Metriken noch nicht erhoben. |
 | **M0.5** | Stresstest für Recall (paraphrasiert / cross-memory / anti-halluzination) | ⏳ Offen — siehe Issues. |
 | **M3** | Reflex-Layer: Hooks für `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` plus opt-in `Stop` | 🟡 **Funktional** — sechs ruhige Claude-Code-Hooks werden standardmäßig installiert; `Stop` Save-Eval ist bewusst hinter `--with-stop-hook`. |
-| **Distribution** | Homebrew-Tap, `bastra`-CLI, `Install Bastra.command`, npm-Package | 🟢 **npm live** — auf npm veröffentlicht: `npx bastra-recall install all` / `npm i -g bastra-recall` funktionieren; Releases publishen automatisch beim GitHub-Release via OIDC Trusted Publishing. `bastra`-CLI mit Adaptern für jedes Surface. Offen: Homebrew-Tap `n0mad-ai/tap` + Doppelklick-`.command` ([#3](https://github.com/n0mad-ai/bastra-recall/issues/3)). |
+| **Distribution** | Homebrew-Tap, `bastra`-CLI, `Install Bastra.command`, npm-Package | 🟢 **npm live** — auf npm veröffentlicht: `npx bastra-recall install all` / `npm i -g bastra-recall` funktionieren; Releases publishen automatisch beim GitHub-Release via OIDC Trusted Publishing. `bastra`-CLI mit Adaptern für jedes Surface. Homebrew-Tap `n0mad-ai/tap` ist live (Formel folgt dem aktuellen Release), das `.command`-Asset hängt an jedem GitHub-Release. |
 | **Multi-Surface** | Ein Install pro AI-Client (MCP + Skill + Hooks wo zutreffend) + REST-Gateway für Nicht-MCP-Clients | 🟡 **Funktional** — `bastra install` deckt Claude Code (MCP + Skill + Hooks), Claude Desktop (MCP + Skill), Cursor (MCP) ab. REST `/api/v1/*` stellt alle Tools via HTTPS + Tunnel für Nicht-MCP-Clients bereit. Offen: ChatGPT Custom GPT Actions (end-to-end noch nicht funktionsfähig), Claude.ai Web Custom Connector Registrierung (#7). |
 
 Außerhalb von v0: **Multi-Device-Sync**. Siehe [PLAN.md](./PLAN.md).
