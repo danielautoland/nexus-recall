@@ -42,7 +42,7 @@ Idempotent: don't reload a memory you've already loaded this turn.
 When the user asks about anything personal, factual, historical, or document-shaped ("find my X", "where is my Y", "how much was Z", "when did I …", "do I have a …", "such mal meinen …"), try the vault **first**. Order:
 
 1. **`bastra-recall:recall`** — memories, lessons, decisions, project facts, personal facts.
-2. **`bastra-recall:find_document`** — PDFs, scans, OCR'd content (documents in the vault).
+2. **`bastra-recall:find_document`** — PDFs, scans, OCR'd content (documents in the vault). Same two-step discipline as recall: `find_document` returns lean candidates; call **`read_document(id)`** as step 2 only for the hits you actually need — it returns the document's full text/OCR content.
 3. **`conversation_search`** — chat history. Fallback only.
 4. **`web_search`** — external info. Last resort for personal queries.
 
