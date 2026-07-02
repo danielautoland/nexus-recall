@@ -330,6 +330,15 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       return;
     }
 
+    // #144: lightweight act-signal (PostToolUse:Bash). No recall, no injection —
+    // only matches the excerpt against open loadedMemories episodes so
+    // shell-driven applications of a memory can close them. Loopback-only
+    // (Host-Gate above), no auth — same trust level as /hook/recall.
+    if (method === "POST" && url === "/hook/act") {
+      handleHookAct(req, res, telemetry);
+      return;
+    }
+
     // Selbstlernende Taxonomie (#64): Konventions-Liste für die Session-Hook-
     // Injection (#66) und Drift-Analyse für den Stop-Hook (#67). Beides
     // loopback-only (Host-Gate oben), read-only, kein Auth — wie /hook/recall.
@@ -475,6 +484,46 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       });
     });
   });
+}
+
+// ─── /hook/act handler (#144) ────────────────────────────────────
+
+function handleHookAct(req: IncomingMessage, res: ServerResponse, telemetry: Telemetry): void {
+  readJsonBody(req, MAX_BODY_BYTES)
+    .then(async (body) => {
+      const excerpt = typeof body.tool_input_excerpt === "string"
+        ? body.tool_input_excerpt.slice(0, 4096)
+        : "";
+      if (!excerpt) {
+        sendJson(res, 400, { error: "tool_input_excerpt is required" });
+        return;
+      }
+      const toolName = typeof body.tool_name === "string" ? body.tool_name : null;
+      const sessionId = typeof body.session_id === "string" ? body.session_id : null;
+      const exitCode = typeof body.exit_code === "number" ? body.exit_code : null;
+
+      const episodes = telemetry.matchLoadedMemories({
+        tool_name: toolName,
+        tool_input_excerpt: excerpt,
+        session_id: sessionId,
+        // High-frequency signal: only MATCHING episodes close; an unrelated
+        // command must not kill an open episode with acted_on=false.
+        closeOnMiss: false,
+      });
+      for (const episode of episodes) {
+        fireAndForget(telemetry.logRecallEpisode(episode));
+      }
+      fireAndForget(
+        telemetry.logHookAct({
+          tool_name: toolName,
+          excerpt_chars: excerpt.length,
+          matched_episodes: episodes.length,
+          exit_code: exitCode,
+        }),
+      );
+      sendJson(res, 200, { matched: episodes.length });
+    })
+    .catch(() => sendJson(res, 400, { error: "invalid JSON body" }));
 }
 
 // ─── /hook/recall handler ────────────────────────────────────────
