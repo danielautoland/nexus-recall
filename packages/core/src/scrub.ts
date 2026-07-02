@@ -28,6 +28,7 @@ export const INJECTED_BLOCK_TAGS = [
   // bastra hook output
   "recall-hints",
   "session-context",
+  "pinned-memories",
   "vault-taxonomy",
   "bastra-update",
   "pending-save-suggestions",
@@ -45,7 +46,7 @@ export type InjectedBlockTag = (typeof INJECTED_BLOCK_TAGS)[number];
 /**
  * Fresh regex per call — a shared global-flagged RegExp carries lastIndex
  * state across calls, which is a classic source of skipped matches. The
- * construction cost is negligible at this call volume (≤ ~30 turns × 11 tags
+ * construction cost is negligible at this call volume (≤ ~30 turns × 12 tags
  * per stop-hook run).
  */
 function blockRe(tag: string): RegExp {
