@@ -28,6 +28,14 @@
  *   POST /api/v1/recategorize_document   → Pro-gated
  *   POST /api/v1/move_document           → Pro-gated
  *
+ *   Floor-Registry (#141/#142, Auth wie die anderen /api/v1-Tools):
+ *   POST /api/v1/floors                  → Floor hinzufügen/rewriten
+ *   POST /api/v1/floors/release          → alle Einträge einer condition lösen
+ *   POST /api/v1/floors/affirm           → last_affirmed stampen (braucht why)
+ *   GET  /api/v1/floors[?scope=…]        → rohe Registry-Einträge
+ *   GET  /hook/floors[?scope=…]          → Einträge + title/summary-Join
+ *                                          (loopback-only, kein Auth)
+ *
  * Auth (für /api/v1/* — /hook/recall und /health bleiben offen, sind
  * loopback-only):
  *   - Wenn BASTRA_API_TOKEN gesetzt: Authorization: Bearer <token>
@@ -72,6 +80,7 @@ import {
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
+import { addFloor, affirm, listFloors, release } from "./floors.js";
 import {
   getApiToken,
   getDocsLanguage,
@@ -351,6 +360,29 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       return;
     }
 
+    // Floor-Registry (#141/#142): Einträge für die Session-Hook-Injection.
+    // Loopback-only (Host-Gate oben), read-only, kein Auth — wie /hook/taxonomy.
+    // Der Join id→title/summary passiert HIER via vault.get, damit die Hook-CLI
+    // dumm bleibt (ein GET, keine per-Eintrag-Roundtrips). Ein nicht auflösbarer
+    // Eintrag kommt ohne title zurück — sichtbar statt still (stale floor).
+    if (method === "GET" && (url === "/hook/floors" || url.startsWith("/hook/floors?"))) {
+      const u = new URL(url, "http://127.0.0.1");
+      const scope = u.searchParams.get("scope") ?? undefined;
+      listFloors(scope)
+        .then((entries) => {
+          const floors = entries.map((e) => {
+            const mem = vault.get(e.memory_id);
+            return {
+              ...e,
+              ...(mem ? { title: mem.fm.title, summary: mem.fm.summary } : {}),
+            };
+          });
+          sendJson(res, 200, { floors });
+        })
+        .catch(() => sendJson(res, 200, { floors: [] }));
+      return;
+    }
+
     // Produkt-Doku-Settings für die Mac-App-Options-Pane: GET liest, POST
     // schreibt nach ~/.bastra/cli-settings.json (das OSS-owned Settings-File —
     // die App fasst es so nie direkt an). Loopback-only wie /hook/* (Host-Gate
@@ -407,6 +439,20 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       if (gate === 401) {
         sendJson(res, 401, { error: "unauthorized" });
         return;
+      }
+
+      // #141/#142: GET /api/v1/floors — der eine Read-Endpoint der REST-
+      // Surface (rohe Registry-Einträge, token-auth wie die anderen /api/v1-
+      // Tools; die loopback-Join-Variante fürs Hook-CLI ist /hook/floors).
+      if (method === "GET") {
+        const u = new URL(url, "http://127.0.0.1");
+        if (u.pathname === "/api/v1/floors") {
+          const scope = u.searchParams.get("scope") ?? undefined;
+          listFloors(scope)
+            .then((floors) => sendJson(res, 200, { floors }))
+            .catch((err: Error) => sendJson(res, 500, { error: err.message }));
+          return;
+        }
       }
 
       if (method !== "POST") {
@@ -744,6 +790,41 @@ async function dispatchApi(
       return await saveMemoryHandler(toolDeps, body);
     case "save_product_doc":
       return await saveProductDocHandler(toolDeps, body);
+
+    // Floor-Registry (#141/#142). Bewusst KEIN neues MCP-Tool (Tool-Surface-
+    // Disziplin) — Governance-Surfaces konsumieren die REST-API. Die
+    // Invarianten (cap, affirm braucht affirmed_by+why, release-by-condition)
+    // erzwingt floors.ts selbst; Fehler landen als 400 beim Caller.
+    case "floors": {
+      const memoryId = typeof body.memory_id === "string" ? body.memory_id : "";
+      const condition = typeof body.condition === "string" ? body.condition : "";
+      const reason = typeof body.reason === "string" ? body.reason : "";
+      const scope = typeof body.scope === "string" && body.scope.trim() ? body.scope : undefined;
+      const affirmedBy = typeof body.affirmed_by === "string" ? body.affirmed_by : undefined;
+      const why = typeof body.why === "string" ? body.why : undefined;
+      const entry = await addFloor({
+        memory_id: memoryId,
+        condition,
+        reason,
+        scope,
+        affirmed_by: affirmedBy,
+        why,
+      });
+      return { ok: true, entry };
+    }
+    case "floors/release": {
+      const condition = typeof body.condition === "string" ? body.condition : "";
+      const released = await release(condition);
+      return { released };
+    }
+    case "floors/affirm": {
+      const entry = await affirm(
+        typeof body.memory_id === "string" ? body.memory_id : "",
+        typeof body.affirmed_by === "string" ? body.affirmed_by : "",
+        typeof body.why === "string" ? body.why : "",
+      );
+      return { ok: true, entry };
+    }
 
     case "find_document": {
       const parsed = FindDocumentArgs.safeParse(body);
