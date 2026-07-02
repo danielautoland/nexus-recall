@@ -19,6 +19,7 @@
  *     copied — not imported — for the same reason.
  */
 import { detectProject } from "@bastra-recall/core";
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
@@ -288,7 +289,7 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
     for (const h of optional) sections.push(formatHintLine(h));
   }
 
-  return [head, ...sections, tail].join("\n");
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
 function escapeAttr(s: string): string {

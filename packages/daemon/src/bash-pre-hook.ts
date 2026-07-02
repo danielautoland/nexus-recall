@@ -22,6 +22,8 @@ import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+// #152: dependency-free scrub leaf only — keeps this hook's load path lean.
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 
@@ -241,7 +243,7 @@ function formatHintBlock(
     for (const h of hits) lines.push(formatHintLine(h));
   }
 
-  return [head, ...lines, tail].join("\n");
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(lines.join("\n")), tail].join("\n");
 }
 
 function readStdin(): Promise<string> {

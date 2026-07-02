@@ -24,6 +24,8 @@ import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+// #152: dependency-free scrub leaf only — keeps this hook's load path lean.
+import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 
@@ -234,7 +236,7 @@ function formatHintBlock(hits: RecallHit[]): string {
     `The Bash command above failed. These memories describe similar failure modes — check before re-running or trying alternatives.`,
   );
   for (const h of hits) lines.push(formatHintLine(h));
-  return [head, ...lines, tail].join("\n");
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(lines.join("\n")), tail].join("\n");
 }
 
 function throttleFile(sessionId: string): string {
