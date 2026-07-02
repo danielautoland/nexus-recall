@@ -15,6 +15,7 @@ import {
   detectRetrieval,
   extractPrompt,
   formatHintBlock,
+  isTrivialPrompt,
   type RecallHit,
 } from "../src/prompt-hook.ts";
 
@@ -262,4 +263,35 @@ test("integration — wrong hook_event_name emits empty object", async () => {
   } finally {
     await daemon.close();
   }
+});
+
+// ─── #151: trivial-prompt gate ───────────────────────────────────────────
+
+test("isTrivialPrompt gates bare acks DE+EN (trailing punctuation tolerated)", () => {
+  for (const p of ["ok", "OK!", "ja", "Ja.", "danke", "passt", "yes", "thanks", "weiter", "nö", "go"]) {
+    assert.equal(isTrivialPrompt(p), true, `should gate: ${p}`);
+  }
+});
+
+test("isTrivialPrompt gates slash-command invocations, typed and expanded", () => {
+  assert.equal(isTrivialPrompt("/fast"), true);
+  assert.equal(isTrivialPrompt("/code-review ultra 123"), true);
+  assert.equal(isTrivialPrompt("<command-name>/effort</command-name>\nstdout follows"), true);
+  assert.equal(isTrivialPrompt("<local-command-caveat>...</local-command-caveat>"), true);
+});
+
+test("isTrivialPrompt does NOT gate paths, retrieval queries, or real prose", () => {
+  assert.equal(isTrivialPrompt("/Users/n0mad/Projekte/x bitte lesen"), false);
+  assert.equal(isTrivialPrompt("find my rental contract"), false);
+  assert.equal(isTrivialPrompt("such mal meinen mietvertrag"), false);
+  assert.equal(isTrivialPrompt("wo ist die config für den daemon"), false);
+  assert.equal(isTrivialPrompt("ok, aber warum schlägt der test fehl?"), false);
+});
+
+test("gate wins over retrieval regex on expanded command payloads", () => {
+  // An expanded slash-command payload whose body happens to contain a
+  // retrieval-shaped phrase must still be gated — the phrase is skill/command
+  // scaffolding, not user intent.
+  const payload = "<command-name>/deep-research</command-name>\nfind all sources about X";
+  assert.equal(isTrivialPrompt(payload), true);
 });

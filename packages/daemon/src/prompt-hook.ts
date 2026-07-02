@@ -113,6 +113,41 @@ export function detectRetrieval(prompt: string): boolean {
   return RETRIEVAL_DE.test(trimmed) || RETRIEVAL_EN.test(trimmed);
 }
 
+// #151: trivial-prompt gate. Bare acks, one-worders and slash-command
+// invocations cannot act on recalled context — injecting there is pure
+// context tax (and with BASTRA_PROMPT_HOOK_MODE=all the hook otherwise fires
+// on EVERY prompt). Deterministic DE+EN check, runs before any recall work.
+const TRIVIAL_ACKS = new Set([
+  // EN
+  "ok", "okay", "k", "kk", "yes", "yep", "yeah", "no", "nope", "thx",
+  "thanks", "thank you", "cool", "nice", "great", "perfect", "go",
+  "continue", "proceed", "stop", "wait", "done", "sure",
+  // DE
+  "ja", "jo", "jep", "nein", "ne", "nö", "danke", "super", "top", "passt",
+  "perfekt", "weiter", "mach", "mach weiter", "los", "gut", "genau",
+  "richtig", "stimmt", "erledigt", "fertig",
+]);
+
+// A typed slash command: "/name" or "/name args". The first token must not
+// contain a second "/" so absolute paths ("/Users/… bitte lesen") never gate.
+const SLASH_COMMAND_RE = /^\/[a-z0-9][a-z0-9_-]*(?:\s|$)/i;
+
+export function isTrivialPrompt(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length === 0) return true;
+  // Slash-command invocations — typed directly, or already expanded by
+  // Claude Code into <command-name>/<local-command-*> blocks. The retrieval
+  // regex would otherwise match phrases inside the expanded command/skill
+  // body instead of user intent.
+  if (SLASH_COMMAND_RE.test(trimmed) && !trimmed.includes("\n")) return true;
+  if (trimmed.includes("<command-name>") || trimmed.startsWith("<local-command-")) return true;
+  // Bare ack / one-worder (trailing punctuation tolerated).
+  const bare = trimmed.toLowerCase().replace(/[\s!.?…]+$/u, "");
+  if (TRIVIAL_ACKS.has(bare)) return true;
+  if (bare.length <= 2) return true;
+  return false;
+}
+
 export function extractPrompt(payload: ClaudeHookPayload): string | null {
   const raw =
     typeof payload.prompt === "string"
@@ -143,6 +178,25 @@ async function main(): Promise<void> {
 
   const prompt = extractPrompt(payload);
   if (!prompt) return emitEmpty();
+
+  // #151: gate before any recall work — the saved tokens surface in stats
+  // via status:"gated" + gated:true.
+  if (isTrivialPrompt(prompt)) {
+    emitEmpty();
+    await writeTelemetry({
+      detected_mode: "none",
+      gated: true,
+      prompt_chars: prompt.length,
+      daemon_url: null,
+      daemon_reachable: false,
+      hint_count: 0,
+      top_score: null,
+      latency_ms_total: Date.now() - startedAt,
+      status: "gated",
+      error: null,
+    });
+    return;
+  }
 
   const isRetrieval = detectRetrieval(prompt);
   let detectedMode: DetectedMode;
@@ -369,13 +423,15 @@ function postRecall(
 
 interface PromptHookTelemetry {
   detected_mode: DetectedMode;
+  /** #151: true when the trivial-prompt gate suppressed injection. */
+  gated?: boolean;
   prompt_chars: number;
   daemon_url: string | null;
   daemon_reachable: boolean;
   hint_count: number;
   top_score: number | null;
   latency_ms_total: number;
-  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
+  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" | "gated";
   error: string | null;
 }
 
