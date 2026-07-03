@@ -38,6 +38,11 @@ if ! brew tap | grep -q "^n0mad-ai/tap$"; then
   brew tap n0mad-ai/tap
 fi
 
+# 2b. Trust the tap (#182): current Homebrew refuses formulas from untrusted
+# third-party taps. </dev/null keeps a hypothetical confirmation prompt from
+# hanging the script; || true keeps older brews (no `trust` command) working.
+brew trust n0mad-ai/tap </dev/null 2>/dev/null || true
+
 # 3. Install / upgrade
 if brew list bastra-recall >/dev/null 2>&1; then
   echo "→ bastra-recall already installed — checking for updates…"
