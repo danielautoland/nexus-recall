@@ -103,7 +103,8 @@ test("embeddings on: setting is persisted even when env overrides (no download f
 
 test("embeddings status: default state names the default source and the OFF note", async () => {
   await withTempFile(async (path) => {
-    const { rc, out } = await withEnvAndStdout(null, () => cmdEmbeddings({ sub: "status", settingsPath: path }));
+    const noDaemon = async () => ({ ok: false as const, detail: "unreachable" });
+    const { rc, out } = await withEnvAndStdout(null, () => cmdEmbeddings({ sub: "status", settingsPath: path, probe: noDaemon }));
     assert.equal(rc, 0);
     assert.match(out, /effective provider: none/);
     assert.match(out, /resolved via: default \(nothing configured\)/);
@@ -226,4 +227,47 @@ test("doctor: healthy ollama → quiet ok line, no warnings", () => {
   });
   assert.ok(lines.some((l) => /✓ ok: ollama running \(0\.9\.1\), model embeddinggemma present \(source: cli-settings\)/.test(l)));
   assert.ok(!lines.some((l) => l.includes("⚠")));
+});
+
+test("install decision: running daemon with semantic recall ON silences the prompt (host-test find 2026-07-03)", () => {
+  // Shell view says none (LaunchAgent env is invisible to the CLI), but the
+  // running daemon reports semantic recall on — never prompt in that state.
+  const a = decideInstallRecallAction({
+    ollamaFlag: null,
+    effectiveProvider: "none",
+    interactive: true,
+    yes: false,
+    dryRun: false,
+    daemonSemanticOn: true,
+  });
+  assert.equal(a, "silent");
+});
+
+test("install decision: unreachable daemon (no signal) keeps the prompt", () => {
+  const a = decideInstallRecallAction({
+    ollamaFlag: null,
+    effectiveProvider: "none",
+    interactive: true,
+    yes: false,
+    dryRun: false,
+    daemonSemanticOn: false,
+  });
+  assert.equal(a, "prompt");
+});
+
+test("embeddings status: running daemon with semantic recall ON shows both views and suppresses the OFF note", async () => {
+  await withTempFile(async (path) => {
+    const daemonOn = async () => ({
+      ok: true as const,
+      detail: "vault_size=1",
+      semanticRecall: "on",
+      embeddingMode: "ollama-embeddinggemma",
+      embeddingSource: "env",
+    });
+    const { rc, out } = await withEnvAndStdout(null, () => cmdEmbeddings({ sub: "status", settingsPath: path, probe: daemonOn }));
+    assert.equal(rc, 0);
+    assert.match(out, /running daemon: semantic recall on \(ollama-embeddinggemma, source: env\)/);
+    assert.match(out, /daemon runs with its own environment/);
+    assert.ok(!/Enable: bastra embeddings on/.test(out), "OFF note must be suppressed when the daemon is semantic");
+  });
 });

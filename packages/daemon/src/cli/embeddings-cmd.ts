@@ -25,6 +25,7 @@ import {
   type EmbeddingProviderName,
 } from "../settings.js";
 import { enableSemanticRecall, ensureOllama, probeOllama } from "./ollama.js";
+import { probeDaemon } from "./helpers.js";
 import { confirm, isInteractive } from "./prompt.js";
 
 const ENABLE_HINT = "bastra embeddings on";
@@ -41,14 +42,19 @@ function write(line: string): void {
   process.stdout.write(line + "\n");
 }
 
-export async function cmdEmbeddings(opts: { sub: string | null; settingsPath?: string }): Promise<number> {
+export async function cmdEmbeddings(opts: {
+  sub: string | null;
+  settingsPath?: string;
+  /** Injectable for tests — the real probe hits the live daemon on 6723. */
+  probe?: typeof probeDaemon;
+}): Promise<number> {
   switch (opts.sub) {
     case "on":
       return cmdOn(opts.settingsPath);
     case "off":
       return cmdOff(opts.settingsPath);
     case "status":
-      return cmdStatus(opts.settingsPath);
+      return cmdStatus(opts.settingsPath, opts.probe ?? probeDaemon);
     default:
       process.stderr.write("usage: bastra embeddings <on|off|status>\n");
       process.stderr.write(`  on      enable semantic recall (persists the setting + sets up Ollama/embeddinggemma)\n`);
@@ -87,13 +93,31 @@ async function cmdOff(settingsPath?: string): Promise<number> {
   return 0;
 }
 
-async function cmdStatus(settingsPath?: string): Promise<number> {
+async function cmdStatus(settingsPath?: string, probe: typeof probeDaemon = probeDaemon): Promise<number> {
   const choice = await resolveEmbeddingChoice({ path: settingsPath });
   const fileProvider = await getEmbeddingProvider(settingsPath);
   const envRaw = process.env.BASTRA_EMBEDDING_PROVIDER;
 
   write(`effective provider: ${choice.provider}`);
   write(`  resolved via: ${sourceLabel(choice, fileProvider, envRaw, settingsPath)}`);
+
+  // The RUNNING daemon can differ from this shell's view: a LaunchAgent/plist
+  // env sets the provider without the CLI ever seeing it (host-test find,
+  // 2026-07-03). Show both so 'none here, on there' stops reading as OFF.
+  let daemonOn = false;
+  try {
+    const p = await probe();
+    if (p.ok && p.semanticRecall) {
+      daemonOn = p.semanticRecall === "on";
+      write(`  running daemon: semantic recall ${p.semanticRecall}` +
+        (p.embeddingMode ? ` (${p.embeddingMode}, source: ${p.embeddingSource ?? "?"})` : ""));
+      if (choice.provider === "none" && daemonOn) {
+        write("  note: the daemon runs with its own environment (e.g. LaunchAgent plist) — this shell's view only governs newly spawned daemons.");
+      }
+    }
+  } catch {
+    /* no running daemon = nothing to add */
+  }
 
   if (choice.requested === "openai" && choice.provider === "none") {
     write("  ⚠ openai is requested but no API key is set (OPENAI_API_KEY / BASTRA_EMBEDDING_KEY) — falling back to none");
@@ -110,7 +134,9 @@ async function cmdStatus(settingsPath?: string): Promise<number> {
       write(`  ollama: ${o.detail}`);
       write(`  model embeddinggemma: ${o.hasModel ? "present" : `MISSING — recall falls back to BM25. Fix: ${ENABLE_HINT}`}`);
     }
-  } else if (choice.provider === "none") {
+  } else if (choice.provider === "none" && !daemonOn) {
+    // Suppressed when the running daemon is semantic — an OFF hint right
+    // after "running daemon: on" would contradict itself.
     write(`  ${RECALL_OFF_NOTE}`);
   }
   return 0;
@@ -156,9 +182,13 @@ export function decideInstallRecallAction(i: {
   interactive: boolean;
   yes: boolean;
   dryRun: boolean;
+  /** The RUNNING daemon reports semantic recall active (e.g. its LaunchAgent
+   *  env sets the provider). The CLI shell can't see that env — without this
+   *  signal the prompt would ask although recall is already semantic. */
+  daemonSemanticOn?: boolean;
 }): InstallRecallAction {
   if (i.ollamaFlag === "auto") return "provision";
-  if (i.effectiveProvider !== "none") return "silent";
+  if (i.effectiveProvider !== "none" || i.daemonSemanticOn === true) return "silent";
   if (i.ollamaFlag === "skip") return "skip";
   if (i.dryRun || i.yes || !i.interactive) return "hint";
   return "prompt";
@@ -171,12 +201,25 @@ export async function installSemanticRecallStep(args: {
   ollama: "auto" | "skip" | null;
 }): Promise<void> {
   const choice = await resolveEmbeddingChoice();
+  // Best-effort probe of the RUNNING daemon: a LaunchAgent/plist env can turn
+  // semantic recall on without the CLI shell ever seeing it (host-test find,
+  // 2026-07-03) — never prompt when recall is already semantic.
+  let daemonSemanticOn = false;
+  if (choice.provider === "none") {
+    try {
+      const probe = await probeDaemon();
+      daemonSemanticOn = probe.ok && probe.semanticRecall === "on";
+    } catch {
+      /* unreachable daemon = no signal */
+    }
+  }
   const action = decideInstallRecallAction({
     ollamaFlag: args.ollama,
     effectiveProvider: choice.provider,
     interactive: isInteractive(),
     yes: args.yes,
     dryRun: args.dryRun,
+    daemonSemanticOn,
   });
 
   if (action === "silent") return;
