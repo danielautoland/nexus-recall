@@ -90,6 +90,31 @@ for (const { path, json } of pkgs) {
   }
 }
 
+// 3b) Version-string constants in source files. bump.mjs originally only
+// touched package.json files, so these shipped stale (beta.2/beta.3 packages
+// reported "0.7.0-beta.1" in /health and the MCP handshake). Every pattern
+// MUST match — a miss fails the bump loudly instead of silently re-opening
+// the gap when a constant moves or gets renamed.
+const VERSION_SOURCES = [
+  { path: "packages/daemon/src/cli/helpers.ts", re: /(export const VERSION = ")[^"]+(")/ },
+  { path: "packages/daemon/src/index.ts", re: /(const DAEMON_VERSION = ")[^"]+(")/ },
+  { path: "packages/daemon/src/index.ts", re: /(\{ name: "bastra-recall", version: ")[^"]+(" \})/ },
+  { path: "packages/daemon/src/mcp-forwarder.ts", re: /(\{ name: "bastra-recall-mcp", version: ")[^"]+(" \})/ },
+];
+for (const { path: relPath, re } of VERSION_SOURCES) {
+  const abs = resolve(repoRoot, relPath);
+  const src = readFileSync(abs, "utf8");
+  const m = src.match(re);
+  if (!m) {
+    console.error(`error: version pattern not found in ${relPath} — update VERSION_SOURCES in scripts/bump.mjs`);
+    process.exit(1);
+  }
+  const current = m[0].slice(m[1].length, m[0].length - m[2].length);
+  if (current === version) continue;
+  changes.push(`${relPath}: "${current}" → "${version}"`);
+  if (!dryRun) writeFileSync(abs, src.replace(re, `$1${version}$2`));
+}
+
 // 4) Report.
 if (changes.length === 0) {
   console.log(`Nothing to change — everything is already at ${version}.`);
