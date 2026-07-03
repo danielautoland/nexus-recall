@@ -5,17 +5,18 @@ Persistent **recall memory** for AI coding agents — Claude Code, Claude Deskto
 ## Install
 
 ```bash
-# zero-install, one-off:
-npx bastra-recall install all
+# zero-install, one-off — guided setup with selection lists:
+npx bastra-recall install
 
 # or install the CLI globally:
 npm install -g bastra-recall
-bastra install all
+bastra install
 ```
 
 Both expose the `bastra` CLI. After installing, restart your AI client.
 
-- `bastra install all` — register the MCP server, Skill, and hooks across Claude Code, Claude Desktop, and Cursor.
+- `bastra install` — guided setup (interactive): pick vault, AI clients, semantic recall.
+- `bastra install all` — register the MCP server, Skill, and hooks across Claude Code, Claude Desktop, and Cursor (script-friendly).
 - `bastra doctor` — check / repair registrations.
 - `bastra uninstall all` — remove everything again.
 

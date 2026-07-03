@@ -126,7 +126,7 @@ Three paths, in order of friction. bastra-recall is self-contained: the daemon, 
 2. Double-click it in Finder.
 3. Done. Restart Claude Code / Claude Desktop / Cursor.
 
-The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and runs `bastra install all` — no terminal knowledge required.
+The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and hands over to the guided setup (`bastra install`): selection lists for the memory vault, your AI clients, and semantic recall — no terminal knowledge required.
 
 #### B) One command — for developers
 
@@ -154,13 +154,14 @@ Adapter status:
 
 Every write is **idempotent** (re-runs are no-ops), **atomic** (tmp file + rename), **backed up** (timestamped `.bak-…` next to the original), and **parse-safe** (broken JSON aborts the run instead of corrupting it). Vault path resolves in this order: `--vault <path>` flag → `BASTRA_VAULT_PATH` env → auto-detect from an existing registration in `~/.claude.json` or `claude_desktop_config.json`. If none of those produce a path (a fresh machine), an interactive `bastra install` offers to create `~/BastraVault` for you; non-interactive runs (piped, `--yes`, `--dry-run`) keep the clear deterministic error.
 
-Once installed through Homebrew or npm, this collapses to `bastra install all`. From the first npm release on:
+Once installed through Homebrew or npm, this collapses to a single command. From the first npm release on:
 
 ```bash
-npx bastra-recall install all       # zero-install, one-off
+npx bastra-recall install           # zero-install: guided setup with selection lists
+npx bastra-recall install all       # direct: all clients (script-friendly, add --yes for CI)
 # or install the CLI globally:
 npm install -g bastra-recall
-bastra install all
+bastra install
 ```
 
 #### C) Fully manual — fallback
@@ -412,7 +413,7 @@ Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-S
 2. Doppelklick im Finder.
 3. Fertig. Claude Code / Claude Desktop / Cursor neu starten.
 
-Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und führt `bastra install all` aus — kein Terminal-Wissen nötig.
+Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und startet das geführte Setup (`bastra install`): Auswahllisten für Memory-Vault, AI-Clients und Semantic Recall — kein Terminal-Wissen nötig.
 
 > **Status:** Tap `n0mad-ai/tap` ist live; das `.command`-Asset hängt an jedem GitHub-Release.
 
@@ -442,13 +443,14 @@ Adapter-Status:
 
 Jeder Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-File + Rename), **gesichert** (timestamped `.bak-…` neben dem Original) und **parse-safe** (kaputtes JSON bricht den Lauf ab statt es zu zerstören). Vault-Pfad-Auflösung in dieser Reihenfolge: `--vault <pfad>`-Flag → `BASTRA_VAULT_PATH`-ENV → Auto-Detect aus bestehender Registrierung in `~/.claude.json` oder `claude_desktop_config.json`. Greift nichts davon (frische Maschine), bietet ein interaktives `bastra install` an, `~/BastraVault` anzulegen; nicht-interaktive Läufe (gepiped, `--yes`, `--dry-run`) behalten die klare, deterministische Fehlermeldung.
 
-Sobald über Homebrew oder npm installiert, verkürzt sich das zu `bastra install all`. Ab dem ersten npm-Release:
+Sobald über Homebrew oder npm installiert, verkürzt sich das zu einem einzigen Befehl. Ab dem ersten npm-Release:
 
 ```bash
-npx bastra-recall install all       # ohne Installation, einmalig
+npx bastra-recall install           # ohne Installation: geführtes Setup mit Auswahllisten
+npx bastra-recall install all       # direkt: alle Clients (skript-tauglich, --yes für CI)
 # oder die CLI global installieren:
 npm install -g bastra-recall
-bastra install all
+bastra install
 ```
 
 #### C) Komplett manuell — Fallback
