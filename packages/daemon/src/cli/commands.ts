@@ -1,6 +1,16 @@
 import { ADAPTERS, resolveTargets } from "./registry.js";
-import { VERSION, formatStatus } from "./helpers.js";
+import {
+  VERSION,
+  formatStatus,
+  resolveVault,
+  decideFirstRunVaultAction,
+  defaultVaultPath,
+  createVaultAt,
+  DEFAULT_VAULT_DISPLAY,
+  VAULT_REQUIRED_ERROR,
+} from "./helpers.js";
 import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
+import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
 
@@ -129,6 +139,50 @@ function resolveVaultPath(cliVault: string | null): string | null {
   return cliVault ?? process.env.BASTRA_VAULT_PATH ?? null;
 }
 
+export const FIRST_RUN_VAULT_QUESTION =
+  `No memory vault configured yet. Create one at ${DEFAULT_VAULT_DISPLAY}?`;
+
+/**
+ * First-run vault step (#178): on a fresh machine there is nothing to
+ * auto-detect, so without this the headline onboarding command errors once
+ * per surface. Runs ONCE before the per-surface loop. Returns the created
+ * vault path (the caller feeds it through opts.vaultPath — the same route a
+ * --vault value takes), or an exit code when install must stop (refusal or
+ * failed creation → the unchanged non-zero error semantics). `io` is
+ * injectable for tests only (there is no TTY on CI).
+ */
+export async function installVaultFirstRunStep(
+  i: { vaultConfigured: boolean; interactive: boolean; yes: boolean; dryRun: boolean },
+  io: {
+    ask?: (question: string, opts: { defaultYes?: boolean }) => Promise<boolean>;
+    create?: (path: string) => Promise<{ path: string } | { error: string }>;
+  } = {},
+): Promise<{ vaultPath: string | null; exit: number | null }> {
+  const action = decideFirstRunVaultAction(i);
+  // "error" = non-TTY/--yes without a vault: do nothing here — the per-surface
+  // loop reports today's deterministic error, so scripts see exactly what they
+  // saw before.
+  if (action === "proceed" || action === "error") return { vaultPath: null, exit: null };
+  if (action === "would-create") {
+    process.stdout.write(`~ would prompt to create ${DEFAULT_VAULT_DISPLAY} (dry-run): no vault configured yet\n\n`);
+    return { vaultPath: null, exit: null };
+  }
+  // action === "prompt" — ask once, default Yes.
+  const accepted = await (io.ask ?? confirm)(FIRST_RUN_VAULT_QUESTION, { defaultYes: true });
+  if (!accepted) {
+    process.stderr.write(`error: ${VAULT_REQUIRED_ERROR}\n`);
+    return { vaultPath: null, exit: 1 };
+  }
+  const created = await (io.create ?? createVaultAt)(defaultVaultPath());
+  if ("error" in created) {
+    process.stderr.write(`✗ could not create ${DEFAULT_VAULT_DISPLAY}: ${created.error}\n`);
+    process.stderr.write(`error: ${VAULT_REQUIRED_ERROR}\n`);
+    return { vaultPath: null, exit: 1 };
+  }
+  process.stdout.write(`✓ created ${created.path} — your memories live here as plain markdown files\n\n`);
+  return { vaultPath: created.path, exit: null };
+}
+
 export async function cmdInstall(args: ParsedArgs): Promise<number> {
   const targets = resolveTargets(args.surface);
   if ("error" in targets) {
@@ -143,6 +197,18 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
     force: args.yes,
     withStopHook: args.withStopHook,
   };
+
+  // First-run vault guard (#178) — before the loop, so the offer never
+  // repeats per surface.
+  const preResolve = await resolveVault(opts);
+  const firstRun = await installVaultFirstRunStep({
+    vaultConfigured: !("error" in preResolve),
+    interactive: isInteractive(),
+    yes: args.yes,
+    dryRun: args.dryRun,
+  });
+  if (firstRun.exit !== null) return firstRun.exit;
+  if (firstRun.vaultPath) opts.vaultPath = firstRun.vaultPath;
 
   let hadError = false;
   for (const adapter of targets) {

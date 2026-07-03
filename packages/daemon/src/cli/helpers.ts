@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { FORWARDER_SCRIPT_PATH, CLAUDE_DESKTOP_CONFIG, CLAUDE_CODE_CONFIG } from "./paths.js";
 import type { InstallOpts } from "./types.js";
@@ -87,15 +88,80 @@ async function detectExistingVault(): Promise<string | null> {
   return null;
 }
 
+export const VAULT_REQUIRED_ERROR =
+  "vault path required — pass --vault <path>, set BASTRA_VAULT_PATH, or install for another surface first (vault is auto-detected from existing registrations)";
+
 export async function resolveVault(opts: InstallOpts): Promise<{ path: string } | { error: string }> {
   if (opts.vaultPath) return { path: opts.vaultPath };
   const env = process.env.BASTRA_VAULT_PATH;
   if (env && env.length > 0) return { path: env };
   const detected = await detectExistingVault();
   if (detected) return { path: detected };
-  return {
-    error: "vault path required — pass --vault <path>, set BASTRA_VAULT_PATH, or install for another surface first (vault is auto-detected from existing registrations)",
-  };
+  return { error: VAULT_REQUIRED_ERROR };
+}
+
+// ─── first-run vault (#178) ──────────────────────────────────────────────────
+
+/** Default vault offered on first run. Keep DISPLAY and defaultVaultPath in sync. */
+export const DEFAULT_VAULT_DIRNAME = "BastraVault";
+export const DEFAULT_VAULT_DISPLAY = "~/BastraVault";
+
+export function defaultVaultPath(home: string = homedir()): string {
+  return resolve(home, DEFAULT_VAULT_DIRNAME);
+}
+
+const VAULT_README = `# Bastra Vault
+
+This folder is your bastra-recall memory vault. Every memory Claude saves —
+lessons, preferences, decisions, project facts — lives here as a plain
+markdown file you can read, edit, and back up like any other note.
+
+Created by \`bastra install\`. To use a different folder, re-run:
+\`bastra install all --vault <path>\`
+`;
+
+/**
+ * Creates the vault folder (mkdir -p) plus a short README explaining what it
+ * holds. Idempotent: an existing folder is fine and an existing README is
+ * never overwritten. Returns the same shape as resolveVault so the caller
+ * feeds the created path through the exact route a --vault value takes.
+ */
+export async function createVaultAt(path: string): Promise<{ path: string } | { error: string }> {
+  try {
+    await mkdir(path, { recursive: true });
+    try {
+      await writeFile(join(path, "README.md"), VAULT_README, { flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    return { path };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
+export type FirstRunVaultAction = "proceed" | "prompt" | "would-create" | "error";
+
+/**
+ * Pure decision for the first-run vault step (#178) — exported so the
+ * TTY/flag matrix is unit-testable without a terminal:
+ *   vault resolves (flag / env / auto-detect) → proceed, never ask
+ *   non-TTY or --yes → error: keep today's deterministic per-surface error
+ *     (scripts must never block on a prompt). Checked BEFORE dry-run so a
+ *     dry-run reports what the same invocation would really do.
+ *   --dry-run (interactive) → would-create: report the offer, write nothing
+ *   otherwise → ask once, before the per-surface loop
+ */
+export function decideFirstRunVaultAction(i: {
+  vaultConfigured: boolean;
+  interactive: boolean;
+  yes: boolean;
+  dryRun: boolean;
+}): FirstRunVaultAction {
+  if (i.vaultConfigured) return "proceed";
+  if (!i.interactive || i.yes) return "error";
+  if (i.dryRun) return "would-create";
+  return "prompt";
 }
 
 export interface DaemonProbe {

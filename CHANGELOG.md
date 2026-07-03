@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **First-run vault offer (#178)**: on a fresh machine `bastra install` no longer
+  errors with "vault path required" once per surface — when no vault resolves
+  (no `--vault`, no `BASTRA_VAULT_PATH`, nothing to auto-detect) an interactive
+  install asks ONCE, before the per-surface loop: *"No memory vault configured
+  yet. Create one at ~/BastraVault? [Y/n]"*. Yes (default) creates the folder
+  with a short README and installs every surface with it; No keeps the current
+  error text and non-zero exit. Non-TTY and `--yes` keep today's deterministic
+  error (scripts never block on a prompt); `--dry-run` reports the offer as a
+  `~ would prompt to create …` line and writes nothing. The TTY/flag matrix is
+  a pure decision function (`decideFirstRunVaultAction`), unit-tested like the
+  #79 semantic-recall prompt it now leads into.
 - **Survival substrate invariant (#146)**: a memory's id keeps resolving after
   demote (score-only, file byte-identical) and soft-delete (append-only trash +
   audit entry, recoverable via restore) — the one guarantee the pin/floor
