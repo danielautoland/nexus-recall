@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { reportHinted } from "./hook-hinted.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 250, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -241,6 +242,8 @@ async function main(): Promise<void> {
         },
       }),
     );
+    // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+    await reportHinted(url, filtered.map((h) => h.id));
   }
 
   await writeTelemetry({

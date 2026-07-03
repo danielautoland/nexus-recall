@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { reportHinted } from "./hook-hinted.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -202,6 +203,8 @@ async function main(): Promise<void> {
     status,
     error: errMsg,
   });
+  // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+  await reportHinted(url, hits.map((h) => h.id));
 }
 
 function emitEmpty(): void {
