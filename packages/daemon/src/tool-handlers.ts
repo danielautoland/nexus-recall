@@ -51,6 +51,10 @@ export interface ToolDeps {
   /** Optional query-language override for the bridge pool (sharedRecall.language);
    *  null/absent = auto-detect the query language per recall. */
   sharedRecallLang?: SupportedLanguage | null;
+  /** #165: true while the embedding circuit breaker is open — hybrid recall
+   *  is silently served BM25-only (no embed attempt). Recall telemetry flags
+   *  those events as embedding_degraded. Absent = no breaker (embeddings off). */
+  embeddingDegraded?: () => boolean;
 }
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
@@ -255,6 +259,11 @@ export async function recallHandler(
   const hits = rawHits.filter((h) => h.score >= floor);
   const droppedBelowFloor = rawHits.length - hits.length;
 
+  // #165: BM25-only serviert, weil der Embedding-Breaker offen ist. Nach dem
+  // Recall ausgewertet — ein Probe-Call, der gerade fehlschlug, re-öffnet den
+  // Breaker und zählt korrekt als degraded.
+  const embeddingDegraded = deps.search.hasEmbeddings() && (deps.embeddingDegraded?.() ?? false);
+
   const recallId = deps.telemetry.newRecallId();
   fireAndForget(
     deps.telemetry.logRecall({
@@ -273,6 +282,7 @@ export async function recallHandler(
       bridge_expansion:
         expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
       candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+      embedding_degraded: embeddingDegraded ? true : undefined,
     }),
   );
 

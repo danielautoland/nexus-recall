@@ -246,6 +246,7 @@ interface DocumentFrontmatter {
   id: string;
   title: string;
   type: "doc";
+  aliases: string[];
   summary: string;
   topic_path: string[];
   tags: string[];
@@ -261,7 +262,8 @@ interface DocumentFrontmatter {
   folder_path: string;
 }
 
-function buildFrontmatter(args: {
+/** Exported for tests (pure). */
+export function buildFrontmatter(args: {
   id: string;
   title: string;
   summary: string;
@@ -273,6 +275,8 @@ function buildFrontmatter(args: {
   folderPath: string;
   created: string;
   updated: string;
+  /** Bestehende Aliases (User-editiert in Obsidian) — werden übernommen. */
+  aliases?: string[];
 }): DocumentFrontmatter {
   const topicPath: string[] = ["documents"];
   if (args.folderPath) {
@@ -280,10 +284,20 @@ function buildFrontmatter(args: {
   } else {
     topicPath.push(args.category);
   }
+  // Obsidian löst [[wikilinks]] gegen die `aliases`-Frontmatter-Liste auf
+  // (Standard-Obsidian-Feature). Das Sidecar heißt nach dem Original-File
+  // (`<file>.jpg.md`), nicht nach der id — ohne die id als Alias wären die
+  // [[<doc-id>]]-Cross-Links des RelatedEnrichers in Obsidian unauflösbar
+  // und ein Klick legt eine leere Stray-Note an (#188).
+  const existingAliases = args.aliases ?? [];
+  const aliases = existingAliases.includes(args.id)
+    ? existingAliases
+    : [...existingAliases, args.id];
   return {
     id: args.id,
     title: args.title,
     type: "doc",
+    aliases,
     summary: args.summary,
     topic_path: topicPath,
     tags: args.tags,
@@ -426,6 +440,7 @@ export async function recategorizeDocument(
     document_category?: string;
     folder_path?: string;
     linked_file?: boolean;
+    aliases?: string[];
   };
 
   // Wenn Folder geändert: erst move (verschiebt Files + Sidecar). Sonst nur
@@ -460,6 +475,7 @@ export async function recategorizeDocument(
     folderPath,
     created: m.fm.created,
     updated: todayISO(),
+    aliases: fm.aliases,
   });
 
   await atomicWriteFile(sidecarPath, renderSidecar(updated, m.body));
@@ -482,6 +498,7 @@ export async function moveDocument(
     original_path?: string;
     folder_path?: string;
     linked_file?: boolean;
+    aliases?: string[];
   };
 
   const moved = await moveDocumentFiles(vault, {
@@ -505,6 +522,7 @@ export async function moveDocument(
     folderPath: args.folder_path,
     created: m.fm.created,
     updated: todayISO(),
+    aliases: fm.aliases,
   });
   await atomicWriteFile(moved.newSidecarPath, renderSidecar(updated, m.body));
   await vault.reindexFile(moved.newSidecarPath);

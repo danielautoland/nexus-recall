@@ -10,6 +10,7 @@ import {
   VAULT_REQUIRED_ERROR,
 } from "./helpers.js";
 import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
+import { sweepSharedSkill } from "./skill.js";
 import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
@@ -27,7 +28,8 @@ Commands:
   install                    Guided setup (interactive): pick vault, clients,
                              semantic recall from selection lists
   install <surface|all>      Register bastra-recall with the AI client
-  uninstall <surface|all>    Remove the registration (skill is kept; it's shared)
+  uninstall <surface|all>    Remove the registration (the shared skill is
+                             removed once no surface references it anymore)
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
   embeddings <on|off|status> Semantic recall (multilingual vector search):
@@ -274,6 +276,16 @@ export async function cmdUninstall(args: ParsedArgs): Promise<number> {
       process.stdout.write(`  error: ${(err as Error).message}\n`);
     }
     process.stdout.write("\n");
+  }
+
+  // The shared skill survives per-surface uninstalls by design; once the loop
+  // leaves no surface registration referencing it, it's an orphan — sweep it
+  // so a full uninstall leaves nothing behind (#181). Silent when kept or
+  // already absent.
+  const sweep = await sweepSharedSkill({ surface: args.surface, dryRun: args.dryRun });
+  if (sweep.status === "removed" || sweep.status === "would-remove") {
+    process.stdout.write("→ skill (shared across Claude surfaces)\n");
+    process.stdout.write(`  ${formatStatus(sweep.status)}: ${sweep.detail}\n\n`);
   }
 
   // Ollama is global, not a surface. On a full uninstall, if bastra activated

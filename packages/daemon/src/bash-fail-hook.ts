@@ -29,6 +29,14 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
+import {
+  decideBackoff,
+  loadSessionState,
+  recordSourceEmit,
+  recordSourceSuppressed,
+  saveSessionState,
+  wasEmitConsumed,
+} from "./session-state.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -36,6 +44,8 @@ const HOOK_VERSION = "0.1.0";
 const SCORE_FLOOR = 50;
 const THROTTLE_WINDOW_MS = 30_000;
 const THROTTLE_DIR = join(tmpdir(), "bastra-hook");
+// #161: backoff source key — fail-hints back off independently.
+const BACKOFF_SOURCE = "bash-fail";
 
 interface ClaudeHookPayload {
   session_id?: string;
@@ -155,23 +165,45 @@ async function main(): Promise<void> {
   if (resp && hits.length === 0) status = "no-hits";
 
   // No hits above floor → no value in interrupting Claude.
+  let backoffStreak = 0;
+  let suppressed = false;
+  let suppressedTokensEst = 0;
   if (hits.length === 0) {
     emitEmpty();
   } else {
-    // Mark throttle only when we actually emit — otherwise quiet calls
-    // would burn the budget.
-    await markThrottle(sessionId);
-    // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-    await reportHinted(url, hits.map((h) => h.id));
+    // #161 empty-streak backoff (see session-state.ts): unconsumed injection
+    // streaks widen the cadence; any load of an emitted candidate resets.
+    const state = await loadSessionState(sessionId);
+    const entry = state.sources?.[BACKOFF_SOURCE];
+    const consumed = await wasEmitConsumed(entry);
+    const decision = decideBackoff(entry, consumed);
+    backoffStreak = decision.streak;
+    suppressed = decision.suppress;
     const block = formatHintBlock(hits);
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PostToolUse",
-          additionalContext: block,
-        },
-      }),
-    );
+    if (suppressed) {
+      // Suppressed emits {} like the no-hits path; the throttle stays
+      // unmarked (nothing was emitted), the saved tokens go to telemetry.
+      suppressedTokensEst = Math.ceil(block.length / 4);
+      recordSourceSuppressed(state, BACKOFF_SOURCE);
+      await saveSessionState(sessionId, state);
+      emitEmpty();
+    } else {
+      // Mark throttle only when we actually emit — otherwise quiet calls
+      // would burn the budget.
+      await markThrottle(sessionId);
+      // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+      await reportHinted(url, hits.map((h) => h.id));
+      recordSourceEmit(state, BACKOFF_SOURCE, hits.map((h) => h.id), consumed);
+      await saveSessionState(sessionId, state);
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            additionalContext: block,
+          },
+        }),
+      );
+    }
   }
 
   const totalMs = Date.now() - startedAt;
@@ -180,10 +212,13 @@ async function main(): Promise<void> {
     command_head: commandHead,
     daemon_url: url,
     daemon_reachable: resp !== null,
-    hit_count: hits.length,
+    hit_count: suppressed ? 0 : hits.length,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: totalMs,
-    status,
+    backoff_streak: backoffStreak,
+    suppressed,
+    suppressed_tokens_est: suppressedTokensEst,
+    status: suppressed ? "suppressed" : status,
     error: errMsg,
   });
 }
@@ -415,7 +450,13 @@ interface BashFailHookTelemetry {
   hit_count: number;
   top_score: number | null;
   latency_ms_total: number;
-  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
+  /** #161: aufgelöster Streak der Backoff-Entscheidung dieses Events. */
+  backoff_streak: number;
+  /** #161: true, wenn der Backoff die Injektion unterdrückt hat. */
+  suppressed: boolean;
+  /** #161: Tokens des NICHT injizierten Blocks — die Sparseite der ROI. */
+  suppressed_tokens_est: number;
+  status: "ok" | "no-hits" | "suppressed" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }
 

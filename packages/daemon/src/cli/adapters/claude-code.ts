@@ -24,6 +24,7 @@ import {
   resolveVault,
 } from "../helpers.js";
 import { copySkill } from "../skill.js";
+import { checkForwarderRegistration, ensureStableForwarder } from "../stable-runtime.js";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
 
 // ─── Hook helpers (claude-code-only surface) ─────────────────────
@@ -305,7 +306,8 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   const vault = await resolveVault(opts);
   if ("error" in vault) return { status: "error", message: vault.error, configPath };
 
-  const block = buildServerBlock(vault.path);
+  const fwd = await ensureStableForwarder({ dryRun: opts.dryRun });
+  const block = buildServerBlock(vault.path, fwd.path);
   const read = await readJsonConfig(configPath);
   if ("error" in read) return { status: "error", message: read.error, configPath };
 
@@ -343,6 +345,7 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
 
   if (opts.dryRun) {
     const steps: string[] = [];
+    if (fwd.note) steps.push(`runtime: ${fwd.note}`);
     if (!mcpMatches) steps.push(`mcp: would register '${SERVER_KEY}' in ${configPath}`);
     else steps.push("mcp: already matches");
     steps.push(`skill: ${skillResult.detail}`);
@@ -360,6 +363,7 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   }
 
   const lines: string[] = [];
+  if (fwd.note) lines.push(`runtime: ${fwd.note}`);
   lines.push(mcpMatches ? "mcp: already matches" : `mcp: registered '${SERVER_KEY}'`);
   lines.push(`skill: ${skillResult.detail}`);
   lines.push(`hooks: ${hookResult.detail}`);
@@ -384,9 +388,9 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
   const mcpPresent = !!(servers && SERVER_KEY in servers);
 
   // Skill is shared with Claude Desktop (~/.claude/skills/bastra-recall).
-  // We don't remove it here — Claude Desktop might still need it. To purge
-  // the skill, run a separate `bastra uninstall --purge-skill` or remove
-  // the file manually.
+  // We don't remove it here — Claude Desktop might still need it. Once no
+  // surface registration references it, cmdUninstall's final sweep removes
+  // it (#181).
   const hookResult = await patchClaudeCodeHooks("uninstall", { dryRun: opts.dryRun });
   const statuslineResult = await patchClaudeCodeStatusline("uninstall", { dryRun: opts.dryRun, force: false });
 
@@ -439,12 +443,15 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
   const registered = SERVER_KEY in servers;
   details["mcp-registration"] = registered ? "present" : "missing";
 
+  let forwarderBroken = false;
   if (registered) {
     const block = servers[SERVER_KEY] as Record<string, unknown>;
     const args = Array.isArray(block?.args) ? block.args : [];
     const fwd = args[0];
     if (typeof fwd === "string") {
-      details["forwarder-path"] = (await fileExists(fwd)) ? `${fwd} (exists)` : `${fwd} (MISSING)`;
+      const check = checkForwarderRegistration(fwd, await fileExists(fwd), "claude-code");
+      details["forwarder-path"] = check.detail;
+      forwarderBroken = check.broken;
     }
     const env = block?.env as Record<string, unknown> | undefined;
     const vault = env?.BASTRA_VAULT_PATH;
@@ -494,11 +501,11 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
 
   if (!registered) return { status: "missing", message: "MCP not registered with Claude Code", details };
   const broken =
-    details["forwarder-path"]?.includes("MISSING") === true ||
+    forwarderBroken ||
     details["vault-path"]?.includes("MISSING") === true ||
     requiredHooksMissing ||
     details["skill"] === "missing";
-  if (broken) return { status: "broken", message: "registered but some pieces are missing", details };
+  if (broken) return { status: "broken", message: "registered but some pieces need repair — re-run 'bastra install claude-code'", details };
   return { status: "ok", message: "MCP + skill + required hooks registered and healthy", details };
 }
 

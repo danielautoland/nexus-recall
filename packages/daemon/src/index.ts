@@ -78,6 +78,7 @@ import { startBackgroundCheck } from "./update-check.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
 import { reapStaleForwarderProcesses } from "./reap-forwarders.js";
 import { prewarmOllamaModel, unloadOllamaModel } from "./ollama-lifecycle.js";
+import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
 
@@ -220,11 +221,17 @@ async function main(): Promise<void> {
     /* kein State = keine Demotions */
   }
 
-  const { provider, status: embeddingStatus, ollama } = await resolveEmbedding();
+  const { provider: rawProvider, status: embeddingStatus, ollama } = await resolveEmbedding();
   console.error(embeddingStatusLine(embeddingStatus));
   // Für /health (#92): Runtime-Health des Index, nicht nur die Boot-Config.
   let embIdxForHealth: EmbeddingIndex | null = null;
-  if (provider) {
+  // Circuit breaker (#165) am Provider-Boundary: nach 3 konsekutiven
+  // Provider-Fehlern skipt Hybrid-Recall den Embed-Versuch komplett
+  // (BM25-only, kein Timeout pro Query gegen ein wedged Ollama); nach dem
+  // Cooldown testet genau EIN Probe-Call, ob der Provider wieder lebt.
+  const embeddingBreaker = rawProvider ? new EmbeddingBreaker() : null;
+  if (rawProvider && embeddingBreaker) {
+    const provider = new BreakerGuardedProvider(rawProvider, embeddingBreaker);
     const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
     const embIdx = new EmbeddingIndex(vault, provider, persistPath);
     embIdxForHealth = embIdx;
@@ -332,6 +339,11 @@ async function main(): Promise<void> {
     commonsVerifications,
     learnedBridges,
     sharedRecallLang,
+    // #165: Recall-Telemetrie flaggt Events als embedding_degraded, wenn der
+    // Breaker gerade offen ist (Vector-Leg geskippt, BM25-only serviert).
+    embeddingDegraded: embeddingBreaker
+      ? () => embeddingBreaker.state(Date.now()) === "open"
+      : undefined,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
@@ -359,6 +371,7 @@ async function main(): Promise<void> {
           onActivity: markActivity,
           embedding: embeddingStatus,
           embeddingHealth: () => embIdxForHealth?.runtimeHealth() ?? null,
+          embeddingBreaker: () => embeddingBreaker?.snapshot(Date.now()) ?? null,
           curator: { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
         });
 

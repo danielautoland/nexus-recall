@@ -4,6 +4,7 @@ import type { Vault, VaultEvent } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
 import { fuseRRF } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
+import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
 
 export interface RecallHit {
   id: string;
@@ -136,6 +137,11 @@ export class SearchIndex {
 
   constructor(private readonly vault: Vault) {
     this.mini = new MiniSearch<IndexDoc>({
+      // #162: Identifier-erhaltender Tokenizer (Dual-Emission: `my-app.config.ts`
+      // + `my app config ts`). Gilt für Index- UND Query-Seite — MiniSearch fällt
+      // ohne `searchOptions.tokenize` auf diese Funktion zurück; KEIN separates
+      // searchOptions.tokenize setzen, sonst bricht die Symmetrie (query-normalize.ts).
+      tokenize: tokenizeWithIdentifiers,
       fields: [
         "title",
         "summary",
@@ -199,6 +205,10 @@ export class SearchIndex {
   }
 
   recall(query: string, opts: RecallOptions = {}): RecallHit[] {
+    // #162: Query-Hygiene für ALLE Caller (MCP-Recall, Hooks, Bridge, Dedup) —
+    // Längen-Cap, Whitespace-Kollaps, dangling Operatoren. Vor dem Cache-Key,
+    // damit äquivalente Queries denselben Eintrag teilen.
+    query = normalizeQuery(query);
     const k = opts.k ?? 5;
     const stage = new StageEmitter(opts.onStage);
     const recallStart = Date.now();
@@ -287,6 +297,10 @@ export class SearchIndex {
    *  Hook-Score-Threshold (≥100 = REQUIRED) sinnvoll greift. */
   async recallHybrid(query: string, opts: RecallOptions = {}): Promise<RecallHit[]> {
     if (!this.embeddings) return this.recall(query, opts);
+    // #162: gleiche Query-Hygiene wie in recall() — auch der Vector-Arm
+    // profitiert vom Längen-Cap (idempotent, deshalb kein Doppel-Schaden
+    // beim BM25-Fallback oben).
+    query = normalizeQuery(query);
     const k = opts.k ?? 5;
     const stage = new StageEmitter(opts.onStage);
     const recallStart = Date.now();

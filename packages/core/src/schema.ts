@@ -148,6 +148,19 @@ export const FrontmatterSchema = z.object({
   linked_file: z.boolean().optional(),
   document_category: z.string().optional(),
   folder_path: z.string().optional(),
+  /**
+   * Obsidian löst `[[wikilinks]]` gegen die `aliases`-Frontmatter-Liste auf
+   * (Standard-Obsidian-Feature). Doc-Sidecars heißen nach dem Original-File
+   * (`<file>.jpg.md`), nicht nach der id — sie tragen deshalb ihre eigene
+   * doc-id als Alias, damit die `[[<doc-id>]]`-Cross-Links des
+   * RelatedEnrichers in Obsidian aufs Sidecar auflösen statt beim Klick eine
+   * leere Stray-Note anzulegen (#188). Preprocess: Obsidian akzeptiert auch
+   * die Bare-String-Form — coercen statt rejecten, damit hand-editierte
+   * Sidecars weiter laden.
+   */
+  aliases: z
+    .preprocess((v) => (typeof v === "string" ? [v] : v), z.array(z.string()))
+    .optional(),
   // Auto-Inbox: Files vom Inbox-Watcher werden ohne User-Sheet eingelesen
   // und als "ungeprüft" markiert. Mac-App rendert Pill + Tint, bietet
   // Bulk-Review-Sheet bei ≥2 needs_review im aktuellen Folder.

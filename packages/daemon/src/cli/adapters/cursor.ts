@@ -13,6 +13,7 @@ import {
   readJsonConfig,
   resolveVault,
 } from "../helpers.js";
+import { checkForwarderRegistration, ensureStableForwarder } from "../stable-runtime.js";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
 
 async function cursorInstall(opts: InstallOpts): Promise<InstallResult> {
@@ -20,7 +21,9 @@ async function cursorInstall(opts: InstallOpts): Promise<InstallResult> {
   const vault = await resolveVault(opts);
   if ("error" in vault) return { status: "error", message: vault.error, configPath };
 
-  const block = buildServerBlock(vault.path);
+  const fwd = await ensureStableForwarder({ dryRun: opts.dryRun });
+  const runtimeNote = fwd.note ? `\n  · runtime: ${fwd.note}` : "";
+  const block = buildServerBlock(vault.path, fwd.path);
   const read = await readJsonConfig(configPath);
   if ("error" in read) return { status: "error", message: read.error, configPath };
 
@@ -37,7 +40,7 @@ async function cursorInstall(opts: InstallOpts): Promise<InstallResult> {
   if (opts.dryRun) {
     return {
       status: "would-install",
-      message: `would register '${SERVER_KEY}' (vault=${vault.path}, forwarder=${block.args[0]})`,
+      message: `would register '${SERVER_KEY}' (vault=${vault.path}, forwarder=${block.args[0]})${runtimeNote}`,
       configPath,
     };
   }
@@ -46,7 +49,7 @@ async function cursorInstall(opts: InstallOpts): Promise<InstallResult> {
   await atomicWriteJson(configPath, data);
   return {
     status: "installed",
-    message: `registered '${SERVER_KEY}' — restart Cursor (Cursor Rules layer not installed; coming next)`,
+    message: `registered '${SERVER_KEY}' — restart Cursor (Cursor Rules layer not installed; coming next)${runtimeNote}`,
     configPath,
     backupPath: backupPath ?? undefined,
   };
@@ -95,12 +98,15 @@ async function cursorDoctor(): Promise<DoctorResult> {
   const registered = SERVER_KEY in servers;
   details["mcp-registration"] = registered ? "present" : "missing";
 
+  let forwarderBroken = false;
   if (registered) {
     const block = servers[SERVER_KEY] as Record<string, unknown>;
     const args = Array.isArray(block?.args) ? block.args : [];
     const fwd = args[0];
     if (typeof fwd === "string") {
-      details["forwarder-path"] = (await fileExists(fwd)) ? `${fwd} (exists)` : `${fwd} (MISSING)`;
+      const check = checkForwarderRegistration(fwd, await fileExists(fwd), "cursor");
+      details["forwarder-path"] = check.detail;
+      forwarderBroken = check.broken;
     }
     const env = block?.env as Record<string, unknown> | undefined;
     const vault = env?.BASTRA_VAULT_PATH;
@@ -114,9 +120,9 @@ async function cursorDoctor(): Promise<DoctorResult> {
 
   if (!registered) return { status: "missing", message: "not registered with Cursor", details };
   const broken =
-    details["forwarder-path"]?.includes("MISSING") === true ||
+    forwarderBroken ||
     details["vault-path"]?.includes("MISSING") === true;
-  if (broken) return { status: "broken", message: "registered but referenced paths are missing", details };
+  if (broken) return { status: "broken", message: "registered but referenced paths need repair — re-run 'bastra install cursor'", details };
   return { status: "ok", message: "registered (no Cursor Rules layer yet — roadmap)", details };
 }
 

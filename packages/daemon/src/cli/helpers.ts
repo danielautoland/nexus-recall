@@ -15,10 +15,12 @@ export interface McpServerBlock {
   env: Record<string, string>;
 }
 
-export function buildServerBlock(vaultPath: string): McpServerBlock {
+// forwarderPath defaults to this CLI's own dist; npx installs pass the
+// stable-runtime copy instead (#180 — the npx cache is ephemeral).
+export function buildServerBlock(vaultPath: string, forwarderPath: string = FORWARDER_SCRIPT_PATH): McpServerBlock {
   return {
     command: "node",
-    args: [FORWARDER_SCRIPT_PATH],
+    args: [forwarderPath],
     env: { BASTRA_VAULT_PATH: vaultPath },
   };
 }

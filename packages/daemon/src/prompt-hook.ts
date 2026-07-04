@@ -30,6 +30,14 @@ import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
+import {
+  decideBackoff,
+  loadSessionState,
+  recordSourceEmit,
+  recordSourceSuppressed,
+  saveSessionState,
+  wasEmitConsumed,
+} from "./session-state.js";
 
 // Session-namespaced feed — same path the forwarder of THIS session writes
 // (claude ancestor PID, since CC sends no session id — #41836).
@@ -71,6 +79,8 @@ const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.2.0";
 const SCORE_FLOOR = 50; // higher than PreToolUse: prompts rarely match recall_when exactly
 const MUST_LOAD_SCORE = 100;
+// #161: backoff source key — prompt-lookup hints back off independently.
+const BACKOFF_SOURCE = "prompt-lookup";
 
 /** "retrieval-only" (default) or "all" (also recall on non-lookup prompts, score-gated to MUST_LOAD_SCORE). */
 type PromptHookMode = "retrieval-only" | "all";
@@ -268,20 +278,42 @@ async function main(): Promise<void> {
   }
   if (resp && filtered.length === 0) status = "no-hits";
 
+  let backoffStreak = 0;
+  let suppressed = false;
+  let suppressedTokensEst = 0;
   if (filtered.length === 0) {
     emitEmpty();
   } else {
+    // #161 empty-streak backoff (see session-state.ts): unconsumed injection
+    // streaks widen the cadence; any load of an emitted candidate resets.
+    const sessionId = payload.session_id ?? "";
+    const state = await loadSessionState(sessionId);
+    const entry = state.sources?.[BACKOFF_SOURCE];
+    const consumed = await wasEmitConsumed(entry);
+    const decision = decideBackoff(entry, consumed);
+    backoffStreak = decision.streak;
+    suppressed = decision.suppress;
     const block = formatHintBlock(filtered, project, detectedMode);
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: block,
-        },
-      }),
-    );
-    // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-    await reportHinted(url, filtered.map((h) => h.id));
+    if (suppressed) {
+      // Suppressed emits {} exactly like the empty path (#161).
+      suppressedTokensEst = Math.ceil(block.length / 4);
+      recordSourceSuppressed(state, BACKOFF_SOURCE);
+      await saveSessionState(sessionId, state);
+      emitEmpty();
+    } else {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: block,
+          },
+        }),
+      );
+      recordSourceEmit(state, BACKOFF_SOURCE, filtered.map((h) => h.id), consumed);
+      await saveSessionState(sessionId, state);
+      // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+      await reportHinted(url, filtered.map((h) => h.id));
+    }
   }
 
   await writeTelemetry({
@@ -289,10 +321,13 @@ async function main(): Promise<void> {
     prompt_chars: prompt.length,
     daemon_url: url,
     daemon_reachable: resp !== null,
-    hint_count: filtered.length,
+    hint_count: suppressed ? 0 : filtered.length,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
-    status,
+    backoff_streak: backoffStreak,
+    suppressed,
+    suppressed_tokens_est: suppressedTokensEst,
+    status: suppressed ? "suppressed" : status,
     error: errMsg,
   });
 }
@@ -435,7 +470,13 @@ interface PromptHookTelemetry {
   hint_count: number;
   top_score: number | null;
   latency_ms_total: number;
-  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" | "gated";
+  /** #161: resolved streak of this event's backoff decision. */
+  backoff_streak?: number;
+  /** #161: true when the empty-streak backoff suppressed the injection. */
+  suppressed?: boolean;
+  /** #161: est. tokens of the NOT-injected block — the savings side of ROI. */
+  suppressed_tokens_est?: number;
+  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" | "gated" | "suppressed";
   error: string | null;
 }
 

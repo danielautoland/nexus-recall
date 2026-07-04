@@ -52,6 +52,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
+import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import {
   recallHandler,
@@ -114,6 +115,9 @@ export interface HttpOptions {
    *  Zustand nach Boot ändert (Modell gelöscht, Ollama down → degraded;
    *  nächster Erfolg → wieder ok). null = kein Index aktiv. */
   embeddingHealth?: () => EmbeddingRuntimeHealth | null;
+  /** Circuit-Breaker-Zustand (#165) für /health. null = kein Breaker aktiv
+   *  (embeddings off). */
+  embeddingBreaker?: () => EmbeddingBreakerSnapshot | null;
   /** Curator-Deps (#155/#156) für die /curator/*-Loopback-Endpoints. */
   curator?: CuratorRunDeps;
 }
@@ -293,6 +297,9 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       // of advertising semantic recall that silently runs BM25-only.
       const rt = opts.embeddingHealth?.() ?? null;
       const degraded = opts.embedding.on && rt !== null && !rt.ok;
+      // Breaker-Zustand (#165): billiger Snapshot, macht sichtbar ob Recall
+      // gerade bewusst BM25-only serviert wird (open) statt nur "degraded".
+      const breaker = opts.embeddingBreaker?.() ?? null;
       sendJson(res, 200, {
         ok: true,
         vault_size: vault.size(),
@@ -303,6 +310,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         embedding_mode: opts.embedding.providerId ?? "disabled",
         embedding_source: opts.embedding.source,
         ...(degraded ? { embedding_error: rt.lastError } : {}),
+        ...(breaker ? { embedding_breaker: breaker } : {}),
         update_available: updateState && updateState.hasUpdate
           ? {
               current: updateState.current,
@@ -338,7 +346,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
 
     if (method === "POST" && url === "/hook/recall") {
-      handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang);
+      handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang, toolDeps.embeddingDegraded);
       return;
     }
 
@@ -614,6 +622,7 @@ function handleHookRecall(
   telemetry: Telemetry,
   learnedBridges?: BridgePool | null,
   sharedRecallLang?: SupportedLanguage | null,
+  embeddingDegraded?: () => boolean,
 ): void {
   // SSE-Branch (#38): wenn der Caller `Accept: text/event-stream`
   // sendet, streamen wir Stages live. Default-JSON-Response bleibt
@@ -742,6 +751,8 @@ function handleHookRecall(
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+          // #165: post-recall ausgewertet, siehe recallHandler.
+          embedding_degraded: search.hasEmbeddings() && (embeddingDegraded?.() ?? false) ? true : undefined,
         }),
       );
 

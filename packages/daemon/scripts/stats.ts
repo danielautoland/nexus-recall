@@ -346,8 +346,29 @@ function summarizeContextROI(events: AnyEvent[]): void {
     typeof e.surfaced === "boolean" ? Boolean(e.surfaced) : e.surfaced_score != null;
   const actedSurfaced = episodes.filter((e) => isSurfaced(e) && e.acted_on === true);
 
+  // #161: Backoff-Ersparnis — Events, deren Injektion der Empty-Streak-
+  // Backoff unterdrückt hat, tragen suppressed_tokens_est als Sparseite.
+  const allHookKinds = new Set([
+    ...hookKinds,
+    "bash_fail_hook_call",
+    "prompt_hook_call",
+    "todo_hook_call",
+  ]);
+  const suppressedEvents = events.filter(
+    (e) => allHookKinds.has(String(e.kind)) && e.suppressed === true,
+  );
+  const savedTokens = suppressedEvents.reduce(
+    (sum, e) => sum + (typeof e.suppressed_tokens_est === "number" ? Number(e.suppressed_tokens_est) : 0),
+    0,
+  );
+
   console.log(`\n## Net-context-ROI  (hint tokens spent vs. acted-on loads they caused)`);
   console.log(`  injected hint tokens (est.):  ${totalTokens}  across ${withTokens.length} hook emissions`);
+  if (suppressedEvents.length > 0) {
+    console.log(
+      `  backoff-suppressed (#161):    ${suppressedEvents.length} emissions skipped, ~${savedTokens} hint tokens saved`,
+    );
+  }
   console.log(`  acted-on surfaced loads:      ${actedSurfaced.length}`);
   console.log(
     actedSurfaced.length > 0
