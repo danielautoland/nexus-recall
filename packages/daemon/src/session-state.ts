@@ -262,8 +262,19 @@ export interface BackoffDecision {
  * Decide whether this injection-worthy event should be suppressed. Pure —
  * `consumed` is resolved separately (wasEmitConsumed) so tests can pin the
  * matrix without I/O. Malformed entries fail open (emit normally).
+ *
+ * `hasRequired` (#161 review): true when the pending emission contains ANY
+ * hit at/above MUST_LOAD_SCORE. REQUIRED-band hits are non-negotiable loads —
+ * suppressing them would silently drop exactly the hints the scoring model
+ * marked as must-see, so they BYPASS suppression. The bypass emit is regular
+ * streak bookkeeping (recordSourceEmit as usual); only consumption resets
+ * the streak. One rule here, shared by every backoff-consulting emitter.
  */
-export function decideBackoff(entry: SourceBackoff | undefined, consumed: boolean): BackoffDecision {
+export function decideBackoff(
+  entry: SourceBackoff | undefined,
+  consumed: boolean,
+  hasRequired: boolean,
+): BackoffDecision {
   if (
     !entry ||
     typeof entry.streak !== "number" ||
@@ -275,7 +286,9 @@ export function decideBackoff(entry: SourceBackoff | undefined, consumed: boolea
   }
   const streak = consumed ? 0 : entry.streak;
   const suppress =
-    streak >= BACKOFF_MIN_STREAK && entry.skipped < Math.min(streak, BACKOFF_STREAK_CAP);
+    !hasRequired &&
+    streak >= BACKOFF_MIN_STREAK &&
+    entry.skipped < Math.min(streak, BACKOFF_STREAK_CAP);
   return { suppress, streak };
 }
 

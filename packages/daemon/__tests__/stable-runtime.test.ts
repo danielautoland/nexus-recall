@@ -19,6 +19,8 @@ import {
   checkForwarderRegistration,
   ensureStableForwarder,
   isEphemeralInstallPath,
+  mapBinToStableRuntime,
+  removeRuntimeBase,
   resolveNodeModulesRoot,
   stableRuntimeTarget,
 } from "../src/cli/stable-runtime.js";
@@ -165,15 +167,33 @@ test("ensureStableForwarder: same version reuses the copy — survives cache evi
   });
 });
 
-test("ensureStableForwarder: new version copies again alongside the old one", async () => {
+test("ensureStableForwarder: new version copies again and prunes the old dir — runtime never grows unbounded", async () => {
   await withTempDir(async (dir) => {
     const home = join(dir, "home");
     const { forwarderPath } = await makeFakeNpxCache(dir);
     await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "1.0.0", home });
+    // Stale staging leftovers (killed install) go too.
+    const staleStaging = `${stableRuntimeTarget("1.0.0", home).rootDir}.tmp-99999`;
+    await mkdir(staleStaging, { recursive: true });
     const r = await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "2.0.0", home });
     assert.equal(r.action, "copied");
-    assert.ok(await exists(stableRuntimeTarget("1.0.0", home).forwarderPath));
+    assert.equal(await exists(stableRuntimeTarget("1.0.0", home).rootDir), false);
+    assert.equal(await exists(staleStaging), false);
     assert.ok(await exists(stableRuntimeTarget("2.0.0", home).forwarderPath));
+  });
+});
+
+test("ensureStableForwarder: reuse never prunes — a second surface install keeps sibling dirs", async () => {
+  await withTempDir(async (dir) => {
+    const home = join(dir, "home");
+    const { forwarderPath } = await makeFakeNpxCache(dir);
+    await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "3.0.0", home });
+    // A sibling dir that appears after the copy (e.g. concurrent tooling).
+    const sibling = stableRuntimeTarget("other", home).rootDir;
+    await mkdir(sibling, { recursive: true });
+    const r = await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "3.0.0", home });
+    assert.equal(r.action, "reused");
+    assert.ok(await exists(sibling));
   });
 });
 
@@ -210,6 +230,95 @@ test("ensureStableForwarder: failed copy falls back to the cache path, never thr
     assert.equal(r.action, "fallback");
     assert.equal(r.path, fwd);
     assert.match(r.note ?? "", /copy failed/);
+  });
+});
+
+// ─── mapBinToStableRuntime (#180: hooks + statusline follow the forwarder) ───
+
+test("mapBinToStableRuntime: bin under the source node_modules maps into the copy", () => {
+  const res = {
+    rootDir: "/home/x/.bastra/runtime/1.0.0",
+    sourceNodeModules: "/home/x/.npm/_npx/ab/node_modules",
+  };
+  assert.equal(
+    mapBinToStableRuntime("/home/x/.npm/_npx/ab/node_modules/@bastra-recall/daemon/dist/hook.js", res),
+    join("/home/x/.bastra/runtime/1.0.0", "node_modules", "@bastra-recall", "daemon", "dist", "hook.js"),
+  );
+  // Statusline resolves within the copied node_modules too.
+  assert.equal(
+    mapBinToStableRuntime("/home/x/.npm/_npx/ab/node_modules/@bastra-recall/statusline/dist/index.mjs", res),
+    join("/home/x/.bastra/runtime/1.0.0", "node_modules", "@bastra-recall", "statusline", "dist", "index.mjs"),
+  );
+});
+
+test("mapBinToStableRuntime: non-stable resolution or bin outside the tree passes through", () => {
+  // Native install: no stable runtime → identity, byte-identical no-op.
+  assert.equal(
+    mapBinToStableRuntime("/repo/packages/daemon/dist/hook.js", {}),
+    "/repo/packages/daemon/dist/hook.js",
+  );
+  // Stable runtime active, but the bin lives outside the copied tree
+  // (source-checkout sibling) → identity.
+  const res = { rootDir: "/h/.bastra/runtime/1.0.0", sourceNodeModules: "/h/.npm/_npx/ab/node_modules" };
+  assert.equal(
+    mapBinToStableRuntime("/repo/packages/statusline/dist/index.mjs", res),
+    "/repo/packages/statusline/dist/index.mjs",
+  );
+});
+
+test("ensureStableForwarder: stable resolutions carry rootDir + sourceNodeModules; native/fallback don't", async () => {
+  await withTempDir(async (dir) => {
+    const home = join(dir, "home");
+    const { nmRoot, forwarderPath } = await makeFakeNpxCache(dir);
+    const target = stableRuntimeTarget("9.9.9-test", home);
+
+    const dry = await ensureStableForwarder({ dryRun: true }, { forwarderPath, version: "9.9.9-test", home });
+    assert.equal(dry.rootDir, target.rootDir);
+    assert.equal(dry.sourceNodeModules, nmRoot);
+
+    const copied = await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "9.9.9-test", home });
+    assert.equal(copied.action, "copied");
+    assert.equal(copied.rootDir, target.rootDir);
+    assert.equal(copied.sourceNodeModules, nmRoot);
+
+    const reused = await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "9.9.9-test", home });
+    assert.equal(reused.action, "reused");
+    assert.equal(reused.rootDir, target.rootDir);
+    assert.equal(reused.sourceNodeModules, nmRoot);
+
+    const native = await ensureStableForwarder(
+      { dryRun: false },
+      { forwarderPath: "/opt/homebrew/lib/node_modules/@bastra-recall/daemon/dist/mcp-forwarder.js", version: "9.9.9-test", home },
+    );
+    assert.equal(native.rootDir, undefined);
+    assert.equal(native.sourceNodeModules, undefined);
+
+    const fallback = await ensureStableForwarder(
+      { dryRun: false },
+      { forwarderPath: join(dir, "_npx", "weird", "daemon", "dist", "mcp-forwarder.js"), version: "0.0.1", home },
+    );
+    assert.equal(fallback.action, "fallback");
+    assert.equal(fallback.rootDir, undefined);
+  });
+});
+
+// ─── removeRuntimeBase (uninstall all, #180) ─────────────────────────────────
+
+test("removeRuntimeBase: removes ~/.bastra/runtime entirely and reports it", async () => {
+  await withTempDir(async (dir) => {
+    const home = join(dir, "home");
+    const { forwarderPath } = await makeFakeNpxCache(dir);
+    await ensureStableForwarder({ dryRun: false }, { forwarderPath, version: "1.0.0", home });
+    assert.equal(await removeRuntimeBase(home), true);
+    assert.equal(await exists(join(home, ".bastra", "runtime")), false);
+    // Sibling ~/.bastra content survives.
+    assert.ok(await exists(join(home, ".bastra")));
+  });
+});
+
+test("removeRuntimeBase: absent dir → false, never throws", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(await removeRuntimeBase(join(dir, "no-such-home")), false);
   });
 });
 

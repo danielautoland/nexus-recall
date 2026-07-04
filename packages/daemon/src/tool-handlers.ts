@@ -233,6 +233,11 @@ export async function recallHandler(
   const expansion = expandQuery(parsed.data.query, deps.learnedBridges, {
     configuredLang: deps.sharedRecallLang ?? null,
   });
+  // #165: VOR dem Recall ausgewertet — der Flag muss den Recall beschreiben,
+  // der gleich serviert wird. Post-Recall könnte ein parallel fehlschlagender
+  // Backfill-Batch den Breaker öffnen und einen gesunden Hybrid-Recall
+  // fälschlich als degraded loggen (bzw. ein Probe-Erfolg das Umgekehrte).
+  const embeddingDegraded = deps.search.hasEmbeddings() && (deps.embeddingDegraded?.() ?? false);
   let rawHits = deps.search.hasEmbeddings()
     ? await deps.search.recallHybrid(expansion.query, recallOpts)
     : deps.search.recall(expansion.query, recallOpts);
@@ -258,11 +263,6 @@ export async function recallHandler(
   const floor = parsed.data.min_score ?? RECALL_FLOOR;
   const hits = rawHits.filter((h) => h.score >= floor);
   const droppedBelowFloor = rawHits.length - hits.length;
-
-  // #165: BM25-only serviert, weil der Embedding-Breaker offen ist. Nach dem
-  // Recall ausgewertet — ein Probe-Call, der gerade fehlschlug, re-öffnet den
-  // Breaker und zählt korrekt als degraded.
-  const embeddingDegraded = deps.search.hasEmbeddings() && (deps.embeddingDegraded?.() ?? false);
 
   const recallId = deps.telemetry.newRecallId();
   fireAndForget(
@@ -571,7 +571,10 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
     score -= 20;
   }
 
-  const duplicateQuery = [input.title, input.summary, ...input.recall_when, ...input.tags].join(" ");
+  // #162: kurze, diskriminierende Felder (title, tags, recall_when) zuerst,
+  // die potentiell lange summary zuletzt — falls der QUERY_MAX_CHARS-Cap
+  // greift, fällt nur Summary-Schwanz weg, nie ein diskriminierender Term.
+  const duplicateQuery = [input.title, ...input.tags, ...input.recall_when, input.summary].join(" ");
   const duplicateCandidates = deps.search
     .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: false })
     .filter((hit) => hit.id !== input.id)
@@ -692,10 +695,18 @@ async function saveMemoryInner(
   // routing silently relocates it on any edit (and trashes the original) — e.g.
   // a memories/people/ memo updated without folder gets re-routed to
   // memories/projects/<scope>/. An explicit folder still moves it (#64 re-filing).
+  // #188: Bestehende Obsidian-Aliases durchreichen — saveMemory erhält sie
+  // sonst nur beim Same-Path-Overwrite; beim Re-Filing (neuer Ordner) liest
+  // es den neuen Pfad und fände sie nicht. Kein Tool-Schema-Feld: aliases
+  // ist Substrat-Plumbing, kein Agent-Knob.
+  const base =
+    previous && parsed.data.aliases === undefined
+      ? { ...parsed.data, aliases: previous.fm.aliases }
+      : parsed.data;
   const input =
     previous && !parsed.data.folder
-      ? { ...parsed.data, folder: relative(deps.vaultPath, dirname(previous.filePath)) }
-      : parsed.data;
+      ? { ...base, folder: relative(deps.vaultPath, dirname(previous.filePath)) }
+      : base;
 
   const result = await saveMemory(deps.vaultPath, input);
   if (previous && previous.filePath !== result.file_path) {

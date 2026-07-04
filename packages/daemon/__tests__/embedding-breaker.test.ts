@@ -9,6 +9,11 @@
  * - BreakerGuardedProvider: offener Breaker skipt den inneren Provider
  *   komplett (kein Call, kein Timeout), Probe geht nach Cooldown durch,
  *   leerer Input umgeht den Breaker in beide Richtungen.
+ * - Hardening (#165 Review): reset() re-closed hart (Autostart-Fenster),
+ *   der data-shaped Batch-Mismatch ("expected N embeddings, got M") zählt
+ *   nie Richtung OPEN, BreakerOpenError trägt die Root-Cause des letzten
+ *   Fehlers (für /health), und der embedding_degraded-Flag wird VOR dem
+ *   Recall ausgewertet.
  * - Wiring ohne Netzwerk: recallHybrid über echtes Vault + SearchIndex +
  *   EmbeddingIndex degradiert bei offenem Breaker auf BM25-only und liefert
  *   weiter Hits; der Probe-Erfolg re-aktiviert das Vector-Leg.
@@ -25,9 +30,12 @@ import {
   EmbeddingBreaker,
   BreakerGuardedProvider,
   BreakerOpenError,
+  isBatchShapeMismatch,
   BREAKER_FAILURE_THRESHOLD,
   BREAKER_COOLDOWN_MS,
 } from "../src/embedding-breaker.js";
+import { recallHandler, type ToolDeps } from "../src/tool-handlers.js";
+import { Telemetry } from "../src/telemetry.js";
 
 const T0 = 1_000_000;
 
@@ -123,6 +131,27 @@ test("snapshot surfaces state, failures and remaining cooldown", () => {
   assert.equal(b.snapshot(T0 + BREAKER_COOLDOWN_MS).cooldown_remaining_ms, 0);
 });
 
+test("reset() re-closes an open breaker hard — autostart window (#165)", () => {
+  const b = new EmbeddingBreaker();
+  for (let i = 0; i < BREAKER_FAILURE_THRESHOLD; i++) {
+    b.recordFailure(T0 + i, "connect ECONNREFUSED 127.0.0.1:11434");
+  }
+  assert.equal(b.state(T0 + 10), "open");
+  // Daemon-Boot: ensureOllamaServerForDaemon meldet started / "already
+  // running" → index.ts resettet. Ohne den Reset würden frühe Boot-Fehler
+  // die ersten Recalls der Session 60s auf BM25 pinnen, obwohl der Server
+  // Sekunden später steht.
+  b.reset();
+  assert.deepEqual(b.snapshot(T0 + 10), {
+    state: "closed",
+    consecutive_failures: 0,
+    opened_at_ms: null,
+    cooldown_remaining_ms: null,
+  });
+  assert.equal(b.shouldAttempt(T0 + 10), true);
+  assert.equal(b.lastFailureMessage(), null);
+});
+
 // ─── Guarded provider (fake inner, fake clock) ───────────────────
 
 /** Deterministischer Provider: dim 4, Fehler schaltbar, Call-Zähler. */
@@ -131,10 +160,13 @@ class FakeProvider implements EmbeddingProvider {
   readonly dim = 4;
   calls = 0;
   failing = false;
+  /** Überschreibt die Fehlermeldung (z.B. Batch-Mismatch-Shape). */
+  failWith: string | null = null;
   async embed(texts: string[]): Promise<Float32Array[]> {
     // Contract der echten Provider: leerer Input → [] ohne Roundtrip.
     if (texts.length === 0) return [];
     this.calls++;
+    if (this.failWith !== null) throw new Error(this.failWith);
     if (this.failing) throw new Error("fake provider down");
     return texts.map((t) => {
       // Grobe, aber stabile Text-Abbildung — genug für Cosine-Ranking.
@@ -183,6 +215,70 @@ test("guarded provider: empty input bypasses the breaker in both directions", as
   assert.deepEqual(await guarded.embed([]), []);
   // … und zählt nicht als Erfolg: der Breaker bleibt offen.
   assert.equal(breaker.state(now), "open");
+});
+
+test("isBatchShapeMismatch matches exactly the core mismatch shape", () => {
+  assert.equal(isBatchShapeMismatch(new Error("Ollama embed: expected 4 embeddings, got 2")), true);
+  assert.equal(isBatchShapeMismatch(new Error("Ollama embed: expected 1 embeddings, got none")), true);
+  assert.equal(isBatchShapeMismatch("expected 50 embeddings, got 49"), true);
+  // Availability-Fehler zählen weiter Richtung OPEN.
+  assert.equal(isBatchShapeMismatch(new Error("Ollama embed HTTP 500 (http://127.0.0.1:11434/api/embed): boom")), false);
+  assert.equal(isBatchShapeMismatch(new Error("fetch failed")), false);
+  assert.equal(isBatchShapeMismatch(new Error("connect ECONNREFUSED 127.0.0.1:11434")), false);
+});
+
+test("guarded provider: poisoned-batch mismatch is data-shaped — never trips the breaker", async () => {
+  const now = T0;
+  const inner = new FakeProvider();
+  const breaker = new EmbeddingBreaker();
+  const guarded = new BreakerGuardedProvider(inner, breaker, () => now);
+
+  // Deterministischer Pro-Batch-Fehler (z.B. ein vergiftetes Dokument im
+  // Backfill): egal wie oft er auftritt, der Breaker bleibt closed — der
+  // Provider ist verfügbar, nur die Daten sind kaputt. Der Fehler selbst
+  // propagiert unverändert (Requeue-Verhalten des EmbeddingIndex bleibt).
+  inner.failWith = "Ollama embed: expected 2 embeddings, got 1";
+  for (let i = 0; i < BREAKER_FAILURE_THRESHOLD + 2; i++) {
+    await assert.rejects(guarded.embed(["a", "b"]), /expected 2 embeddings, got 1/);
+  }
+  assert.equal(breaker.state(now), "closed");
+  assert.equal(breaker.snapshot(now).consecutive_failures, 0);
+
+  // Echte Availability-Fehler zählen weiterhin — auch mit Mismatch dazwischen.
+  inner.failWith = "fake provider down";
+  await assert.rejects(guarded.embed(["q"]));
+  inner.failWith = "Ollama embed: expected 1 embeddings, got none";
+  await assert.rejects(guarded.embed(["q"]));
+  inner.failWith = "fake provider down";
+  await assert.rejects(guarded.embed(["q"]));
+  await assert.rejects(guarded.embed(["q"]));
+  assert.equal(breaker.state(now), "open");
+});
+
+test("BreakerOpenError carries the last root cause — /health keeps showing WHY", async () => {
+  let now = T0;
+  const inner = new FakeProvider();
+  const breaker = new EmbeddingBreaker();
+  const guarded = new BreakerGuardedProvider(inner, breaker, () => now);
+  inner.failing = true;
+  for (let i = 0; i < 3; i++) await assert.rejects(guarded.embed(["q"]), /fake provider down/);
+  assert.equal(breaker.lastFailureMessage(), "fake provider down");
+
+  // EmbeddingIndex speichert err.message als runtime lastError (/health →
+  // embedding_error) — die Root-Cause muss im BreakerOpenError mitreisen,
+  // sonst überschreibt der generische Circuit-Text das actionable WARUM.
+  await assert.rejects(guarded.embed(["q"]), (err: unknown) => {
+    assert.ok(err instanceof BreakerOpenError);
+    assert.match((err as Error).message, /embedding breaker open/);
+    assert.match((err as Error).message, /last error: fake provider down/);
+    return true;
+  });
+
+  // Nach Erholung (Probe-Erfolg) ist die Root-Cause gecleart.
+  now = T0 + BREAKER_COOLDOWN_MS;
+  inner.failing = false;
+  await guarded.embed(["q"]);
+  assert.equal(breaker.lastFailureMessage(), null);
 });
 
 // ─── Wiring: recallHybrid degradiert bei offenem Breaker (kein Netzwerk) ──
@@ -258,6 +354,9 @@ test("hybrid recall serves BM25-only while open, probe re-enables the vector leg
     assert.equal(inner.calls, callsBefore + 3, "no provider call while open");
     // So verdrahtet index.ts den Telemetrie-Flag-Getter (embedding_degraded).
     assert.equal(search.hasEmbeddings() && breaker.state(now) === "open", true);
+    // /health-Pfad: der BreakerOpenError landet als runtime lastError — und
+    // trägt die Root-Cause statt sie mit dem Circuit-Text zu überschreiben.
+    assert.match(embIdx.runtimeHealth().lastError ?? "", /last error: fake provider down/);
 
     // Cooldown vorbei + Provider gesund → genau ein Probe-Call, re-closed.
     now = T0 + BREAKER_COOLDOWN_MS;
@@ -268,6 +367,58 @@ test("hybrid recall serves BM25-only while open, probe re-enables the vector leg
     assert.equal(breaker.state(now), "closed");
   } finally {
     embIdx?.stop();
+    search.stop();
+    await vault.stop?.();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ─── embedding_degraded wird VOR dem Recall ausgewertet (#165 Race) ──
+
+test("recall telemetry: embedding_degraded describes the served recall, not the post-recall breaker state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-breaker-order-"));
+  const vault = new Vault(dir);
+  const search = new SearchIndex(vault);
+  try {
+    await writeFile(join(dir, "alpha.md"), memoryFile("alpha", "alpha bravo"), "utf8");
+    await vault.init();
+    search.start();
+
+    // Der Breaker öffnet erst WÄHREND des Recalls (z.B. paralleler Backfill-
+    // Batch-Fehler). Der servierte Recall lief noch gesund hybrid — würde der
+    // Flag nach dem Recall ausgewertet, wäre er fälschlich degraded.
+    let breakerOpen = false;
+    const searchStub = {
+      hasEmbeddings: () => true,
+      recallHybrid: async (q: string, opts: unknown) => {
+        const hits = search.recall(q, opts as never);
+        breakerOpen = true;
+        return hits;
+      },
+    } as unknown as SearchIndex;
+
+    const telemetry = new Telemetry();
+    let logged: { embedding_degraded?: boolean } | null = null;
+    (telemetry as unknown as { logRecall: (p: unknown) => Promise<void> }).logRecall = async (p) => {
+      logged = p as { embedding_degraded?: boolean };
+    };
+
+    const deps = {
+      vault,
+      search: searchStub,
+      telemetry,
+      vaultPath: dir,
+      embeddingDegraded: () => breakerOpen,
+    } as ToolDeps;
+
+    await recallHandler(deps, { query: "alpha bravo" });
+    assert.ok(logged, "logRecall must have been called");
+    assert.equal(
+      (logged as { embedding_degraded?: boolean }).embedding_degraded,
+      undefined,
+      "flag must be captured BEFORE the recall runs",
+    );
+  } finally {
     search.stop();
     await vault.stop?.();
     await rm(dir, { recursive: true, force: true });

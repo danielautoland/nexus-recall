@@ -28,6 +28,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { capAtWordBoundary } from "@bastra-recall/core";
 import { detectLanguage, isSupportedLanguage, type SupportedLanguage } from "./language.js";
 
 export interface Bridge {
@@ -150,6 +151,13 @@ export function scrubBridge(b: Bridge): Bridge | null {
 
 const MAX_QUERY_EXPANSION = 12; // cap how much a single query can be widened
 
+// #162: the base query is capped BEFORE expansion terms are appended, so the
+// appended terms always survive core's downstream QUERY_MAX_CHARS (8000)
+// defense cap — otherwise a long base pushes the tail-appended expansions
+// past the cap and telemetry claims an expansion that was silently dropped.
+// 4000 base + ≤12 terms of ≤24 chars stays far below the core cap.
+const MAX_BASE_QUERY_CHARS = 4000;
+
 /**
  * A language-partitioned, read-only set of bridges. Built once at daemon boot from
  * <root>/bridges/<lang>/*.json (mirroring the Commons recipes layout). Never written.
@@ -252,7 +260,8 @@ function isValidBridge(b: unknown): b is Bridge {
 // ─── Query expansion (the recall-time integration helper) ────────────────────
 
 export interface ExpansionResult {
-  /** The query to actually run — original, plus any bridge expansion terms appended. */
+  /** The query to actually run — original (base capped at MAX_BASE_QUERY_CHARS
+   *  when expansions fire), plus any bridge expansion terms appended. */
   query: string;
   /** The language the bridge layer routed on (null = abstained, no expansion). */
   lang: SupportedLanguage | null;
@@ -277,5 +286,9 @@ export function expandQuery(
   if (!lang) return { query, lang: null, added: [] };
   const added = pool.expansionsFor(query, lang);
   if (added.length === 0) return { query, lang, added: [] };
-  return { query: `${query} ${added.join(" ")}`, lang, added };
+  // Trigger-Matching (expansionsFor) sah die VOLLE Query; nur die Basis des
+  // zusammengesetzten Suchstrings wird gedeckelt (Wortgrenze, nie im Token),
+  // damit die Expansions strukturell vor dem Core-Cap sicher sind (#162).
+  const base = capAtWordBoundary(query, MAX_BASE_QUERY_CHARS);
+  return { query: `${base} ${added.join(" ")}`, lang, added };
 }

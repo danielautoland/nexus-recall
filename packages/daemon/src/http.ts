@@ -708,6 +708,10 @@ function handleHookRecall(
         candidatePool = pool.map((h) => ({ id: h.id, score: h.score }));
       };
       const tRecall0 = Date.now();
+      // #165: VOR dem Recall festgehalten, damit der Flag den Recall
+      // beschreibt, der tatsächlich serviert wird (siehe recallHandler).
+      const embeddingDegradedAtRecall =
+        search.hasEmbeddings() && (embeddingDegraded?.() ?? false);
       const hits = search.hasEmbeddings()
         ? await search.recallHybrid(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool })
         : search.recall(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool });
@@ -751,8 +755,8 @@ function handleHookRecall(
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
-          // #165: post-recall ausgewertet, siehe recallHandler.
-          embedding_degraded: search.hasEmbeddings() && (embeddingDegraded?.() ?? false) ? true : undefined,
+          // #165: pre-recall festgehalten, siehe oben / recallHandler.
+          embedding_degraded: embeddingDegradedAtRecall ? true : undefined,
         }),
       );
 

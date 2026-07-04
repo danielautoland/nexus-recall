@@ -248,11 +248,13 @@ async function main(): Promise<void> {
   } else {
     // #161 empty-streak backoff (see session-state.ts): unconsumed injection
     // streaks widen the cadence; any load of an emitted candidate resets.
+    // REQUIRED-band hits (score >= MUST_LOAD_SCORE) bypass suppression.
     const sessionId = payload.session_id ?? "";
     const state = await loadSessionState(sessionId);
     const entry = state.sources?.[BACKOFF_SOURCE];
     const consumed = await wasEmitConsumed(entry);
-    const decision = decideBackoff(entry, consumed);
+    const hasRequired = filtered.some((h) => h.score >= MUST_LOAD_SCORE);
+    const decision = decideBackoff(entry, consumed, hasRequired);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
     const block = formatHintBlock(filtered, project, extraction.topics);

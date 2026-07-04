@@ -3,7 +3,8 @@
  *
  * Covers:
  *   - decideBackoff matrix: no entry, min-streak threshold, skipped window,
- *     cap at BACKOFF_STREAK_CAP, consumption reset, malformed entries
+ *     cap at BACKOFF_STREAK_CAP, consumption reset, malformed entries,
+ *     REQUIRED-band bypass (hasRequired)
  *   - recordSourceEmit: streak growth, reset on consumption, ids cap
  *   - recordSourceSuppressed: skipped counter, defensive no-op
  *   - suppression cadence over a simulated event stream (E E E S S E …)
@@ -38,42 +39,68 @@ function entry(streak: number, skipped: number, at = 1_000_000): ss.SourceBackof
 // ── decideBackoff matrix ────────────────────────────────────────────────────
 
 test("decideBackoff: no entry → never suppress", () => {
-  assert.deepEqual(ss.decideBackoff(undefined, false), { suppress: false, streak: 0 });
+  assert.deepEqual(ss.decideBackoff(undefined, false, false), { suppress: false, streak: 0 });
 });
 
 test("decideBackoff: streak below MIN_STREAK → emit", () => {
-  assert.equal(ss.decideBackoff(entry(0, 0), false).suppress, false);
-  assert.equal(ss.decideBackoff(entry(ss.BACKOFF_MIN_STREAK - 1, 0), false).suppress, false);
+  assert.equal(ss.decideBackoff(entry(0, 0), false, false).suppress, false);
+  assert.equal(ss.decideBackoff(entry(ss.BACKOFF_MIN_STREAK - 1, 0), false, false).suppress, false);
 });
 
 test("decideBackoff: streak at MIN_STREAK, window open → suppress", () => {
-  const d = ss.decideBackoff(entry(ss.BACKOFF_MIN_STREAK, 0), false);
+  const d = ss.decideBackoff(entry(ss.BACKOFF_MIN_STREAK, 0), false, false);
   assert.equal(d.suppress, true);
   assert.equal(d.streak, ss.BACKOFF_MIN_STREAK);
 });
 
 test("decideBackoff: skipped < streak keeps suppressing, then probes", () => {
-  assert.equal(ss.decideBackoff(entry(3, 0), false).suppress, true);
-  assert.equal(ss.decideBackoff(entry(3, 2), false).suppress, true);
+  assert.equal(ss.decideBackoff(entry(3, 0), false, false).suppress, true);
+  assert.equal(ss.decideBackoff(entry(3, 2), false, false).suppress, true);
   // window exhausted → probe emit
-  assert.equal(ss.decideBackoff(entry(3, 3), false).suppress, false);
+  assert.equal(ss.decideBackoff(entry(3, 3), false, false).suppress, false);
 });
 
 test("decideBackoff: cap — streak beyond CAP needs only CAP skips", () => {
-  assert.equal(ss.decideBackoff(entry(12, ss.BACKOFF_STREAK_CAP - 1), false).suppress, true);
-  assert.equal(ss.decideBackoff(entry(12, ss.BACKOFF_STREAK_CAP), false).suppress, false);
+  assert.equal(ss.decideBackoff(entry(12, ss.BACKOFF_STREAK_CAP - 1), false, false).suppress, true);
+  assert.equal(ss.decideBackoff(entry(12, ss.BACKOFF_STREAK_CAP), false, false).suppress, false);
 });
 
 test("decideBackoff: consumption resets streak to 0 → emit", () => {
-  const d = ss.decideBackoff(entry(7, 1), true);
+  const d = ss.decideBackoff(entry(7, 1), true, false);
   assert.deepEqual(d, { suppress: false, streak: 0 });
 });
 
 test("decideBackoff: malformed entry fails open", () => {
   const broken = { streak: "x", at: 1, skipped: 0 } as unknown as ss.SourceBackoff;
-  assert.deepEqual(ss.decideBackoff(broken, false), { suppress: false, streak: 0 });
+  assert.deepEqual(ss.decideBackoff(broken, false, false), { suppress: false, streak: 0 });
   const noEmit = entry(5, 0, 0); // at <= 0 → never emitted
-  assert.deepEqual(ss.decideBackoff(noEmit, false), { suppress: false, streak: 0 });
+  assert.deepEqual(ss.decideBackoff(noEmit, false, false), { suppress: false, streak: 0 });
+});
+
+// ── REQUIRED-band bypass (hasRequired) ──────────────────────────────────────
+
+test("decideBackoff: hasRequired bypasses suppression at every streak level", () => {
+  // Every state that would suppress without a REQUIRED hit must emit with one.
+  const wouldSuppress = [
+    entry(ss.BACKOFF_MIN_STREAK, 0),
+    entry(3, 2),
+    entry(12, ss.BACKOFF_STREAK_CAP - 1),
+    entry(50, 0),
+  ];
+  for (const e of wouldSuppress) {
+    assert.equal(ss.decideBackoff(e, false, false).suppress, true, "precondition: suppresses");
+    const d = ss.decideBackoff(e, false, true);
+    assert.equal(d.suppress, false, `hasRequired must bypass (streak ${e.streak})`);
+    // Streak resolution is unchanged — bypass is not a consumption signal.
+    assert.equal(d.streak, e.streak);
+  }
+});
+
+test("decideBackoff: hasRequired matrix — no entry / consumed / malformed stay identical", () => {
+  assert.deepEqual(ss.decideBackoff(undefined, false, true), { suppress: false, streak: 0 });
+  assert.deepEqual(ss.decideBackoff(entry(7, 1), true, true), { suppress: false, streak: 0 });
+  const broken = { streak: "x", at: 1, skipped: 0 } as unknown as ss.SourceBackoff;
+  assert.deepEqual(ss.decideBackoff(broken, false, true), { suppress: false, streak: 0 });
 });
 
 // ── recordSourceEmit / recordSourceSuppressed ───────────────────────────────
@@ -127,8 +154,14 @@ test("recordSourceSuppressed: increments skipped; no-op without entry", () => {
 // ── suppression cadence over a simulated event stream ──────────────────────
 
 /** Mimics one injection-worthy hook event: decide, then commit the outcome. */
-function driveEvent(state: ss.SessionState, source: string, consumed: boolean, now: number): boolean {
-  const d = ss.decideBackoff(state.sources?.[source], consumed);
+function driveEvent(
+  state: ss.SessionState,
+  source: string,
+  consumed: boolean,
+  now: number,
+  hasRequired = false,
+): boolean {
+  const d = ss.decideBackoff(state.sources?.[source], consumed, hasRequired);
   if (d.suppress) {
     ss.recordSourceSuppressed(state, source);
     return false; // suppressed
@@ -153,6 +186,21 @@ test("cadence: skip requirement never exceeds the cap", () => {
   let skips = 0;
   while (!driveEvent(state, "s", false, 2000)) skips++;
   assert.equal(skips, ss.BACKOFF_STREAK_CAP);
+});
+
+test("cadence: REQUIRED emission mid-window emits as a REGULAR emission — streak grows, only consumption resets", () => {
+  const state: ss.SessionState = { shown: {}, sources: { s: entry(3, 0) } };
+  // Suppression window is open (streak 3, skipped 0) — a REQUIRED hit still emits…
+  assert.equal(driveEvent(state, "s", false, 4000, true), true);
+  // …and is booked as a regular unconsumed emit: streak 3 → 4, not reset.
+  assert.equal(state.sources?.s.streak, 4);
+  assert.equal(state.sources?.s.skipped, 0);
+  // The next optional-only event goes back to suppression (window re-opened).
+  assert.equal(driveEvent(state, "s", false, 4001, false), false);
+  assert.equal(state.sources?.s.skipped, 1);
+  // Only consumption resets the streak — even alongside a REQUIRED hit.
+  assert.equal(driveEvent(state, "s", true, 4002, true), true);
+  assert.equal(state.sources?.s.streak, 0);
 });
 
 test("cadence: consumption mid-window re-opens immediately and resets streak", () => {

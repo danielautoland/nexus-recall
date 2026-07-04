@@ -259,7 +259,8 @@ async function main(): Promise<void> {
   // 7b) Empty-streak backoff (#161): if this source's recent injections went
   //     unconsumed (no load-marker newer than the emit), widen the cadence —
   //     skip the next min(streak, cap) would-be injections, then probe.
-  //     Best-effort: state errors fail open and we emit normally.
+  //     REQUIRED-band hits (score >= MUST_LOAD_SCORE) bypass suppression —
+  //     see decideBackoff. Best-effort: state errors fail open, emit normally.
   let backoffStreak = 0;
   let suppressed = false;
   let suppressedTokensEst = 0;
@@ -267,7 +268,7 @@ async function main(): Promise<void> {
   if (dedupActive && totalHints > 0) {
     const entry = sessionState.sources?.[BACKOFF_SOURCE];
     backoffConsumed = await wasEmitConsumed(entry);
-    const decision = decideBackoff(entry, backoffConsumed);
+    const decision = decideBackoff(entry, backoffConsumed, requiredHits.length > 0);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
     if (suppressed) status = "suppressed";
@@ -331,7 +332,9 @@ async function main(): Promise<void> {
     daemon_url: url,
     daemon_reachable: resp !== null,
     hint_count: suppressed ? 0 : totalHints,
-    required_count: requiredHits.length,
+    // Suppressed events zero ALL per-hit fields (like hint_count/hinted_ids).
+    // With the REQUIRED-band bypass this is provably 0 anyway — defensive.
+    required_count: suppressed ? 0 : requiredHits.length,
     top_score: topScore,
     latency_ms_total: totalMs,
     dropped_dedup_count: droppedDedupCount,

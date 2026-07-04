@@ -1,6 +1,15 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { matchPattern, formatHintBlock } from "../src/bash-pre-hook.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOOK_PATH = resolve(__dirname, "..", "src", "bash-pre-hook.ts");
 
 describe("bash-pre-hook: matchPattern", () => {
   it("matches rm -rf as destructive", () => {
@@ -147,5 +156,116 @@ describe("bash-pre-hook: formatHintBlock", () => {
     assert.equal(out.match(/<\/recall-hints>/g)!.length, 1);
     assert.ok(out.endsWith("</recall-hints>"));
     assert.ok(!out.includes("<system-reminder>"));
+  });
+});
+
+// ─── #161: the tripwire is EXEMPT from backoff — the STOP warning always emits ──
+
+function startMockDaemon(handler: (req: IncomingMessage, res: ServerResponse) => void) {
+  const server = createServer(handler);
+  return new Promise<{ port: number; close: () => Promise<void> }>((ok) => {
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      ok({
+        port,
+        close: () =>
+          new Promise<void>((done) => {
+            server.close(() => done());
+          }),
+      });
+    });
+  });
+}
+
+function runHook(
+  payload: object,
+  env: Record<string, string>,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((ok, ko) => {
+    const child = spawn("npx", ["tsx", HOOK_PATH], {
+      env: { ...process.env, ...env, BASTRA_TELEMETRY: "off" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.on("error", ko);
+    child.on("close", (code) => ok({ stdout, stderr, code: code ?? -1 }));
+    child.stdin.write(JSON.stringify(payload));
+    child.stdin.end();
+  });
+}
+
+describe("bash-pre-hook: backoff exemption (#161)", () => {
+  it("destructive STOP warning + enrichment emit despite a hot suppression window", async () => {
+    // Pre-seed a session state that WOULD suppress any backoff-consulting
+    // emitter (streak far above BACKOFF_MIN_STREAK, window wide open).
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-backoff-"));
+    const sessionId = "bashpre-backoff-exempt";
+    await writeFile(
+      join(stateDir, `${sessionId}.json`),
+      JSON.stringify({
+        shown: {},
+        sources: {
+          "bash-tripwire": { streak: 6, at: Date.now() - 1000, ids: ["safety-1"], skipped: 0 },
+        },
+      }),
+      "utf8",
+    );
+
+    const daemon = await startMockDaemon((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === "/hook/recall") {
+        // Sub-REQUIRED score (80 < 100): the emission must still not be
+        // suppressible — the tripwire is exempt, not merely REQUIRED-bypassed.
+        res.end(
+          JSON.stringify({
+            hits: [
+              {
+                id: "safety-1",
+                title: "no rm -rf",
+                type: "user-preference",
+                scope: "all-projects",
+                summary: "Never rm -rf without explicit ok.",
+                score: 80,
+              },
+            ],
+            vault_size: 10,
+            latency_ms: 1,
+            recall_id: "t",
+          }),
+        );
+      } else {
+        res.end("{}");
+      }
+    });
+
+    try {
+      const { stdout } = await runHook(
+        {
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          session_id: sessionId,
+          tool_input: { command: "rm -rf /tmp/whatever" },
+        },
+        {
+          BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+          BASTRA_HOOK_STATE_DIR: stateDir,
+        },
+      );
+      const parsed = JSON.parse(stdout) as {
+        hookSpecificOutput?: { additionalContext?: string };
+      };
+      assert.ok(parsed.hookSpecificOutput, "STOP warning must emit — never suppressed");
+      const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
+      assert.match(ctx, /STOP — destructive/);
+      // Enrichment always rides along with the warning (no trimming either).
+      assert.match(ctx, /safety-1/);
+    } finally {
+      await daemon.close();
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

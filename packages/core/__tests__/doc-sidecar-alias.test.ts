@@ -17,6 +17,7 @@ import { Vault } from "../src/vault.js";
 import type { EmbeddingIndex } from "../src/embeddings.js";
 import { RelatedEnricher } from "../src/related-enrich.js";
 import { parseMemoryWith } from "../src/schema.js";
+import { saveMemory } from "../src/save.js";
 
 const DOC_ID = "doc-inbox-photo-2026-01-27-jpg";
 const NEIGHBOR_ID = "doc-inbox-other-jpg";
@@ -194,4 +195,78 @@ test("Schema toleriert Obsidians Bare-String-Form und coerct zu Liste", () => {
   const raw = docSidecarMd(DOC_ID, `aliases: ${DOC_ID}\n`);
   const m = parseMemoryWith(matter, raw, "/x.md", 0);
   assert.deepEqual(m.fm.aliases, [DOC_ID]);
+});
+
+// ─── Koerzierungs-Matrix (#188): ein Memory darf NIE über seine aliases
+// aus dem Vault fallen — hand-editierte Frontmatter liefert Zahlen, YAML-
+// Dates, Bare-Scalars, dangling `aliases:` (null) oder leere Listen. ───
+const COERCION_MATRIX: { name: string; fm: string; want: string[] | undefined }[] = [
+  { name: "Zahl in Liste (aliases: [2024])", fm: "aliases: [2024]\n", want: ["2024"] },
+  { name: "YAML-Date in Liste (aliases: [2026-05-01] → JS Date)", fm: "aliases: [2026-05-01]\n", want: ["2026-05-01"] },
+  { name: "Bare-Zahl (aliases: 2024)", fm: "aliases: 2024\n", want: ["2024"] },
+  { name: "Bare-YAML-Date (aliases: 2026-05-01)", fm: "aliases: 2026-05-01\n", want: ["2026-05-01"] },
+  { name: "dangling aliases: (null)", fm: "aliases:\n", want: undefined },
+  { name: "leere Liste (aliases: [])", fm: "aliases: []\n", want: undefined },
+  { name: "gemischte Liste (Zahl + String + null-Member)", fm: 'aliases: [2024, "Foto Mai", null]\n', want: ["2024", "Foto Mai"] },
+];
+
+for (const { name, fm, want } of COERCION_MATRIX) {
+  test(`Schema-Koerzierung statt Reject: ${name}`, () => {
+    const raw = docSidecarMd(DOC_ID, fm);
+    // Darf nicht throwen — sonst fällt das ganze Memory aus dem Vault.
+    const m = parseMemoryWith(matter, raw, "/x.md", 0);
+    assert.deepEqual(m.fm.aliases, want);
+  });
+}
+
+// ─── saveMemory-Serializer (#188): aliases werden geschrieben und ein
+// Overwrite ohne explizite aliases erhält die bestehenden File-Aliases. ───
+function saveInput(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "alias-save-test",
+    title: "Alias Save Test",
+    type: "lesson",
+    summary: "s",
+    body: "body",
+    topic_path: ["t"],
+    tags: ["t"],
+    scope: "t",
+    recall_when: ["w"],
+    ...overrides,
+  } as Parameters<typeof saveMemory>[1];
+}
+
+test("saveMemory schreibt aliases und Overwrite ohne aliases erhält sie", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-doc-alias-"));
+  try {
+    // 1) Erst-Save mit aliases → Serializer schreibt sie ins File.
+    const first = await saveMemory(dir, saveInput({ aliases: ["Foto Mai", DOC_ID] }));
+    const fm1 = matter(await readFile(first.file_path, "utf8")).data as { aliases?: string[] };
+    assert.deepEqual(fm1.aliases, ["Foto Mai", DOC_ID]);
+
+    // 2) Overwrite OHNE aliases → bestehende File-Aliases bleiben erhalten.
+    const second = await saveMemory(dir, saveInput({ overwrite: true, summary: "s2" }));
+    assert.equal(second.file_path, first.file_path);
+    const fm2 = matter(await readFile(second.file_path, "utf8")).data as { aliases?: string[]; summary?: string };
+    assert.deepEqual(fm2.aliases, ["Foto Mai", DOC_ID]);
+    assert.equal(fm2.summary, "s2");
+
+    // 3) Overwrite MIT expliziten aliases → sie ersetzen die alten.
+    await saveMemory(dir, saveInput({ overwrite: true, aliases: ["Neu"] }));
+    const fm3 = matter(await readFile(first.file_path, "utf8")).data as { aliases?: string[] };
+    assert.deepEqual(fm3.aliases, ["Neu"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveMemory ohne aliases auf neuem File schreibt kein aliases-Feld", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-doc-alias-"));
+  try {
+    const result = await saveMemory(dir, saveInput());
+    const raw = await readFile(result.file_path, "utf8");
+    assert.doesNotMatch(raw, /aliases:/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -14,6 +14,7 @@ export type { RecallHit, RecallOptions } from "./search.js";
 export {
   normalizeQuery,
   tokenizeWithIdentifiers,
+  capAtWordBoundary,
   QUERY_MAX_CHARS,
 } from "./query-normalize.js";
 

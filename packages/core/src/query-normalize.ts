@@ -26,8 +26,31 @@
  * boolean-artige Operatoren an den Rändern strippen.
  */
 
-/** Query-Längen-Cap (hostile-input defense). */
-export const QUERY_MAX_CHARS = 1000;
+/** Query-Längen-Cap — REINE hostile-input defense, kein Relevanz-Knob.
+ *  8000 statt 1000, damit lange, legitime Hook-Prompts (gepastete Stack-
+ *  traces) ihre diskriminierenden Identifier nicht verlieren (#162). */
+export const QUERY_MAX_CHARS = 8000;
+
+/**
+ * Schneidet `text` auf höchstens `maxChars` Zeichen — an einer Whitespace-
+ * Grenze, nie mitten im Token (ein halbierter Identifier matcht nichts und
+ * vergiftet fuzzy/prefix). Fallback: enthält der Kopf gar kein Whitespace
+ * (ein Monster-Token), wird hart geschnitten — Defense bleibt Defense.
+ * Pure, wirft nie; Rückgabe ist rechts getrimmt, wenn geschnitten wurde.
+ */
+export function capAtWordBoundary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const head = text.slice(0, maxChars);
+  // Schnitt fällt genau AUF Whitespace → letztes Token im Kopf ist komplett.
+  if (/\s/.test(text.charAt(maxChars))) return head.trimEnd();
+  // Sonst würde das Token am Schnitt halbiert → auf die letzte
+  // Whitespace-Grenze im Kopf zurückfallen.
+  const partialStart = head.search(/\S+$/);
+  // -1: Kopf endet auf Whitespace (Grenze schon sauber). 0: Monster-Token
+  // ohne jedes Whitespace → harter Schnitt.
+  if (partialStart <= 0) return head.trimEnd();
+  return head.slice(0, partialStart).trimEnd();
+}
 
 // MiniSearch-Default-Splitter ist /[\n\r\p{Z}\p{P}]+/u. Ein Token-Zeichen
 // ist alles, was der Default NICHT splittet — plus `.`, `-`, `_` als
@@ -77,13 +100,14 @@ const DANGLING_OPS = new Set([
 ]);
 
 /**
- * Pure Query-Hygiene für den Recall-Entry: Cap auf QUERY_MAX_CHARS,
- * Whitespace-Kollaps, dangling Operatoren an beiden Enden strippen.
- * Idempotent; wirft nie. Identifier-Tokens bleiben byte-identisch erhalten.
+ * Pure Query-Hygiene für den Recall-Entry: Cap auf QUERY_MAX_CHARS (an
+ * Whitespace-Grenze, nie mitten im Token), Whitespace-Kollaps, dangling
+ * Operatoren an beiden Enden strippen. Idempotent; wirft nie.
+ * Identifier-Tokens bleiben byte-identisch erhalten.
  */
 export function normalizeQuery(query: string): string {
   // Cap zuerst — alles Weitere arbeitet auf gedeckelter Länge.
-  const capped = query.slice(0, QUERY_MAX_CHARS);
+  const capped = capAtWordBoundary(query, QUERY_MAX_CHARS);
   const collapsed = capped.replace(/\s+/g, " ").trim();
   if (!collapsed) return "";
   const words = collapsed.split(" ");

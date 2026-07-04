@@ -20,6 +20,7 @@ import { Vault, SearchIndex } from "../src/index.js";
 import {
   normalizeQuery,
   tokenizeWithIdentifiers,
+  capAtWordBoundary,
   QUERY_MAX_CHARS,
 } from "../src/query-normalize.js";
 
@@ -113,6 +114,61 @@ test("normalizeQuery: identifiers stay byte-identical", () => {
 test("normalizeQuery: caps hostile input at QUERY_MAX_CHARS", () => {
   const hostile = "x".repeat(50_000);
   assert.ok(normalizeQuery(hostile).length <= QUERY_MAX_CHARS);
+});
+
+// ─── cap semantics (#162: defense cap, not a relevance knob) ─────
+
+test("cap: QUERY_MAX_CHARS is 8000 — hostile-input defense must not truncate pasted stack traces", () => {
+  // The 1000-char cap silently dropped discriminating identifiers from long
+  // hook prompts on BOTH search arms. 8000 keeps legitimate prompts intact.
+  assert.equal(QUERY_MAX_CHARS, 8000);
+});
+
+test("capAtWordBoundary: text within the cap is returned byte-identical", () => {
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 11), "aaa bbb ccc");
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 500), "aaa bbb ccc");
+});
+
+test("capAtWordBoundary: never cuts mid-token — partial trailing token is dropped", () => {
+  // index 9 is inside "ccc" → the partial token must go, not be halved
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 9), "aaa bbb");
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 5), "aaa");
+});
+
+test("capAtWordBoundary: cut landing exactly on whitespace keeps the full last token", () => {
+  // index 7 is the space after "bbb"
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 7), "aaa bbb");
+});
+
+test("capAtWordBoundary: cut landing right after whitespace drops the next token cleanly", () => {
+  // index 8 is the first char of "ccc" — head ends in a space
+  assert.equal(capAtWordBoundary("aaa bbb ccc", 8), "aaa bbb");
+});
+
+test("capAtWordBoundary: single whitespace-free monster token falls back to a hard cut", () => {
+  assert.equal(capAtWordBoundary("x".repeat(100), 10), "x".repeat(10));
+});
+
+test("normalizeQuery: long hook prompt keeps identifiers past the old 1000-char cap", () => {
+  // Regression for #162: a pasted stack trace pushed the discriminating
+  // identifier past the old slice(0, 1000) and it vanished from the query.
+  const stackNoise = "at Object.handler (webpack-internal:///./src/foo.ts) ".repeat(40); // > 2000 chars
+  const query = `${stackNoise} my-app.config.ts crashes on rebuild`;
+  assert.ok(query.length > 1000 && query.length < QUERY_MAX_CHARS);
+  assert.ok(
+    normalizeQuery(query).includes("my-app.config.ts"),
+    "identifier beyond the old cap must survive normalization",
+  );
+});
+
+test("normalizeQuery: over-cap query is cut at a word boundary, never mid-token", () => {
+  // 1599 × "word " = 7995 chars; the straddler starts at 7995 so index 8000
+  // falls inside it — the partial token must be dropped entirely.
+  const query = "word ".repeat(1599) + "identifier-straddling-the-cap";
+  const normalized = normalizeQuery(query);
+  assert.ok(normalized.length <= QUERY_MAX_CHARS);
+  assert.ok(normalized.endsWith("word"), "cut falls back to the last full token");
+  assert.ok(!normalized.includes("ident"), "no fragment of the straddling token survives");
 });
 
 test("normalizeQuery: idempotent", () => {

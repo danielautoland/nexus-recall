@@ -74,6 +74,40 @@ test("sweep guard: runs that never touch ~/.claude/skills don't sweep", () => {
   assert.equal(shouldSweepSkill({ surface: null, remainingRegistrations: [] }), false);
 });
 
+test("sweep guard: a covered surface whose uninstall FAILED counts as still registered", () => {
+  // 'all' needs every skill-sharing surface to have succeeded …
+  assert.equal(
+    shouldSweepSkill({ surface: "all", remainingRegistrations: [], succeededSurfaces: ["claude-desktop"] }),
+    false,
+  );
+  assert.equal(
+    shouldSweepSkill({
+      surface: "all",
+      remainingRegistrations: [],
+      succeededSurfaces: ["claude-desktop", "claude-code"],
+    }),
+    true,
+  );
+  // … but a failed cursor never blocks — it doesn't share the skill.
+  assert.equal(
+    shouldSweepSkill({
+      surface: "all",
+      remainingRegistrations: [],
+      succeededSurfaces: ["claude-desktop", "claude-code"], // cursor errored
+    }),
+    true,
+  );
+  // Single-surface run: that surface itself must have succeeded.
+  assert.equal(
+    shouldSweepSkill({ surface: "claude-code", remainingRegistrations: [], succeededSurfaces: [] }),
+    false,
+  );
+  assert.equal(
+    shouldSweepSkill({ surface: "claude-code", remainingRegistrations: [], succeededSurfaces: ["claude-code"] }),
+    true,
+  );
+});
+
 // ─── fs step (temp dir, injected paths) ──────────────────────────────────────
 
 test("sweep step: 'all' with no registrations left removes the skill dir", async () => {
@@ -137,6 +171,46 @@ test("sweep step: dry-run single surface only subtracts itself — the other reg
     const io = await setupHome(dir, { skill: true, registered: ["claude-desktop", "claude-code"] });
     const r = await sweepSharedSkill({ surface: "claude-code", dryRun: true }, io);
     assert.equal(r.status, "kept");
+    assert.equal(existsSync(io.skillDir), true);
+  });
+});
+
+test("sweep step: dry-run 'all' with a FAILED surface never over-promises — its registration is not subtracted", async () => {
+  await withTempDir(async (dir) => {
+    const io = await setupHome(dir, { skill: true, registered: ["claude-desktop", "claude-code"] });
+    // claude-code's uninstall reported an error (e.g. invalid settings JSON).
+    const r = await sweepSharedSkill(
+      { surface: "all", dryRun: true, succeededSurfaces: ["claude-desktop", "cursor"] },
+      io,
+    );
+    assert.equal(r.status, "kept");
+    assert.match(r.detail, /claude-code/);
+    assert.equal(existsSync(io.skillDir), true);
+  });
+});
+
+test("sweep step: dry-run 'all' with every surface succeeded still reports would-remove", async () => {
+  await withTempDir(async (dir) => {
+    const io = await setupHome(dir, { skill: true, registered: ["claude-desktop", "claude-code"] });
+    const r = await sweepSharedSkill(
+      { surface: "all", dryRun: true, succeededSurfaces: ["claude-desktop", "claude-code", "cursor"] },
+      io,
+    );
+    assert.equal(r.status, "would-remove");
+    assert.equal(existsSync(io.skillDir), true);
+  });
+});
+
+test("sweep step: a FAILED surface blocks the wet sweep even when its registration is already gone", async () => {
+  await withTempDir(async (dir) => {
+    const io = await setupHome(dir, { skill: true, registered: [] });
+    // claude-code errored mid-uninstall after its MCP entry was dropped.
+    const r = await sweepSharedSkill(
+      { surface: "all", dryRun: false, succeededSurfaces: ["claude-desktop"] },
+      io,
+    );
+    assert.equal(r.status, "kept");
+    assert.match(r.detail, /uninstall failed: claude-code/);
     assert.equal(existsSync(io.skillDir), true);
   });
 });

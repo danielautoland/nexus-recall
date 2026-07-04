@@ -246,6 +246,14 @@ async function main(): Promise<void> {
         if (auto.detail !== "already running") {
           console.error(`[bastra-recall] ollama autostart: ${auto.detail}`);
         }
+        // #165 Autostart-Fenster: frühe Embed-Fehler beim Boot (Ollama noch
+        // down) haben den Breaker evtl. schon geöffnet und würden die ersten
+        // Recalls der Session für einen vollen Cooldown auf BM25 pinnen,
+        // obwohl der Server jetzt steht. Läuft er (frisch gestartet oder
+        // schon da), Breaker hart zurücksetzen: closed, Counter 0.
+        if (auto.started || auto.detail === "already running") {
+          embeddingBreaker.reset();
+        }
         const ok = await prewarmOllamaModel(ollama.baseURL, ollama.model, ollama.keepAlive);
         void telemetry.logOllamaLifecycle({
           action: "prewarm",

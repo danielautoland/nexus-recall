@@ -27,23 +27,16 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
-import {
-  decideBackoff,
-  loadSessionState,
-  recordSourceEmit,
-  recordSourceSuppressed,
-  saveSessionState,
-  wasEmitConsumed,
-  type SessionState,
-} from "./session-state.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.1.0";
 const SCORE_FLOOR = 50;
-// #161: backoff source key — one key for both severities; they share the
-// noise pattern (162 surfaced / 0 loaded in early v0.7 numbers).
-const BACKOFF_SOURCE = "bash-tripwire";
+// #161 CONSTRAINT: this hook is fully EXEMPT from the empty-streak backoff.
+// The STOP/CAUTION tripwire is a safety warning — the warning itself is the
+// point, and it must emit unconditionally (including its lesson enrichment).
+// Safety beats context tax: trimming the attached hint list could return
+// later as an optimization; suppressing the warning may not.
 
 interface ClaudeHookPayload {
   session_id?: string;
@@ -191,43 +184,17 @@ async function main(): Promise<void> {
   if (resp && hits.length === 0) status = "no-hits";
 
   // Emit hint even if no memories match — the warning itself is the point.
+  // #161 CONSTRAINT (see top of file): the tripwire is exempt from backoff.
+  // Warning + enrichment always emit — never suppressed, never trimmed here.
   const block = formatHintBlock(match.label, match.severity, hits);
-
-  // #161 empty-streak backoff: only candidate-carrying blocks participate —
-  // a plain warning (no hits) has no consumption signal and always emits.
-  const sessionId = payload.session_id ?? "";
-  let backoffStreak = 0;
-  let suppressed = false;
-  let consumed = false;
-  let state: SessionState | null = null;
-  if (hits.length > 0) {
-    state = await loadSessionState(sessionId);
-    const entry = state.sources?.[BACKOFF_SOURCE];
-    consumed = await wasEmitConsumed(entry);
-    const decision = decideBackoff(entry, consumed);
-    backoffStreak = decision.streak;
-    suppressed = decision.suppress;
-  }
-
-  if (suppressed && state) {
-    // Suppressed emits {} exactly like the empty path (#161).
-    emitEmpty();
-    recordSourceSuppressed(state, BACKOFF_SOURCE);
-    await saveSessionState(sessionId, state);
-  } else {
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          additionalContext: block,
-        },
-      }),
-    );
-    if (state) {
-      recordSourceEmit(state, BACKOFF_SOURCE, hits.map((h) => h.id), consumed);
-      await saveSessionState(sessionId, state);
-    }
-  }
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        additionalContext: block,
+      },
+    }),
+  );
 
   const totalMs = Date.now() - startedAt;
   await writeTelemetry({
@@ -235,19 +202,19 @@ async function main(): Promise<void> {
     severity: match.severity,
     daemon_url: url,
     daemon_reachable: resp !== null,
-    hint_count: suppressed ? 0 : hits.length,
+    hint_count: hits.length,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: totalMs,
-    hint_tokens_est: suppressed ? 0 : Math.ceil(block.length / 4),
-    hinted_ids: suppressed ? [] : hits.map((h) => h.id),
-    backoff_streak: backoffStreak,
-    suppressed,
-    suppressed_tokens_est: suppressed ? Math.ceil(block.length / 4) : 0,
-    status: suppressed ? "suppressed" : status,
+    hint_tokens_est: Math.ceil(block.length / 4),
+    hinted_ids: hits.map((h) => h.id),
+    backoff_streak: 0,
+    suppressed: false,
+    suppressed_tokens_est: 0,
+    status,
     error: errMsg,
   });
   // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-  if (!suppressed) await reportHinted(url, hits.map((h) => h.id));
+  await reportHinted(url, hits.map((h) => h.id));
 }
 
 function emitEmpty(): void {
@@ -376,13 +343,12 @@ interface BashHookCallTelemetry {
   /** Geschätzte Tokens des injizierten Tripwire-Blocks (#72). */
   hint_tokens_est: number;
   hinted_ids: string[];
-  /** #161: aufgelöster Streak der Backoff-Entscheidung dieses Events. */
-  backoff_streak: number;
-  /** #161: true, wenn der Backoff die Injektion unterdrückt hat. */
-  suppressed: boolean;
-  /** #161: Tokens des NICHT injizierten Blocks — die Sparseite der ROI. */
-  suppressed_tokens_est: number;
-  status: "ok" | "no-hits" | "suppressed" | "daemon-unreachable" | "timeout" | "error";
+  /** #161: Tripwire ist backoff-EXEMPT — Felder bleiben fürs Stats-Schema,
+   *  sind aber konstant „nie unterdrückt“ (streak 0, suppressed false, 0). */
+  backoff_streak: 0;
+  suppressed: false;
+  suppressed_tokens_est: 0;
+  status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }
 

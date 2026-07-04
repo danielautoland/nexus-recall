@@ -15,11 +15,13 @@
  * dependency set. Copying the tree verbatim keeps ESM resolution untouched.
  *
  * Idempotent: same version = reuse the existing copy (marker + forwarder
- * present). Old version dirs are left in place on upgrade — another surface
- * may still be registered against them until its own re-install re-points it.
+ * present). After a successful copy, OTHER version dirs are pruned
+ * (best-effort) so ~/.bastra/runtime never grows unbounded — a live daemon
+ * spawned from an old dir keeps running via its open fds; the next spawn
+ * uses the new path.
  */
-import { cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { homedir } from "node:os";
 import { FORWARDER_SCRIPT_PATH } from "./paths.js";
 import { VERSION, fileExists } from "./helpers.js";
@@ -92,6 +94,68 @@ export interface ForwarderResolution {
   action: "native" | "reused" | "copied" | "would-copy" | "fallback";
   /** Human line for the install output (`runtime: …`); absent on "native". */
   note?: string;
+  /** ~/.bastra/runtime/<version> when the stable runtime is (or would be) active. */
+  rootDir?: string;
+  /** The source node_modules the runtime is copied from — bins under it map into the copy. */
+  sourceNodeModules?: string;
+}
+
+/**
+ * Maps a bin from the install source tree into the stable runtime copy (#180).
+ * Everything the claude-code adapter registers (hooks, statusline) must point
+ * into ~/.bastra/runtime too — not just the forwarder — or npm evicting the
+ * npx cache breaks 6-7 registrations silently. The copied tree mirrors the
+ * source node_modules verbatim, so a bin under it lives at the same relative
+ * path under <rootDir>/node_modules. Non-stable resolutions and bins outside
+ * the copied tree (source checkouts) pass through untouched — non-npx
+ * installs stay byte-identical.
+ */
+export function mapBinToStableRuntime(
+  bin: string,
+  res: Pick<ForwarderResolution, "rootDir" | "sourceNodeModules">,
+): string {
+  if (!res.rootDir || !res.sourceNodeModules) return bin;
+  const rel = relative(res.sourceNodeModules, bin);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return bin;
+  return join(res.rootDir, "node_modules", rel);
+}
+
+/**
+ * Best-effort prune after a successful copy: every sibling of the version dir
+ * just installed goes (old versions, stale .tmp staging). Never the fresh one.
+ * Constraint: a live daemon spawned from an old dir keeps running via its
+ * open fds; the next spawn uses the new path. Never throws — an unpruned dir
+ * is only disk usage.
+ */
+export async function pruneOldRuntimes(target: RuntimeTarget): Promise<void> {
+  try {
+    const runtimeBase = dirname(target.rootDir);
+    const keep = basename(target.rootDir);
+    for (const entry of await readdir(runtimeBase)) {
+      if (entry === keep) continue;
+      await rm(join(runtimeBase, entry), { recursive: true, force: true }).catch(() => undefined);
+    }
+  } catch {
+    // readdir failed (dir gone?) — nothing to prune.
+  }
+}
+
+/**
+ * Full-uninstall cleanup (`uninstall all`): with every surface registration
+ * gone nothing references ~/.bastra/runtime anymore — remove it entirely.
+ * Constraint: a live daemon spawned from a runtime dir keeps running via its
+ * open fds; the next install re-creates the dir. Best-effort, never throws.
+ * Returns true when a dir was actually removed (caller prints a line then).
+ */
+export async function removeRuntimeBase(home: string = homedir()): Promise<boolean> {
+  try {
+    const dir = join(home, ".bastra", "runtime");
+    if (!(await fileExists(dir))) return false;
+    await rm(dir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -110,25 +174,29 @@ export async function ensureStableForwarder(
 
   const version = io.version ?? VERSION;
   const target = stableRuntimeTarget(version, io.home);
-  if ((await fileExists(target.markerPath)) && (await fileExists(target.forwarderPath))) {
-    return { path: target.forwarderPath, action: "reused", note: `stable runtime ${version} reused (${target.rootDir})` };
-  }
-  if (opts.dryRun) {
-    return { path: target.forwarderPath, action: "would-copy", note: `would copy runtime to ${target.rootDir} (npx cache is ephemeral)` };
-  }
-
   // FORWARDER_SCRIPT_PATH is <packageRoot>/dist/mcp-forwarder.js.
   const nmRoot = resolveNodeModulesRoot(dirname(dirname(fwd)));
+  // Attached to every stable resolution so the claude-code adapter can map
+  // its hook/statusline bins into the copy (#180 — see mapBinToStableRuntime).
+  const stable = { rootDir: target.rootDir, sourceNodeModules: nmRoot ?? undefined };
+  if ((await fileExists(target.markerPath)) && (await fileExists(target.forwarderPath))) {
+    return { path: target.forwarderPath, action: "reused", note: `stable runtime ${version} reused (${target.rootDir})`, ...stable };
+  }
+  if (opts.dryRun) {
+    return { path: target.forwarderPath, action: "would-copy", note: `would copy runtime to ${target.rootDir} (npx cache is ephemeral)`, ...stable };
+  }
+
   if (!nmRoot) {
     return { path: fwd, action: "fallback", note: "npx cache detected but package layout unexpected — registering the cache path (prefer a permanent install: npm i -g)" };
   }
   try {
     await copyRuntimeTree(nmRoot, target, version);
-    return { path: target.forwarderPath, action: "copied", note: `copied to ${target.rootDir} (npx cache is ephemeral — registrations now survive cache eviction)` };
+    await pruneOldRuntimes(target);
+    return { path: target.forwarderPath, action: "copied", note: `copied to ${target.rootDir} (npx cache is ephemeral — registrations now survive cache eviction)`, ...stable };
   } catch (e) {
     // Concurrent install may have won the rename race — the copy is there.
     if (await fileExists(target.forwarderPath)) {
-      return { path: target.forwarderPath, action: "reused", note: `stable runtime ${version} reused (${target.rootDir})` };
+      return { path: target.forwarderPath, action: "reused", note: `stable runtime ${version} reused (${target.rootDir})`, ...stable };
     }
     return { path: fwd, action: "fallback", note: `runtime copy failed (${(e as Error).message}) — registering the npx cache path` };
   }

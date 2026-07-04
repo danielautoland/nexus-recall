@@ -13,11 +13,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   detectRetrieval,
+  effectiveScoreFloor,
   extractPrompt,
   formatHintBlock,
   isTrivialPrompt,
+  MUST_LOAD_SCORE,
   type RecallHit,
 } from "../src/prompt-hook.ts";
+import { decideBackoff, type SourceBackoff } from "../src/session-state.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_PATH = resolve(__dirname, "..", "src", "prompt-hook.ts");
@@ -296,4 +299,94 @@ test("gate wins over retrieval regex on expanded command payloads", () => {
   // scaffolding, not user intent.
   const payload = "<command-name>/deep-research</command-name>\nfind all sources about X";
   assert.equal(isTrivialPrompt(payload), true);
+});
+
+// ─── #161: backoff safety — retrieval exemption + generic-mode invariant ──
+
+test("#161 — generic mode floors at MUST_LOAD_SCORE: suppression impossible by construction", () => {
+  // Every hit surviving the generic floor sits in the REQUIRED band …
+  assert.ok(
+    effectiveScoreFloor("generic") >= MUST_LOAD_SCORE,
+    "generic floor must be >= MUST_LOAD_SCORE — this is what makes the invariant hold",
+  );
+  // … so hasRequired is true for any non-empty generic emission, and the
+  // shared decideBackoff can never suppress it — whatever the streak says.
+  const hotEntries: SourceBackoff[] = [
+    { streak: 2, at: Date.now() - 1000, ids: ["x"], skipped: 0 },
+    { streak: 50, at: Date.now() - 1000, ids: ["x"], skipped: 0 },
+  ];
+  for (const e of hotEntries) {
+    assert.equal(decideBackoff(e, false, false).suppress, true, "precondition: would suppress");
+    assert.equal(decideBackoff(e, false, true).suppress, false, "REQUIRED band bypasses");
+  }
+});
+
+test("integration — #161: retrieval lookup is NEVER suppressed, even in a hot suppression window", async () => {
+  // Pre-seed a prompt-lookup backoff state that would suppress a generic
+  // emission (streak far above BACKOFF_MIN_STREAK, window wide open).
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-prompt-backoff-"));
+  const sessionId = "prompt-backoff-retrieval-exempt";
+  await writeFile(
+    join(stateDir, `${sessionId}.json`),
+    JSON.stringify({
+      shown: {},
+      sources: {
+        "prompt-lookup": { streak: 6, at: Date.now() - 1000, ids: ["old-hit"], skipped: 0 },
+      },
+    }),
+    "utf8",
+  );
+
+  const daemon = await startMockDaemon((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/recall") {
+      // Sub-REQUIRED score (70 < MUST_LOAD_SCORE): the emission must survive
+      // via the retrieval exemption itself, not via the hasRequired bypass.
+      res.end(
+        JSON.stringify({
+          hits: [
+            {
+              id: "lease-2024",
+              title: "Mietvertrag 2024",
+              type: "project-fact",
+              scope: "personal",
+              summary: "Mietvertrag Hauptstr. 5, unterschrieben 2024-01-15.",
+              score: 70,
+            },
+          ],
+          vault_size: 50,
+          latency_ms: 5,
+          recall_id: "t",
+        }),
+      );
+    } else {
+      res.end("{}");
+    }
+  });
+
+  try {
+    const { stdout } = await runHook(
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt: "such mal meinen Mietvertrag",
+        session_id: sessionId,
+        cwd: process.cwd(),
+      },
+      {
+        BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+        BASTRA_HOOK_STATE_DIR: stateDir,
+      },
+    );
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { additionalContext?: string };
+    };
+    assert.ok(parsed.hookSpecificOutput, "retrieval lookup must emit — never suppressed");
+    assert.match(parsed.hookSpecificOutput?.additionalContext ?? "", /lease-2024/);
+  } finally {
+    await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });
