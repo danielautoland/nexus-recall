@@ -63,8 +63,18 @@ export function capAtWordBoundary(text: string, maxChars: number): string {
 // target es2024).
 const GLUE_CHARS = new Set([".", "-", "_"]);
 const SPLIT_CHAR_RE = /[\n\r\p{Z}\p{P}]/u;
-const GLUE_TRIM_RE = /^[._-]+|[._-]+$/g;
 const GLUE_SPLIT_RE = /[._-]+/;
+
+/** Rand-Kleber (`.` `-` `_`) per Index-Scan trimmen — die naheliegende
+ *  Regex (`/^[._-]+|[._-]+$/`) ist am `$`-Anker auf langen Kleber-Läufen
+ *  quadratisch (CodeQL js/polynomial-redos, PR-#191-Findings). */
+function trimGlue(token: string): string {
+  let start = 0;
+  let end = token.length;
+  while (start < end && GLUE_CHARS.has(token[start])) start++;
+  while (end > start && GLUE_CHARS.has(token[end - 1])) end--;
+  return token.slice(start, end);
+}
 
 function isTokenChar(ch: string): boolean {
   return GLUE_CHARS.has(ch) || !SPLIT_CHAR_RE.test(ch);
@@ -98,7 +108,7 @@ function scanRawTokens(text: string): string[] {
 export function tokenizeWithIdentifiers(text: string): string[] {
   const out: string[] = [];
   for (const raw of scanRawTokens(text)) {
-    const token = raw.replace(GLUE_TRIM_RE, "");
+    const token = trimGlue(raw);
     if (!token) continue;
     out.push(token);
     if (GLUE_SPLIT_RE.test(token)) {
