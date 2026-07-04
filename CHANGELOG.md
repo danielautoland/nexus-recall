@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-07-04
+
+> Versioning note: from this release on, the `-beta.N` suffix is dropped — the
+> leading `0.` (pre-1.0) already signals beta status per SemVer.
+
 ### Added
 - **Prompt-injection capture scan (#147)**: incoming third-party content
   (document/OCR ingest, bridge captures, externally-sourced saves) is scanned
@@ -364,6 +369,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.7.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.6
 [0.7.0-beta.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.5
 [0.7.0-beta.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.4
 [0.7.0-beta.3]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.3
