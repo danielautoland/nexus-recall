@@ -362,6 +362,20 @@ export function handleCuratorState(_req: IncomingMessage, res: ServerResponse, d
  * to dryRun:true: a hand-triggered run is a review request, not consent to
  * demote — the periodic pass is the acting path.
  */
+/**
+ * HTTP boundary sanitizer (CodeQL js/stack-trace-exposure, alert #23):
+ * runCuratorPass is never-throw and carries the exception detail in
+ * `result.error` — useful for the daemon log (index.ts tick), but it must
+ * not reach an HTTP response. Loopback-only today; the hygiene rule holds
+ * regardless of audience. Exported for tests.
+ */
+export function sanitizeRunResultForHttp(
+  result: CuratorRunResult,
+): { status: number; body: CuratorRunResult } {
+  if (!result.error) return { status: 200, body: result };
+  return { status: 500, body: { ...result, error: "curator run failed — see daemon log" } };
+}
+
 export function handleCuratorRun(req: IncomingMessage, res: ServerResponse, deps: CuratorRunDeps): void {
   let raw = "";
   req.on("data", (c) => { raw += c; if (raw.length > 4096) req.destroy(); });
@@ -369,12 +383,14 @@ export function handleCuratorRun(req: IncomingMessage, res: ServerResponse, deps
     let body: { force?: boolean; dryRun?: boolean } = {};
     try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { /* defaults */ }
     runCuratorPass(deps, { force: body.force ?? true, dryRun: body.dryRun ?? true })
-      .then((result) => sendJson(res, 200, result))
-      .catch((err) => {
-        // Exception detail stays in the server log — never in the HTTP
-        // response (CodeQL js/stack-trace-exposure, alert #23). Loopback-only
-        // today, but the hygiene rule holds regardless of audience.
-        console.error(`[bastra-recall] /curator/run failed: ${(err as Error)?.message ?? err}`);
+      .then((result) => {
+        if (result.error) console.error(`[bastra-recall] /curator/run failed: ${result.error}`);
+        const { status, body: payload } = sanitizeRunResultForHttp(result);
+        sendJson(res, status, payload);
+      })
+      .catch(() => {
+        // Unreachable by contract (runCuratorPass never throws) — and
+        // deliberately detail-free if it ever happens anyway.
         sendJson(res, 500, { error: "curator run failed — see daemon log" });
       });
   });
