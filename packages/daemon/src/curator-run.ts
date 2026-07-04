@@ -370,6 +370,12 @@ export function handleCuratorRun(req: IncomingMessage, res: ServerResponse, deps
     try { body = raw.trim() ? JSON.parse(raw) : {}; } catch { /* defaults */ }
     runCuratorPass(deps, { force: body.force ?? true, dryRun: body.dryRun ?? true })
       .then((result) => sendJson(res, 200, result))
-      .catch((err) => sendJson(res, 500, { error: (err as Error).message }));
+      .catch((err) => {
+        // Exception detail stays in the server log — never in the HTTP
+        // response (CodeQL js/stack-trace-exposure, alert #23). Loopback-only
+        // today, but the hygiene rule holds regardless of audience.
+        console.error(`[bastra-recall] /curator/run failed: ${(err as Error)?.message ?? err}`);
+        sendJson(res, 500, { error: "curator run failed — see daemon log" });
+      });
   });
 }
