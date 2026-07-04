@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { reportHinted } from "./hook-hinted.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -160,6 +161,8 @@ async function main(): Promise<void> {
     // Mark throttle only when we actually emit — otherwise quiet calls
     // would burn the budget.
     await markThrottle(sessionId);
+    // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+    await reportHinted(url, hits.map((h) => h.id));
     const block = formatHintBlock(hits);
     process.stdout.write(
       JSON.stringify({

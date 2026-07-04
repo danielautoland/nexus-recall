@@ -34,6 +34,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { shouldSkipPath, passesScopeFilter } from "./hook-skip.js";
+import { reportHinted } from "./hook-hinted.js";
 import {
   bumpShown,
   cleanupOldStates,
@@ -293,6 +294,8 @@ async function main(): Promise<void> {
     status,
     error: errMsg,
   });
+  // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+  await reportHinted(url, hintedIds);
 }
 
 function emitEmpty(): void {

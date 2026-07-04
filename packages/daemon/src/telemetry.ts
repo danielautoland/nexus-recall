@@ -269,6 +269,15 @@ interface JoinStateSnapshot {
   >;
 }
 
+/**
+ * Usage-sidecar sink (#154): receives the memory-usage moments this layer
+ * already observes (surfaced/loaded/acted_on), timestamped here so the sink
+ * stays a dumb forwarder (index.ts wires it to recordUsage on the vault).
+ */
+export type UsageSink = (
+  events: Array<{ id: string; kind: "surfaced" | "loaded" | "acted_on"; ts: string }>,
+) => void;
+
 export class Telemetry {
   private readonly enabled: boolean;
   private readonly logDir: string;
@@ -279,11 +288,14 @@ export class Telemetry {
   private turns = new Map<string, TurnTrace>();
   private latestTurn: TurnTrace | null = null;
   private loadedMemories: LoadedMemoryTrace[] = [];
+  /** Usage-sidecar sink (#154) — wired by index.ts to recordUsage(vault). */
+  private readonly onUsage?: UsageSink;
   private initPromise: Promise<void> | null = null;
   private readonly joinStatePath: string;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor() {
+  constructor(opts: { onUsage?: UsageSink } = {}) {
+    this.onUsage = opts.onUsage;
     this.enabled =
       (envFirst("BASTRA_TELEMETRY", "NEXUS_TELEMETRY") ?? "on").toLowerCase() !== "off";
     // Log-Pfad bleibt bei `~/.nexus-recall/logs` bis zur User-Data-Migration
@@ -323,6 +335,17 @@ export class Telemetry {
    * load_memory(id) can report whether (and where) the id was hinted to the
    * user. Most-recent hint wins on collision.
    */
+  /** Forward a usage moment to the sidecar sink — best-effort, never throws. */
+  private emitUsage(events: Array<{ id: string; kind: "surfaced" | "loaded" | "acted_on" }>): void {
+    if (!this.onUsage || events.length === 0) return;
+    try {
+      const ts = new Date().toISOString();
+      this.onUsage(events.map((e) => ({ ...e, ts })));
+    } catch {
+      /* usage is telemetry-of-telemetry — never let it break an episode */
+    }
+  }
+
   recordHookHints(recall_id: string, hits: Array<{ id: string; score?: number }>): void {
     const ts = Date.now();
     for (let i = 0; i < hits.length; i++) {
@@ -335,7 +358,19 @@ export class Telemetry {
         ts,
       });
     }
+    // Deliberately NO usage emission here: these are the engine's raw top-k.
+    // The hook CLIs drop hits client-side (score floors, #110/#148 scope
+    // filter, per-session dedup) — counting them as "surfaced" would let
+    // phantom demand demote memories nobody ever saw (review find
+    // 2026-07-03). The hooks report what they actually injected via
+    // POST /hook/hinted → recordSurfacedUsage below.
     this.scheduleFlush();
+  }
+
+  /** Usage moment "surfaced" (#154) — fed by POST /hook/hinted with the ids a
+   *  hook ACTUALLY injected after its client-side filtering. */
+  recordSurfacedUsage(ids: string[]): void {
+    this.emitUsage(ids.filter((id) => typeof id === "string" && id.length > 0).map((id) => ({ id, kind: "surfaced" as const })));
   }
 
   /**
@@ -400,6 +435,12 @@ export class Telemetry {
     session_id?: string | null;
   }): void {
     const tokens = new Set(payload.distinctive_tokens);
+    // Usage BEFORE the token gate: the gate only decides whether an acted_on
+    // episode is matchable — a load is a load. Without this, terse memories
+    // (all words short/stopwords → zero distinctive tokens) never record
+    // engagement and the curator would demote actively-loaded memories with
+    // no reactivation path (review find 2026-07-03).
+    this.emitUsage([{ id: payload.memory_id, kind: "loaded" }]);
     if (tokens.size === 0) return;
     const turn = this.currentTurn(payload.session_id ?? null);
     const now = Date.now();
@@ -468,6 +509,9 @@ export class Telemetry {
 
     this.loadedMemories = this.loadedMemories.filter(
       (entry) => !entry.closed && now - entry.ts <= ACTED_ON_WINDOW_MS,
+    );
+    this.emitUsage(
+      episodes.filter((e) => e.acted_on).map((e) => ({ id: e.memory_id, kind: "acted_on" as const })),
     );
     this.scheduleFlush();
     return episodes;

@@ -114,6 +114,18 @@ export class SearchIndex {
   >();
   private static readonly STALENESS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 
+  // Curator-Demotions (#155): id-Set, vom Daemon nach jedem Curator-Pass
+  // (und beim Boot aus dem State-File) gesetzt. Reiner Score-Mechanismus —
+  // siehe CURATOR_DEMOTION_MULTIPLIER.
+  private curatorDemotions = new Set<string>();
+
+  /** Ersetzt das aktive Demotion-Set (score-only, #155). Leert den
+   *  Query-Cache, damit die neue Gewichtung sofort greift. */
+  setDemotions(ids: Iterable<string>): void {
+    this.curatorDemotions = new Set(ids);
+    this.queryCache.clear();
+  }
+
   // Query-Cache (#30): MiniSearch tokenisiert die Query bei jedem
   // `recall()` neu. Hooks rufen häufig mit identischer Query auf
   // (detectTopics() ist deterministisch). LRU via Map-insertion-order,
@@ -514,6 +526,7 @@ export class SearchIndex {
         this.stalenessCache.set(h.id, entry);
       }
       let mult = STALE_MULTIPLIERS[entry.status];
+      if (this.curatorDemotions.has(h.id)) mult *= CURATOR_DEMOTION_MULTIPLIER;
       if (!opts.type && h.type === "doc") mult *= DOC_TYPE_DAMPING;
       if (mult !== 1.0) h.score = round(h.score * mult);
     }
@@ -683,6 +696,16 @@ const STALE_MULTIPLIERS: Record<StaleStatus, number> = {
   stale: 0.5,
   expired: 0.2,
 };
+
+/**
+ * Curator-Demotion (#155): Score-Faktor für Memories, die der deterministische
+ * Staleness-Pass demotet hat (surfaced-but-never-acted-on). Gleiche Liga wie
+ * "stale": auffindbar, aber hinter engagierten Memories. Score-only per
+ * survival-by-id-Vertrag (#146) — load_memory, Citations und die Datei selbst
+ * bleiben unberührt; die Engine trägt nur den Mechanismus (setDemotions),
+ * die Curation-Entscheidung lebt im Daemon.
+ */
+export const CURATOR_DEMOTION_MULTIPLIER = 0.5;
 
 /**
  * Dämpfung für type="doc"-Hits im Default-Recall (kein expliziter type-

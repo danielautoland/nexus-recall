@@ -29,6 +29,7 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
+import { reportHinted } from "./hook-hinted.js";
 
 // Session-namespaced feed — same path the forwarder of THIS session writes
 // (claude ancestor PID, since CC sends no session id — #41836).
@@ -279,6 +280,8 @@ async function main(): Promise<void> {
         },
       }),
     );
+    // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+    await reportHinted(url, filtered.map((h) => h.id));
   }
 
   await writeTelemetry({

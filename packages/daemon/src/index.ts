@@ -36,6 +36,9 @@ import {
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
+import { recordUsage } from "./usage-sidecar.js";
+import { loadCuratorState } from "./curator.js";
+import { runCuratorPass } from "./curator-run.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
@@ -198,8 +201,24 @@ async function main(): Promise<void> {
   // embeddingStatusLine logs the resolved mode on EVERY path including success —
   // the silent-success path was the root of #79.
   // Vor dem Embedding-Block konstruiert, weil Prewarm/Unload (#109) ihre
-  // Lifecycle-Events darüber loggen.
-  const telemetry = new Telemetry();
+  // Lifecycle-Events darüber loggen. Der onUsage-Sink speist den Per-Memory-
+  // Usage-Sidecar (#154) — fire-and-forget, ein kaputter Sidecar darf keinen
+  // Tool-Call brechen (Contract in usage-sidecar.ts).
+  const telemetry = new Telemetry({
+    onUsage: (events) => {
+      void recordUsage(VAULT_PATH!, events);
+    },
+  });
+
+  // Curator-Demotions (#155) überleben Daemon-Restarts: Score-Set aus dem
+  // State-File beim Boot in den Index laden. Best-effort.
+  try {
+    const curatorState = await loadCuratorState(VAULT_PATH!);
+    const staleIds = Object.keys(curatorState.stale);
+    if (staleIds.length > 0) search.setDemotions(staleIds);
+  } catch {
+    /* kein State = keine Demotions */
+  }
 
   const { provider, status: embeddingStatus, ollama } = await resolveEmbedding();
   console.error(embeddingStatusLine(embeddingStatus));
@@ -340,6 +359,7 @@ async function main(): Promise<void> {
           onActivity: markActivity,
           embedding: embeddingStatus,
           embeddingHealth: () => embIdxForHealth?.runtimeHealth() ?? null,
+          curator: { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
         });
 
   const server = new Server(
@@ -609,6 +629,32 @@ async function main(): Promise<void> {
     }, 60_000);
     unloadTimer.unref();
   }
+
+  // Curator phase A (#155): 15-min-Tick, das echte Gate (7d-Intervall +
+  // Min-Idle) sitzt in shouldRunCurator — der Tick ist nur der billige Poll.
+  // Kein separater launchd-Job: LaunchAgent-Daemons laufen dauerhaft,
+  // forwarder-gespawnte leben lange genug für mindestens einen Tick, sofern
+  // eine Session sie wach hält. Acting path (dryRun:false) — der manuelle
+  // POST /curator/run bleibt default-dry.
+  const curatorTimer = setInterval(() => {
+    void runCuratorPass(
+      { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
+      { lastActivityMs, dryRun: false },
+    ).then((r) => {
+      if (r.error) {
+        console.error(`[bastra-recall] curator pass failed (non-fatal): ${r.error}`);
+      } else if (r.ran) {
+        console.error(
+          `[bastra-recall] curator pass (${r.mode}): ${r.demoted.length} demoted, ${r.reactivated.length} reactivated, ${r.pendingObservation.length} watching, ${r.staleTotal} stale total`,
+        );
+      }
+    }).catch((err) => {
+      // Belt + suspenders: runCuratorPass is never-throw by contract, but a
+      // background tick must never be able to kill the daemon regardless.
+      console.error(`[bastra-recall] curator tick error (non-fatal): ${(err as Error)?.message ?? err}`);
+    });
+  }, 15 * 60_000);
+  curatorTimer.unref();
 }
 
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";

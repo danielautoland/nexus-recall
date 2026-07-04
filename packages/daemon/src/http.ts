@@ -81,6 +81,7 @@ import {
 import { getUpdateState } from "./update-check.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
+import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
 import {
   getApiToken,
   getDocsLanguage,
@@ -113,6 +114,8 @@ export interface HttpOptions {
    *  Zustand nach Boot ändert (Modell gelöscht, Ollama down → degraded;
    *  nächster Erfolg → wieder ok). null = kein Index aktiv. */
   embeddingHealth?: () => EmbeddingRuntimeHealth | null;
+  /** Curator-Deps (#155/#156) für die /curator/*-Loopback-Endpoints. */
+  curator?: CuratorRunDeps;
 }
 
 const MAX_BODY_BYTES = 256 * 1024; // 256 KiB — content excerpts are capped client-side
@@ -345,6 +348,34 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // (Host-Gate above), no auth — same trust level as /hook/recall.
     if (method === "POST" && url === "/hook/act") {
       handleHookAct(req, res, telemetry);
+      return;
+    }
+
+    // Surfaced-Feedback (#154): die Hook-CLI meldet die ids, die sie nach
+    // ihrem client-seitigen Filtern WIRKLICH injiziert hat — nur die zählen
+    // als "surfaced" im Usage-Sidecar. Loopback-only wie /hook/act.
+    if (method === "POST" && url === "/hook/hinted") {
+      readJsonBody(req, MAX_BODY_BYTES)
+        .then((body) => {
+          const ids = Array.isArray((body as { ids?: unknown })?.ids)
+            ? ((body as { ids: unknown[] }).ids.filter((x) => typeof x === "string") as string[])
+            : [];
+          telemetry.recordSurfacedUsage(ids);
+          sendJson(res, 200, { ok: true, counted: ids.length });
+        })
+        .catch(() => sendJson(res, 400, { error: "invalid body" }));
+      return;
+    }
+
+    // Curator (#155/#156): Loopback-only wie /hook/* (Host-Gate oben).
+    // GET = State lesen; POST = manueller Lauf, default dry-run (Review-
+    // Anfrage, kein Demote-Consent) — Handler leben in curator-run.ts.
+    if (opts.curator && method === "GET" && url === "/curator/state") {
+      handleCuratorState(req, res, opts.curator);
+      return;
+    }
+    if (opts.curator && method === "POST" && url === "/curator/run") {
+      handleCuratorRun(req, res, opts.curator);
       return;
     }
 

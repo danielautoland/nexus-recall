@@ -34,6 +34,7 @@ import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
+import { reportHinted } from "./hook-hinted.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
@@ -314,6 +315,8 @@ async function main(): Promise<void> {
     status,
     error: errMsg,
   });
+  // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+  await reportHinted(url, top.map((h) => h.id));
 }
 
 function emitEmpty(): void {

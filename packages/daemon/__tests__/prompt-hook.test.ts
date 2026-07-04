@@ -174,7 +174,9 @@ test("integration — retrieval prompt yields recall-hints block", async () => {
     let body = "";
     req.on("data", (c: Buffer) => (body += c.toString()));
     req.on("end", () => {
-      received = { url: req.url, body: JSON.parse(body) };
+      // The hook now also fires a /hook/hinted usage ping (#154) — only the
+      // recall request is what this test asserts on.
+      if (req.url === "/hook/recall") received = { url: req.url, body: JSON.parse(body) };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
