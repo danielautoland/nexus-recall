@@ -191,6 +191,19 @@ function collectConflictsAndDangling(vault: VaultLike): {
   return { conflicts, dangling };
 }
 
+/** #147: captures whose sidecar carries injection_flags from the ingest scan. */
+function collectFlaggedCaptures(vault: VaultLike): Array<{ id: string; title?: string; flags: string[] }> {
+  const out: Array<{ id: string; title?: string; flags: string[] }> = [];
+  for (const m of vault.list()) {
+    const id = str(m.fm.id);
+    const flags = Array.isArray(m.fm.injection_flags)
+      ? (m.fm.injection_flags as unknown[]).filter((f): f is string => typeof f === "string")
+      : [];
+    if (id && flags.length > 0) out.push({ id, title: str(m.fm.title), flags });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /**
  * 0-byte .md files anywhere in the vault (dotfolders excluded) — typically
  * Obsidian's auto-created empty notes from clicking an unresolved wikilink
@@ -322,6 +335,7 @@ async function runCuratorPassInner(
     floors: await collectFloorReview(deps.vault, nowMs),
     ...collectConflictsAndDangling(deps.vault),
     emptyFiles: await collectEmptyFiles(deps.vaultRoot),
+    flagged: collectFlaggedCaptures(deps.vault),
     ...(mode !== "acting" ? { pendingReview: true } : {}),
   };
   const reportWritten = await writeVaultHealthReport(deps.vaultRoot, data);

@@ -177,6 +177,10 @@ export const FrontmatterSchema = z.object({
    * coercen statt rejecten, damit hand-editierte Sidecars weiter laden.
    */
   aliases: z.preprocess(coerceAliases, z.array(z.string()).optional()),
+  /** #147: Injection-Marker-Kategorien aus dem Capture-Scan (save_document).
+   *  Gleiche Toleranz wie aliases: ein Memory darf über dieses operationale
+   *  Feld nie aus dem Vault fallen. */
+  injection_flags: z.preprocess(coerceAliases, z.array(z.string()).optional()),
   // Auto-Inbox: Files vom Inbox-Watcher werden ohne User-Sheet eingelesen
   // und als "ungeprüft" markiert. Mac-App rendert Pill + Tint, bietet
   // Bulk-Review-Sheet bei ≥2 needs_review im aktuellen Folder.

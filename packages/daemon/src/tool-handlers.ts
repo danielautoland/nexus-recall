@@ -24,6 +24,8 @@ import {
   type StageListener,
   type RecallStage,
   type RecallHit,
+  scanForInjection,
+  formatInjectionAdvisory,
 } from "@bastra-recall/core";
 import { Telemetry, fireAndForget } from "./telemetry.js";
 import { touchLoadedMarker } from "./session-state.js";
@@ -569,6 +571,20 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
       "remove quoted hook/context blocks (<recall-hints>, <session-context>, <system-reminder>, …) — they are conversation scaffolding, not memory content",
     );
     score -= 20;
+  }
+
+  // #147: Injection-Marker im Save-Inhalt — advisory only, nie blocken (der
+  // Flag ist billig, ein verpasster Marker nicht). Trifft vor allem Captures
+  // von Third-Party-Content (Bridge, zitierte Dokumente); rein user-eigene
+  // Memories triggern die Muster praktisch nie.
+  const injectionFindings = scanForInjection([input.title, input.summary, input.body].join("\n"));
+  const injectionAdvisory = formatInjectionAdvisory(injectionFindings);
+  if (injectionAdvisory) {
+    issues.push(injectionAdvisory);
+    suggestions.push(
+      "review the flagged spans — quoted third-party material keeps the flag as provenance; if it is your own phrasing, reword it",
+    );
+    score -= 15;
   }
 
   // #162: kurze, diskriminierende Felder (title, tags, recall_when) zuerst,

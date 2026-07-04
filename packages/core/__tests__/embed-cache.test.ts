@@ -6,6 +6,18 @@ import * as path from "node:path";
 import { Vault } from "../src/vault.js";
 import { EmbeddingIndex, type EmbeddingProvider } from "../src/embeddings.js";
 
+/** rm mit einem Retry: der EmbedCache flusht asynchron — ein Write, der
+ *  zwischen readdir und rmdir landet, macht das rekursive rm ENOTEMPTY
+ *  (macOS-Race, flakte ~1/5 Läufe). Ein kurzer Settle + Retry genügt. */
+async function rmSettled(dir: string): Promise<void> {
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch {
+    await new Promise((r) => setTimeout(r, 150));
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function memoryMd(id: string, title: string): string {
   return `---
 id: ${id}
@@ -77,7 +89,7 @@ test("embed-cache: identical content re-save does NOT trigger provider call", as
     );
     idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rmSettled(dir);
   }
 });
 
@@ -107,7 +119,7 @@ test("embed-cache: title change invalidates cache and triggers re-embed", async 
     assert.equal(provider.totalTexts, 2, "title change must trigger re-embed");
     idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rmSettled(dir);
   }
 });
 
@@ -154,6 +166,6 @@ test("embed-cache: cache persists across EmbeddingIndex instances", async () => 
       idx2.stop();
     }
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rmSettled(dir);
   }
 });
