@@ -63,6 +63,9 @@ export interface VaultHealthData {
   floors: ReportFloorEntry[];
   conflicts: ReportConflictCluster[];
   dangling: ReportDanglingLink[];
+  /** Vault-relative paths of 0-byte .md files — usually Obsidian's
+   *  auto-created empty notes from clicking an unresolved wikilink. */
+  emptyFiles?: string[];
   /** True on review-only passes (dry-run / first-ever run): the stale list
    *  shows what WOULD be demoted — nothing has acted yet. */
   pendingReview?: boolean;
@@ -162,6 +165,19 @@ export function renderVaultHealthReport(data: VaultHealthData): string {
     L.push("");
     for (const d of data.dangling) {
       L.push(`- [[${d.fromId}]] → \`[[${d.target}]]\` (missing)`);
+    }
+  }
+  L.push("");
+  L.push("<!-- bastra-report:empty-files -->");
+  L.push("## Empty files");
+  L.push("");
+  if (!data.emptyFiles || data.emptyFiles.length === 0) {
+    L.push("None. No 0-byte `.md` files in the vault.");
+  } else {
+    L.push("Zero-byte markdown files — typically created by Obsidian when a wikilink that does not resolve to a file (e.g. a bastra doc-id link) gets clicked. They carry nothing and are safe to delete.");
+    L.push("");
+    for (const p of data.emptyFiles) {
+      L.push(`- \`${p}\``);
     }
   }
   L.push("");

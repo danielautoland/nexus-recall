@@ -10,6 +10,8 @@
  * only grows by routing lines.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readdir, stat } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import { listFloors } from "./floors.js";
 import {
   applyDecision,
@@ -189,6 +191,32 @@ function collectConflictsAndDangling(vault: VaultLike): {
   return { conflicts, dangling };
 }
 
+/**
+ * 0-byte .md files anywhere in the vault (dotfolders excluded) — typically
+ * Obsidian's auto-created empty notes from clicking an unresolved wikilink
+ * (e.g. a bastra doc-id link; real-vault find 2026-07-04). Best-effort:
+ * returns [] on any error.
+ */
+async function collectEmptyFiles(vaultRoot: string): Promise<string[]> {
+  try {
+    const entries = await readdir(vaultRoot, { recursive: true, withFileTypes: true });
+    const empty: string[] = [];
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith(".md")) continue;
+      const rel = relative(vaultRoot, join(e.parentPath, e.name));
+      if (rel.split(sep).some((part) => part.startsWith("."))) continue;
+      try {
+        if ((await stat(join(vaultRoot, rel))).size === 0) empty.push(rel);
+      } catch {
+        /* raced deletion — skip */
+      }
+    }
+    return empty.sort();
+  } catch {
+    return [];
+  }
+}
+
 // ─── the pass ────────────────────────────────────────────────────────────────
 
 /**
@@ -293,6 +321,7 @@ async function runCuratorPassInner(
     })),
     floors: await collectFloorReview(deps.vault, nowMs),
     ...collectConflictsAndDangling(deps.vault),
+    emptyFiles: await collectEmptyFiles(deps.vaultRoot),
     ...(mode !== "acting" ? { pendingReview: true } : {}),
   };
   const reportWritten = await writeVaultHealthReport(deps.vaultRoot, data);
