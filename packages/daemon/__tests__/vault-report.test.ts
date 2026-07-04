@@ -98,6 +98,14 @@ test("deterministic: identical data renders byte-identical output (stable re-run
   assert.equal(renderVaultHealthReport(FULL), renderVaultHealthReport(FULL));
 });
 
+test("empty-files section: lists paths with delete guidance; empty state is quiet", () => {
+  const withEmpty = renderVaultHealthReport({ ...FULL, emptyFiles: ["doc-inbox-photo-x-jpg.md"] });
+  assert.ok(withEmpty.includes("<!-- bastra-report:empty-files -->"));
+  assert.ok(withEmpty.includes("`doc-inbox-photo-x-jpg.md`"));
+  assert.ok(withEmpty.includes("safe to delete"));
+  assert.ok(renderVaultHealthReport(EMPTY).includes("No 0-byte `.md` files"));
+});
+
 test("writer: REPORT.md lands atomically in the vault root and is overwritten in place", async () => {
   const root = await mkdtemp(join(tmpdir(), "bastra-report-"));
   try {

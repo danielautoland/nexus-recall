@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -166,6 +166,26 @@ test("full lifecycle: review-first → observation window matures → acting →
     assert.deepEqual(r4.reactivated, ["tax"]);
     assert.equal(r4.staleTotal, 0);
     assert.deepEqual(demotionCalls.at(-1), [], "index demotion set cleared");
+  });
+});
+
+test("empty-files section: 0-byte .md files are reported, dotfolders ignored (real-vault find 2026-07-04)", async () => {
+  await withFixture(async (root, deps) => {
+    // The Obsidian artifact class: click on an unresolved doc-id wikilink
+    // creates an empty note in the vault root.
+    await writeFile(join(root, "doc-inbox-photo-x-jpg.md"), "", "utf8");
+    await mkdir(join(root, ".obsidian"), { recursive: true });
+    await writeFile(join(root, ".obsidian", "workspace.md"), "", "utf8");
+    await mkdir(join(root, "memories"), { recursive: true });
+    await writeFile(join(root, "memories", "empty-note.md"), "", "utf8");
+
+    const r = await runCuratorPass(deps, { force: true, dryRun: true, nowMs: NOW });
+    assert.equal(r.reportWritten, true);
+    const report = await readFile(join(root, "REPORT.md"), "utf8");
+    assert.ok(report.includes("`doc-inbox-photo-x-jpg.md`"), "root empty file listed");
+    assert.ok(report.includes("`memories/empty-note.md`"), "nested empty file listed");
+    assert.ok(!report.includes("workspace.md"), "dotfolder contents ignored");
+    assert.ok(report.includes("safe to delete"));
   });
 });
 
