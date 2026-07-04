@@ -56,9 +56,37 @@ export function capAtWordBoundary(text: string, maxChars: number): string {
 // ist alles, was der Default NICHT splittet — plus `.`, `-`, `_` als
 // Identifier-Kleber. Alles andere (Slash, Doppelpunkt, Quotes, …) trennt
 // weiterhin, damit Pfade wie `src/search.ts:42` in Segmente zerfallen.
-const TOKEN_RE = /(?:[._-]|[^\n\r\p{Z}\p{P}])+/gu;
+// Token-Zeichen = Nicht-Splitter ∪ {._-}. Als Einzelzeichen-Tests statt
+// einer quantifizierten Alternation-Regex: der Scan unten ist damit
+// beweisbar linear (CodeQL js/polynomial-redos flaggte die Alternation-Form,
+// obwohl die Zweige disjunkt waren; die v-Flag-Klassen-Union bräuchte
+// target es2024).
+const GLUE_CHARS = new Set([".", "-", "_"]);
+const SPLIT_CHAR_RE = /[\n\r\p{Z}\p{P}]/u;
 const GLUE_TRIM_RE = /^[._-]+|[._-]+$/g;
 const GLUE_SPLIT_RE = /[._-]+/;
+
+function isTokenChar(ch: string): boolean {
+  return GLUE_CHARS.has(ch) || !SPLIT_CHAR_RE.test(ch);
+}
+
+/** Linearer Roh-Token-Scan (Ersatz für die geflaggte matchAll-Regex). */
+function scanRawTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let start = -1;
+  let i = 0;
+  for (const ch of text) {
+    if (isTokenChar(ch)) {
+      if (start < 0) start = i;
+    } else if (start >= 0) {
+      tokens.push(text.slice(start, i));
+      start = -1;
+    }
+    i += ch.length; // Surrogatpaare zählen 2 UTF-16-Einheiten
+  }
+  if (start >= 0) tokens.push(text.slice(start));
+  return tokens;
+}
 
 /**
  * Gemeinsamer Tokenizer für Index- UND Query-Seite (Symmetrie-Invariante,
@@ -69,8 +97,8 @@ const GLUE_SPLIT_RE = /[._-]+/;
  */
 export function tokenizeWithIdentifiers(text: string): string[] {
   const out: string[] = [];
-  for (const raw of text.matchAll(TOKEN_RE)) {
-    const token = raw[0].replace(GLUE_TRIM_RE, "");
+  for (const raw of scanRawTokens(text)) {
+    const token = raw.replace(GLUE_TRIM_RE, "");
     if (!token) continue;
     out.push(token);
     if (GLUE_SPLIT_RE.test(token)) {
