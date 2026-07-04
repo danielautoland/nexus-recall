@@ -1,4 +1,5 @@
 import MiniSearch from "minisearch";
+import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import type { Memory } from "@bastra-recall/core";
 
 /**
@@ -91,6 +92,11 @@ export function buildIndex(memories: Memory[], arm: Arm): MiniSearch<IndexDoc> {
   const mini = new MiniSearch<IndexDoc>({
     fields,
     storeFields: ["id"],
+    // Core's identifier-preserving tokenizer (#162) — top-level `tokenize`
+    // applies to index AND query side (no searchOptions.tokenize, same
+    // symmetry rule as core SearchIndex). Imported, not mirrored, so the
+    // ablation cannot drift from production tokenization.
+    tokenize: tokenizeWithIdentifiers,
     searchOptions: { boost, ...SEARCH_OPTIONS },
   });
   mini.addAll(memories.map(toDoc));

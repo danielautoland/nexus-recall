@@ -10,6 +10,8 @@ import {
   VAULT_REQUIRED_ERROR,
 } from "./helpers.js";
 import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
+import { sweepSharedSkill } from "./skill.js";
+import { removeRuntimeBase } from "./stable-runtime.js";
 import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
@@ -27,7 +29,8 @@ Commands:
   install                    Guided setup (interactive): pick vault, clients,
                              semantic recall from selection lists
   install <surface|all>      Register bastra-recall with the AI client
-  uninstall <surface|all>    Remove the registration (skill is kept; it's shared)
+  uninstall <surface|all>    Remove the registration (the shared skill is
+                             removed once no surface references it anymore)
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
   embeddings <on|off|status> Semantic recall (multilingual vector search):
@@ -261,6 +264,7 @@ export async function cmdUninstall(args: ParsedArgs): Promise<number> {
   }
 
   let hadError = false;
+  const succeededSurfaces: string[] = [];
   for (const adapter of targets) {
     process.stdout.write(`→ ${adapter.surface} (${adapter.description})\n`);
     process.stdout.write(`  config: ${adapter.configPath}\n`);
@@ -269,11 +273,35 @@ export async function cmdUninstall(args: ParsedArgs): Promise<number> {
       process.stdout.write(`  ${formatStatus(r.status)}: ${r.message}\n`);
       if (r.backupPath) process.stdout.write(`  backup: ${r.backupPath}\n`);
       if (r.status === "error") hadError = true;
+      if (r.status === "removed" || r.status === "would-remove" || r.status === "not-present") {
+        succeededSurfaces.push(adapter.surface);
+      }
     } catch (err) {
       hadError = true;
       process.stdout.write(`  error: ${(err as Error).message}\n`);
     }
     process.stdout.write("\n");
+  }
+
+  // The shared skill survives per-surface uninstalls by design; once the loop
+  // leaves no surface registration referencing it, it's an orphan — sweep it
+  // so a full uninstall leaves nothing behind (#181). Silent when kept or
+  // already absent. Only surfaces whose uninstall SUCCEEDED enter the
+  // decision — a failed one counts as still registered.
+  const sweep = await sweepSharedSkill({ surface: args.surface, dryRun: args.dryRun, succeededSurfaces });
+  if (sweep.status === "removed" || sweep.status === "would-remove") {
+    process.stdout.write("→ skill (shared across Claude surfaces)\n");
+    process.stdout.write(`  ${formatStatus(sweep.status)}: ${sweep.detail}\n\n`);
+  }
+
+  // Full uninstall: nothing references the pinned npx runtimes anymore —
+  // remove ~/.bastra/runtime entirely (#180). Best-effort and silent when
+  // absent; skipped when any surface errored (its registration may still
+  // point into the runtime). A live daemon spawned from a runtime dir keeps
+  // running via its open fds; the next install re-creates the dir.
+  if (args.surface === "all" && !args.dryRun && !hadError && (await removeRuntimeBase())) {
+    process.stdout.write("→ runtime (pinned npx runtime, ~/.bastra/runtime)\n");
+    process.stdout.write(`  ${formatStatus("removed")}: no surface registration references it anymore\n\n`);
   }
 
   // Ollama is global, not a surface. On a full uninstall, if bastra activated

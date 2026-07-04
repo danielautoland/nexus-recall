@@ -119,11 +119,20 @@ export class RelatedEnricher {
     const expectedBody = rebuildBodyWithAutoSection(memory.body, filtered);
     const sameBody = autoRelatedEquivalent(memory.body, expectedBody);
 
-    if (sameVia && sameBody) return null;
+    // #188: Doc-Sidecars heißen nach dem Original-File (`<file>.jpg.md`),
+    // nicht nach der id — Obsidian löst [[<doc-id>]]-Links nur über die
+    // `aliases`-Frontmatter-Liste auf (Standard-Obsidian-Feature). Der
+    // Enricher stellt die eigene id als Alias auf jedem Doc-Sidecar sicher,
+    // das er anfasst — inkrementeller Backfill statt Big-Bang-Migration.
+    const aliasId = memory.fm.type === "doc" ? id : undefined;
+    const missingAlias =
+      aliasId !== undefined && !(memory.fm.aliases ?? []).includes(aliasId);
+
+    if (sameVia && sameBody && !missingAlias) return null;
 
     if (this.writeGate && !(await this.writeGate())) return null;
 
-    await rewriteFile(memory.filePath, filtered, expectedBody);
+    await rewriteFile(memory.filePath, filtered, expectedBody, aliasId);
     await this.vault.reindexFile(memory.filePath);
     return filtered;
   }
@@ -204,11 +213,27 @@ async function rewriteFile(
   filePath: string,
   related_via: RelatedViaEntry[],
   newBody: string,
+  ensureAlias?: string,
 ): Promise<void> {
   const raw = await readFile(filePath, "utf8");
   const parsed = matter(raw);
-  const fm = parsed.data as Record<string, unknown>;
+  // Copy statt in-place: gray-matter cached matter(content) per Input-String —
+  // Mutation von parsed.data würde den Cache-Eintrag vergiften (siehe
+  // trigger-expand.ts).
+  const fm = { ...(parsed.data as Record<string, unknown>) };
   fm.related_via = related_via;
+  if (ensureAlias !== undefined) {
+    // Bestehende (User-)Aliases bleiben erhalten, die id wird nur ergänzt —
+    // Obsidian erlaubt auch die Bare-String-Form, deshalb normalisieren.
+    const existing = Array.isArray(fm.aliases)
+      ? fm.aliases.map(String)
+      : typeof fm.aliases === "string"
+        ? [fm.aliases]
+        : [];
+    if (!existing.includes(ensureAlias)) {
+      fm.aliases = [...existing, ensureAlias];
+    }
+  }
   const next = matter.stringify(
     newBody.startsWith("\n") ? newBody : `\n${newBody}`,
     fm,

@@ -12,6 +12,7 @@ import {
   resolveVault,
 } from "../helpers.js";
 import { copySkill } from "../skill.js";
+import { checkForwarderRegistration, ensureStableForwarder } from "../stable-runtime.js";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
@@ -21,7 +22,8 @@ async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
   const vault = await resolveVault(opts);
   if ("error" in vault) return { status: "error", message: vault.error, configPath };
 
-  const block = buildServerBlock(vault.path);
+  const fwd = await ensureStableForwarder({ dryRun: opts.dryRun });
+  const block = buildServerBlock(vault.path, fwd.path);
   const read = await readJsonConfig(configPath);
   if ("error" in read) return { status: "error", message: read.error, configPath };
 
@@ -45,6 +47,7 @@ async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
 
   if (opts.dryRun) {
     const steps: string[] = [];
+    if (fwd.note) steps.push(`runtime: ${fwd.note}`);
     steps.push(mcpMatches ? "mcp: already matches" : `mcp: would register '${SERVER_KEY}' (vault=${vault.path})`);
     steps.push(`skill: ${skillResult.detail}`);
     return { status: "would-install", message: steps.join("\n  · "), configPath };
@@ -58,6 +61,7 @@ async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
   }
 
   const lines: string[] = [];
+  if (fwd.note) lines.push(`runtime: ${fwd.note}`);
   lines.push(mcpMatches ? "mcp: already matches" : `mcp: registered '${SERVER_KEY}'`);
   lines.push(`skill: ${skillResult.detail}`);
   lines.push("restart Claude Desktop to activate");
@@ -118,14 +122,18 @@ async function claudeDesktopDoctor(): Promise<DoctorResult> {
   const registered = SERVER_KEY in servers;
   details["mcp-registration"] = registered ? "present" : "missing";
 
+  let forwarderBroken = false;
   if (registered) {
     const block = servers[SERVER_KEY] as Record<string, unknown>;
     const args = Array.isArray(block?.args) ? block.args : [];
     const fwd = args[0];
     if (typeof fwd === "string") {
-      details["forwarder-path"] = (await fileExists(fwd)) ? `${fwd} (exists)` : `${fwd} (MISSING)`;
+      const check = checkForwarderRegistration(fwd, await fileExists(fwd), "claude-desktop");
+      details["forwarder-path"] = check.detail;
+      forwarderBroken = check.broken;
     } else {
       details["forwarder-path"] = "no path in args[0]";
+      forwarderBroken = true;
     }
     const env = block?.env as Record<string, unknown> | undefined;
     const vault = env?.BASTRA_VAULT_PATH;
@@ -145,12 +153,11 @@ async function claudeDesktopDoctor(): Promise<DoctorResult> {
 
   if (!registered) return { status: "missing", message: "not registered with Claude Desktop", details };
   const broken =
-    details["forwarder-path"]?.includes("MISSING") === true ||
+    forwarderBroken ||
     details["vault-path"]?.includes("MISSING") === true ||
-    details["forwarder-path"]?.startsWith("no ") === true ||
     details["vault-path"]?.startsWith("not ") === true ||
     details["skill"] === "missing";
-  if (broken) return { status: "broken", message: "registered but skill or referenced paths are missing", details };
+  if (broken) return { status: "broken", message: "registered but skill or referenced paths need repair — re-run 'bastra install claude-desktop'", details };
   return { status: "ok", message: "registered with skill, looks healthy", details };
 }
 

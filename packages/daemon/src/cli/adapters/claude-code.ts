@@ -24,6 +24,7 @@ import {
   resolveVault,
 } from "../helpers.js";
 import { copySkill } from "../skill.js";
+import { checkForwarderRegistration, ensureStableForwarder, mapBinToStableRuntime } from "../stable-runtime.js";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
 
 // ─── Hook helpers (claude-code-only surface) ─────────────────────
@@ -125,18 +126,25 @@ type HookStepStatus = "installed" | "already-installed" | "would-install" | "rem
 
 async function patchClaudeCodeHooks(
   action: "install" | "uninstall",
-  opts: { dryRun: boolean; includeStop?: boolean },
+  opts: { dryRun: boolean; includeStop?: boolean; mapBin?: (bin: string) => string },
 ): Promise<{ status: HookStepStatus; detail: string; backupPath?: string }> {
-  const defs = hookDefinitions({ includeStop: opts.includeStop });
+  const sourceDefs = hookDefinitions({ includeStop: opts.includeStop });
   const includeStop = opts.includeStop === true;
 
   if (action === "install") {
-    for (const def of defs) {
+    // Existence is checked against the SOURCE bins — under an active stable
+    // runtime the copy may not exist yet (dry-run), but it mirrors these.
+    for (const def of sourceDefs) {
       if (!(await fileExists(def.bin))) {
         return { status: "error", detail: `hook binary missing: ${def.bin} — run 'npm run build'` };
       }
     }
   }
+
+  // Register the stable-runtime copy of each bin when active (#180) — hooks
+  // pointing into the npx cache break on eviction just like the forwarder.
+  const mapBin = opts.mapBin;
+  const defs = mapBin ? sourceDefs.map((def) => ({ ...def, bin: mapBin(def.bin) })) : sourceDefs;
 
   const read = await readJsonConfig(CLAUDE_CODE_SETTINGS);
   if ("error" in read) return { status: "error", detail: read.error };
@@ -210,12 +218,16 @@ async function patchClaudeCodeHooks(
 
 // Matches Daniel's hand-configured block + the One-command default:
 //   node <statusline>/dist/index.mjs --style=powerline
-const STATUSLINE_COMMAND = `node ${STATUSLINE_BIN} --style=powerline`;
+// The bin is a parameter (#180): under an active stable runtime it points into
+// the ~/.bastra/runtime copy instead of the npx cache.
+function statuslineCommand(bin: string): string {
+  return `node ${bin} --style=powerline`;
+}
 
-function buildStatuslineBlock(): Record<string, unknown> {
+function buildStatuslineBlock(command: string): Record<string, unknown> {
   return {
     type: "command",
-    command: STATUSLINE_COMMAND,
+    command,
     refreshInterval: 1,
     __bastraRecall: true,
   };
@@ -236,11 +248,11 @@ function isOurStatusline(sl: unknown): boolean {
   );
 }
 
-function statuslineMatches(sl: unknown): boolean {
+function statuslineMatches(sl: unknown, command: string): boolean {
   if (typeof sl !== "object" || sl === null) return false;
   const s = sl as Record<string, unknown>;
   return (
-    s.command === STATUSLINE_COMMAND &&
+    s.command === command &&
     s.type === "command" &&
     s.refreshInterval === 1
   );
@@ -252,8 +264,12 @@ type StatuslineStepStatus =
 
 async function patchClaudeCodeStatusline(
   action: "install" | "uninstall",
-  opts: { dryRun: boolean; force: boolean },
+  opts: { dryRun: boolean; force: boolean; bin?: string },
 ): Promise<{ status: StatuslineStepStatus; detail: string; backupPath?: string }> {
+  // opts.bin: the path to REGISTER (stable-runtime copy when active, #180).
+  // Build/existence is still checked against the source STATUSLINE_BIN — the
+  // copy mirrors it and may not exist yet under dry-run.
+  const command = statuslineCommand(opts.bin ?? STATUSLINE_BIN);
   if (action === "install" && !(await fileExists(STATUSLINE_BIN))) {
     return { status: "error", detail: `statusline not built: ${STATUSLINE_BIN} — run 'npm run build'` };
   }
@@ -270,17 +286,17 @@ async function patchClaudeCodeStatusline(
       if (!opts.force) {
         return { status: "foreign-kept", detail: "a different statusLine is configured — kept it (pass --yes to use bastra's)" };
       }
-    } else if (statuslineMatches(existing)) {
+    } else if (statuslineMatches(existing, command)) {
       return { status: "already-installed", detail: "bastra statusLine already configured" };
     }
 
     if (opts.dryRun) {
       const verb = !present ? "would add" : isOurStatusline(existing) ? "would update" : "would replace foreign";
-      return { status: "would-install", detail: `${verb} statusLine → ${STATUSLINE_COMMAND}` };
+      return { status: "would-install", detail: `${verb} statusLine → ${command}` };
     }
 
     const backupPath = await backupConfig(CLAUDE_CODE_SETTINGS);
-    data.statusLine = buildStatuslineBlock();
+    data.statusLine = buildStatuslineBlock(command);
     await atomicWriteJson(CLAUDE_CODE_SETTINGS, data);
     const how = !present ? "powerline, refreshInterval 1s" : isOurStatusline(existing) ? "path updated" : "replaced foreign";
     return { status: "installed", detail: `statusLine registered (${how})`, backupPath: backupPath ?? undefined };
@@ -305,7 +321,12 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   const vault = await resolveVault(opts);
   if ("error" in vault) return { status: "error", message: vault.error, configPath };
 
-  const block = buildServerBlock(vault.path);
+  const fwd = await ensureStableForwarder({ dryRun: opts.dryRun });
+  // #180: hooks and statusline must survive npx-cache eviction like the
+  // forwarder — register the stable-runtime copy of every bin when active.
+  // On non-npx installs mapBin is the identity (byte-identical no-op).
+  const mapBin = (bin: string) => mapBinToStableRuntime(bin, fwd);
+  const block = buildServerBlock(vault.path, fwd.path);
   const read = await readJsonConfig(configPath);
   if ("error" in read) return { status: "error", message: read.error, configPath };
 
@@ -317,8 +338,13 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   const hookResult = await patchClaudeCodeHooks("install", {
     dryRun: opts.dryRun,
     includeStop: opts.withStopHook === true,
+    mapBin,
   });
-  const statuslineResult = await patchClaudeCodeStatusline("install", { dryRun: opts.dryRun, force: opts.force === true });
+  const statuslineResult = await patchClaudeCodeStatusline("install", {
+    dryRun: opts.dryRun,
+    force: opts.force === true,
+    bin: mapBin(STATUSLINE_BIN),
+  });
 
   if (skillResult.status === "error") return { status: "error", message: `skill: ${skillResult.detail}`, configPath };
   if (hookResult.status === "error") return { status: "error", message: `hooks: ${hookResult.detail}`, configPath };
@@ -343,6 +369,7 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
 
   if (opts.dryRun) {
     const steps: string[] = [];
+    if (fwd.note) steps.push(`runtime: ${fwd.note}`);
     if (!mcpMatches) steps.push(`mcp: would register '${SERVER_KEY}' in ${configPath}`);
     else steps.push("mcp: already matches");
     steps.push(`skill: ${skillResult.detail}`);
@@ -360,6 +387,7 @@ async function claudeCodeInstall(opts: InstallOpts): Promise<InstallResult> {
   }
 
   const lines: string[] = [];
+  if (fwd.note) lines.push(`runtime: ${fwd.note}`);
   lines.push(mcpMatches ? "mcp: already matches" : `mcp: registered '${SERVER_KEY}'`);
   lines.push(`skill: ${skillResult.detail}`);
   lines.push(`hooks: ${hookResult.detail}`);
@@ -384,14 +412,14 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
   const mcpPresent = !!(servers && SERVER_KEY in servers);
 
   // Skill is shared with Claude Desktop (~/.claude/skills/bastra-recall).
-  // We don't remove it here — Claude Desktop might still need it. To purge
-  // the skill, run a separate `bastra uninstall --purge-skill` or remove
-  // the file manually.
+  // We don't remove it here — Claude Desktop might still need it. Once no
+  // surface registration references it, cmdUninstall's final sweep removes
+  // it (#181).
   const hookResult = await patchClaudeCodeHooks("uninstall", { dryRun: opts.dryRun });
   const statuslineResult = await patchClaudeCodeStatusline("uninstall", { dryRun: opts.dryRun, force: false });
 
   if (!mcpPresent && hookResult.status === "not-present" && statuslineResult.status === "not-present") {
-    return { status: "not-present", message: "nothing to remove (skill kept in case Claude Desktop still uses it)", configPath };
+    return { status: "not-present", message: "nothing to remove (skill: shared file — final sweep decides)", configPath };
   }
 
   if (opts.dryRun) {
@@ -399,7 +427,7 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
     steps.push(mcpPresent ? `mcp: would remove '${SERVER_KEY}'` : "mcp: not present");
     steps.push(`hooks: ${hookResult.detail}`);
     steps.push(`statusline: ${statuslineResult.detail}`);
-    steps.push("skill: kept (shared with Claude Desktop)");
+    steps.push("skill: shared file — final sweep decides");
     return { status: "would-remove", message: steps.join("\n  · "), configPath };
   }
 
@@ -416,7 +444,7 @@ async function claudeCodeUninstall(opts: { dryRun: boolean }): Promise<Uninstall
   lines.push(mcpPresent ? `mcp: removed '${SERVER_KEY}'` : "mcp: not present");
   lines.push(`hooks: ${hookResult.detail}`);
   lines.push(`statusline: ${statuslineResult.detail}`);
-  lines.push("skill: kept (shared with Claude Desktop)");
+  lines.push("skill: shared file — final sweep decides");
   lines.push("restart Claude Code to drop the connection");
 
   return {
@@ -439,12 +467,15 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
   const registered = SERVER_KEY in servers;
   details["mcp-registration"] = registered ? "present" : "missing";
 
+  let forwarderBroken = false;
   if (registered) {
     const block = servers[SERVER_KEY] as Record<string, unknown>;
     const args = Array.isArray(block?.args) ? block.args : [];
     const fwd = args[0];
     if (typeof fwd === "string") {
-      details["forwarder-path"] = (await fileExists(fwd)) ? `${fwd} (exists)` : `${fwd} (MISSING)`;
+      const check = checkForwarderRegistration(fwd, await fileExists(fwd), "claude-code");
+      details["forwarder-path"] = check.detail;
+      forwarderBroken = check.broken;
     }
     const env = block?.env as Record<string, unknown> | undefined;
     const vault = env?.BASTRA_VAULT_PATH;
@@ -494,11 +525,11 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
 
   if (!registered) return { status: "missing", message: "MCP not registered with Claude Code", details };
   const broken =
-    details["forwarder-path"]?.includes("MISSING") === true ||
+    forwarderBroken ||
     details["vault-path"]?.includes("MISSING") === true ||
     requiredHooksMissing ||
     details["skill"] === "missing";
-  if (broken) return { status: "broken", message: "registered but some pieces are missing", details };
+  if (broken) return { status: "broken", message: "registered but some pieces need repair — re-run 'bastra install claude-code'", details };
   return { status: "ok", message: "MCP + skill + required hooks registered and healthy", details };
 }
 

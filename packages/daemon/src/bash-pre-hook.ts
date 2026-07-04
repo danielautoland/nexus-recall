@@ -32,6 +32,11 @@ const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOU
 const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.1.0";
 const SCORE_FLOOR = 50;
+// #161 CONSTRAINT: this hook is fully EXEMPT from the empty-streak backoff.
+// The STOP/CAUTION tripwire is a safety warning — the warning itself is the
+// point, and it must emit unconditionally (including its lesson enrichment).
+// Safety beats context tax: trimming the attached hint list could return
+// later as an optimization; suppressing the warning may not.
 
 interface ClaudeHookPayload {
   session_id?: string;
@@ -179,6 +184,8 @@ async function main(): Promise<void> {
   if (resp && hits.length === 0) status = "no-hits";
 
   // Emit hint even if no memories match — the warning itself is the point.
+  // #161 CONSTRAINT (see top of file): the tripwire is exempt from backoff.
+  // Warning + enrichment always emit — never suppressed, never trimmed here.
   const block = formatHintBlock(match.label, match.severity, hits);
   process.stdout.write(
     JSON.stringify({
@@ -200,6 +207,9 @@ async function main(): Promise<void> {
     latency_ms_total: totalMs,
     hint_tokens_est: Math.ceil(block.length / 4),
     hinted_ids: hits.map((h) => h.id),
+    backoff_streak: 0,
+    suppressed: false,
+    suppressed_tokens_est: 0,
     status,
     error: errMsg,
   });
@@ -333,6 +343,11 @@ interface BashHookCallTelemetry {
   /** Geschätzte Tokens des injizierten Tripwire-Blocks (#72). */
   hint_tokens_est: number;
   hinted_ids: string[];
+  /** #161: Tripwire ist backoff-EXEMPT — Felder bleiben fürs Stats-Schema,
+   *  sind aber konstant „nie unterdrückt“ (streak 0, suppressed false, 0). */
+  backoff_streak: 0;
+  suppressed: false;
+  suppressed_tokens_est: 0;
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }

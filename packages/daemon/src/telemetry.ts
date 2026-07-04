@@ -87,6 +87,10 @@ export interface RecallEvent extends BaseEvent {
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall,
    *  so the far slice is observable for offline harvesting. Lean {id, score} only. */
   candidate_pool?: { id: string; score: number }[];
+  /** #165: served BM25-only because the embedding circuit breaker was open
+   *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
+   *  stats separate degraded from normal recalls. */
+  embedding_degraded?: boolean;
 }
 
 export interface LoadMemoryEvent extends BaseEvent {
@@ -178,6 +182,8 @@ export interface HookRecallEvent extends BaseEvent {
   bridge_expansion?: BridgeExpansion;
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */
   candidate_pool?: { id: string; score: number }[];
+  /** #165: served BM25-only because the embedding circuit breaker was open. */
+  embedding_degraded?: boolean;
 }
 
 /**

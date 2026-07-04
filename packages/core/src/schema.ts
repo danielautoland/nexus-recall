@@ -58,6 +58,24 @@ export function isPathSafeComponent(value: string): boolean {
 const pathSafeMessage =
   "must not contain path separators, '..', or a leading dot";
 
+/**
+ * Tolerante aliases-Koerzierung (#188): Frontmatter ist in Obsidian hand-
+ * editierbar, also kommen aliases auch als Bare-Scalar (`aliases: foo`),
+ * Zahl (`aliases: [2024]`), YAML-Datum (`aliases: [2026-05-01]` → JS Date,
+ * siehe dateString oben) oder dangling `aliases:` (null) an. Ein Memory darf
+ * NIE über seine aliases aus dem Vault fallen — deshalb coercen statt
+ * rejecten: null/leer → undefined, Scalar → [String], Date → YYYY-MM-DD.
+ * Auch von save.ts genutzt, damit ein Overwrite bestehende Aliases erhält.
+ */
+export function coerceAliases(v: unknown): string[] | undefined {
+  if (v == null) return undefined;
+  const arr = Array.isArray(v) ? v : [v];
+  const out = arr
+    .filter((a) => a != null)
+    .map((a) => (a instanceof Date ? a.toISOString().slice(0, 10) : String(a)));
+  return out.length > 0 ? out : undefined;
+}
+
 export const FrontmatterSchema = z.object({
   id: z.string().min(1).refine(isPathSafeComponent, { message: pathSafeMessage }),
   title: z.string().min(1),
@@ -148,6 +166,17 @@ export const FrontmatterSchema = z.object({
   linked_file: z.boolean().optional(),
   document_category: z.string().optional(),
   folder_path: z.string().optional(),
+  /**
+   * Obsidian löst `[[wikilinks]]` gegen die `aliases`-Frontmatter-Liste auf
+   * (Standard-Obsidian-Feature). Doc-Sidecars heißen nach dem Original-File
+   * (`<file>.jpg.md`), nicht nach der id — sie tragen deshalb ihre eigene
+   * doc-id als Alias, damit die `[[<doc-id>]]`-Cross-Links des
+   * RelatedEnrichers in Obsidian aufs Sidecar auflösen statt beim Klick eine
+   * leere Stray-Note anzulegen (#188). Preprocess: coerceAliases() — Obsidian
+   * akzeptiert Bare-Scalars, YAML macht aus 2024/2026-05-01 Number/Date;
+   * coercen statt rejecten, damit hand-editierte Sidecars weiter laden.
+   */
+  aliases: z.preprocess(coerceAliases, z.array(z.string()).optional()),
   // Auto-Inbox: Files vom Inbox-Watcher werden ohne User-Sheet eingelesen
   // und als "ungeprüft" markiert. Mac-App rendert Pill + Tint, bietet
   // Bulk-Review-Sheet bei ≥2 needs_review im aktuellen Folder.

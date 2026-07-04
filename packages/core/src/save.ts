@@ -1,8 +1,8 @@
-import { writeFile, access, mkdir, unlink } from "node:fs/promises";
+import { writeFile, readFile, access, mkdir, unlink } from "node:fs/promises";
 import { join, dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
-import { MemoryTypeEnum, isPathSafeComponent } from "./schema.js";
+import { MemoryTypeEnum, isPathSafeComponent, coerceAliases } from "./schema.js";
 import { clampSummary, SUMMARY_MAX } from "./summary.js";
 
 /**
@@ -28,6 +28,13 @@ export const SaveMemoryInput = z.object({
   }),
   recall_when: z.array(z.string().min(1)).min(1),
   related: z.array(z.string()).optional(),
+  /**
+   * Obsidian-Aliases (#188): Substrat-Plumbing, kein Agent-Knob — der Daemon
+   * exponiert das Feld NICHT im MCP-Tool-Schema. Wird vom RelatedEnricher /
+   * Documents-Flow gesetzt. Beim Overwrite ohne explizite aliases bleiben
+   * die bestehenden File-Aliases erhalten (siehe saveMemory).
+   */
+  aliases: z.array(z.string()).optional(),
   /**
    * Memory-Graph (#30 / #49): LLM-detektierte Beziehungen. Optional —
    * normalerweise nicht beim manuellen save_memory gesetzt, sondern vom
@@ -273,6 +280,22 @@ export async function saveMemory(
     );
   }
 
+  // #188: Ein Overwrite ohne explizite aliases darf die bestehenden
+  // Obsidian-Aliases des Files nicht verlieren — Doc-Sidecars tragen ihre
+  // doc-id als Alias, damit [[<doc-id>]]-Links in Obsidian auflösen.
+  // Best-effort: ein unlesbares File blockt den Save nicht.
+  let aliases = input.aliases;
+  if (aliases === undefined && exists) {
+    try {
+      const existingRaw = await readFile(filePath, "utf8");
+      aliases = coerceAliases(
+        (matter(existingRaw).data as Record<string, unknown> | undefined)?.aliases,
+      );
+    } catch {
+      // korrupt/parallel gelöscht → nichts zu erhalten
+    }
+  }
+
   const today = todayISO();
   // Wikilinks aus dem Body in `related[]` spiegeln. Im OSS-Stack existiert
   // sonst keine Stelle, die `[[id]]`-Referenzen in Strukturdaten überführt
@@ -297,6 +320,7 @@ export async function saveMemory(
     scope: input.scope,
     recall_when: input.recall_when,
     related: mergedRelated,
+    ...(aliases && aliases.length > 0 ? { aliases } : {}),
     related_via: input.related_via ?? [],
     sensitivity: input.sensitivity ?? "team",
     ...(input.valid_until ? { valid_until: input.valid_until } : {}),

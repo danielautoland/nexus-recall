@@ -172,6 +172,45 @@ test("expandQuery is a no-op for a null pool or abstained language", async () =>
   });
 });
 
+test("expandQuery caps the base at a word boundary BEFORE appending expansions (#162)", async () => {
+  const deB = bridge({ lang: "de", trigger_terms: ["panel"], expansion_terms: ["resignkey", "observer"] });
+  await withPool([deB], async (pool) => {
+    // Trigger up front, then enough filler to blow past the 4000-char base cap.
+    const query = "panel " + "füllwort ".repeat(500); // ~4500 chars
+    const r = expandQuery(query, pool, { configuredLang: "de" });
+    assert.deepEqual(r.added, ["resignkey", "observer"], "expansion fired");
+    // Structural guarantee: the appended terms sit INSIDE the capped string,
+    // so core's downstream QUERY_MAX_CHARS defense can never cut them —
+    // telemetry never claims an expansion that was dropped.
+    assert.ok(r.query.endsWith(" resignkey observer"), "expansions survive at the tail");
+    const base = r.query.slice(0, -" resignkey observer".length);
+    assert.ok(base.length <= 4000, `base capped to 4000 (got ${base.length})`);
+    assert.ok(
+      base.trim().split(/\s+/).every((w) => w === "panel" || w === "füllwort"),
+      "base cap falls on a word boundary — no half token",
+    );
+  });
+});
+
+test("expandQuery trigger matching sees the FULL query, not the capped base", async () => {
+  const deB = bridge({ lang: "de", trigger_terms: ["resignkey"], expansion_terms: ["observer", "modal"] });
+  await withPool([deB], async (pool) => {
+    // The only trigger term sits beyond the 4000-char base cap.
+    const query = "füllwort ".repeat(500) + "resignkey";
+    const r = expandQuery(query, pool, { configuredLang: "de" });
+    assert.deepEqual(r.added, ["observer", "modal"], "trigger beyond the cap still fires");
+    assert.ok(r.query.endsWith(" observer modal"));
+  });
+});
+
+test("expandQuery leaves a short base untouched when appending", async () => {
+  const deB = bridge({ lang: "de", trigger_terms: ["panel"], expansion_terms: ["resignkey"] });
+  await withPool([deB], async (pool) => {
+    const r = expandQuery("warum schließt das Panel", pool, { configuredLang: "de" });
+    assert.equal(r.query, "warum schließt das Panel resignkey", "no cap side effects below 4000 chars");
+  });
+});
+
 test("configuredLang override forces a pool regardless of detection", async () => {
   const deB = bridge({ lang: "de", trigger_terms: ["panel"], expansion_terms: ["resignkey"] });
   await withPool([deB], async (pool) => {

@@ -14,6 +14,8 @@
  *     → POST 127.0.0.1:BASTRA_HTTP_PORT/hook/recall
  *     → per-session dedup (#32): drop hits shown >= 3 times within 4h
  *       (unless load_memory marker is newer than last show)
+ *     → empty-streak backoff (#161): unconsumed injection streaks widen the
+ *       cadence per source ("write-edit"); consumption resets it
  *     → format hits as <recall-hints>…</recall-hints>
  *     → stdout: {"hookSpecificOutput": { hookEventName, additionalContext }}
  *
@@ -38,10 +40,14 @@ import { reportHinted } from "./hook-hinted.js";
 import {
   bumpShown,
   cleanupOldStates,
+  decideBackoff,
   getLoadedMarkerMtime,
   loadSessionState,
+  recordSourceEmit,
+  recordSourceSuppressed,
   saveSessionState,
   shouldDropHit,
+  wasEmitConsumed,
   type SessionState,
 } from "./session-state.js";
 
@@ -53,6 +59,9 @@ const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30); // mirror SKILL.md: <30 i
 // can lift the REQUIRED band (e.g. to 130) from telemetry without a rebuild,
 // but the default stays 100 until the data says to raise it.
 const MUST_LOAD_SCORE = envInt("BASTRA_MUST_LOAD_SCORE", 100);
+// #161: backoff source key — write-edit hints back off independently of the
+// other hook sources (bash-tripwire, bash-fail, prompt-lookup, todo-plan).
+const BACKOFF_SOURCE = "write-edit";
 
 interface ClaudeHookPayload {
   session_id?: string;
@@ -81,7 +90,14 @@ interface RecallResponse {
   recall_id: string;
 }
 
-type HookStatus = "ok" | "no-hits" | "skipped" | "daemon-unreachable" | "timeout" | "error";
+type HookStatus =
+  | "ok"
+  | "no-hits"
+  | "skipped"
+  | "suppressed"
+  | "daemon-unreachable"
+  | "timeout"
+  | "error";
 
 const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
@@ -127,6 +143,9 @@ async function main(): Promise<void> {
       dropped_scope_count: 0,
       hint_tokens_est: 0,
       hinted_ids: [],
+      backoff_streak: 0,
+      suppressed: false,
+      suppressed_tokens_est: 0,
       status: "skipped",
       error: null,
     });
@@ -237,6 +256,24 @@ async function main(): Promise<void> {
 
   const topScore = resp?.hits?.[0]?.score ?? null;
 
+  // 7b) Empty-streak backoff (#161): if this source's recent injections went
+  //     unconsumed (no load-marker newer than the emit), widen the cadence —
+  //     skip the next min(streak, cap) would-be injections, then probe.
+  //     REQUIRED-band hits (score >= MUST_LOAD_SCORE) bypass suppression —
+  //     see decideBackoff. Best-effort: state errors fail open, emit normally.
+  let backoffStreak = 0;
+  let suppressed = false;
+  let suppressedTokensEst = 0;
+  let backoffConsumed = false;
+  if (dedupActive && totalHints > 0) {
+    const entry = sessionState.sources?.[BACKOFF_SOURCE];
+    backoffConsumed = await wasEmitConsumed(entry);
+    const decision = decideBackoff(entry, backoffConsumed, requiredHits.length > 0);
+    backoffStreak = decision.streak;
+    suppressed = decision.suppress;
+    if (suppressed) status = "suppressed";
+  }
+
   // 8) Emit Claude-Code hookSpecificOutput first — that's the hot path.
   // hint_tokens_est (#72): grobe Token-Schätzung (~4 chars/token) des
   // tatsächlich injizierten Blocks — die Kostenseite der net-context-ROI.
@@ -244,6 +281,13 @@ async function main(): Promise<void> {
   let hintedIds: string[] = [];
   if (totalHints === 0) {
     emitEmpty();
+  } else if (suppressed) {
+    // Suppressed emits {} exactly like the empty path; the would-be cost is
+    // logged as suppressed_tokens_est so net-context-ROI counts the savings.
+    emitEmpty();
+    const block = formatHintBlock(requiredHits, optionalHits, project);
+    suppressedTokensEst = Math.ceil(block.length / 4);
+    recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
     const block = formatHintBlock(requiredHits, optionalHits, project);
     hintTokensEst = Math.ceil(block.length / 4);
@@ -256,12 +300,16 @@ async function main(): Promise<void> {
         },
       }),
     );
+    recordSourceEmit(sessionState, BACKOFF_SOURCE, hintedIds, backoffConsumed);
   }
 
-  // 9) Bump shown-counts for everything we surfaced, then persist.
+  // 9) Bump shown-counts for everything we surfaced, then persist. When
+  //    suppressed nothing was shown — only the backoff counter changed.
   if (dedupActive && survivingHits.length > 0) {
-    const now = Date.now();
-    for (const h of survivingHits) bumpShown(sessionState, h.id, now);
+    if (!suppressed) {
+      const now = Date.now();
+      for (const h of survivingHits) bumpShown(sessionState, h.id, now);
+    }
     await saveSessionState(sessionId, sessionState);
   }
 
@@ -283,14 +331,19 @@ async function main(): Promise<void> {
     query_chars: topics.query.length,
     daemon_url: url,
     daemon_reachable: resp !== null,
-    hint_count: totalHints,
-    required_count: requiredHits.length,
+    hint_count: suppressed ? 0 : totalHints,
+    // Suppressed events zero ALL per-hit fields (like hint_count/hinted_ids).
+    // With the REQUIRED-band bypass this is provably 0 anyway — defensive.
+    required_count: suppressed ? 0 : requiredHits.length,
     top_score: topScore,
     latency_ms_total: totalMs,
     dropped_dedup_count: droppedDedupCount,
     dropped_scope_count: droppedScopeCount,
     hint_tokens_est: hintTokensEst,
     hinted_ids: hintedIds,
+    backoff_streak: backoffStreak,
+    suppressed,
+    suppressed_tokens_est: suppressedTokensEst,
     status,
     error: errMsg,
   });
@@ -431,6 +484,12 @@ interface HookCallTelemetry {
   hint_tokens_est: number;
   /** IDs, die tatsächlich emittiert wurden (#72 context-tax per memory). */
   hinted_ids: string[];
+  /** #161: aufgelöster Streak der Backoff-Entscheidung dieses Events. */
+  backoff_streak: number;
+  /** #161: true, wenn der Backoff die Injektion unterdrückt hat. */
+  suppressed: boolean;
+  /** #161: Tokens des NICHT injizierten Blocks — die Sparseite der ROI. */
+  suppressed_tokens_est: number;
   status: HookStatus;
   error: string | null;
 }
