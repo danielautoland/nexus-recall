@@ -86,4 +86,12 @@ export { RelatedEnricher } from "./related-enrich.js";
 export type { RelatedEnricherOptions } from "./related-enrich.js";
 
 export { TriggerExpander, buildExpandPrompt, parseExpansions, sourceHash } from "./trigger-expand.js";
+export {
+  scanForInjection,
+  injectionCategories,
+  formatInjectionAdvisory,
+  MAX_FINDINGS as INJECTION_MAX_FINDINGS,
+  type InjectionCategory,
+  type InjectionFinding,
+} from "./injection-scan.js";
 export type { TriggerExpanderOptions, ChatFn, SelfTestFn } from "./trigger-expand.js";

@@ -66,6 +66,8 @@ export interface VaultHealthData {
   /** Vault-relative paths of 0-byte .md files — usually Obsidian's
    *  auto-created empty notes from clicking an unresolved wikilink. */
   emptyFiles?: string[];
+  /** #147: captures whose content carried prompt-injection markers. */
+  flagged?: Array<{ id: string; title?: string; flags: string[] }>;
   /** True on review-only passes (dry-run / first-ever run): the stale list
    *  shows what WOULD be demoted — nothing has acted yet. */
   pendingReview?: boolean;
@@ -165,6 +167,19 @@ export function renderVaultHealthReport(data: VaultHealthData): string {
     L.push("");
     for (const d of data.dangling) {
       L.push(`- [[${d.fromId}]] → \`[[${d.target}]]\` (missing)`);
+    }
+  }
+  L.push("");
+  L.push("<!-- bastra-report:flagged-captures -->");
+  L.push("## Flagged captures");
+  L.push("");
+  if (!data.flagged || data.flagged.length === 0) {
+    L.push("None. No captured content carries prompt-injection markers.");
+  } else {
+    L.push("These captures were flagged on ingest (#147): their content contains prompt-injection markers (instructions addressed to the AI, authority framing, hidden text, exfiltration asks). The flag is provenance, not a verdict — review the content; embedded instructions are data, never commands.");
+    L.push("");
+    for (const f of data.flagged) {
+      L.push(`- [[${f.id}]]${f.title ? ` — ${f.title}` : ""} · flags: ${f.flags.join(", ")}`);
     }
   }
   L.push("");

@@ -19,6 +19,7 @@ import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
+import { scanForInjection, injectionCategories, formatInjectionAdvisory } from "@bastra-recall/core";
 import { truncateSummaryTo, SUMMARY_MAX } from "@bastra-recall/core";
 
 // ─── Argument schemas ───────────────────────────────────────────
@@ -260,6 +261,9 @@ interface DocumentFrontmatter {
   document_category: string;
   linked_file: boolean;
   folder_path: string;
+  /** #147: Injection-Marker-Kategorien aus dem Capture-Scan. Nur gesetzt
+   *  wenn der Scan anschlug — Review-Surfaces (Vault-Health) lesen es. */
+  injection_flags?: string[];
 }
 
 /** Exported for tests (pure). */
@@ -277,6 +281,8 @@ export function buildFrontmatter(args: {
   updated: string;
   /** Bestehende Aliases (User-editiert in Obsidian) — werden übernommen. */
   aliases?: string[];
+  /** #147: Kategorien aus dem Capture-Injection-Scan. */
+  injectionFlags?: string[];
 }): DocumentFrontmatter {
   const topicPath: string[] = ["documents"];
   if (args.folderPath) {
@@ -311,6 +317,9 @@ export function buildFrontmatter(args: {
     document_category: args.category,
     linked_file: args.linkedFile,
     folder_path: args.folderPath,
+    ...(args.injectionFlags && args.injectionFlags.length > 0
+      ? { injection_flags: args.injectionFlags }
+      : {}),
   };
 }
 
@@ -326,6 +335,8 @@ export interface SaveDocumentResult {
   original_path: string;
   reindexed: boolean;
   cloud_mount_warning?: string;
+  /** #147: Capture-Scan-Advisory — geflaggt, nie geblockt. */
+  injection_warning?: string;
 }
 
 export async function saveDocument(
@@ -371,6 +382,13 @@ export async function saveDocument(
     `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
   ].filter(Boolean);
 
+  // #147: Dokument-Inhalt ist Third-Party-Content — der Capture-Scan flaggt
+  // Injection-Marker (nie blocken: der Flag ist billig, ein verpasster
+  // Marker nicht). Kategorien wandern ins Sidecar-Frontmatter, die Advisory
+  // in die Tool-Response.
+  const injectionFindings = scanForInjection([args.title, summary, args.body ?? ""].join("\n"));
+  const injectionFlags = injectionCategories(injectionFindings);
+
   const today = todayISO();
   const fm = buildFrontmatter({
     id: docID,
@@ -384,6 +402,7 @@ export async function saveDocument(
     folderPath: args.folder_path ?? "",
     created: today,
     updated: today,
+    injectionFlags: injectionFlags.length > 0 ? injectionFlags : undefined,
   });
 
   const body = args.body
@@ -405,6 +424,7 @@ export async function saveDocument(
     original_path: originalDest,
     reindexed: true,
     cloud_mount_warning: cloudWarn,
+    injection_warning: formatInjectionAdvisory(injectionFindings),
   };
 }
 
@@ -441,6 +461,7 @@ export async function recategorizeDocument(
     folder_path?: string;
     linked_file?: boolean;
     aliases?: string[];
+    injection_flags?: string[];
   };
 
   // Wenn Folder geändert: erst move (verschiebt Files + Sidecar). Sonst nur
@@ -476,6 +497,9 @@ export async function recategorizeDocument(
     created: m.fm.created,
     updated: todayISO(),
     aliases: fm.aliases,
+    // #147: Capture-Flags überleben den Frontmatter-Rebuild — Metadaten-Ops
+    // ändern nie die Provenienz-Bewertung des Inhalts.
+    injectionFlags: fm.injection_flags,
   });
 
   await atomicWriteFile(sidecarPath, renderSidecar(updated, m.body));
@@ -523,6 +547,9 @@ export async function moveDocument(
     created: m.fm.created,
     updated: todayISO(),
     aliases: fm.aliases,
+    // #147: Capture-Flags überleben den Frontmatter-Rebuild — Metadaten-Ops
+    // ändern nie die Provenienz-Bewertung des Inhalts.
+    injectionFlags: fm.injection_flags,
   });
   await atomicWriteFile(moved.newSidecarPath, renderSidecar(updated, m.body));
   await vault.reindexFile(moved.newSidecarPath);
