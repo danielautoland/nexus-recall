@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runCuratorPass, type CuratorRunDeps } from "../src/curator-run.js";
+import { runCuratorPass, sanitizeRunResultForHttp, type CuratorRunDeps } from "../src/curator-run.js";
 import { recordUsage } from "../src/usage-sidecar.js";
 import { loadCuratorState } from "../src/curator.js";
 
@@ -187,6 +187,26 @@ test("empty-files section: 0-byte .md files are reported, dotfolders ignored (re
     assert.ok(!report.includes("workspace.md"), "dotfolder contents ignored");
     assert.ok(report.includes("safe to delete"));
   });
+});
+
+test("HTTP boundary: exception detail never reaches the response (CodeQL alert #23)", () => {
+  const base = {
+    ran: false as const,
+    mode: "acting" as const,
+    dryRun: false,
+    demoted: [],
+    reactivated: [],
+    pendingObservation: [],
+    staleTotal: 0,
+    reportWritten: false,
+  };
+  const failed = sanitizeRunResultForHttp({ ...base, error: "ENOSPC: no space left on device, write '/Users/x/.bastra/x'" });
+  assert.equal(failed.status, 500);
+  assert.equal(failed.body.error, "curator run failed — see daemon log");
+  assert.ok(!JSON.stringify(failed.body).includes("ENOSPC"), "no exception detail in the payload");
+  const ok = sanitizeRunResultForHttp({ ...base, ran: true });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.error, undefined);
 });
 
 test("gate: un-forced run respects the 7d interval (skipped: interval)", async () => {
