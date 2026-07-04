@@ -10,6 +10,7 @@ import {
   VAULT_REQUIRED_ERROR,
 } from "./helpers.js";
 import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
+import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
@@ -23,6 +24,8 @@ Usage:
   bastra <command> [surface] [options]
 
 Commands:
+  install                    Guided setup (interactive): pick vault, clients,
+                             semantic recall from selection lists
   install <surface|all>      Register bastra-recall with the AI client
   uninstall <surface|all>    Remove the registration (skill is kept; it's shared)
   update                     brew upgrade (if brew-installed) + re-register +
@@ -184,6 +187,21 @@ export async function installVaultFirstRunStep(
 }
 
 export async function cmdInstall(args: ParsedArgs): Promise<number> {
+  // `bastra install --help` must document, never act — without this it would
+  // fall through to the wizard (TTY) or the missing-surface error (script).
+  if (args.showHelp) {
+    showHelp();
+    return 0;
+  }
+
+  // Bare `bastra install` on a terminal → guided setup (selection lists for
+  // vault, clients, semantic recall). Scripted invocations (a named surface,
+  // --yes, --dry-run, non-TTY) never enter the wizard and keep the exact
+  // pre-wizard behavior below.
+  if (shouldRunWizard({ surface: args.surface, interactive: isInteractive(), yes: args.yes, dryRun: args.dryRun })) {
+    return runInstallWizard(args);
+  }
+
   const targets = resolveTargets(args.surface);
   if ("error" in targets) {
     process.stderr.write(`error: ${targets.error}\n`);
