@@ -7,36 +7,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **First-run vault offer (#178)**: on a fresh machine `bastra install` no longer
-  errors with "vault path required" once per surface — when no vault resolves
-  (no `--vault`, no `BASTRA_VAULT_PATH`, nothing to auto-detect) an interactive
-  install asks ONCE, before the per-surface loop: *"No memory vault configured
-  yet. Create one at ~/BastraVault? [Y/n]"*. Yes (default) creates the folder
-  with a short README and installs every surface with it; No keeps the current
-  error text and non-zero exit. Non-TTY and `--yes` keep today's deterministic
-  error (scripts never block on a prompt); `--dry-run` reports the offer as a
-  `~ would prompt to create …` line and writes nothing. The TTY/flag matrix is
-  a pure decision function (`decideFirstRunVaultAction`), unit-tested like the
-  #79 semantic-recall prompt it now leads into.
-- **Survival substrate invariant (#146)**: a memory's id keeps resolving after
-  demote (score-only, file byte-identical) and soft-delete (append-only trash +
-  audit entry, recoverable via restore) — the one guarantee the pin/floor
-  lifecycle (#142) and any future citation layer both build on. Pinned by a CI
-  regression test (`packages/core/__tests__/survival-by-id.test.ts`) that goes
-  red if either operation starts *evaporating* the cell instead of demoting /
-  trashing it, and documented as a citable contract in `docs/survival.md`. The
-  retire/unpin arm waits on the #142 floor (left as `test.todo`).
+- **Prompt-injection capture scan (#147)**: incoming third-party content
+  (document/OCR ingest, bridge captures, externally-sourced saves) is scanned
+  for injection markers — instructions addressed to the AI, authority framing,
+  hidden/encoded text, exfiltration asks. Findings **flag, never block**:
+  `save_document` stamps `injection_flags` into the sidecar and surfaces an
+  `injection_warning` in the tool result, `save_memory` gets a non-blocking
+  `save_quality` advisory, and the vault-health report lists flagged captures
+  as a review section. Zero recall-path cost — the scan runs on capture only.
+- **Embedding circuit breaker (#165)**: after 3 consecutive provider failures,
+  hybrid recall silently degrades to BM25-only for a 60s cooldown (no
+  per-query timeout tax); a half-open probe re-closes on recovery. Resets on
+  Ollama autostart; `/health` carries the breaker snapshot; degraded recalls
+  are marked in telemetry (`embedding_degraded`).
+- **Identifier-preserving search tokenization (#162)**: dotted/hyphenated/
+  underscored identifiers (`my-app.config.ts`, `chat-send`, `P2.2`) now match
+  as units on BOTH index and query side (dual emission keeps all previous
+  matches working). Query hygiene: 8000-char hostile-input cap at word
+  boundaries, dangling-operator strip; bridge expansion terms structurally
+  survive the cap.
+- **Hook empty-streak backoff (#161)**: hint sources whose injections go
+  unconsumed widen their cadence per session (cap 8×); any load/acted_on
+  resets. Safety carve-outs: the bash-tripwire STOP warning never backs off,
+  REQUIRED-band hints (score ≥ 100) always emit, explicit retrieval prompts
+  are exempt. Suppressed emissions are logged for net-context-ROI.
+- **Stable npx runtime (#180)**: installs from an npx cache copy the runtime
+  to `~/.bastra/runtime/<version>/` and register ALL paths (forwarder, hooks,
+  statusline) from there — cache eviction no longer breaks registrations.
+  Old versions are pruned; `doctor` warns about remaining `_npx` paths.
+- **Obsidian-resolvable doc cross-links (#188)**: document sidecars carry
+  their doc-id as an Obsidian alias, so the enricher's `[[doc-id]]` links
+  resolve to the sidecar instead of creating empty stray notes on click.
+  The schema coerces any hand-edited alias shape — a memory is never
+  rejected over `aliases`.
 
 ### Fixed
-- **Strong cross-scope recall hints (#148)**: the #110 foreign-scope hard-filter
-  dropped hints from other project scopes in *all* score bands, so genuinely
-  cross-project work surfaced no auto-hints at all (a `bastra-io`-scoped "read the
-  Discord #dev channel" memory never fired during `bastra-recall` work). A hit now
-  passes the foreign-scope filter only when it matched its **hand-written**
-  `recall_when` *and* sits in the REQUIRED band — deliberate cross-project
-  relevance gets through, while the original #110 tag/topic-overlap noise (a high
-  score with no recall_when match) stays filtered. New `matched_recall_when` hit
-  signal in core, gated in `passesScopeFilter`.
+- **`uninstall all` removes the shared skill (#181)**: a final sweep deletes
+  `~/.claude/skills/bastra-recall/` when no skill-sharing registration
+  remains (surfaces whose uninstall failed count as still registered).
+
+## [0.7.0-beta.5] — 2026-07-04
+
+### Added
+- **Guided install wizard (#185)**: bare `bastra install` on a terminal runs
+  a guided setup with selection lists — memory vault (create `~/BastraVault`
+  or pick a folder), AI clients (multiselect, detected ones preselected),
+  semantic recall (enable / keyword-only). Ctrl-C cancels cleanly without
+  writing anything; all scripted flows (`install all`, `--yes`, `--dry-run`,
+  non-TTY) are unchanged and `--ollama`/`--no-ollama` are honored.
+- **Self-improving lifecycle, Wave C (#186)**:
+  - *Usage sidecar (#154)* — durable per-memory aggregate of
+    surfaced/loaded/acted_on under `<vault>/.bastra/usage/`; "surfaced"
+    counts only hints the hooks actually injected (post-filter feedback via
+    `POST /hook/hinted`).
+  - *Staleness curator, phase A (#155)* — deterministic score-only demotion
+    of memories that keep surfacing without engagement. Review-first pass,
+    ≥30 days of usage data required, floored/doc/taxonomy memories protected,
+    any real load reactivates; survival-by-id now CI-pinned for curator
+    demotions too.
+  - *Vault-health report (#156)* — each curator run projects `REPORT.md`
+    into the vault: stale candidates with usage numbers, floors awaiting
+    re-affirmation, same-topic clusters, dangling wikilinks, 0-byte files.
+    Manual trigger: `POST /curator/run` (dry-run by default).
+- **First-run vault offer (#178, #179)**: on a fresh machine an interactive
+  `bastra install` asks once to create `~/BastraVault` instead of erroring
+  per surface; non-TTY/`--yes`/`--dry-run` keep deterministic behavior
+  (pure decision function, unit-tested).
+
+### Fixed
+- **Daemon-aware embeddings status (#177)**: `bastra embeddings status` and
+  the install-end prompt respect a RUNNING daemon whose environment already
+  enables semantic recall — no more contradictory OFF notes or re-prompts.
+- **`brew trust` for the tap (#182, #183)**: `Install Bastra.command` trusts
+  the third-party tap before installing (new Homebrew security gate).
+- **Double-click installer prompts (#185)**: the install log pipe made
+  stdout non-TTY and silently skipped every interactive prompt — the guided
+  setup now runs on `/dev/tty`, with a fallback to `install all` on older
+  CLI versions.
+
+## [0.7.0-beta.4] — 2026-07-03
+
+### Fixed
+- **Stale version-string constants**: `scripts/bump.mjs` now rewrites the
+  hardcoded version constants (CLI `VERSION`, daemon `DAEMON_VERSION`,
+  forwarder serverInfo) and fails loudly on a pattern miss — `/health` no
+  longer reports an old version after a release.
+- Homebrew formula (tap repo): build the full workspace root and ship pruned
+  production `node_modules` — fixes 67 TS build errors and the
+  `ERR_MODULE_NOT_FOUND: @bastra-recall/core` crash from release tarballs
+  (#184).
+
+## [0.7.0-beta.3] — 2026-07-03
+
+### Added
+- **Floor/pin primitive (#141, #142)**: push-by-state memories with an
+  opaque per-entry handle `{memory_id, condition, reason, last_affirmed,
+  affirmed_by, why}`; keyed `release(condition)`; `affirm` is an explicit
+  call requiring `affirmed_by` + a fresh `why` (no why → the clock does not
+  move). Expired floors drop back to ranked — unpin ≠ remove. Exposed via
+  loopback REST (`/api/v1/floors`) and injected as a pinned block with an
+  audit line.
+- **Discoverable semantic recall (#79)**: new `bastra embeddings
+  <on|off|status>` command, a one-time install-end prompt, and a doctor note
+  — turning the embedding layer on is a single line instead of an env dance.
+- **Wave A ingest hygiene (#149–#152)**: central pre-ingest scrubber strips
+  bastra's own injected context blocks before heuristics/doc2query; injected
+  hint blocks are fenced as reference-only; anti-thrash save semantics
+  (terminal success note + consecutive-failure cap); trivial-prompt gate
+  skips hint injection for bare acks and slash commands.
+- **Wider acted_on surface (#144)**: a lightweight act-signal on every
+  completed Bash command closes open recall episodes without letting
+  unrelated commands kill them (`closeOnMiss=false` on the high-frequency
+  path).
+- **Three-arm survival harness (#103)**: `lexical · hybrid · expanded` eval
+  arms with a far-split — measured on a real vault: hybrid rescues far
+  recall (+16.5pp); the residual gap is ranking, not demand.
+- **Survival substrate invariant (#146)**: demote is score-only (file
+  byte-identical), soft-delete is append-only trash + audit, both CI-pinned
+  (`survival-by-id.test.ts`) and documented as a citable contract in
+  `docs/survival.md`.
+
+### Fixed
+- **Strong cross-scope recall hints (#148)**: a hit passes the #110
+  foreign-scope filter only when it matched its hand-written `recall_when`
+  AND sits in the REQUIRED band — deliberate cross-project relevance gets
+  through, tag/topic-overlap noise stays filtered.
+- `save_memory` update without an explicit folder no longer relocates the
+  memory.
+- Security: js-yaml 3.14.2 → 3.15.0 (GHSA-h67p-54hq-rp68).
 
 ## [0.7.0-beta.2] — 2026-06-28
 
@@ -266,4 +364,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.7.0-beta.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.5
+[0.7.0-beta.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.4
+[0.7.0-beta.3]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.3
 [0.6.0-beta.1]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.6.0-beta.1
