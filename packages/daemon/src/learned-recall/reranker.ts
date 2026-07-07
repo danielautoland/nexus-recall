@@ -2,7 +2,7 @@
  * Teacher 2 (#120): a local LLM reranker over a recall's candidate pool. For a far
  * query whose right memory ranked low, a stronger model picks which candidate truly
  * answers it — the offline judgment the bi-encoder/BM25 couldn't make. Runs on a LOCAL
- * Ollama chat model (default qwen3-vl:4b), so it stays OSS-autonomous: no API key, no
+ * Ollama chat model (default gemma3:4b), so it stays OSS-autonomous: no API key, no
  * cloud, no egress. Offline + hard-cases-only, per zzallirog's design.
  *
  * The chat call is injected (ChatFn) so the prompt-building and answer-parsing are
@@ -31,7 +31,10 @@ export interface RerankResult {
 /** Injectable chat function: prompt in, raw model reply out. */
 export type ChatFn = (prompt: string) => Promise<string>;
 
-export const DEFAULT_RERANK_MODEL = "qwen3-vl:4b";
+// The 16 GB baseline text model — kept in sync with settings.GENERATION_MODEL_DEFAULT.
+// A 4B instruction model, chosen over the older vision-language qwen3-vl:4b.
+// env BASTRA_RERANK_MODEL still overrides; the install wizard persists per-machine.
+export const DEFAULT_RERANK_MODEL = "gemma3:4b";
 
 /** A live Ollama chat client (POST /api/chat, non-streaming). */
 export function ollamaChat(opts: { baseURL?: string; model?: string; timeoutMs?: number } = {}): ChatFn {

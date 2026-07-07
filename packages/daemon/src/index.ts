@@ -40,12 +40,12 @@ import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
 import { runCuratorPass } from "./curator-run.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage } from "./settings.js";
+import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, resolveGenerationModel } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
-import { ollamaChat, DEFAULT_RERANK_MODEL } from "./learned-recall/reranker.js";
+import { ollamaChat } from "./learned-recall/reranker.js";
 import { existsSync } from "node:fs";
 import {
   recallHandler,
@@ -273,7 +273,7 @@ async function main(): Promise<void> {
     });
     embIdx
       .start()
-      .then(() => {
+      .then(async () => {
         search.useEmbeddings(embIdx);
         if (envBool("BASTRA_AUTO_RELATED", true)) {
           enricher.start();
@@ -288,7 +288,7 @@ async function main(): Promise<void> {
         // Self-Test gegen recallHybrid filtert halluzinierte Paraphrasen, behält
         // aber die wertvollen far-Paraphrasen (semantisch, nicht lexikalisch).
         if (ollama && envBool("BASTRA_TRIGGER_EXPAND", true)) {
-          const expandModel = envFirst("BASTRA_EXPAND_MODEL") ?? DEFAULT_RERANK_MODEL;
+          const expandModel = await resolveGenerationModel();
           // doc2query generation is far slower than a rerank judgment (a 4B model
           // writing 3-5 phrases takes ~30-90s, more on a cold start), so it gets
           // its own generous timeout instead of the reranker's 30s default —

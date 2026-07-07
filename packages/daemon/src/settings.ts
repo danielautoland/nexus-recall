@@ -69,7 +69,20 @@ export interface CliSettings {
   // instruction ("suggest" proposes, "auto" writes without asking); language is
   // the language product docs are written in (free short tag, e.g. "de").
   docs?: { mode?: DocsMode; language?: string };
+  // Generation model (#84-adjacent): the Ollama chat model for doc2query +
+  // reranking. undefined = daemon falls through to env / GENERATION_MODEL_DEFAULT.
+  // Persisted cross-platform here (not a LaunchAgent env var) so Windows/Linux
+  // installs carry the choice too. Written by `bastra models` / the install wizard.
+  generation?: { model: string };
 }
+
+/**
+ * Default generation (doc2query + rerank) model — the 16 GB baseline pick.
+ * A 4B text model with strong instruction-following, chosen over the older
+ * qwen3-vl:4b (a vision-language model doing text work). The install wizard may
+ * persist a heavier model for roomier machines (see cli/hardware.ts).
+ */
+export const GENERATION_MODEL_DEFAULT = "gemma3:4b";
 
 export function settingsFilePath(): string {
   return join(homedir(), ".bastra", "cli-settings.json");
@@ -106,7 +119,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -171,6 +184,13 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
     }
     if (docs.mode !== undefined || docs.language !== undefined) settings.docs = docs;
   }
+  if (typeof data?.generation?.model === "string" && data.generation.model.trim().length > 0) {
+    settings.generation = { model: data.generation.model.trim() };
+  } else if (data?.generation !== undefined) {
+    process.stderr.write(
+      `[bastra-recall] cli-settings.json: ignoring invalid generation.model ${JSON.stringify(data?.generation?.model)}\n`,
+    );
+  }
   return settings;
 }
 
@@ -208,6 +228,31 @@ export async function setUpdateMode(mode: UpdateMode, path: string = settingsFil
 /** The stored embedding provider, or undefined when unset (no opinion). */
 export async function getEmbeddingProvider(path?: string): Promise<EmbeddingProviderName | undefined> {
   return (await readSettings(path)).embedding?.provider;
+}
+
+/** Persists the generation (doc2query + rerank) model, merging into existing settings. */
+export async function setGenerationModel(model: string, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, generation: { model: model.trim() } }, path);
+}
+
+/**
+ * The ONE generation-model resolution, shared by doc2query (index.ts) and the
+ * reranker so the precedence can't drift:
+ *
+ *   1. env BASTRA_EXPAND_MODEL / BASTRA_RERANK_MODEL — always wins
+ *   2. cli-settings.json generation.model — the installer's / `bastra models` choice
+ *   3. GENERATION_MODEL_DEFAULT — the 16 GB baseline pick
+ *
+ * Cross-platform by construction: the persisted choice lives in cli-settings.json,
+ * not a LaunchAgent env var, so a Windows/Linux daemon reads the same value.
+ */
+export async function resolveGenerationModel(path?: string): Promise<string> {
+  const env = process.env.BASTRA_EXPAND_MODEL ?? process.env.BASTRA_RERANK_MODEL;
+  if (typeof env === "string" && env.trim().length > 0) return env.trim();
+  const stored = (await readSettings(path)).generation?.model;
+  if (typeof stored === "string" && stored.trim().length > 0) return stored.trim();
+  return GENERATION_MODEL_DEFAULT;
 }
 
 /**
