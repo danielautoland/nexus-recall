@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.8] — 2026-07-07
+
+### Fixed
+- **`npx bastra-recall install` now launches the guided wizard** instead of
+  crashing with `FATAL: BASTRA_VAULT_PATH is not set`. The unscoped wrapper
+  package only exposed a `bastra` bin, so the `bastra-recall` command resolved
+  to the **daemon's** `bastra-recall` bin (the raw daemon entry, which needs a
+  vault env) rather than the CLI. Fix: the wrapper now also exposes a
+  `bastra-recall` bin → CLI launcher, and the daemon's daemon-entry bin was
+  renamed to `bastra-recall-daemon` to remove the name collision. Any bare
+  `bastra install` / `npx bastra-recall install` on a terminal runs the wizard.
+
 ## [0.7.7] — 2026-07-07
 
 ### Added
@@ -404,6 +416,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.7.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.8
 [0.7.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.7
 [0.7.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.6
 [0.7.0-beta.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.5
