@@ -86,8 +86,28 @@ import { spawnSync } from "node:child_process";
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
 const DOCUMENT_WRITE_ENABLED = envFirst("BASTRA_DOCUMENT_WRITE", "NEXUS_DOCUMENT_WRITE") === "1";
 
-const DAEMON_VERSION = "0.7.8";
+const DAEMON_VERSION = "0.7.9";
 const DEFAULT_HTTP_PORT = 6723;
+
+// ── CLI delegation guard ─────────────────────────────────────────────────────
+// This module is the DAEMON entry — the forwarder starts it as `node index.js`
+// with no CLI command. But package-manager bin resolution (npx / npm exec) can
+// route a `bastra-recall <cmd>` invocation here instead of the CLI. When called
+// with a CLI command (install, doctor, …), hand off to the CLI — which owns
+// `install` → the guided wizard — instead of dying on the missing vault path
+// below. The daemon path runs only when NO CLI command is present.
+const CLI_COMMANDS = new Set([
+  "install", "uninstall", "doctor", "update", "status",
+  "config", "embeddings", "models", "token", "commons", "bridges",
+  "help", "version",
+]);
+const firstArg = process.argv[2];
+if (firstArg && (CLI_COMMANDS.has(firstArg) || /^(--help|-h|--version|-v)$/.test(firstArg))) {
+  // cli.js runs its own main() on import and calls process.exit(); park so the
+  // daemon setup below is never reached.
+  await import("./cli.js");
+  await new Promise<never>(() => {});
+}
 
 const VAULT_PATH = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
 if (!VAULT_PATH) {
@@ -384,7 +404,7 @@ async function main(): Promise<void> {
         });
 
   const server = new Server(
-    { name: "bastra-recall", version: "0.7.8" },
+    { name: "bastra-recall", version: "0.7.9" },
     { capabilities: { tools: {} } },
   );
 

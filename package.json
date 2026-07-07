@@ -1,6 +1,6 @@
 {
   "name": "bastra-recall-monorepo",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "Workspace root for bastra-recall: OSS daemon, MCP server, and Claude Code skill — the open foundation under the Bastra Mac app.",
   "private": true,
   "license": "MIT",

@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.9] — 2026-07-07
+
+### Fixed
+- **`bastra-recall install` always reaches the guided wizard now.** Package-
+  manager bin resolution (`npx` / `npm exec`) could route `bastra-recall
+  <command>` to the daemon entry point, which then died with
+  `FATAL: BASTRA_VAULT_PATH is not set` instead of running the CLI. The daemon
+  entry now detects a CLI command (`install`, `doctor`, `status`, …) and
+  delegates to the CLI — so `npx bastra-recall install` runs the install wizard
+  regardless of which bin the package manager picks. The daemon path is
+  unchanged when started with no command (as the forwarder does).
+
 ## [0.7.8] — 2026-07-07
 
 ### Fixed
@@ -416,6 +428,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.7.9]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.9
 [0.7.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.8
 [0.7.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.7
 [0.7.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.6
