@@ -219,16 +219,16 @@ async function cloneOrPull(): Promise<number> {
   const path = commonsPath();
   if (existsSync(join(path, ".git"))) {
     process.stdout.write(`→ updating commons (${path})\n`);
-    const r = run(git, ["-C", path, "pull", "--ff-only"], { timeoutMs: 120_000, showProgress: true });
+    const r = run(git, ["-C", path, "pull", "--ff-only"], { timeoutMs: 120_000, showProgress: true, env: { GIT_TERMINAL_PROMPT: "0" } });
     if (!r.ok) {
       process.stderr.write(`✗ git pull failed (${r.detail})\n`);
       return 1;
     }
   } else {
     process.stdout.write(`→ cloning ${COMMONS_REPO_URL} → ${path}\n`);
-    const r = run(git, ["clone", "--depth", "1", COMMONS_REPO_URL, path], { timeoutMs: 300_000, showProgress: true });
+    const r = run(git, ["clone", "--depth", "1", COMMONS_REPO_URL, path], { timeoutMs: 300_000, showProgress: true, env: { GIT_TERMINAL_PROMPT: "0" } });
     if (!r.ok) {
-      process.stderr.write(`✗ git clone failed (${r.detail}) — is the repo reachable for your account?\n`);
+      process.stderr.write(`✗ git clone failed (${r.detail}) — is the repo reachable (public, or your account has access)?\n`);
       return 1;
     }
   }

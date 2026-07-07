@@ -18,7 +18,7 @@
  */
 import { spawn } from "node:child_process";
 import { findExecutable, run } from "./exec.js";
-import { getOllamaAutostart, setEmbeddingProvider } from "../settings.js";
+import { getOllamaAutostart, setEmbeddingProvider, setGenerationModel } from "../settings.js";
 
 const OLLAMA_URL = (process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434").replace(/\/+$/, "");
 const EMBED_MODEL = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
@@ -163,6 +163,62 @@ export async function enableSemanticRecall(
   }
   const result = await ensureOllama({ dryRun: opts.dryRun, mode: "auto" });
   return { ...result, persisted };
+}
+
+/** Is a specific Ollama model already pulled? Best-effort via /api/tags. */
+export async function ollamaModelPresent(name: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { models?: { name: string }[] };
+    return (data.models ?? []).some((m) => m.name === name || m.name === `${name}:latest`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pull a generation (doc2query + rerank) text model and persist the choice to
+ * cli-settings.json. The text model is an add-on to the Ollama server that the
+ * semantic-recall step already provisions — so this does NOT install Ollama; it
+ * requires a running server and fails clearly if there isn't one.
+ *
+ * Idempotent: an already-present model skips the pull. `settingsPath` is
+ * injectable for tests.
+ */
+export async function enableGenerationModel(
+  model: string,
+  opts: { dryRun: boolean } = { dryRun: false },
+  settingsPath?: string,
+): Promise<EnsureResult> {
+  if (opts.dryRun) {
+    return { status: "would-install", activated: false, message: `would pull ${model} + persist generation.model` };
+  }
+  const probe = await probeOllama();
+  if (!probe.ok) {
+    return {
+      status: "error",
+      activated: false,
+      message: `Ollama isn't running — enable semantic recall first (that installs + starts it), then set the text model`,
+    };
+  }
+  const ollamaPath = findExecutable("ollama");
+  if (!ollamaPath) {
+    return { status: "error", activated: false, message: "`ollama` is not on PATH — install it, then re-run" };
+  }
+  if (!(await ollamaModelPresent(model))) {
+    process.stdout.write(`  → pulling ${model} (text model for doc2query + rerank)\n`);
+    const r = run(ollamaPath, ["pull", model], { timeoutMs: 1_800_000, showProgress: true });
+    if (r.signal) return { status: "error", activated: false, message: `pull of ${model} was interrupted — re-run when ready` };
+    if (!r.ok) return { status: "error", activated: false, message: `\`ollama pull ${model}\` failed (${r.detail})` };
+    if (!(await ollamaModelPresent(model))) return { status: "error", activated: false, message: `${model} not present after pull — re-run \`ollama pull ${model}\`` };
+  }
+  await setGenerationModel(model, settingsPath);
+  return {
+    status: "activated",
+    activated: true,
+    message: `text model ${model} ready + saved — restart the daemon to apply`,
+  };
 }
 
 // ── Ollama HTTP probes ───────────────────────────────────────────────────────

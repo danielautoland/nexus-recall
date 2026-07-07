@@ -174,6 +174,12 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     // TTY guard alone for an unattended background re-run. (With a provider
     // already effective the install step stays silent — no skip noise.)
     ollama: "skip",
+    // Same reasoning for the Stop hook: a silent SessionStart auto-update must
+    // NOT bolt the (now default-on) Stop hook onto a user who never opted in.
+    // Hard-off here → the adapter's preserve-logic keeps an already-registered
+    // one but adds none. Fresh default-on happens only at a real `bastra install`
+    // / the wizard, never a background re-register. (Daniel, 2026-07-07)
+    withStopHook: false,
   };
   const installRC = await cmdInstall(installArgs);
   if (installRC !== 0) {

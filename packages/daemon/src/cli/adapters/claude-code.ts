@@ -39,11 +39,11 @@ interface HookDef {
   note: string;
 }
 
-// Single source of truth for the reflex layer. The Stop hook stays opt-in
-// (`--with-stop-hook`) — but since the #48 redesign it is SILENT: suggestions
-// go to ~/.bastra/pending-suggestions.json (read by the next SessionStart as
+// Single source of truth for the reflex layer. The Stop hook is ON by default
+// since the #48 redesign made it SILENT: suggestions go to
+// ~/.bastra/pending-suggestions.json (read by the next SessionStart as
 // additionalContext) instead of systemMessage, which Claude Code rendered 1:1
-// into the chat. Opt-in remains until the heuristics are live-validated.
+// into the chat. Live-validated → default on; opt out with --no-stop-hook.
 function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
   const defs: HookDef[] = [
     { event: "SessionStart", matcher: "startup|resume|clear|compact", bin: SESSION_HOOK_BIN, timeout: 3, note: "bastra-recall SessionStart hook" },

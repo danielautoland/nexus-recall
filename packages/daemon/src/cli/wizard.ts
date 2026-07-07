@@ -3,9 +3,11 @@
  *
  * Selection lists instead of y/n text prompts: vault location (create the
  * default or pick a folder), AI clients (multiselect, detected ones
- * preselected), semantic recall (enable / keyword-only). Built on
- * @clack/prompts; every prompt is cancellable (Ctrl-C → clean exit, nothing
- * written).
+ * preselected), stop-hook (claude-code, default on), semantic recall (enable /
+ * keyword-only), generation text model (hardware-tiered), Bastra Commons +
+ * shared bridges (opt-in, default off), auto-update mode, product-doc capture.
+ * Built on @clack/prompts; every prompt is cancellable (Ctrl-C → clean exit,
+ * nothing written).
  *
  * The wizard is a front-end only: it collects choices, then drives the exact
  * same machinery as `bastra install all` (createVaultAt, adapter.install,
@@ -27,8 +29,20 @@ import {
   probeDaemon,
 } from "./helpers.js";
 import { RECALL_OFF_NOTE } from "./embeddings-cmd.js";
-import { enableSemanticRecall } from "./ollama.js";
-import { resolveEmbeddingChoice } from "../settings.js";
+import { enableSemanticRecall, enableGenerationModel, probeOllama, ollamaModelPresent } from "./ollama.js";
+import { detectHardware, recommendTextModel } from "./hardware.js";
+import { cmdCommons } from "./commons.js";
+import {
+  resolveEmbeddingChoice,
+  resolveGenerationModel,
+  setSharedRecallEnabled,
+  setUpdateMode,
+  setDocsMode,
+  DEFAULT_UPDATE_MODE,
+  DEFAULT_DOCS_MODE,
+  type UpdateMode,
+  type DocsMode,
+} from "../settings.js";
 import type { InstallResult, ParsedArgs } from "./types.js";
 
 /**
@@ -173,6 +187,24 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   });
   if (bailed(chosen)) { p.cancel(CANCEL_MSG); return 1; }
 
+  // ── 2b. stop hook (claude-code only — the sole surface with hooks) ─────────
+  // Live-validated (#48), so it now defaults ON, but stays a visible toggle: if
+  // it ever gets noisy the user can turn it off here (or re-run
+  // `bastra install claude-code --no-stop-hook`).
+  let stopHook = args.withStopHook;
+  if ((chosen as string[]).includes("claude-code")) {
+    const hookAns = await p.select({
+      message: "Stop-hook for Claude Code? (at the end of a turn, suggests what's worth saving to memory)",
+      options: [
+        { value: "on", label: "Enable — recommended", hint: "silently writes save-suggestions to a file; no chat noise" },
+        { value: "off", label: "Off", hint: "enable later: bastra install claude-code --with-stop-hook" },
+      ],
+      initialValue: "on",
+    });
+    if (bailed(hookAns)) { p.cancel(CANCEL_MSG); return 1; }
+    stopHook = hookAns === "on";
+  }
+
   // ── 3. semantic recall ────────────────────────────────────────────────────
   // Same precedence as decideInstallRecallAction: --ollama/--no-ollama are
   // consent/opt-out and suppress the question; an already-effective provider
@@ -218,6 +250,112 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     semantic = answer as "on" | "later";
   }
 
+  // ── 4. generation text model ──────────────────────────────────────────────
+  // The text model rides on the Ollama server semantic recall uses. Offered when
+  // recall is freshly being enabled ("on"), OR already configured ("already")
+  // but no generation model is pulled yet — the common existing-user case (they
+  // set up embeddings before this step existed). Below the 16 GB RAM tier the
+  // recommendation is "none" and the step is skipped entirely.
+  let textModel: string | null = null;
+  let offerTextModel = semantic === "on";
+  // Only when recall actually runs on Ollama: the doc2query/rerank model is dead
+  // weight for an OpenAI-embedding install (the daemon's expander is Ollama-gated,
+  // index.ts). "already" can also mean provider "openai", so gate on the provider
+  // — not merely a coincidentally-running Ollama server.
+  if (semantic === "already" && choice.provider === "ollama") {
+    const probe = await probeOllama();
+    if (probe.ok && !(await ollamaModelPresent(await resolveGenerationModel()))) {
+      offerTextModel = true;
+    }
+  }
+  if (offerTextModel) {
+    const hw = detectHardware();
+    const rec = recommendTextModel(hw.ramGB);
+    if (rec.model) {
+      const options: { value: string; label: string; hint?: string }[] = [
+        { value: rec.model, label: `${rec.model} — recommended for ${hw.ramGB} GB`, hint: `~${rec.sizeGB} GB download` },
+      ];
+      if (rec.alt) {
+        options.push({ value: rec.alt.model, label: `${rec.alt.model} — ${rec.alt.note}`, hint: `~${rec.alt.sizeGB} GB download` });
+      }
+      options.push({ value: "", label: "Skip — keyword + semantic recall only", hint: "add later: bastra models set <model>" });
+      const ans = await p.select({
+        message: "Text model for memory rewriting (doc2query + rerank)?",
+        options,
+        initialValue: rec.model,
+      });
+      if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+      textModel = (ans as string) || null;
+    }
+  }
+
+  // ── 5. Bastra Commons — community recipe vault (read-only) ─────────────────
+  // Folds a public, curated recipe repo into recall as a second read-only index.
+  // Nothing of yours is shared: contributions go through PRs, never auto-egress.
+  let commonsOn = false;
+  {
+    const ans = await p.select({
+      message: "Bastra Commons? (community-curated engineering recipes, folded into recall read-only)",
+      options: [
+        { value: "off", label: "Not now", hint: "enable anytime: bastra commons enable" },
+        { value: "on", label: "Enable", hint: "clones a public recipe repo (read-only); nothing of yours is shared" },
+      ],
+      initialValue: "off",
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    commonsOn = ans === "on";
+  }
+
+  // ── 6. shared learned-recall bridges (opt-in, contributes via PR) ──────────
+  // Bridges live IN the Commons repo, so they only make sense once Commons is on.
+  // Enabling loads the shared vocabulary-expansion pool; contributing your own
+  // is a separate, explicit, PR-gated step — nothing auto-leaves the machine.
+  let bridgesOn = false;
+  if (commonsOn) {
+    const ans = await p.select({
+      message: "Shared learned-recall bridges? (widen recall with a community vocabulary pool from Commons)",
+      options: [
+        { value: "off", label: "Not now", hint: "enable anytime: bastra bridges enable" },
+        { value: "on", label: "Enable", hint: "loads shared bridges read-only; sharing your own is separate & PR-gated" },
+      ],
+      initialValue: "off",
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    bridgesOn = ans === "on";
+  }
+
+  // ── 7. auto-update behavior ────────────────────────────────────────────────
+  let updateMode: UpdateMode = DEFAULT_UPDATE_MODE;
+  {
+    const ans = await p.select({
+      message: "Auto-update behavior?",
+      options: [
+        { value: "notify", label: "Notify me when an update is available", hint: "recommended" },
+        { value: "auto", label: "Auto — install updates in the background" },
+        { value: "off", label: "Off — never check" },
+      ],
+      initialValue: DEFAULT_UPDATE_MODE,
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    updateMode = ans as UpdateMode;
+  }
+
+  // ── 8. product-doc capture ─────────────────────────────────────────────────
+  let docsMode: DocsMode = DEFAULT_DOCS_MODE;
+  {
+    const ans = await p.select({
+      message: "Auto-capture product docs? (keep a user-facing doc current when a feature area is finished)",
+      options: [
+        { value: "off", label: "Off", hint: "recommended to start" },
+        { value: "suggest", label: "Suggest — propose the doc, you confirm" },
+        { value: "auto", label: "Auto — write docs without asking" },
+      ],
+      initialValue: DEFAULT_DOCS_MODE,
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    docsMode = ans as DocsMode;
+  }
+
   // ── execute ───────────────────────────────────────────────────────────────
   if (vaultNeedsCreate) {
     const created = await createVaultAt(vaultPath!);
@@ -242,7 +380,7 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
         dryRun: false,
         vaultPath,
         force: false,
-        withStopHook: args.withStopHook,
+        withStopHook: stopHook,
       });
       results.push({ surface, r });
       if (r.status === "error") hadError = true;
@@ -269,6 +407,9 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
+  // Tracks whether recall is actually usable before we bolt a text-model download
+  // on top. Only the fresh-enable path can fail here; "already"/"later" start true.
+  let semanticOk = semantic !== "on";
   if (semantic === "on") {
     // No spinner here on purpose: brew/ollama stream their own progress to
     // stdout (a ~620 MB download deserves a real progress bar, not a spinner).
@@ -277,6 +418,7 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     if (r.status === "error" || r.status === "unsupported") {
       p.log.warn(`${r.message}\nSetting saved — finish setup, then re-run: bastra embeddings on`);
     } else if (r.activated) {
+      semanticOk = true;
       p.log.success(`Semantic recall: ${r.message}`);
     } else {
       // e.g. "env-override": nothing was provisioned — a green success here
@@ -286,6 +428,50 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   } else if (semantic === "later") {
     p.log.info(RECALL_OFF_NOTE);
   }
+
+  // Text model rides on the Ollama server semantic recall uses. Skip it on the
+  // fresh-enable path when that setup failed: the server can be up while the
+  // embedding-model pull failed — recall is then broken, so a multi-GB text-model
+  // download would be dead weight. The "already" path was gated up front.
+  if (textModel && semanticOk) {
+    p.log.step(`Pulling the text model ${textModel}…`);
+    const gr = await enableGenerationModel(textModel, { dryRun: false });
+    if (gr.activated) p.log.success(`Text model: ${gr.message}`);
+    else p.log.warn(`Text model: ${gr.message}\nAdd it later: bastra models set ${textModel}`);
+  }
+
+  // Bastra Commons — clone + enable (read-only recall enrichment). cmdCommons
+  // streams git progress to stdout (like the ollama pull above), so no spinner.
+  let commonsOk = false;
+  if (commonsOn) {
+    p.log.step("Enabling Bastra Commons — cloning the community recipe repo…");
+    const rc = await cmdCommons({ sub: "enable" });
+    commonsOk = rc === 0;
+    if (commonsOk) p.log.success("Bastra Commons: enabled (restart the daemon to load it)");
+    else p.log.warn("Bastra Commons: could not enable — try later: bastra commons enable");
+  }
+
+  // Shared learned-recall bridges — a settings toggle only (the pool lives IN the
+  // Commons clone). Enable only when that clone succeeded, else the daemon would
+  // report shared-recall ON with an empty pool and the state would misrepresent disk.
+  if (bridgesOn && commonsOk) {
+    await setSharedRecallEnabled(true);
+    p.log.success("Shared learned-recall: enabled (restart the daemon to load the bridge pool)");
+  } else if (bridgesOn) {
+    p.log.warn("Shared learned-recall: skipped (Commons couldn't be enabled) — after fixing: bastra commons enable && bastra bridges enable");
+  }
+
+  // Auto-update + product-doc capture: plain settings writes, applied on next boot.
+  // Only persist a non-default choice (a default pick needs no file change).
+  if (updateMode !== DEFAULT_UPDATE_MODE) {
+    await setUpdateMode(updateMode);
+    p.log.success(`Auto-update: ${updateMode}`);
+  }
+  if (docsMode !== DEFAULT_DOCS_MODE) {
+    await setDocsMode(docsMode);
+    p.log.success(`Product-doc capture: ${docsMode}`);
+  }
+
   p.outro(`Done. Restart ${restart} to pick up the memory tool.`);
   return 0;
 }

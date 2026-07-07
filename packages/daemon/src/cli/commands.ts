@@ -38,6 +38,10 @@ Commands:
                              (~620 MB) and persists the choice; 'off' returns
                              to BM25 keyword-only; 'status' shows the effective
                              provider and how it was resolved
+  models [status|recommend|  Local text model for memory rewriting (doc2query +
+    set <tag>]               rerank). 'status' shows the active model + this
+                             machine's RAM-tier recommendation; 'set' pulls a
+                             model + persists it (e.g. gemma4:12b on a 24 GB+ box)
   config get <key>           Read a setting (e.g. update.mode)
   config set <key> <value>   Write a setting (update.mode = notify|auto|off,
                              docs.mode = off|suggest|auto, docs.language = en|de|…)
@@ -73,7 +77,7 @@ Options:
   --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~620 MB)
   --no-ollama                Skip the Ollama setup (semantic recall uses BM25 keyword search)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
-  --with-stop-hook           Install optional Stop save-eval hook
+  --no-stop-hook             Skip the Stop save-eval hook (registered by default)
   --help, -h                 Show this help
   --version, -v              Show version
 
@@ -104,7 +108,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     quiet: false,
     yes: false,
     fix: false,
-    withStopHook: false,
+    // Stop save-eval hook is registered by default since #48 (live-validated,
+    // silent file-relay — no chat noise). Opt out with --no-stop-hook.
+    withStopHook: true,
     staged: false,
     ollama: null,
     positional: [],
@@ -120,7 +126,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "-q" || a === "--quiet") result.quiet = true;
     else if (a === "--yes" || a === "-y") result.yes = true;
     else if (a === "--fix") result.fix = true;
-    else if (a === "--with-stop-hook") result.withStopHook = true;
+    else if (a === "--with-stop-hook") result.withStopHook = true; // kept for compat — now the default
+    else if (a === "--no-stop-hook") result.withStopHook = false;
     else if (a === "--staged") result.staged = true;
     else if (a === "--ollama") result.ollama = "auto";
     else if (a === "--no-ollama") result.ollama = "skip";

@@ -6,6 +6,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.7] — 2026-07-07
+
+### Added
+- **Guided-install wizard, expanded to 8 steps**: beyond vault / clients /
+  semantic recall / text model, the wizard now offers the Claude Code **Stop
+  hook** (default on), **Bastra Commons** (community recipe vault, read-only,
+  default off), **shared learned-recall bridges** (default off, only when
+  Commons is on), **auto-update mode**, and **product-doc capture** — each a
+  cancellable selection with safe defaults.
+- **`bastra models` command** (`status` / `recommend` / `set <tag>`): inspect
+  or set the local generation (doc2query + rerank) text model, hardware-tiered
+  by this machine's RAM (`cli/hardware.ts`); the choice persists to
+  cli-settings.json so Windows/Linux installs carry it too.
+
+### Changed
+- **Stop save-eval hook is now registered by default** (live-validated #48; it
+  has been silent since the file-relay redesign — suggestions go to
+  `pending-suggestions.json`, read by the next session, no chat noise). Opt out
+  with `--no-stop-hook`. A silent background auto-update never bolts it onto a
+  user who hasn't opted in — only a real `bastra install` / the wizard does.
+- **Text-model wizard step also reaches existing users**: when semantic recall
+  already runs on Ollama but no generation model is pulled yet, the wizard
+  offers to add one (skipped for OpenAI-embedding installs, where the daemon's
+  expander never runs).
+- **Bastra Commons repository is now public** — anonymous read-only clone, no
+  GitHub login required.
+
+### Fixed
+- **Commons clone can no longer hang on a git login prompt**: clone/pull run
+  with `GIT_TERMINAL_PROMPT=0`, so an unreachable/private repo fails fast and
+  the wizard continues instead of blocking.
+- **Wizard robustness**: the text-model download no longer runs after a failed
+  semantic-recall setup; bridges are enabled only when the Commons clone
+  actually succeeded.
+
 ## [0.7.6] — 2026-07-04
 
 > Versioning note: from this release on, the `-beta.N` suffix is dropped — the
@@ -369,6 +404,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.7.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.7
 [0.7.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.6
 [0.7.0-beta.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.5
 [0.7.0-beta.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.0-beta.4

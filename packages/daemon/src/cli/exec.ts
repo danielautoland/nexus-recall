@@ -20,10 +20,14 @@ export interface RunResult {
  * spawnSync with a hard timeout and a closed stdin. stdin:"ignore" means a
  * brew sudo prompt fails fast instead of hanging a non-interactive run.
  */
-export function run(bin: string, args: string[], opts: { timeoutMs: number; showProgress?: boolean }): RunResult {
+export function run(bin: string, args: string[], opts: { timeoutMs: number; showProgress?: boolean; env?: Record<string, string> }): RunResult {
   const r = spawnSync(bin, args, {
     stdio: opts.showProgress ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
     timeout: opts.timeoutMs,
+    // Merge onto process.env (never replace it — git needs PATH/HOME). Callers
+    // pass e.g. GIT_TERMINAL_PROMPT=0 so a non-anonymous clone fails fast instead
+    // of blocking on a /dev/tty username prompt (stdin:"ignore" alone doesn't stop that).
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
   });
   if (r.error) {
     const code = (r.error as NodeJS.ErrnoException).code;
