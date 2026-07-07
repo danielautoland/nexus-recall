@@ -45,8 +45,14 @@
  *   - Ohne gesetzten Token läuft alles offen — dev/local mode.
  *
  * CORS (für /api/v1/*):
- *   - BASTRA_CORS_ORIGIN (default "*") — bei Tunneling mit eigener Domain
- *     auf konkrete Origin einschränken.
+ *   - BASTRA_CORS_ORIGIN (default LEER = deny-all, #95) — Komma-Liste erlaubter
+ *     Browser-Origins; nur gelistete werden zurückgespiegelt. "*" bleibt als
+ *     explizites Tunnel/Dev-Opt-in. Für die Prod-Admin-App gehört ihre HTTPS-
+ *     Origin (z.B. https://bastra.io) in die Liste.
+ *   - Private Network Access: ein Preflight von öffentlicher HTTPS-Origin auf
+ *     den localhost-Daemon wird automatisch mit
+ *     `Access-Control-Allow-Private-Network: true` beantwortet (nur wenn die
+ *     Origin erlaubt ist).
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -284,7 +290,15 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     // CORS preflight for /api/v1/*
     if (method === "OPTIONS" && url.startsWith("/api/v1/")) {
-      sendCors(res, resolveCorsOrigin(req.headers.origin, corsAllow));
+      const allowedOrigin = resolveCorsOrigin(req.headers.origin, corsAllow);
+      // Private Network Access (Chrome): ein Preflight von öffentlicher HTTPS-
+      // Origin auf die localhost-Ressource (Prod-Admin-App https://bastra.io →
+      // 127.0.0.1-Daemon) trägt diesen Request-Header und wird sonst geblockt.
+      // Nur beim Preflight beantworten, nur wenn die Origin erlaubt ist.
+      const allowPrivateNetwork =
+        allowedOrigin !== null &&
+        req.headers["access-control-request-private-network"] === "true";
+      sendCors(res, allowedOrigin, { allowPrivateNetwork });
       res.writeHead(204);
       res.end();
       return;
@@ -928,7 +942,11 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function sendCors(res: ServerResponse, origin: string | null): void {
+function sendCors(
+  res: ServerResponse,
+  origin: string | null,
+  opts?: { allowPrivateNetwork?: boolean },
+): void {
   // Nur spiegeln, wenn die Origin erlaubt ist (null = nicht erlaubt → kein
   // ACAO-Header, der Browser blockt die Response selbst). Vary: Origin, damit
   // Caches/Proxies die per-Origin-Antwort nicht über Origins hinweg vermischen.
@@ -942,6 +960,13 @@ function sendCors(res: ServerResponse, origin: string | null): void {
     "Content-Type, Authorization",
   );
   res.setHeader("Access-Control-Max-Age", "600");
+  // Private Network Access: Chrome verlangt bei einem Preflight von öffentlicher
+  // HTTPS-Origin auf eine private/localhost-Ressource diesen Antwort-Header,
+  // sonst blockt es den Call. Wird nur beim OPTIONS-Preflight gesetzt (Caller
+  // entscheidet) und nur bei erlaubter Origin — konsistent mit dem ACAO-Header.
+  if (opts?.allowPrivateNetwork && origin) {
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
