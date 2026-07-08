@@ -55,6 +55,13 @@ export interface CliSettings {
   // are rejected (secure by default). Created on demand by `bastra token`; the
   // daemon reads it at startup as the Bearer the bastra.io web app must present.
   api?: { token: string };
+  // Browser-bridge CORS allowlist: undefined = none stored → the daemon falls
+  // back to the (empty) env allowlist BASTRA_CORS_ORIGIN, so browser origins stay
+  // locked out until opted in. Written additively by `bastra token --origin <url>`
+  // (dedupe, origin-validated); the daemon reads it at startup when
+  // BASTRA_CORS_ORIGIN is unset/empty — mirroring how api.token backstops
+  // BASTRA_API_TOKEN. Each entry is a bare scheme://host[:port] origin (no path).
+  cors?: { origins: string[] };
   // Bastra Commons (community recipe vault): undefined = disabled. Enabled via
   // `bastra commons enable`; the daemon then loads the cloned repo as a
   // read-only second BM25 index.
@@ -106,6 +113,27 @@ export function isEmbeddingProviderName(v: unknown): v is EmbeddingProviderName 
 }
 
 /**
+ * Normalizes a CORS origin to its bare `scheme://host[:port]` form (what the
+ * browser sends in the Origin header, so http.ts can compare it byte-for-byte
+ * against reqOrigin). Returns null for anything that isn't an http(s) origin
+ * without a path/query/hash/credentials — those are dropped, never stored.
+ */
+export function normalizeCorsOrigin(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  let u: URL;
+  try {
+    u = new URL(v.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  // Must be JUST an origin: no path (beyond the implicit "/"), query, hash, or
+  // embedded credentials — a stored value has to equal what a browser reflects.
+  if ((u.pathname !== "/" && u.pathname !== "") || u.search || u.hash || u.username || u.password) return null;
+  return u.origin;
+}
+
+/**
  * Reads stored settings. A missing file → silent defaults (normal: not created
  * yet). A *corrupt* file → loud warning + defaults, and we do NOT silently
  * revert (callers that write will repair it). Never throws.
@@ -119,7 +147,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; cors?: { origins?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -149,6 +177,31 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.api?.token === "string" && data.api.token.length > 0) {
     settings.api = { token: data.api.token };
+  }
+  if (data?.cors !== undefined) {
+    // Same policy as the other optional blocks: keep the valid entries, drop the
+    // rest with a warning — a corrupt origin must never widen the allowlist.
+    const rawOrigins = data.cors.origins;
+    if (!Array.isArray(rawOrigins)) {
+      if (rawOrigins !== undefined) {
+        process.stderr.write(
+          `[bastra-recall] cli-settings.json: ignoring invalid cors.origins ${JSON.stringify(rawOrigins)} (expected an array)\n`,
+        );
+      }
+    } else {
+      const origins: string[] = [];
+      for (const raw of rawOrigins) {
+        const norm = normalizeCorsOrigin(raw);
+        if (norm === null) {
+          process.stderr.write(
+            `[bastra-recall] cli-settings.json: ignoring invalid cors.origins entry ${JSON.stringify(raw)}\n`,
+          );
+        } else if (!origins.includes(norm)) {
+          origins.push(norm);
+        }
+      }
+      if (origins.length > 0) settings.cors = { origins };
+    }
   }
   if (typeof data?.commons?.enabled === "boolean") {
     settings.commons = { enabled: data.commons.enabled };
@@ -338,6 +391,35 @@ export async function setOllamaAutostart(on: boolean, path: string = settingsFil
 /** The stored REST API token, or undefined when none has been issued. */
 export async function getApiToken(path?: string): Promise<string | undefined> {
   return (await readSettings(path)).api?.token;
+}
+
+/**
+ * The stored browser-bridge CORS origins (empty when none set). The daemon uses
+ * these as the allowlist when BASTRA_CORS_ORIGIN is unset/empty (env is the ops
+ * override). Values are already normalized + validated by readSettings.
+ */
+export async function getCorsOrigins(path?: string): Promise<string[]> {
+  return (await readSettings(path)).cors?.origins ?? [];
+}
+
+/**
+ * Additively allows a browser Origin, merging into existing settings. The url is
+ * normalized to its bare scheme://host[:port] form and deduped; an invalid one
+ * (not an http(s) origin, or carrying a path) is warned about on stderr and
+ * dropped — the allowlist is never widened by a malformed value.
+ */
+export async function addCorsOrigin(url: string, path: string = settingsFilePath()): Promise<void> {
+  const origin = normalizeCorsOrigin(url);
+  if (origin === null) {
+    process.stderr.write(
+      `[bastra-recall] ignoring invalid --origin ${JSON.stringify(url)} — expected an origin like https://your.host (scheme + host, no path)\n`,
+    );
+    return;
+  }
+  const current = await readSettings(path);
+  const existing = current.cors?.origins ?? [];
+  if (existing.includes(origin)) return; // already allowed — nothing to write
+  await writeSettings({ ...current, cors: { origins: [...existing, origin] } }, path);
 }
 
 /** Persists an explicit API token atomically (merging into existing settings). */

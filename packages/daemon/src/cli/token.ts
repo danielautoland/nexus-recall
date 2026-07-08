@@ -12,9 +12,9 @@
  *
  * stdout = the bare token (script-friendly); stderr = the human hint.
  */
-import { ensureApiToken, clearApiToken } from "../settings.js";
+import { ensureApiToken, clearApiToken, addCorsOrigin, normalizeCorsOrigin } from "../settings.js";
 
-export async function cmdToken(args: { sub: string | null; json: boolean }): Promise<number> {
+export async function cmdToken(args: { sub: string | null; json: boolean; origin?: string | null }): Promise<number> {
   if (args.sub && args.sub !== "rotate" && args.sub !== "show" && args.sub !== "clear") {
     process.stderr.write(
       `error: unknown 'token' subcommand '${args.sub}' — use 'bastra token', 'bastra token rotate', or 'bastra token clear'\n`,
@@ -42,13 +42,26 @@ export async function cmdToken(args: { sub: string | null; json: boolean }): Pro
   const rotate = args.sub === "rotate";
   const token = await ensureApiToken({ rotate });
 
+  // Optional one-step onboarding: also allowlist the browser Origin so the web
+  // app can reach the daemon without hand-editing the launchd plist / env.
+  // addCorsOrigin validates + warns on stderr when the value isn't a real
+  // origin; allowedOrigin is the normalized form (null when invalid/absent).
+  let allowedOrigin: string | null = null;
+  if (args.origin != null) {
+    await addCorsOrigin(args.origin);
+    allowedOrigin = normalizeCorsOrigin(args.origin);
+  }
+
   if (args.json) {
-    process.stdout.write(JSON.stringify({ token, rotated: rotate }) + "\n");
+    process.stdout.write(
+      JSON.stringify({ token, rotated: rotate, ...(args.origin != null ? { origin: allowedOrigin } : {}) }) + "\n",
+    );
     return 0;
   }
   process.stdout.write(token + "\n");
   process.stderr.write(
     (rotate ? "↻ rotated — the previous token no longer works.\n" : "") +
+      (allowedOrigin ? `✓ allowed origin ${allowedOrigin} for the browser bridge.\n` : "") +
       "Paste into bastra.io → Settings → Recall, then restart the daemon so it\n" +
       "loads the token (the next recall respawns it): bastra update\n",
   );

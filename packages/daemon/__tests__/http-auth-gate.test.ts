@@ -11,7 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { corsAllowlistFromEnv, resolveCorsOrigin, gateApiRequest, safeEqual, isLoopbackHost } from "../src/http.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { corsAllowlistFromEnv, resolveCorsAllowlist, resolveCorsOrigin, gateApiRequest, safeEqual, isLoopbackHost } from "../src/http.js";
+import { addCorsOrigin, getCorsOrigins } from "../src/settings.js";
 
 const SITE = "https://bastra.io";
 const TOKEN = "secret-token";
@@ -149,6 +153,39 @@ test("corsAllowlist (#95): milestone test D — evil.com + valid token → 403 o
   );
   // Explicit legacy "*" would still let it through (the documented tunnel/dev tradeoff).
   assert.equal(resolveCorsOrigin("https://evil.com", corsAllowlistFromEnv("*")), "https://evil.com");
+});
+
+// ── CORS allowlist source: env override vs cli-settings (`bastra token --origin`)
+test("resolveCorsAllowlist: env wins when set; cli-settings when env empty", () => {
+  const stored = ["https://stored.dev"];
+  // env (ops override) present → env wins, cli-settings ignored.
+  assert.deepEqual(resolveCorsAllowlist([SITE], stored), [SITE]);
+  // env empty → the origins minted by `bastra token --origin` apply.
+  assert.deepEqual(resolveCorsAllowlist([], stored), stored);
+  // neither → empty allowlist = deny all browser origins (secure by default).
+  assert.deepEqual(resolveCorsAllowlist([], []), []);
+});
+
+test("addCorsOrigin → getCorsOrigins: normalizes, dedupes, drops invalid", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-cors-"));
+  const path = join(dir, "cli-settings.json");
+  // Silence the intentional "ignoring invalid …" warning so the run stays clean.
+  const origErr = process.stderr.write.bind(process.stderr);
+  let warned = 0;
+  // @ts-expect-error test shim: swallow stderr, count the warnings we expect.
+  process.stderr.write = () => { warned++; return true; };
+  try {
+    await addCorsOrigin(SITE, path);
+    await addCorsOrigin(SITE, path); // exact dup → not appended
+    await addCorsOrigin("http://localhost:5173/", path); // trailing slash → normalized to bare origin
+    await addCorsOrigin("https://bastra.io/app?x=1", path); // has a path → invalid, dropped
+    await addCorsOrigin("not-a-url", path); // unparseable → dropped
+    assert.deepEqual(await getCorsOrigins(path), [SITE, "http://localhost:5173"]);
+    assert.ok(warned >= 2, "both invalid origins should warn");
+  } finally {
+    process.stderr.write = origErr;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ── safeEqual: timing-safe Token-Vergleich ───────────────────────────

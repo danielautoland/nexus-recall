@@ -48,6 +48,9 @@ Commands:
   token [rotate|clear]       Print the REST API token (mint on first use) for
                              browser/REST clients; 'rotate' issues a fresh one,
                              'clear' removes it (locks out browser/REST clients)
+    [--origin <url>]         With 'token': also allowlist this browser Origin
+                             (e.g. https://bastra.io) so the web app can reach
+                             the daemon — no plist/env editing needed
   commons <enable|update|disable|status>
                              Bastra Commons: community-proven recipes as a
                              read-only second recall index (git-synced)
@@ -113,6 +116,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     withStopHook: true,
     staged: false,
     ollama: null,
+    origin: null,
     positional: [],
   };
 
@@ -135,6 +139,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       result.vaultPath = argv[++i] ?? null;
     } else if (a.startsWith("--vault=")) {
       result.vaultPath = a.slice("--vault=".length);
+    } else if (a === "--origin") {
+      result.origin = argv[++i] ?? null;
+    } else if (a.startsWith("--origin=")) {
+      result.origin = a.slice("--origin=".length);
     } else if (a.startsWith("--")) {
       process.stderr.write(`warning: unknown flag '${a}' ignored\n`);
     } else {

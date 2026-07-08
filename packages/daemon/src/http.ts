@@ -91,6 +91,7 @@ import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
 import {
   getApiToken,
+  getCorsOrigins,
   getDocsLanguage,
   getDocsMode,
   setDocsLanguage,
@@ -200,6 +201,16 @@ export function corsAllowlistFromEnv(raw: string | undefined): string[] {
 }
 
 /**
+ * The effective CORS allowlist from its two sources, env as the ops override —
+ * mirroring how BASTRA_API_TOKEN backstops the minted token: a non-empty
+ * BASTRA_CORS_ORIGIN wins outright; otherwise the origins that `bastra token
+ * --origin` wrote into cli-settings.json apply. Exported for unit tests.
+ */
+export function resolveCorsAllowlist(fromEnv: readonly string[], fromSettings: readonly string[]): string[] {
+  return fromEnv.length > 0 ? [...fromEnv] : [...fromSettings];
+}
+
+/**
  * Which Origin to reflect in `Access-Control-Allow-Origin`. `null` = the origin
  * isn't allowed → emit no ACAO header and the browser blocks the response. "*"
  * in the allowlist is permissive (tunnel/dev): reflect the caller's origin, or
@@ -257,7 +268,10 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   // wird die Request-Origin nur zurückgespiegelt, wenn sie erlaubt ist — sonst
   // kein ACAO-Header und der Browser blockt die Response selbst. Browser-
   // Requests (Origin gesetzt) müssen zusätzlich das Token tragen (siehe Gate).
-  const corsAllow = corsAllowlistFromEnv(process.env.BASTRA_CORS_ORIGIN);
+  // Quelle wie beim Token: env gewinnt als Ops-Override; sonst die von
+  // `bastra token --origin` in cli-settings.json freigeschaltete Liste.
+  const fromEnv = corsAllowlistFromEnv(process.env.BASTRA_CORS_ORIGIN);
+  const corsAllow = resolveCorsAllowlist(fromEnv, await getCorsOrigins());
   if (corsAllow.includes("*") && apiToken) {
     console.error(
       "[bastra-recall] WARNING: BASTRA_CORS_ORIGIN=* with a minted API token — ANY website that obtains the token can call /api/v1/* from the browser. Set an explicit allowlist: BASTRA_CORS_ORIGIN=https://your.host",

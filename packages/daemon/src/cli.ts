@@ -48,7 +48,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "config": return cmdConfig(args);
     case "embeddings": return cmdEmbeddings({ sub: args.surface });
     case "models": return cmdModels({ sub: args.surface, positional: args.positional });
-    case "token": return cmdToken({ sub: args.surface, json: args.json });
+    case "token": return cmdToken({ sub: args.surface, json: args.json, origin: args.origin });
     case "commons": return cmdCommons({ sub: args.surface, positional: args.positional });
     case "bridges": return cmdBridges({ sub: args.surface, positional: args.positional });
     default:

@@ -56,6 +56,10 @@ export interface ParsedArgs {
   // → "skip"; null → ask ONCE at the end of a successful install (TTY only,
   // never with --yes/--dry-run; non-TTY prints the `bastra embeddings on` hint).
   ollama: "auto" | "skip" | null;
+  // `token --origin <url>`: mint the token AND allowlist this browser Origin in
+  // cli-settings.json in one step (so onboarding is a single command). null =
+  // flag absent → `bastra token` behaves exactly as before.
+  origin: string | null;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];
