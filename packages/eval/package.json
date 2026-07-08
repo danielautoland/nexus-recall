@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.0",
     "typescript": "^6.0.3"
   },
   "homepage": "https://bastra.io"
