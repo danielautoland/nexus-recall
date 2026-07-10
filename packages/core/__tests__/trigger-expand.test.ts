@@ -73,13 +73,14 @@ async function vaultWith(ids: string[]): Promise<{ dir: string; vault: Vault }> 
 
 // ── pure helpers ───────────────────────────────────────────────────
 
-test("buildExpandPrompt carries title/summary/triggers and asks for reworded bilingual phrases", () => {
+test("buildExpandPrompt carries title/summary/triggers and asks for reworded phrases in the note's language", () => {
   const p = buildExpandPrompt(fakeMemory());
   assert.match(p, /NSPanel closes when sheet attaches/);
   assert.match(p, /resignKey observer must respect attachedSheet/);
   assert.match(p, /nspanel resignkey \| panel closes/);
   assert.match(p, /DIFFERENT words/);
-  assert.match(p, /German and English/);
+  assert.match(p, /SAME language/);
+  assert.doesNotMatch(p, /German and English/);
 });
 
 test("parseExpansions strips bullets/numbering and trims", () => {

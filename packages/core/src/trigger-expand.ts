@@ -171,7 +171,7 @@ export function sourceHash(m: Memory): string {
 }
 
 /** Build the doc2query prompt: ask for short, reworded search phrases in the
- *  vault's bilingual register, deliberately avoiding the existing trigger words.
+ *  note's own language(s), deliberately avoiding the existing trigger words.
  *  Source fields are scrubbed of injected context blocks (#149) so quoted hook
  *  scaffolding never seeds paraphrases; sourceHash stays on the RAW fields —
  *  re-expansion keys on author edits, not on scrub behavior. */
@@ -189,7 +189,9 @@ export function buildExpandPrompt(m: Memory): string {
     '  selbst" — NOT a slug, tag, id, filename, or hyphen-chain like "panel-close-fix".',
     "- Use ONLY concepts that appear in the memory below. Never invent product names,",
     "  companies, people, dates, or files that are not in it.",
-    "- Mix German and English naturally (the vault is bilingual).",
+    "- Write every query in the SAME language(s) the note itself uses — never",
+    "  translate. A note in one language gets queries in that language; a note",
+    "  that mixes languages may mix the same way.",
     "- One query per line. No numbering, no quotes, no commentary, no headings.",
     "",
     `Title: ${clean(m.fm.title)}`,
