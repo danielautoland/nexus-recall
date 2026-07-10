@@ -179,13 +179,16 @@ export function extractWikilinks(body: string): string[] {
 export function slugify(input: string): string {
   const lower = input
     .toLowerCase()
-    .normalize("NFKD")
-    .replace(/\p{Diacritic}/gu, "");
-  const slug = lower
+    // Umlaut-Transliteration MUSS vor NFKD laufen: NFKD zerlegt ä→a+combining,
+    // der Diacritic-Strip macht daraus ein nacktes "a", und ein späteres
+    // .replace(/ä/) fände dann kein ä mehr (→ ä/ö/ü würden zu a/o/u verstümmelt).
     .replace(/ä/g, "ae")
     .replace(/ö/g, "oe")
     .replace(/ü/g, "ue")
     .replace(/ß/g, "ss")
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "");
+  const slug = lower
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, SLUG_MAX_LEN);
