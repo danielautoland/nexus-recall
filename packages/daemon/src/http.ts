@@ -632,6 +632,9 @@ function handleHookAct(req: IncomingMessage, res: ServerResponse, telemetry: Tel
           excerpt_chars: excerpt.length,
           matched_episodes: episodes.length,
           exit_code: exitCode,
+          // Claude-Session-id ins Event — ohne sie stempelt der Sink seine
+          // Boot-UUID und der Transcript-Join ist unmöglich (Audit 2026-07-10).
+          ...(sessionId ? { session_id: sessionId } : {}),
         }),
       );
       sendJson(res, 200, { matched: episodes.length });

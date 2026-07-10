@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
@@ -153,5 +153,49 @@ test("/hook/act miss leaves the episode OPEN — a later matching act still clos
     assert.equal((JSON.parse(hit.body) as { matched: number }).matched, 1);
   } finally {
     await srv.close();
+  }
+});
+
+test("/hook/act logs the CLAUDE session id on the hook_act event, not the daemon boot uuid", async () => {
+  // Audit 2026-07-10: handleHookAct nutzte die session_id fürs Episode-
+  // Matching, loggte sie aber nicht — der Sink stempelte seine Boot-UUID und
+  // machte den per-Session-Join gegen Transcripts strukturell unmöglich.
+  const logDir = await mkdtemp(join(tmpdir(), "bastra-act-log-"));
+  const prevLogPath = process.env.BASTRA_LOG_PATH;
+  process.env.BASTRA_LOG_PATH = logDir;
+  try {
+    const srv = await makeServer();
+    try {
+      const res = await httpPost(srv.port, "/hook/act", {
+        tool_name: "Bash",
+        tool_input_excerpt: "echo cross-check",
+        exit_code: null,
+        session_id: "claude-session-cross-check",
+      });
+      assert.equal(res.status, 200);
+      // write() ist fire-and-forget — kurz auf die Event-Zeile pollen.
+      const day = new Date().toISOString().slice(0, 10);
+      const eventsPath = join(logDir, `events-${day}.jsonl`);
+      let line = "";
+      for (let i = 0; i < 20 && !line; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        try {
+          const raw = await readFile(eventsPath, "utf8");
+          line = raw.split("\n").filter((l) => l.includes('"hook_act"')).pop() ?? "";
+        } catch {
+          // Datei existiert noch nicht — weiter pollen
+        }
+      }
+      assert.ok(line, "hook_act event was not written");
+      const event = JSON.parse(line) as { session_id: string; exit_code: number | null };
+      assert.equal(event.session_id, "claude-session-cross-check");
+      assert.equal(event.exit_code, null); // act ohne Exit-Code zählt trotzdem
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    if (prevLogPath === undefined) delete process.env.BASTRA_LOG_PATH;
+    else process.env.BASTRA_LOG_PATH = prevLogPath;
+    await rm(logDir, { recursive: true, force: true });
   }
 });

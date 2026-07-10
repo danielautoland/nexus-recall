@@ -2,6 +2,7 @@ import { describe, it, beforeEach } from "node:test";
 import { strict as assert } from "node:assert";
 import { unlink } from "node:fs/promises";
 import {
+  invokesOwnBinary,
   readExitCode,
   extractErrorContext,
   extractCommandHead,
@@ -199,6 +200,51 @@ describe("bash-fail-hook: #144 act-signal", () => {
     }
   });
 
+  it("no-exit-code payload (current Claude Code schema) still sends /hook/act with exit_code null", async () => {
+    // Audit 2026-07-10: aktuelle Payloads tragen kein Exit-Code-Feld mehr —
+    // ein frühes `exitCode === null → return` machte den act-Kanal tot
+    // (15 von ~7200 erwarteten Signalen in 3 Tagen).
+    const daemon = await startRecordingDaemon();
+    try {
+      const stdout = await runFailHook(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          session_id: `act-noexit-${Date.now()}`,
+          tool_input: { command: "npm test" },
+          tool_response: { stdout: "ok", stderr: "", interrupted: false, isImage: false, noOutputExpected: false },
+        },
+        daemon.port,
+      );
+      assert.equal(stdout.trim(), "{}");
+      const paths = daemon.seen.map((r) => r.path);
+      assert.deepEqual(paths, ["/hook/act"]); // act ja, fail-recall nein
+      assert.equal(daemon.seen[0].body.exit_code, null);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("interrupted:true (current-schema Ctrl-C) sends nothing at all", async () => {
+    const daemon = await startRecordingDaemon();
+    try {
+      const stdout = await runFailHook(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          session_id: `act-intr-${Date.now()}`,
+          tool_input: { command: "npm run dev" },
+          tool_response: { stdout: "", stderr: "", interrupted: true },
+        },
+        daemon.port,
+      );
+      assert.equal(stdout.trim(), "{}");
+      assert.equal(daemon.seen.length, 0);
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it("Ctrl-C (130) sends nothing at all", async () => {
     const daemon = await startRecordingDaemon();
     try {
@@ -217,5 +263,27 @@ describe("bash-fail-hook: #144 act-signal", () => {
     } finally {
       await daemon.close();
     }
+  });
+});
+
+describe("bash-fail-hook: invokesOwnBinary (self-exclusion guard)", () => {
+  it("does NOT match commands that merely contain the repo name in a path", () => {
+    assert.equal(invokesOwnBinary("git -C /Users/x/Projekte/bastra-recall status"), false);
+    assert.equal(invokesOwnBinary("node /tmp/claude-501/-Users-x-Projekte-bastra-recall/scratch/migrate.mjs"), false);
+    assert.equal(invokesOwnBinary("grep -rn foo packages/daemon/src --include='*.ts'"), false);
+    assert.equal(invokesOwnBinary("tail -5 /Users/x/Projekte/bastra-recall/README.md"), false);
+  });
+  it("matches actual invocations of our binaries", () => {
+    assert.equal(invokesOwnBinary("bastra-recall install"), true);
+    assert.equal(invokesOwnBinary("npx bastra-recall install all"), true);
+    assert.equal(invokesOwnBinary("npx -y bastra-recall doctor"), true);
+    assert.equal(invokesOwnBinary("node_modules/.bin/bastra-recall-hook"), true);
+    assert.equal(invokesOwnBinary("FOO=1 bastra-recall status"), true);
+    assert.equal(invokesOwnBinary("echo hi && bastra-recall update"), true);
+    assert.equal(invokesOwnBinary("echo $(bastra-recall status)"), true);
+  });
+  it("does not match unrelated programs with similar prefixes", () => {
+    assert.equal(invokesOwnBinary("bastra-recallish --help"), false);
+    assert.equal(invokesOwnBinary("mybastra-recall run"), false);
   });
 });

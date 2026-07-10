@@ -94,15 +94,25 @@ async function main(): Promise<void> {
   // `tool_response` have both been observed. Accept either.
   const result = (payload.tool_result ?? payload.tool_response ?? {}) as Record<string, unknown>;
   const exitCode = readExitCode(result);
-  if (exitCode === null) return emitEmpty();
+  // Aktuelle Claude-Code-Payloads tragen GAR KEIN Exit-Code-Feld mehr (nur
+  // stdout/stderr/interrupted/…) — readExitCode() liefert dann null. Das
+  // act-Signal muss trotzdem feuern (PostToolUse = Command lief); nur der
+  // Fail-Hint unten braucht einen echten non-zero Code. Ein frühes
+  // `exitCode === null → return` war ein Kill-Switch: 3-Tage-Audit 2026-07-10
+  // fand 15 von ~7200 erwarteten act-Signalen (0,2 %).
   if (exitCode === 130) return emitEmpty(); // SIGINT — user Ctrl-C
+  if (result.interrupted === true) return emitEmpty(); // Schema-Äquivalent von 130
 
   const toolInput = (payload.tool_input ?? {}) as Record<string, unknown>;
   const command = typeof toolInput.command === "string" ? toolInput.command : "";
   if (!command.trim()) return emitEmpty();
 
-  // No loop on our own binaries.
-  if (/\bbastra-recall(?:-[a-z-]+)?\b/.test(command)) return emitEmpty();
+  // No loop on our own binaries — matcht das AUFGERUFENE Programm (Basename
+  // pro Pipeline-/Subshell-Segment), nicht einen Substring: der frühere
+  // Substring-Test traf auch jeden Pfad, der den Repo-Namen enthält
+  // („…/Projekte/bastra-recall/…") und schluckte im Dogfood-Repo ~75 % der
+  // Commands.
+  if (invokesOwnBinary(command)) return emitEmpty();
 
   const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
   const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
@@ -126,7 +136,9 @@ async function main(): Promise<void> {
 
   // Success path ends here — the act-signal was the only job. The daemon-side
   // hook_act event is the telemetry record; no hint, no local log line.
-  if (exitCode === 0) return emitEmpty();
+  // exitCode === null: Command lief, aber das Payload trägt keinen Code —
+  // ohne bekannten Fehler gibt es auch keinen Fail-Hint.
+  if (exitCode === null || exitCode === 0) return emitEmpty();
 
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "default";
   if (await isThrottled(sessionId)) return emitEmpty();
@@ -230,6 +242,26 @@ async function main(): Promise<void> {
 
 function emitEmpty(): void {
   process.stdout.write("{}");
+}
+
+/** True, wenn ein Pipeline-/Subshell-Segment tatsächlich eines unserer
+ *  Binaries aufruft (`bastra-recall`, `bastra-recall-*`) — geprüft am
+ *  Basename des aufgerufenen Programms, damit Pfade, die den Repo-Namen nur
+ *  ENTHALTEN, nicht matchen. `npx`/`node`-Wrapper, Flags und env-Prefixe
+ *  werden übersprungen. */
+export function invokesOwnBinary(command: string): boolean {
+  for (const segment of command.split(/[|;&]+|\$\(|`/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean);
+    let program = "";
+    for (const w of words) {
+      if (w === "npx" || w === "node" || w.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
+      program = w;
+      break;
+    }
+    const base = program.split("/").pop() ?? "";
+    if (/^bastra-recall(?:-[a-z-]+)?$/.test(base)) return true;
+  }
+  return false;
 }
 
 function readExitCode(result: Record<string, unknown>): number | null {
@@ -408,7 +440,9 @@ function postRecall(
  *  delay the hook's main job. */
 function postAct(
   baseUrl: string,
-  body: { tool_name: string; tool_input_excerpt: string; exit_code: number; session_id: string | null },
+  // exit_code null = Command lief, aber das aktuelle Claude-Code-Payload
+  // trägt kein Exit-Code-Feld — das act-Signal zählt trotzdem (#144-Audit).
+  body: { tool_name: string; tool_input_excerpt: string; exit_code: number | null; session_id: string | null },
   timeoutMs: number,
 ): Promise<void> {
   return new Promise((resolve) => {
@@ -498,12 +532,6 @@ export {
   THROTTLE_WINDOW_MS,
 };
 
-const killSwitch = setTimeout(() => {
-  emitEmpty();
-  process.exit(0);
-}, HOOK_TIMEOUT_MS + 50);
-killSwitch.unref();
-
 const isMain = (() => {
   if (typeof process.argv[1] !== "string") return false;
   const argv1 = process.argv[1];
@@ -515,6 +543,16 @@ const isMain = (() => {
 })();
 
 if (isMain) {
+  // Kill-Switch NUR im Binary-Modus: er begrenzt die Hook-Laufzeit gegenüber
+  // Claude Code. Auf Modul-Top-Level exitete er auch IMPORTEURE — der
+  // Test-Runner starb nach ~2s mit exit 0 und übersprang still alle
+  // restlichen Tests der Datei (Audit 2026-07-10).
+  const killSwitch = setTimeout(() => {
+    emitEmpty();
+    process.exit(0);
+  }, HOOK_TIMEOUT_MS + 50);
+  killSwitch.unref();
+
   main()
     .then(() => process.exit(0))
     .catch(() => {

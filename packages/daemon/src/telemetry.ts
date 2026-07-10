@@ -582,7 +582,10 @@ export class Telemetry {
   }
 
   async logHookAct(
-    payload: Omit<HookActEvent, "kind" | "ts" | "session_id">,
+    // session_id optional: der Hook liefert die CLAUDE-Session-id mit — sie
+    // überschreibt (via Spread) die Daemon-Boot-UUID, sonst ist ein
+    // per-Session-Join gegen Transcripts strukturell unmöglich (Audit 2026-07-10).
+    payload: Omit<HookActEvent, "kind" | "ts" | "session_id"> & { session_id?: string },
   ): Promise<void> {
     if (!this.enabled) return;
     await this.write({
