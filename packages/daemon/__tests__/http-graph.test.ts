@@ -118,6 +118,7 @@ test("buildGraph: clusters, ghosts, bridges, private filter", async () => {
     // coarse layer ships alongside the fine clusters
     assert.equal(a1.group, "projects");
     assert.equal(p1.group, "people");
+    assert.equal(a1.sub, "general", "no sub-area folder → general");
     assert.equal(ghost.group, "projects", "ghost inherits a linker's group");
     const groupKeys = g.groups.map((x) => x.key);
     assert.ok(groupKeys.includes("projects") && groupKeys.includes("people"));

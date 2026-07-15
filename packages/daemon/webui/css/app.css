@@ -372,6 +372,7 @@ html, body {
   -webkit-backdrop-filter: var(--panel-blur);
   box-shadow: var(--shadow);
   display: flex;
+  flex-direction: column;
   transition: transform 0.28s var(--ease-fly), top 0.28s var(--ease-fly), bottom 0.28s var(--ease-fly);
 }
 /* collapsed: the panel slides fully off-screen; only the corner handle stays.
@@ -427,6 +428,7 @@ body.panel-pinned #topbar { right: 250px; }
 .panel-body {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden; /* panels never scroll horizontally — convention */
   padding: 12px 18px 18px;
 }
 .panel-section { border-bottom: 1px solid var(--panel-border); }
@@ -507,8 +509,12 @@ body.panel-pinned #topbar { right: 250px; }
 }
 #legend .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #legend .count { font: 11px var(--font-mono); color: var(--text-dim); }
+#panel-footer {
+  flex: none;
+  padding: 12px 18px;
+  border-top: 1px solid var(--panel-border);
+}
 #reset-layout {
-  margin-top: 10px;
   width: 100%;
   padding: 6px 0;
   font: 11px var(--font-mono);
@@ -767,3 +773,133 @@ body.inspector-open #minimap { left: 432px; }
   opacity: 0.75;
   pointer-events: none;
 }
+
+/* ── drill switcher (sidebar, instance mode) ───────────────────── */
+#drill-switch-head {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--panel-border);
+  margin-bottom: 8px;
+}
+#drill-switch-head button {
+  width: 30px;
+  display: grid;
+  place-items: center; /* chevrons dead-center, no line-height games */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+#drill-switch-head button:hover { background: var(--accent-soft); color: var(--accent); }
+#drill-switch-head button:first-child { border-right: 1px solid var(--panel-border); }
+#drill-switch-head button:last-child { border-left: 1px solid var(--panel-border); }
+#drill-active {
+  flex: 1;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* vertically AND horizontally centered */
+  padding: 0 8px;
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#drill-list {
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden; /* every scroll container clips horizontally */
+  padding-right: 4px; /* rows stay clear of the scrollbar */
+}
+#drill-list li { margin: 0; } /* no negative margins inside a scroller */
+#drill-list li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px;
+  margin: 0 -6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+#drill-list li:hover { background: var(--accent-soft); }
+#drill-list li.active { background: var(--accent-soft); }
+#drill-list li.active .name { color: var(--accent); }
+#drill-list .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#drill-list .count { font: 11px var(--font-mono); color: var(--text-dim); }
+#drill-section { padding-bottom: 14px; }
+/* the reveal: slide in from the right, then two gentle accent washes —
+   enough to pull the eye, never enough to shout */
+#drill-section.attention { animation: drill-attention 2.4s ease; }
+@keyframes drill-attention {
+  0% { transform: translateX(26px); opacity: 0; }
+  14% { transform: none; opacity: 1; background: transparent; }
+  32% { background: var(--accent-soft); }
+  50% { background: transparent; }
+  68% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+
+/* ── emblem cropper modal ──────────────────────────────────────── */
+#cropper[hidden] { display: none !important; } /* explicit display beats [hidden] otherwise */
+#cropper {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+#cropper-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--shadow);
+}
+#cropper-canvas {
+  border-radius: 50%; /* the emblem IS a circle — the frame previews it */
+  border: 1px solid var(--panel-border);
+  cursor: grab;
+  touch-action: none;
+}
+#cropper-canvas:active { cursor: grabbing; }
+#cropper-zoom { width: 100%; accent-color: var(--accent); }
+#cropper-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+#cropper-actions button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+#cropper-actions button:hover { border-color: var(--accent); color: var(--accent); }
+#cropper-ok { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+#cropper-ok:hover { background: var(--accent); }
+:root[data-theme="dark"] #cropper-ok:hover { color: #06131f; }
+:root[data-theme="light"] #cropper-ok:hover { color: #fffdf8; }

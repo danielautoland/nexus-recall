@@ -115,9 +115,20 @@ const IMAGE_TYPES: Record<string, string> = {
 const IMAGE_BASENAME = "vault-image";
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
-async function findVaultImage(vaultPath: string): Promise<{ file: string; type: string } | null> {
+/** ?entity=<project> scopes the emblem to memories/projects/<project>/ —
+ *  the image lives openly inside the project's own folder. Strictly one
+ *  path-safe component; anything else falls back to the vault root. */
+function imageDirFor(vaultPath: string, url: string): string {
+  const entity = new URL(url, "http://127.0.0.1").searchParams.get("entity") ?? "";
+  if (entity !== "" && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(entity) && !entity.includes("..")) {
+    return join(vaultPath, "memories", "projects", entity);
+  }
+  return vaultPath;
+}
+
+async function findVaultImage(dir: string): Promise<{ file: string; type: string } | null> {
   for (const [type, ext] of Object.entries(IMAGE_TYPES)) {
-    const file = join(vaultPath, IMAGE_BASENAME + ext);
+    const file = join(dir, IMAGE_BASENAME + ext);
     try {
       if ((await stat(file)).isFile()) return { file, type };
     } catch {
@@ -127,9 +138,9 @@ async function findVaultImage(vaultPath: string): Promise<{ file: string; type: 
   return null;
 }
 
-/** GET /ui/vault-image — serve the emblem (404 = none set → monogram). */
-export async function handleUiVaultImageGet(res: ServerResponse, vaultPath: string): Promise<void> {
-  const found = await findVaultImage(vaultPath);
+/** GET /ui/vault-image[?entity=…] — serve the emblem (404 → monogram). */
+export async function handleUiVaultImageGet(res: ServerResponse, url: string, vaultPath: string): Promise<void> {
+  const found = await findVaultImage(imageDirFor(vaultPath, url));
   if (!found) {
     sendJsonPlain(res, 404, { error: "no vault image" });
     return;
@@ -141,17 +152,28 @@ export async function handleUiVaultImageGet(res: ServerResponse, vaultPath: stri
     .pipe(res);
 }
 
-/** POST /ui/vault-image — raw image body; stored as vault-image.<ext> at the
- *  vault root (open file, visible in Obsidian/Finder like everything else). */
+/** POST /ui/vault-image[?entity=…] — raw image body; stored as
+ *  vault-image.<ext> at the vault root or inside the project folder (open
+ *  files, visible in Obsidian/Finder like everything else). */
 export async function handleUiVaultImagePost(
   req: IncomingMessage,
   res: ServerResponse,
+  url: string,
   vaultPath: string,
   settingsPath?: string,
 ): Promise<void> {
   if (!(await getUiEnabled(settingsPath))) {
     sendJsonPlain(res, 404, { error: "ui disabled" });
     return;
+  }
+  const dir = imageDirFor(vaultPath, url);
+  if (dir !== vaultPath) {
+    try {
+      if (!(await stat(dir)).isDirectory()) throw new Error("not a directory");
+    } catch {
+      sendJsonPlain(res, 404, { error: "unknown project folder" });
+      return;
+    }
   }
   const type = (req.headers["content-type"] ?? "").split(";")[0].trim();
   const ext = IMAGE_TYPES[type];
@@ -176,9 +198,9 @@ export async function handleUiVaultImagePost(
   try {
     // one emblem at a time — drop other extensions before writing
     for (const oldExt of Object.values(IMAGE_TYPES)) {
-      if (oldExt !== ext) await unlink(join(vaultPath, IMAGE_BASENAME + oldExt)).catch(() => undefined);
+      if (oldExt !== ext) await unlink(join(dir, IMAGE_BASENAME + oldExt)).catch(() => undefined);
     }
-    await writeFile(join(vaultPath, IMAGE_BASENAME + ext), Buffer.concat(chunks));
+    await writeFile(join(dir, IMAGE_BASENAME + ext), Buffer.concat(chunks));
     sendJsonPlain(res, 200, { ok: true });
   } catch (err) {
     sendJsonPlain(res, 500, { error: (err as Error).message });

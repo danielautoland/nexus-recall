@@ -4,13 +4,13 @@
  *  recolors with the chrome. */
 
 import { fetchGraph, fetchHealth, fetchAnnotations, postAnnotation, fetchSemanticSearch, clusterHues, clusterColor } from "./graph-data.js";
-import { computeRingLayout } from "./ring-layout.js";
 import { createSimulation } from "./simulation.js";
 import { createRenderer } from "./renderer.js";
 import { createInteractions } from "./interactions.js";
 import { createInspector } from "./inspector.js";
 import { createSearch } from "./search.js";
 import { createMinimap } from "./minimap.js";
+import { createRingView } from "./managers/ring-view.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -111,223 +111,97 @@ async function main() {
   });
 
   // ── views: clouds (force layout) ↔ ring (computed wheel) ───────
+  // All ring internals (decor, drill browser, emblem, band hit tests) live
+  // in the ring-view manager; this file only orchestrates the switch and
+  // owns the node-position transition.
   const VIEW_KEY = "bastra-vault-map-view";
   let currentView = "clouds";
-  let ring = null; // computeRingLayout result while in ring view
-  let viewTransition = null; // { t0, ms, from, to }
+  let viewTransition = null; // { t0, ms, from, to, noFit?, done? }
   let cloudSnapshot = null; // node positions to return to
 
-  // center emblem: uploaded vault image, else a monogram of the vault name
-  const emblem = new Image();
-  let emblemOk = false;
-  function loadEmblem() {
-    emblemOk = false;
-    emblem.onload = () => (emblemOk = true);
-    emblem.onerror = () => (emblemOk = false);
-    emblem.src = `/ui/vault-image?ts=${Date.now()}`;
-  }
-  loadEmblem();
-  $("#vault-image-input").addEventListener("change", async () => {
-    const file = $("#vault-image-input").files[0];
-    $("#vault-image-input").value = "";
-    if (!file) return;
-    const res = await fetch("/ui/vault-image", {
-      method: "POST",
-      headers: { "Content-Type": file.type },
-      body: file,
-    });
-    if (res.ok) loadEmblem();
+  const ringView = createRingView({
+    sim,
+    renderer,
+    graph,
+    getInteractions: () => interactions,
+    getHues: () => hues,
+    getSatLight: () => [sat, light],
+    getStructureMode: () => structureMode,
+    startTransition: (from, to) => {
+      viewTransition = { t0: performance.now(), ms: 950, from, to, noFit: true };
+    },
+    onDrillChange: (state) => {
+      drillScope = state; // legend + signals focus on the drilled area
+      renderDrillSwitcher(state);
+      renderLegend();
+      renderSignals();
+    },
   });
+  let drillScope = null; // active drill state (both modes) for sidebar scoping
+  const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
 
-  /** Text along a circle arc, centered on `mid`. Flips on the lower half so
-   *  it always reads left-to-right. Trims with an ellipsis when the segment
-   *  is too narrow; skips entirely when even that doesn't fit. */
-  function drawArcText(ctx, camera, text, r, mid, maxArc, color) {
-    const fontPx = Math.max(11 / camera.scale, 3.5);
-    ctx.font = `700 ${fontPx}px "Avenir Next", system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const track = 1.3; // letterspacing on the arc
-    const chars = [...text];
-    const widths = chars.map((c) => ctx.measureText(c).width);
-    let total = widths.reduce((s, w) => s + w, 0) * track;
-    while (chars.length > 2 && total / r > maxArc) {
-      chars.pop();
-      widths.pop();
-      chars[chars.length - 1] = "…";
-      widths[widths.length - 1] = ctx.measureText("…").width;
-      total = widths.reduce((s, w) => s + w, 0) * track;
+  // ── drill switcher (sidebar): appears for instance-mode areas like
+  // PROJECTS. Revealed AFTER the wheel's fan-out settles, with a short
+  // attention pulse that pulls the eye over — "there's more to switch here".
+  let lastDrillState = null;
+  let drillRevealTimer = 0;
+  function renderDrillSwitcher(state) {
+    const sec = $("#drill-section");
+    const wasHidden = sec.hidden;
+    clearTimeout(drillRevealTimer);
+    lastDrillState = state && state.mode === "instance" ? state : null;
+    if (!lastDrillState) {
+      sec.hidden = true;
+      sec.classList.remove("attention");
+      return;
     }
-    if (total / r > maxArc) return;
-    const flip = Math.sin(mid) > 0; // bottom half: rotate to stay readable
-    const dir = flip ? -1 : 1;
-    let a = mid - (dir * total) / (2 * r);
-    for (let k = 0; k < chars.length; k++) {
-      const w = widths[k] * track;
-      const ca = a + (dir * w) / (2 * r);
-      ctx.save();
-      ctx.translate(ring.center.x + Math.cos(ca) * r, ring.center.y + Math.sin(ca) * r);
-      ctx.rotate(ca + (flip ? -Math.PI / 2 : Math.PI / 2));
-      ctx.fillStyle = color;
-      ctx.fillText(chars[k], 0, 0);
-      ctx.restore();
-      a += (dir * w) / r;
+    $("#drill-title").textContent = lastDrillState.area;
+    $("#drill-active").textContent = lastDrillState.active;
+    const ul = $("#drill-list");
+    ul.innerHTML = "";
+    for (const inst of lastDrillState.instances) {
+      const li = document.createElement("li");
+      if (inst.key === lastDrillState.active) li.className = "active";
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = inst.key;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = inst.count;
+      li.append(name, count);
+      li.addEventListener("click", () => ringView.switchInstance(inst.key));
+      ul.append(li);
     }
-    ctx.textBaseline = "alphabetic";
+    if (wasHidden) {
+      drillRevealTimer = setTimeout(() => {
+        sec.hidden = false;
+        sec.classList.add("attention");
+        setTimeout(() => sec.classList.remove("attention"), 2600);
+      }, 1000);
+    }
   }
-
-  let emblemAlpha = 1; // eases down while a node is active, back up after
-
-  function ringDecor(ctx, camera, theme, now, hasActive) {
-    if (!ring) return;
-    const { center, orbits, segments, band } = ring;
-    const bandMid = (band.rInner + band.rOuter) / 2;
-    // the emblem fades out with the rest when a node takes the stage
-    const targetAlpha = hasActive ? Math.max(theme.dim, 0.15) : 1;
-    emblemAlpha += (targetAlpha - emblemAlpha) * 0.12;
-
-    // the label band — a clearly visible ring between wedges and the orbit
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, bandMid, 0, Math.PI * 2);
-    ctx.lineWidth = band.rOuter - band.rInner;
-    ctx.strokeStyle = theme.band;
-    ctx.stroke();
-    ctx.lineWidth = 1 / camera.scale;
-    ctx.strokeStyle = theme.bandBorder;
-    for (const r of [band.rInner, band.rOuter]) {
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // the inner staggering ring: closes the gap between emblem and wedges —
-    // pie dividers end here instead of running loose towards the image
-    ctx.strokeStyle = theme.bandBorder;
-    ctx.lineWidth = 1 / camera.scale;
-    ctx.globalAlpha = 0.65;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, center.rInnerRing, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // ONE pie divider per boundary (drawn in the middle of each gap), a bit
-    // more subdued than the band borders
-    for (let i = 0; i < segments.length; i++) {
-      const cur = segments[i];
-      const next = segments[(i + 1) % segments.length];
-      const a = i === segments.length - 1
-        ? (cur.a1 + next.a0 + Math.PI * 2) / 2
-        : (cur.a1 + next.a0) / 2;
-      ctx.beginPath();
-      ctx.moveTo(center.x + Math.cos(a) * center.rInnerRing, center.y + Math.sin(a) * center.rInnerRing);
-      ctx.lineTo(center.x + Math.cos(a) * band.rOuter, center.y + Math.sin(a) * band.rOuter);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-
-    for (const seg of segments) {
-      // blocks mode: dashed fine dividers between the staggered sub-wedges,
-      // stopping at the band instead of crossing it
-      if (seg.subDividers?.length) {
-        ctx.strokeStyle = theme.bandBorder;
-        ctx.lineWidth = 1 / camera.scale;
-        ctx.globalAlpha = 0.45;
-        ctx.setLineDash([4 / camera.scale, 4 / camera.scale]);
-        for (const a of seg.subDividers) {
-          ctx.beginPath();
-          ctx.moveTo(center.x + Math.cos(a) * center.rInnerRing, center.y + Math.sin(a) * center.rInnerRing);
-          ctx.lineTo(center.x + Math.cos(a) * band.rInner, center.y + Math.sin(a) * band.rInner);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 1;
-      }
-      const mid = (seg.a0 + seg.a1) / 2;
-      drawArcText(ctx, camera, seg.key.toUpperCase(), bandMid, mid, (seg.a1 - seg.a0) * 0.92, clusterColor(hues, seg.key, sat, light));
-    }
-
-    // outermost: the dashed unwritten orbit with its curved label at the top
-    for (const o of orbits) {
-      ctx.strokeStyle = theme.edge;
-      ctx.lineWidth = 1 / camera.scale;
-      if (o.dashed) ctx.setLineDash([4 / camera.scale, 5 / camera.scale]);
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, o.r, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (o.key === "unwritten") {
-        drawArcText(ctx, camera, "UNWRITTEN", o.r + 12, -Math.PI / 2, 0.8, theme.label);
-      }
-    }
-    // center disc with emblem or monogram
-    ctx.globalAlpha = emblemAlpha;
-    ctx.fillStyle = theme.labelHalo;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, center.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = theme.edgeHi;
-    ctx.lineWidth = 1.6 / camera.scale;
-    ctx.stroke();
-    if (emblemOk) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, center.r - 5, 0, Math.PI * 2);
-      ctx.clip();
-      // cover fit — non-square uploads must not distort
-      const d = (center.r - 5) * 2;
-      const s = Math.max(d / emblem.naturalWidth, d / emblem.naturalHeight);
-      ctx.drawImage(
-        emblem,
-        center.x - (emblem.naturalWidth * s) / 2,
-        center.y - (emblem.naturalHeight * s) / 2,
-        emblem.naturalWidth * s,
-        emblem.naturalHeight * s,
-      );
-      ctx.restore();
-    } else {
-      const initials = (graph.vault_name || "V")
-        .split(/\s+/)
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase();
-      ctx.font = `700 ${center.r * 0.62}px "Avenir Next", system-ui, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = theme.label;
-      ctx.fillText(initials, center.x, center.y + 2);
-      ctx.textBaseline = "alphabetic";
-    }
-    ctx.globalAlpha = 1;
+  function stepInstance(dir) {
+    if (!lastDrillState) return;
+    const list = lastDrillState.instances;
+    const idx = list.findIndex((i) => i.key === lastDrillState.active);
+    const next = list[(idx + dir + list.length) % list.length];
+    ringView.switchInstance(next.key);
   }
+  $("#drill-prev").addEventListener("click", () => stepInstance(-1));
+  $("#drill-next").addEventListener("click", () => stepInstance(1));
 
   function switchView(v) {
     if (v === currentView || viewTransition) return;
     const from = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
     let to;
+    let noFit = false;
     if (v === "ring") {
       cloudSnapshot = from;
-      ring = computeRingLayout(sim.nodes, innerWidth, innerHeight);
-      to = ring.positions;
-      for (const [key, c] of sim.centers) {
-        const rc = ring.centers.get(key);
-        if (rc) {
-          c.x = rc.x;
-          c.y = rc.y;
-        }
-      }
-      renderer.setDecor(ringDecor);
-      renderer.setQuietEdges(true); // ring: strands only on hover/focus
-      renderer.setClusterLabelsVisible(false); // names live in the band
-      $("#ring-hint").hidden = false;
+      to = ringView.enter();
+      noFit = true; // the ring glides its own camera — no end snap
     } else {
       to = cloudSnapshot ?? from;
-      ring = null;
-      renderer.setDecor(null);
-      renderer.setQuietEdges(false);
-      renderer.setClusterLabelsVisible(true);
-      $("#ring-hint").hidden = true;
-      for (const c of sim.centers.values()) delete c.ly;
-      for (const n of sim.nodes) delete n.ringScale; // full size in the clouds
+      ringView.exit();
       sim.reheat(0.3); // clouds settle again; centroids re-anchor the labels
       wasBusy = true;
     }
@@ -336,7 +210,7 @@ async function main() {
     $("#view-switch")
       .querySelectorAll("button")
       .forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-    viewTransition = { t0: performance.now(), ms: 950, from, to };
+    viewTransition = { t0: performance.now(), ms: 950, from, to, noFit };
   }
 
   $("#view-switch").addEventListener("click", (ev) => {
@@ -388,13 +262,9 @@ async function main() {
         select(n);
         return;
       }
-      // ring view: a click on the center emblem opens the image picker
-      if (currentView === "ring" && ring && sx !== undefined) {
-        const w = renderer.toWorld(sx, sy);
-        if (Math.hypot(w.x - ring.center.x, w.y - ring.center.y) <= ring.center.r) {
-          $("#vault-image-input").click();
-          return;
-        }
+      // ring view: headline = back, center = image picker, band = drill in
+      if (currentView === "ring" && sx !== undefined) {
+        if (ringView.handleClick(renderer.toWorld(sx, sy))) return;
       }
       select(null);
     },
@@ -405,6 +275,13 @@ async function main() {
       const tip = $("#tooltip");
       if (!n) {
         tip.hidden = true;
+        // clickable ring chrome gets a pointer: band segments (drill in),
+        // headline (back), center emblem (image picker)
+        if (currentView === "ring") {
+          if (ringView.updateHover(renderer.toWorld(x, y))) canvas.style.cursor = "pointer";
+        } else {
+          ringView.clearHover();
+        }
         return;
       }
       tip.innerHTML = "";
@@ -426,7 +303,9 @@ async function main() {
   });
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && inspector.isOpen()) select(null);
+    if (ev.key !== "Escape") return;
+    if (inspector.isOpen()) select(null);
+    else if (ringView.isDrilled()) ringView.drillOut(); // Esc backs out of the area
   });
 
   // ── right-click menu (vendored ctxmenu.js) ─────────────────────
@@ -477,7 +356,11 @@ async function main() {
   const legendEl = $("#legend");
   function renderLegend() {
     legendEl.innerHTML = "";
-    for (const c of activeGrouping()) {
+    // inside a drill the legend focuses on the wheel's segments; the numbers
+    // and hover/click targets are the drilled area, not the whole vault
+    const scoped = drillScope !== null;
+    const items = scoped ? drillScope.segments : activeGrouping();
+    for (const c of items) {
       const li = document.createElement("li");
       const dot = document.createElement("span");
       dot.className = "dot";
@@ -490,9 +373,18 @@ async function main() {
       count.className = "count";
       count.textContent = c.count;
       li.append(dot, name, count);
-      li.addEventListener("mouseenter", () => renderer.setHighlightCluster(c.key));
-      li.addEventListener("mouseleave", () => renderer.setHighlightCluster(null));
-      li.addEventListener("click", () => interactions.flyToCluster(c.key));
+      const match = scoped
+        ? (n) => drillScope.matchKey(n) === c.key
+        : (n) => n.cluster === c.key;
+      li.addEventListener("mouseenter", () => renderer.setHighlight(match, scoped ? null : c.key));
+      li.addEventListener("mouseleave", () => renderer.setHighlight(null));
+      li.addEventListener("click", () => {
+        if (scoped) {
+          interactions.flyToBounds(visibleNodes().filter(match), { padding: 80, maxScale: 2.4 });
+        } else {
+          interactions.flyToCluster(c.key);
+        }
+      });
       legendEl.append(li);
     }
   }
@@ -521,16 +413,22 @@ async function main() {
 
   const kv = (k, v, ok = false) =>
     `<li><span class="k">${k}</span><span class="v${ok ? " ok" : ""}">${v}</span></li>`;
-  const ghosts = sim.nodes.filter((n) => n.kind === "ghost").length;
-  const bridges = sim.nodes.filter((n) => n.bridge).length;
 
   function renderSignals() {
+    // signals always describe what is ON the map right now — inside a drill
+    // that is the drilled area, not the whole vault
+    const vis = visibleNodes();
+    const visIds = new Set(vis.map((n) => n.id));
+    const ghosts = vis.filter((n) => n.kind === "ghost").length;
+    const bridges = vis.filter((n) => n.bridge).length;
+    const edges = sim.edges.filter((e) => visIds.has(e.s.id) && visIds.has(e.t.id)).length;
+    const care = vis.filter((n) => hasOpenCare(n.id)).length;
     const rows = [
-      { key: "memories", label: "memories", value: sim.nodes.length - ghosts },
-      { key: null, label: "connections", value: sim.edges.length },
+      { key: "memories", label: "memories", value: vis.length - ghosts },
+      { key: null, label: "connections", value: edges },
       { key: "ghosts", label: "unwritten notes", value: ghosts },
       { key: "bridges", label: "bridge nodes", value: bridges },
-      { key: "care", label: "care flags", value: openCareCount() },
+      { key: "care", label: "care flags", value: care },
     ];
     const ul = $("#signals");
     ul.innerHTML = "";
@@ -629,17 +527,9 @@ async function main() {
     renderer.setHues(hues);
     renderLegend();
     if (currentView === "ring") {
-      // recompute the wheel and fly nodes to their new segments
-      const from = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
-      ring = computeRingLayout(sim.nodes, innerWidth, innerHeight);
-      for (const [key, c] of sim.centers) {
-        const rc = ring.centers.get(key);
-        if (rc) {
-          c.x = rc.x;
-          c.y = rc.y;
-        }
-      }
-      viewTransition = { t0: performance.now(), ms: 950, from, to: ring.positions };
+      // structure change resets any drill and recomputes the whole wheel
+      const { from, to } = ringView.refreshForStructure();
+      viewTransition = { t0: performance.now(), ms: 950, from, to, noFit: true };
       cloudSnapshot = null; // stale under the new grouping
     } else {
       // clouds reorganize themselves through the physics — animated by nature
@@ -681,10 +571,16 @@ async function main() {
         }
       }
       if (t >= 1) {
+        const { done, noFit } = viewTransition;
         viewTransition = null;
-        interactions.fitAll();
+        if (!noFit) interactions.fitAll();
+        done?.();
       }
-    } else if (currentView === "clouds") {
+    }
+    // fan-out crossfade: the non-drilled areas dissolve/reappear in place
+    ringView.tick(now);
+    // clouds physics pauses while any fly/fan-out animation is running
+    if (!viewTransition && !ringView.isAnimating() && currentView === "clouds") {
       const busy = sim.tick();
       if (busy && warmupFrames++ === 24 && !userTouched) interactions.fitAll();
       if (!busy && wasBusy && !userTouched) interactions.fitAll(); // settled → final framing

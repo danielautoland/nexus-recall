@@ -523,11 +523,11 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // Path-only match: the viewer cache-busts with ?ts=.
     if (url.split("?")[0] === "/ui/vault-image") {
       if (method === "GET") {
-        handleUiVaultImageGet(res, toolDeps.vaultPath).catch(() => sendJson(res, 404, { error: "no vault image" }));
+        handleUiVaultImageGet(res, url, toolDeps.vaultPath).catch(() => sendJson(res, 404, { error: "no vault image" }));
         return;
       }
       if (method === "POST") {
-        handleUiVaultImagePost(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+        handleUiVaultImagePost(req, res, url, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
         return;
       }
     }

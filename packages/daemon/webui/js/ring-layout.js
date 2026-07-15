@@ -11,7 +11,12 @@
 
 const TAU = Math.PI * 2;
 
-export function computeRingLayout(nodes, width, height) {
+export function computeRingLayout(nodes, width, height, opts = {}) {
+  // opts.keyOf — segment key per node (default: displayed cluster).
+  //   The ring browser drills in by passing n => n.baseCluster with only the
+  //   drilled area's nodes.
+  // opts.headline — drill mode: the area name shown at the top (back target).
+  const keyOf = opts.keyOf ?? ((n) => n.cluster);
   const cx = width / 2;
   const cy = height / 2;
   const R_CENTER = 64; // emblem disc
@@ -23,9 +28,10 @@ export function computeRingLayout(nodes, width, height) {
     if (n.kind === "ghost") {
       ghosts.push(n);
     } else {
-      const l = byCluster.get(n.cluster) ?? [];
+      const key = keyOf(n);
+      const l = byCluster.get(key) ?? [];
       l.push(n);
-      byCluster.set(n.cluster, l);
+      byCluster.set(key, l);
     }
   }
 
@@ -100,38 +106,11 @@ export function computeRingLayout(nodes, width, height) {
 
   clusters.forEach(([key, members], ci) => {
     const span = rawSpans[ci] * spanScale;
-    // grouping mode: members whose fine cluster (baseCluster) differs from
-    // the displayed cluster get staggered sub-wedges with fine dividers
-    const subs = new Map();
-    for (const m of members) {
-      const sk = m.baseCluster && m.baseCluster !== m.cluster ? m.baseCluster : "";
-      const l = subs.get(sk) ?? [];
-      l.push(m);
-      subs.set(sk, l);
-    }
-    const subList = [...subs.entries()].sort((a, b) => b[1].length - a[1].length);
-    const subDividers = [];
-    let outer = R0;
-    if (subList.length === 1) {
-      outer = packWedge(subList[0][1], angle, span);
-    } else {
-      const SUBGAP = 0.012;
-      const subUsable = span - SUBGAP * (subList.length - 1);
-      const subWeights = subList.map(([, l]) => Math.sqrt(l.length));
-      const swSum = subWeights.reduce((s, w) => s + w, 0) || 1;
-      let sa = angle;
-      subList.forEach(([, sm], si) => {
-        const sspan = (subWeights[si] / swSum) * subUsable;
-        outer = Math.max(outer, packWedge(sm, sa, sspan));
-        sa += sspan;
-        if (si < subList.length - 1) {
-          subDividers.push(sa + SUBGAP / 2);
-          sa += SUBGAP;
-        }
-      });
-    }
+    // ONE unbroken area per segment — subcategories only appear after
+    // drilling in (the ring browser), never as inline dividers
+    const outer = packWedge(members, angle, span);
     maxOuter = Math.max(maxOuter, outer);
-    segments.push({ key, a0: angle, a1: angle + span, outer, subDividers });
+    segments.push({ key, a0: angle, a1: angle + span, outer, b0: angle - GAP / 2, b1: angle + span + GAP / 2 });
     // center anchor = segment midpoint (context menu / cluster fits); the
     // visible name lives as curved text in the label band, not here
     const mid = angle + span / 2;
@@ -140,8 +119,17 @@ export function computeRingLayout(nodes, width, height) {
     angle += span + GAP;
   });
 
-  // ── the label band: a visible ring carrying the curved segment names ──
-  const band = { rInner: maxOuter + 10, rOuter: maxOuter + 40 };
+  // ── the label band: a visible ring carrying the curved segment names.
+  // Names must ALWAYS be fully readable — the band radius grows until the
+  // longest name fits its segment's arc (12px world-space font, ~9.5px per
+  // tracked uppercase glyph; the wheel is infinitely zoomable, so growing
+  // the ring costs nothing).
+  let bandInner = maxOuter + 10;
+  for (const seg of segments) {
+    const needed = (seg.key.length * 9.5 + 14) / ((seg.a1 - seg.a0) * 0.92);
+    bandInner = Math.max(bandInner, needed);
+  }
+  const band = { rInner: bandInner, rOuter: bandInner + 30 };
 
   // ── the one enclosing orbit: unwritten notes (dashed, like their nodes) ──
   const orbits = [];
@@ -155,13 +143,17 @@ export function computeRingLayout(nodes, width, height) {
     orbits.push({ key: "unwritten", label: "unwritten", r: orbitR, dashed: true });
   }
 
+  const outerRadius = orbits.length ? orbits[orbits.length - 1].r : band.rOuter;
+
   return {
     positions,
     centers,
     segments,
     band,
+    outerRadius,
     // rInner: the extra inner ring staggering the gap between emblem and wedges
     center: { x: cx, y: cy, r: R_CENTER, r0: R0, rInnerRing: R_CENTER + 16 },
     orbits,
+    headline: opts.headline ?? null,
   };
 }

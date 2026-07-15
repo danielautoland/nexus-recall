@@ -150,10 +150,12 @@ export function createInteractions(canvas, renderer, sim, { onSelect, onHoverCha
     if (t >= 1) flight = null;
   }
 
-  /** Fit the whole graph into the unobstructed viewport (initial view). */
+  /** Fit the whole graph into the unobstructed viewport (initial view).
+   *  Nodes drilled away in the ring browser don't count. */
   function fitAll(padding = 90) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of sim.nodes) {
+      if (n.ringHidden || (n.ringFade !== undefined && n.ringFade < 0.5)) continue;
       if (n.x < minX) minX = n.x;
       if (n.y < minY) minY = n.y;
       if (n.x > maxX) maxX = n.x;

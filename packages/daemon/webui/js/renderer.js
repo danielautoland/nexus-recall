@@ -12,7 +12,8 @@ export function createRenderer(canvas, sim, initialHues) {
   let theme = readTheme();
   let hover = null; // node under cursor
   let focus = null; // clicked/selected node
-  let highlightCluster = null; // legend hover
+  let highlightFn = null; // legend hover predicate (nodes outside it dim)
+  let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
   let decorFn = null; // view decor (ring guides, center emblem), world space
   let quietEdges = false; // ring view: no ambient edges, only the active node's
@@ -35,6 +36,8 @@ export function createRenderer(canvas, sim, initialHues) {
       bridge: v("--map-bridge"),
       band: v("--map-band"),
       bandBorder: v("--map-band-border"),
+      accentSoft: v("--accent-soft"),
+      accent: v("--accent"),
     };
   }
 
@@ -85,6 +88,7 @@ export function createRenderer(canvas, sim, initialHues) {
     // node — that's when the strands matter.
     ctx.lineWidth = 1 / camera.scale;
     for (const e of sim.edges) {
+      if (e.s.ringHidden || e.t.ringHidden) continue; // drilled away (ring browser)
       const isActive = pivotId !== null && (e.s.id === pivotId || e.t.id === pivotId);
       if (quietEdges && !isActive) continue; // ring: strands only on hover/focus
       if (active && !isActive) continue; // calm: hide unrelated edges entirely
@@ -101,27 +105,31 @@ export function createRenderer(canvas, sim, initialHues) {
 
     // ── nodes ──
     for (const n of sim.nodes) {
+      if (n.ringHidden) continue; // drilled away (ring browser)
+      const fade = n.ringFade ?? 1; // fan-out crossfade multiplier
+      if (fade <= 0.02) continue;
       let r = drawRadius(n);
       const dimmed =
         (active && !active.has(n.id)) ||
-        (highlightCluster !== null && n.cluster !== highlightCluster) ||
+        (highlightFn !== null && !highlightFn(n)) ||
         (filterFn !== null && !filterFn(n));
       // filter matches breathe: statically drawn nodes get a soft pulse so
       // "what did this filter select" is visible at a glance
       const filterHit = !dimmed && filterFn !== null && filterFn(n);
       if (filterHit && n.kind !== "ghost") r *= 1 + Math.sin(now / 350 + n.idx * 1.7) * 0.14;
-      ctx.globalAlpha = dimmed ? theme.dim : 1;
+      const nodeAlpha = (dimmed ? theme.dim : 1) * fade;
+      ctx.globalAlpha = nodeAlpha;
       const color = colorOf(n);
 
       if (n.kind === "ghost") {
         const rr = r * (filterHit ? pulse * 1.15 : pulse);
         // tinted backing disc — the dashed outline alone was too faint
         ctx.fillStyle = color;
-        ctx.globalAlpha = (dimmed ? theme.dim : 1) * 0.22;
+        ctx.globalAlpha = nodeAlpha * 0.22;
         ctx.beginPath();
         ctx.arc(n.x, n.y, rr, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = dimmed ? theme.dim : 1;
+        ctx.globalAlpha = nodeAlpha;
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.6 / camera.scale;
         ctx.setLineDash([3 / camera.scale, 3 / camera.scale]);
@@ -134,12 +142,12 @@ export function createRenderer(canvas, sim, initialHues) {
           const g = ctx.createRadialGradient(n.x, n.y, r * 0.4, n.x, n.y, r * 3);
           g.addColorStop(0, color);
           g.addColorStop(1, "transparent");
-          ctx.globalAlpha = (dimmed ? theme.dim : 1) * theme.glowAlpha;
+          ctx.globalAlpha = nodeAlpha * theme.glowAlpha;
           ctx.fillStyle = g;
           ctx.beginPath();
           ctx.arc(n.x, n.y, r * 3, 0, Math.PI * 2);
           ctx.fill();
-          ctx.globalAlpha = dimmed ? theme.dim : 1;
+          ctx.globalAlpha = nodeAlpha;
         }
         ctx.fillStyle = color;
         ctx.beginPath();
@@ -156,7 +164,7 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, r + 3.2 * hs, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.globalAlpha = 0.45 * (dimmed ? theme.dim : 1);
+        ctx.globalAlpha = 0.45 * nodeAlpha;
         ctx.beginPath();
         ctx.arc(n.x, n.y, r + 6 * hs, 0, Math.PI * 2);
         ctx.stroke();
@@ -184,7 +192,7 @@ export function createRenderer(canvas, sim, initialHues) {
     ctx.font = `600 ${fontPx}px "Avenir Next", system-ui, sans-serif`;
     ctx.textAlign = "center";
     for (const [key, c] of sim.centers) {
-      if (highlightCluster !== null && key !== highlightCluster) ctx.globalAlpha = theme.dim;
+      if (highlightLabelKey !== null && key !== highlightLabelKey) ctx.globalAlpha = theme.dim;
       const label = key.toUpperCase();
       // ring view sets an exact label anchor (c.ly); clouds derive it from
       // the cloud's size above the centroid
@@ -219,6 +227,7 @@ export function createRenderer(canvas, sim, initialHues) {
     let best = null;
     let bestD = Infinity;
     for (const n of sim.nodes) {
+      if (n.ringHidden) continue;
       const dx = n.x - p.x;
       const dy = n.y - p.y;
       const d = Math.sqrt(dx * dx + dy * dy) - drawRadius(n) - slop / camera.scale;
@@ -250,7 +259,10 @@ export function createRenderer(canvas, sim, initialHues) {
     setHover: (n) => (hover = n),
     setFocus: (n) => (focus = n),
     getFocus: () => focus,
-    setHighlightCluster: (key) => (highlightCluster = key),
+    setHighlight: (fn, labelKey = null) => {
+      highlightFn = fn;
+      highlightLabelKey = fn === null ? null : labelKey;
+    },
     setFilter: (fn) => (filterFn = fn),
     setDecor: (fn) => (decorFn = fn),
     setQuietEdges: (on) => (quietEdges = on),
