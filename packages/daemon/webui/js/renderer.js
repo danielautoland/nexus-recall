@@ -12,6 +12,8 @@ export function createRenderer(canvas, sim, initialHues) {
   let theme = readTheme();
   let hover = null; // node under cursor
   let focus = null; // clicked/selected node
+  let lastPivotId = null; // flow animation: detect pivot changes …
+  let pivotSince = 0; // … so the pulses ease in instead of popping
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
@@ -38,6 +40,9 @@ export function createRenderer(canvas, sim, initialHues) {
       bandBorder: v("--map-band-border"),
       accentSoft: v("--accent-soft"),
       accent: v("--accent"),
+      flow: v("--map-flow"),
+      flowTail: v("--map-flow-tail"),
+      flowBlend: v("--map-flow-blend") || "source-over",
     };
   }
 
@@ -55,6 +60,44 @@ export function createRenderer(canvas, sim, initialHues) {
   const colorOf = (n) => (n.kind === "ghost" ? theme.ghost : clusterColor(hues, n.cluster, theme.sat, theme.light));
   // ring view sets ringScale to damp sizes near the hub; clouds leave it unset
   const drawRadius = (n) => nodeRadius(n) * (n.ringScale ?? 1);
+
+  let bendCenter = null; // ring hub — when set, strands bow toward it
+
+  /** Control point for an edge, or null for a straight line. Cross-cloud
+   *  strands bow gently to the side (flight-route look — long lines stop
+   *  cutting straight through foreign clouds); in the ring view every
+   *  strand bows toward the hub instead. Computed on (s, t) so the base
+   *  stroke and the sheen share the exact same curve. */
+  function edgeBend(e) {
+    const a = e.s;
+    const b = e.t;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 40) return null;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    if (bendCenter) {
+      const cx = bendCenter.x - mx;
+      const cy = bendCenter.y - my;
+      const cd = Math.hypot(cx, cy);
+      if (cd < 1) return null;
+      const pull = Math.min(dist * 0.18, cd * 0.5);
+      return { x: mx + (cx / cd) * pull, y: my + (cy / cd) * pull };
+    }
+    if (a.cluster === b.cluster) return null;
+    const bulge = Math.min(dist * 0.1, 90);
+    return { x: mx - (dy / dist) * bulge, y: my + (dx / dist) * bulge };
+  }
+
+  function strokeEdge(e) {
+    const cp = edgeBend(e);
+    ctx.beginPath();
+    ctx.moveTo(e.s.x, e.s.y);
+    if (cp) ctx.quadraticCurveTo(cp.x, cp.y, e.t.x, e.t.y);
+    else ctx.lineTo(e.t.x, e.t.y);
+    ctx.stroke();
+  }
 
   /** Set of ids in the active neighborhood (hover wins over focus). */
   function activeSet() {
@@ -78,6 +121,10 @@ export function createRenderer(canvas, sim, initialHues) {
 
     const active = activeSet();
     const pivotId = (hover ?? focus)?.id ?? null;
+    if (pivotId !== lastPivotId) {
+      lastPivotId = pivotId;
+      pivotSince = now;
+    }
     const pulse = 1 + Math.sin(now / 480) * 0.2;
 
     if (decorFn) decorFn(ctx, camera, theme, now, active !== null);
@@ -95,13 +142,13 @@ export function createRenderer(canvas, sim, initialHues) {
       ctx.strokeStyle = isActive ? theme.edgeHi : theme.edge;
       if (!isActive && e.s.cluster !== e.t.cluster) ctx.globalAlpha = 0.3;
       if (isActive) ctx.lineWidth = 1.5 / camera.scale;
-      ctx.beginPath();
-      ctx.moveTo(e.s.x, e.s.y);
-      ctx.lineTo(e.t.x, e.t.y);
-      ctx.stroke();
+      strokeEdge(e);
       ctx.globalAlpha = 1;
       if (isActive) ctx.lineWidth = 1 / camera.scale;
     }
+
+    // a quiet sheen glides along the active strands, under the nodes
+    if (pivotId !== null) drawFlow(now, pivotId);
 
     // ── nodes ──
     for (const n of sim.nodes) {
@@ -216,6 +263,53 @@ export function createRenderer(canvas, sim, initialHues) {
     ctx.restore();
   }
 
+  /** Sheen on the active strands: a soft band of light glides along each
+   *  edge from the pivot outward — the line itself catches light, nothing
+   *  travels ON it. Constant world speed, staggered per strand so the
+   *  strands breathe instead of marching in sync, eased in after a pivot
+   *  change. Additive blend in the dark theme. */
+  function drawFlow(now, pivotId) {
+    const ramp = Math.min(1, (now - pivotSince) / 400);
+    if (ramp <= 0.02) return;
+    const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
+    ctx.save();
+    ctx.globalCompositeOperation = theme.flowBlend;
+    ctx.lineWidth = 1.6 / camera.scale;
+    let k = 0;
+    for (const e of sim.edges) {
+      if (e.s.id !== pivotId && e.t.id !== pivotId) continue;
+      if (e.s.ringHidden || e.t.ringHidden) continue;
+      k++;
+      const from = e.s.id === pivotId ? e.s : e.t;
+      const to = e.s.id === pivotId ? e.t : e.s;
+      const dist = Math.hypot(to.x - from.x, to.y - from.y);
+      if (dist < 24) continue;
+      const fade = Math.min(from.ringFade ?? 1, to.ringFade ?? 1);
+      if (fade <= 0.05) continue;
+      // fixed-length band of light (not a fraction of the strand): long
+      // cross-cloud strands get the same compact glint as short local ones,
+      // and enough of them that the next pass is never far away
+      const W = Math.min(60, dist * 0.4) / dist; // half-width as a fraction
+      const count = 1 + Math.floor(dist / 280);
+      // unhurried, and each strand at its own slightly different pace —
+      // organic drift instead of a synchronized march
+      const speed = 42 + ((k * 53) % 23);
+      const period = (dist / speed) * 1000;
+      ctx.globalAlpha = 0.4 * ramp * fade;
+      for (let p = 0; p < count; p++) {
+        // peak sweeps -W → 1+W so the sheen slides off both ends (no popping)
+        const t = ((now / period + k * 0.41 + p / count) % 1) * (1 + 2 * W) - W;
+        const g = ctx.createLinearGradient(from.x, from.y, to.x, to.y);
+        g.addColorStop(clamp01(t - W), theme.flowTail);
+        g.addColorStop(clamp01(t), theme.flow);
+        g.addColorStop(clamp01(t + W), theme.flowTail);
+        ctx.strokeStyle = g;
+        strokeEdge(e);
+      }
+    }
+    ctx.restore();
+  }
+
   /** screen → world */
   function toWorld(sx, sy) {
     return { x: (sx - camera.x) / camera.scale, y: (sy - camera.y) / camera.scale };
@@ -266,6 +360,7 @@ export function createRenderer(canvas, sim, initialHues) {
     setFilter: (fn) => (filterFn = fn),
     setDecor: (fn) => (decorFn = fn),
     setQuietEdges: (on) => (quietEdges = on),
+    setBendCenter: (pt) => (bendCenter = pt),
     setClusterLabelsVisible: (on) => (clusterLabels = on),
     setHues: (h) => (hues = h),
   };

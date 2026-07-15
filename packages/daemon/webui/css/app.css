@@ -38,6 +38,9 @@
   --map-bridge: rgba(56, 217, 245, 0.9);
   --map-band: rgba(126, 164, 210, 0.07);
   --map-band-border: rgba(126, 164, 210, 0.28);
+  --map-flow: rgba(190, 242, 255, 0.95);
+  --map-flow-tail: rgba(190, 242, 255, 0);
+  --map-flow-blend: lighter;
 }
 
 :root[data-theme="light"] {
@@ -69,6 +72,9 @@
   --map-bridge: rgba(14, 124, 150, 0.95);
   --map-band: rgba(74, 62, 44, 0.06);
   --map-band-border: rgba(74, 62, 44, 0.3);
+  --map-flow: rgba(9, 96, 118, 0.9);
+  --map-flow-tail: rgba(9, 96, 118, 0);
+  --map-flow-blend: source-over;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }

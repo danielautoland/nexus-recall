@@ -515,6 +515,7 @@ export function createRingView(deps) {
     }
     deps.renderer.setDecor(decor);
     deps.renderer.setQuietEdges(true); // ring: strands only on hover/focus
+    deps.renderer.setBendCenter(ring.center); // chords bow toward the hub
     deps.renderer.setClusterLabelsVisible(false); // names live in the band
     $("#ring-hint").hidden = false;
     flyToRing(ring);
@@ -533,6 +534,7 @@ export function createRingView(deps) {
     headlineBounds = null;
     deps.renderer.setDecor(null);
     deps.renderer.setQuietEdges(false);
+    deps.renderer.setBendCenter(null);
     deps.renderer.setClusterLabelsVisible(true);
     $("#ring-hint").hidden = true;
     for (const c of deps.sim.centers.values()) delete c.ly;
