@@ -81,6 +81,11 @@ export interface CliSettings {
   // Persisted cross-platform here (not a LaunchAgent env var) so Windows/Linux
   // installs carry the choice too. Written by `bastra models` / the install wizard.
   generation?: { model: string };
+  // Vault map web UI (#207): undefined = disabled (opt-in). Enabled via the
+  // install wizard or `bastra config set ui.enabled true`; the daemon then
+  // serves the static viewer on /ui (loopback-only). Read per-request, so
+  // toggling does not require a daemon restart.
+  ui?: { enabled: boolean };
 }
 
 /**
@@ -147,7 +152,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; cors?: { origins?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; cors?: { origins?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown }; ui?: { enabled?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -243,6 +248,9 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
     process.stderr.write(
       `[bastra-recall] cli-settings.json: ignoring invalid generation.model ${JSON.stringify(data?.generation?.model)}\n`,
     );
+  }
+  if (typeof data?.ui?.enabled === "boolean") {
+    settings.ui = { enabled: data.ui.enabled };
   }
   return settings;
 }
@@ -431,6 +439,16 @@ export async function getCommonsEnabled(path?: string): Promise<boolean> {
 export async function setCommonsEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, commons: { enabled: on } }, path);
+}
+
+/** Vault map web UI (#207) enabled? Default false (opt-in). */
+export async function getUiEnabled(path?: string): Promise<boolean> {
+  return (await readSettings(path)).ui?.enabled ?? false;
+}
+
+export async function setUiEnabled(on: boolean, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, ui: { enabled: on } }, path);
 }
 
 /** Shared learned-recall bridges enabled? Default false (opt-in, privacy-respecting). */

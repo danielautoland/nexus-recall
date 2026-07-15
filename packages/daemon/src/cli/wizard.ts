@@ -38,6 +38,7 @@ import {
   setSharedRecallEnabled,
   setUpdateMode,
   setDocsMode,
+  setUiEnabled,
   DEFAULT_UPDATE_MODE,
   DEFAULT_DOCS_MODE,
   type UpdateMode,
@@ -356,6 +357,21 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     docsMode = ans as DocsMode;
   }
 
+  // ── 9. vault map UI (#207) ─────────────────────────────────────────────────
+  let uiOn = false;
+  {
+    const ans = await p.select({
+      message: "Enable the vault map? (interactive graph of your memory at http://127.0.0.1:6723/ui — local only)",
+      options: [
+        { value: "on", label: "On — serve the map on /ui" },
+        { value: "off", label: "Off", hint: "enable later: bastra config set ui.enabled true" },
+      ],
+      initialValue: "off",
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    uiOn = ans === "on";
+  }
+
   // ── execute ───────────────────────────────────────────────────────────────
   if (vaultNeedsCreate) {
     const created = await createVaultAt(vaultPath!);
@@ -470,6 +486,10 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   if (docsMode !== DEFAULT_DOCS_MODE) {
     await setDocsMode(docsMode);
     p.log.success(`Product-doc capture: ${docsMode}`);
+  }
+  if (uiOn) {
+    await setUiEnabled(true);
+    p.log.success("Vault map: http://127.0.0.1:6723/ui (read per request — no restart needed)");
   }
 
   p.outro(`Done. Restart ${restart} to pick up the memory tool.`);

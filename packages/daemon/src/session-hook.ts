@@ -189,6 +189,27 @@ async function main(): Promise<void> {
   }
   const taxonomyBlock = formatTaxonomyBlock(conventions);
 
+  // Vault-care (#207): open flags from the vault map. Injected as a standing
+  // instruction so no user ever has to EXPLAIN the workflow to their agent —
+  // the system carries it.
+  let careBlock = "";
+  if (responses.some((r) => r.resp !== null)) {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    const openCare = await fetchCareCount(url, Math.min(150, remainingMs));
+    if (openCare > 0) {
+      careBlock =
+        `\n<vault-care>\n` +
+        `The vault has ${openCare} open care flag(s) in vault-care.md (at the vault root) — ` +
+        `notes the user flagged on the vault map for deletion, editing, writing, or with a remark. ` +
+        `When the user asks to work off the vault care list (any phrasing), read that file and go ` +
+        `through the open "- [ ]" entries TOGETHER with the user: load and show each memory first, ` +
+        `propose the change, apply it via the memory tools only after their go — deletions always ` +
+        `need explicit confirmation. Tick finished lines to "- [x]" in the file. Never apply flags ` +
+        `unprompted; if vault maintenance comes up, mention the open count.\n` +
+        `</vault-care>`;
+    }
+  }
+
   // Best-effort update probe — only when we already have a daemon reachable.
   // Strict budget: 200 ms; if nothing back, we just skip the block.
   //
@@ -267,7 +288,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const extras = taxonomyBlock + updateBlock + pendingBlock + dokuBlock;
+  const extras = taxonomyBlock + careBlock + updateBlock + pendingBlock + dokuBlock;
   // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
   // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
   const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";
@@ -454,6 +475,37 @@ function formatTaxonomyBlock(conventions: ConventionLean[]): string {
     lines.join("\n") +
     `\n</vault-taxonomy>`
   );
+}
+
+/** Open vault-care flag count — same budget discipline as fetchTaxonomy. */
+function fetchCareCount(baseUrl: string, timeoutMs: number): Promise<number> {
+  return new Promise((resolve_) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/care", baseUrl);
+    } catch {
+      resolve_(0);
+      return;
+    }
+    const req = request(
+      { method: "GET", hostname: url.hostname, port: url.port || 80, path: url.pathname, timeout: timeoutMs },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { open?: unknown };
+            resolve_(typeof parsed.open === "number" ? parsed.open : 0);
+          } catch {
+            resolve_(0);
+          }
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", () => resolve_(0));
+    req.end();
+  });
 }
 
 function fetchTaxonomy(baseUrl: string, timeoutMs: number): Promise<ConventionLean[]> {

@@ -57,6 +57,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { buildGraph } from "@bastra-recall/core";
 import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
@@ -86,6 +87,15 @@ import {
   moveDocument,
 } from "./documents-write-handler.js";
 import { getUpdateState } from "./update-check.js";
+import {
+  handleWebUi,
+  handleUiAnnotate,
+  handleUiAnnotations,
+  handleUiSearch,
+  handleUiVaultImageGet,
+  handleUiVaultImagePost,
+  handleHookCare,
+} from "./webui.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
@@ -427,6 +437,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       return;
     }
 
+    // Vault-care count für die Session-Hook-Injection (#207): loopback-only,
+    // read-only, kein Auth — wie /hook/taxonomy.
+    if (method === "GET" && url === "/hook/care") {
+      handleHookCare(res, toolDeps.vaultPath).catch(() => sendJson(res, 200, { open: 0 }));
+      return;
+    }
+
     // Floor-Registry (#141/#142): Einträge für die Session-Hook-Injection.
     // Loopback-only (Host-Gate oben), read-only, kein Auth — wie /hook/taxonomy.
     // Der Join id→title/summary passiert HIER via vault.get, damit die Hook-CLI
@@ -485,6 +502,43 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       return;
     }
 
+    // Vault care (#207): flags from the map, appended to vault-care.md in the
+    // vault (open format — an AI session works the list off). Loopback-only
+    // like /ui, gated on ui.enabled inside the handlers.
+    if (method === "GET" && url === "/ui/annotations") {
+      handleUiAnnotations(res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+    if (method === "POST" && url === "/ui/annotate") {
+      handleUiAnnotate(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+    // Semantic search for the map's search box (#207) — hybrid recall, lean.
+    if (method === "GET" && url.startsWith("/ui/search")) {
+      handleUiSearch(res, url, search).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+    // Ring-view center emblem (#207): stored as vault-image.<ext> at the
+    // vault root — an open file like everything else the daemon writes.
+    // Path-only match: the viewer cache-busts with ?ts=.
+    if (url.split("?")[0] === "/ui/vault-image") {
+      if (method === "GET") {
+        handleUiVaultImageGet(res, toolDeps.vaultPath).catch(() => sendJson(res, 404, { error: "no vault image" }));
+        return;
+      }
+      if (method === "POST") {
+        handleUiVaultImagePost(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+        return;
+      }
+    }
+
+    // Vault map web UI (#207): static viewer, opt-in via ui.enabled. Sits
+    // outside /api/v1/* → loopback-only through the host gate above.
+    if (method === "GET" && (url === "/ui" || url.startsWith("/ui/"))) {
+      handleWebUi(req, res, url).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+
     // ─── REST-API /api/v1/* ──────────────────────────────────────
     if (url.startsWith("/api/v1/")) {
       const reqOrigin = req.headers.origin;
@@ -518,6 +572,43 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           listFloors(scope)
             .then((floors) => sendJson(res, 200, { floors }))
             .catch((err: Error) => sendJson(res, 500, { error: err.message }));
+          return;
+        }
+        // #207: the open graph projection — nodes/edges/clusters/ghosts.
+        // The viewer contract: the web UI, the Mac app, and external tools
+        // all render from this same JSON (#140: no privileged viewer).
+        if (u.pathname === "/api/v1/graph") {
+          try {
+            sendJson(res, 200, buildGraph(vault));
+          } catch (err) {
+            sendJson(res, 500, { error: (err as Error).message });
+          }
+          return;
+        }
+        // #207: full body of one node for the map inspector. Same sensitivity
+        // default as the other externally reachable read paths (no private).
+        if (u.pathname === "/api/v1/graph/node") {
+          const id = u.searchParams.get("id") ?? "";
+          const mem = vault.get(id);
+          if (!mem || mem.fm.sensitivity === "private") {
+            sendJson(res, 404, { error: `unknown node: ${id}` });
+            return;
+          }
+          const { fm } = mem;
+          sendJson(res, 200, {
+            id: fm.id,
+            title: fm.title,
+            type: fm.type,
+            scope: fm.scope,
+            topic_path: fm.topic_path,
+            tags: fm.tags,
+            summary: fm.summary,
+            related: fm.related,
+            source: fm.source ?? null,
+            created: fm.created,
+            updated: fm.updated,
+            body: mem.body,
+          });
           return;
         }
       }

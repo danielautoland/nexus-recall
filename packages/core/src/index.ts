@@ -48,6 +48,9 @@ export type { Memory, MemoryType, Frontmatter } from "./schema.js";
 
 export { truncateSummaryTo, clampSummary, SUMMARY_MAX } from "./summary.js";
 
+export { buildGraph, clusterKeyFor, groupKeyFor } from "./graph.js";
+export type { VaultGraph, GraphNode, GraphEdge, GraphCluster } from "./graph.js";
+
 export { scrubInjectedBlocks, containsInjectedBlock, INJECTED_BLOCK_TAGS } from "./scrub.js";
 export type { ScrubResult, InjectedBlockTag } from "./scrub.js";
 

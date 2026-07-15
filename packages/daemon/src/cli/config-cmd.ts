@@ -22,6 +22,8 @@ import {
   setDocsMode,
   getDocsLanguage,
   setDocsLanguage,
+  getUiEnabled,
+  setUiEnabled,
   isEmbeddingProviderName,
   isDocsMode,
   isDocsLanguage,
@@ -30,7 +32,7 @@ import {
 } from "../settings.js";
 import type { ParsedArgs } from "./types.js";
 
-const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language"] as const;
+const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language", "ui.enabled"] as const;
 type KnownKey = (typeof KNOWN_KEYS)[number];
 
 function isKnownKey(k: string | null): k is KnownKey {
@@ -78,6 +80,9 @@ async function cmdConfigGet(key: KnownKey): Promise<number> {
       return 0;
     case "docs.language":
       process.stdout.write(`${await getDocsLanguage()}\n`);
+      return 0;
+    case "ui.enabled":
+      process.stdout.write(`${await getUiEnabled()}\n`);
       return 0;
   }
 }
@@ -151,6 +156,19 @@ async function cmdConfigSet(key: KnownKey, value: string | null): Promise<number
       }
       await setDocsLanguage(value);
       process.stdout.write(`✓ docs.language = ${value.trim().toLowerCase()}\n  stored in ${settingsFilePath()}\n`);
+      return 0;
+    }
+    case "ui.enabled": {
+      const on = parseBool(value);
+      if (on === null) {
+        process.stderr.write("error: ui.enabled must be one of: true | false (also on|off)\n");
+        return 2;
+      }
+      await setUiEnabled(on);
+      process.stdout.write(`✓ ui.enabled = ${on}\n  stored in ${settingsFilePath()}\n`);
+      if (on) {
+        process.stdout.write("  vault map: http://127.0.0.1:6723/ui (no daemon restart needed)\n");
+      }
       return 0;
     }
   }
