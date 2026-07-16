@@ -6,6 +6,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-16
+
+### Added
+- **Vault map** (#207): an interactive, local-only map of the vault at
+  `http://127.0.0.1:6723/ui` — opt-in via `ui.enabled`, opened with the new
+  **`bastra map`** command (also surfaced in `bastra status` and the install
+  wizard). Three views: **Clouds** (force layout along the folder structure,
+  draggable clouds with an animated evade + gravity-back comfort band),
+  **Ring** (a drill-down wheel over the six memory building blocks — projects,
+  people, self, knowledge, rules, artifacts — with per-project emblems and an
+  instance switcher), and **Semantic** (positions from a PCA projection of the
+  embedding vectors, plus dashed strands for *connections you never wrote*:
+  semantically close pairs with no explicit link). Ghost nodes mark unwritten
+  wikilink targets, bridge halos mark cross-cluster connectors. Renders from
+  three open, token-gated endpoints (`GET /api/v1/graph`, `/graph/node`,
+  `/graph/semantic`) — the web UI is one viewer among equals (#140); private
+  memories never appear.
+- **Search copilot** (#207): a chat docked beside the map's search results
+  that deepens a search — it fans the question out into several recall
+  queries, answers grounded in the notes' actual bodies, and pins its finds
+  highlighted on top of the result list. Runs on the same local Ollama
+  generation model as doc2query (`POST /ui/chat`, loopback-only); nothing
+  leaves the machine.
+- **Vault care** (#207): flag memories straight from the map (*delete*,
+  *edit*, *write*, *note*) into an open `vault-care.md` checklist; the next
+  AI session sees the open flags via the session hook and works the list off
+  with you.
+- **Capture admission rules** (#159): SKILL.md, the `save_memory` description,
+  and two advisory `save_quality` checks now guard against memories that rot —
+  negative capability claims without a fix, imperative self-directives, and
+  stale-in-7-days artifacts.
+- **`write_origin` provenance** (#158): memories carry who authored them
+  (`user-directed` | `agent-session` | `capture-review`). Stamped at save
+  time, preserved on overwrite, and user-directed memories are exempt from
+  automated lifecycle passes (curator).
+
+### Fixed
+- **`reconcile()` heals in-place edits** (#199): files edited by external
+  processes — Obsidian, scripts, a second machine, especially on cloud-storage
+  mounts — no longer serve stale content until a daemon restart. Reconcile now
+  stat-compares mtime/size per indexed file and re-reads on drift.
+
 ## [0.7.9] — 2026-07-07
 
 ### Fixed
@@ -428,6 +470,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.0]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.0
 [0.7.9]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.9
 [0.7.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.8
 [0.7.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.7
