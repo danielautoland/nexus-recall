@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { Vault } from "../src/vault.js";
 
-function memoryMd(id: string): string {
+function memoryMd(id: string, title = `Title ${id}`): string {
   return `---
 id: ${id}
-title: Title ${id}
+title: ${title}
 type: lesson
 summary: summary for ${id}
 topic_path: [test]
@@ -64,6 +64,32 @@ test("reconcile: ignores non-memory .md files", async () => {
   try {
     await writeFile(path.join(dir, "note.md"), "# Just an Obsidian note\n\nno frontmatter.\n", "utf8");
     assert.equal(await vault.reconcile(), 2, "plain note is not counted");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reconcile: heals an in-place edit from an external process (#199)", async () => {
+  const { dir, vault } = await freshVault(["a", "b"]);
+  try {
+    // rewrite a.md at the watcher's back — retitled, like the 243-file repro
+    await writeFile(path.join(dir, "a.md"), memoryMd("a", "Retitled externally"), "utf8");
+    assert.equal(vault.get("a")?.fm.title, "Title a", "index still serves the stale title");
+    assert.equal(await vault.reconcile(), 2, "count unchanged — same files, new content");
+    assert.equal(vault.get("a")?.fm.title, "Retitled externally", "reconcile healed the drift");
+    assert.equal(vault.get("b")?.fm.title, "Title b", "untouched file untouched");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reconcile: in-place edit that changes the id remaps cleanly", async () => {
+  const { dir, vault } = await freshVault(["a", "b"]);
+  try {
+    await writeFile(path.join(dir, "b.md"), memoryMd("b-renamed"), "utf8");
+    assert.equal(await vault.reconcile(), 2);
+    assert.equal(vault.get("b"), undefined, "old id dropped");
+    assert.equal(vault.get("b-renamed")?.fm.title, "Title b-renamed");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

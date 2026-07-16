@@ -25,6 +25,9 @@ export type VaultListener = (e: VaultEvent) => void;
 export class Vault {
   private memorys = new Map<string, Memory>(); // id → memory
   private filePathToId = new Map<string, string>(); // absolute path → id
+  // per indexed file, remembered at read time — reconcile() compares against
+  // these to spot in-place edits the cloud-mount watcher never reported (#199)
+  private fileStats = new Map<string, { mtimeMs: number; size: number }>();
   private listeners = new Set<VaultListener>();
   private watcher?: FSWatcher;
 
@@ -111,16 +114,20 @@ export class Vault {
 
   /**
    * Reconcile the in-memory index against what's actually on disk and return
-   * the corrected count. Walks the tree (stat-level, cheap) and only *reads*
-   * files that aren't indexed yet; drops index entries whose file vanished.
+   * the corrected count. Walks the tree (stat-level, cheap), *reads* files
+   * that aren't indexed yet, drops index entries whose file vanished — and
+   * re-reads indexed files whose mtime/size drifted from the values stamped
+   * at index time (in-place edits by external processes, #199).
    *
    * Needed because the fs watcher is unreliable on cloud-storage mounts
-   * (GoogleDrive/iCloud/Dropbox): adds, and especially deletes/moves done by
-   * another process — the Mac app, Obsidian, a second machine — get missed, so
-   * size() drifts from reality. Callers that need a trustworthy count (e.g. the
-   * `bastra` status panel) call this on demand; it is not on any hot path.
+   * (GoogleDrive/iCloud/Dropbox): adds, deletes/moves, and especially in-place
+   * edits done by another process — the Mac app, Obsidian, a second machine —
+   * get missed, so the index drifts from reality. Callers that need a
+   * trustworthy state (e.g. the `bastra` status panel) call this on demand;
+   * it is not on any hot path.
    */
   async reconcile(): Promise<number> {
+    const BATCH = 32;
     const onDisk = new Set(await this.listMarkdownFiles());
     // Drop index entries whose file is gone (missed unlink/move).
     for (const filePath of [...this.filePathToId.keys()]) {
@@ -128,10 +135,28 @@ export class Vault {
     }
     // Read files not yet indexed (handleAddOrChange silently skips non-memory).
     const toAdd = [...onDisk].filter((p) => !this.filePathToId.has(p));
-    const BATCH = 32;
     for (let i = 0; i < toAdd.length; i += BATCH) {
       await Promise.all(
         toAdd.slice(i, i + BATCH).map((p) => this.handleAddOrChange(p, "add")),
+      );
+    }
+    // Heal in-place edits: stat-compare every indexed file against the values
+    // remembered at read time; on drift, re-read. Freshly added files above
+    // were just stamped, so they cost one matching stat and nothing more.
+    const indexed = [...this.filePathToId.keys()];
+    for (let i = 0; i < indexed.length; i += BATCH) {
+      await Promise.all(
+        indexed.slice(i, i + BATCH).map(async (p) => {
+          try {
+            const st = await stat(p);
+            const known = this.fileStats.get(p);
+            if (!known || known.mtimeMs !== st.mtimeMs || known.size !== st.size) {
+              await this.reindexFile(p);
+            }
+          } catch {
+            /* vanished between walk and stat — the next reconcile drops it */
+          }
+        }),
       );
     }
     return this.memorys.size;
@@ -201,12 +226,16 @@ export class Vault {
       readFile(filePath, "utf8"),
       stat(filePath),
     ]);
-    return parseMemoryWith(
+    const m = parseMemoryWith(
       (input) => matter(input),
       raw,
       filePath,
       st.mtimeMs,
     );
+    // only stamped for real memories (parse throws on plain notes) — the
+    // drift check in reconcile() runs over indexed files exclusively
+    this.fileStats.set(filePath, { mtimeMs: st.mtimeMs, size: st.size });
+    return m;
   }
 
   private async handleAddOrChange(
@@ -233,6 +262,7 @@ export class Vault {
   }
 
   private handleRemove(filePath: string): void {
+    this.fileStats.delete(filePath);
     const id = this.filePathToId.get(filePath);
     if (!id) return;
     this.memorys.delete(id);
