@@ -239,6 +239,10 @@ With `docs.mode` set, the session hook injects the capture instruction: when a u
 
 Full details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (wiki).
 
+### Vault care — flag it now, groom it later
+
+Memories age: titles go stale, duplicates creep in, ghosts point at notes you never wrote. bastra-recall turns tending the vault into a two-step loop instead of a chore. From any node's inspector on the vault map you flag a memory — *delete*, *edit*, *write* (for ghosts), or *note* — and the flags land as checkbox lines in an open `vault-care.md` at the vault root. Your **next AI session sees the open flags automatically** (session hook) and offers to work the list off with you: one guided cleanup pass, your call on every item. No hidden state, no separate app — a markdown checklist any editor can open.
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -533,6 +537,10 @@ Mit gesetztem `docs.mode` injiziert der Session-Hook die Capture-Anweisung: Wenn
 `bastra map` öffnet eine interaktive, rein lokale Karte deines Vaults im Browser (`http://127.0.0.1:6723/ui`). Drei Ansichten: **Clouds** (Force-Layout entlang deiner Ordnerstruktur), **Ring** (ein Drill-Down-Rad über die Gedächtnis-Grundbausteine — Projekte, Personen, Selbst, Wissen, Regeln, Artefakte) und **Semantic** (angeordnet nach Embedding-Bedeutung, mit gestrichelten Strängen für *Verbindungen, die du nie geschrieben hast*). Die Suche kombiniert Sofort-Treffer, Hybrid-Recall und einen lokalen **Search-Copiloten**, mit dem du chattend tiefer suchen kannst — gegroundet auf deinen Notizen, angetrieben vom selben lokalen Ollama-Modell wie doc2query, nichts verlässt die Maschine. Care-Flags markieren Memories direkt aus der Karte für eine Pflege-Session. Standardmäßig aus; `bastra map` bietet das Aktivieren an (`ui.enabled`).
 
 Details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (Wiki).
+
+### Vault-Pflege — jetzt markieren, später aufräumen
+
+Memories altern: Titel veralten, Dubletten schleichen sich ein, Ghosts zeigen auf nie geschriebene Notizen. bastra-recall macht aus der Vault-Pflege einen Zwei-Schritt-Loop statt einer lästigen Pflicht. Aus dem Inspector jeder Node auf der Vault-Map markierst du ein Memory — *delete*, *edit*, *write* (für Ghosts) oder *note* — und die Flags landen als Checkbox-Zeilen in einer offenen `vault-care.md` im Vault-Root. Deine **nächste AI-Session sieht die offenen Flags automatisch** (Session-Hook) und bietet an, die Liste gemeinsam abzuarbeiten: ein geführter Aufräum-Durchgang, jede Entscheidung bleibt bei dir. Kein versteckter State, keine Extra-App — eine Markdown-Checkliste, die jeder Editor öffnen kann.
 
 ### Updates
 
