@@ -530,6 +530,17 @@ function buildSpecificTriggerSuggestion(input: SaveMemoryInput): string {
   return `tighten recall_when around an action + anchor, e.g. 'about to ${input.type} in ${path}: ${anchor}'`;
 }
 
+// #159: admission rules — vault rot has a known shape. Negative capability
+// claims harden into standing refusals that outlive the problem; imperative
+// phrasing gets re-read as a directive in unrelated later contexts. Both are
+// advisory-only flags, never blocks.
+const NEGATIVE_CLAIM_RE =
+  /\b(is broken|does ?n[o']?t work|not working|no longer works|never works|funktioniert nicht( mehr)?|ist kaputt|geht nicht( mehr)?)\b/i;
+const FIX_MARKER_RE =
+  /\b(fix(ed)?|lösung|solution|workaround|abhilfe|stattdessen|instead|how to apply)\b/i;
+const IMPERATIVE_LEAD_RE =
+  /^(always|never|don'?t|do not|avoid|remember to|ensure|immer|nie(mals)?|benutze|verwende|vermeide|nutze|stelle sicher)\b/i;
+
 function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityResult {
   const issues: string[] = [];
   const suggestions: string[] = [];
@@ -552,6 +563,27 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
     issues.push(`generic tags: ${genericTags.join(", ")}`);
     suggestions.push("add at least one project/component/outcome tag so future matches are narrower");
     score -= Math.min(24, genericTags.length * 12);
+  }
+
+  // #159: 'X is broken / doesn't work' without a fix becomes a standing
+  // refusal that keeps surfacing long after the problem was solved
+  if (
+    NEGATIVE_CLAIM_RE.test(`${input.title} ${input.summary}`) &&
+    !FIX_MARKER_RE.test(`${input.summary} ${input.body}`)
+  ) {
+    issues.push("negative capability claim without a fix — hardens into a standing refusal");
+    suggestions.push(
+      "capture the FIX (install step, config, env var) instead of the failure as a constraint — or add the fix to the body",
+    );
+    score -= 12;
+  }
+
+  // #159: imperative lead reads as a directive when recalled in unrelated
+  // contexts — declarative facts age better
+  if (IMPERATIVE_LEAD_RE.test(input.title.trim()) || IMPERATIVE_LEAD_RE.test(input.summary.trim())) {
+    issues.push("imperative phrasing — re-reads as a self-directive in unrelated later contexts");
+    suggestions.push("state it as a declarative fact: 'User prefers …' / 'X requires Y', not 'Always/Never …'");
+    score -= 8;
   }
 
   // #149: a complete hook/context block quoted in memory content is
@@ -898,6 +930,18 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "- Sensitive personal data (unless a stable preference)\n" +
       "- When unsure: default to NOT saving. False saves erode trust.\n" +
       "\n" +
+      "ADMISSION RULES — memories that were true once quietly poison " +
+      "later behavior:\n" +
+      "- NO negative capability claims ('X tool is broken', 'Y does not " +
+      "  work') — they harden into standing refusals that outlive the " +
+      "  problem. If something failed due to setup state, capture the FIX " +
+      "  (install step, config, env var), never the failure as a constraint.\n" +
+      "- NO stale-in-7-days artifacts: task progress, PR numbers, " +
+      "  'phase N done' belong in git/issues, not in memory.\n" +
+      "- Declarative facts, not self-directives: 'User prefers concise " +
+      "  replies' ✓ — 'Always reply concisely' ✗. Imperative phrasing " +
+      "  gets re-read as a directive in unrelated later contexts.\n" +
+      "\n" +
       "BEFORE SAVING: call recall() with the title/topic to check for " +
       "an existing memory you should update (overwrite=true) instead " +
       "of creating a duplicate.\n" +
@@ -1074,6 +1118,17 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
           description:
             "If true, replace an existing memory with the same id. " +
             "Default false (errors on collision).",
+        },
+        write_origin: {
+          type: "string",
+          enum: ["user-directed", "agent-session", "capture-review"],
+          description:
+            "Provenance (#158): set 'user-directed' ONLY when the human " +
+            "explicitly asked to remember this ('merk dir das') — such " +
+            "memories are exempt from automated lifecycle passes (curator, " +
+            "consolidation). Omit otherwise: 'agent-session' is the default " +
+            "for autonomous saves. On overwrite without this field, the " +
+            "existing provenance is preserved.",
         },
       },
       required: [

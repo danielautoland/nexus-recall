@@ -75,6 +75,12 @@ After a real back-and-forth with a contributor lands (not a trivial reply): memo
 - Sensitive personal data unless it's a stable preference.
 - **When in doubt: do NOT save.** False saves erode trust faster than missed saves.
 
+### Admission rules — memories that were true once quietly poison later behavior
+
+- **No negative capability claims** ("X tool is broken", "Y does not work") — they harden into standing refusals that keep surfacing long after the problem was fixed. If something failed due to setup state, capture the **fix** (install step, config, env var), never the failure as a constraint.
+- **No stale-in-7-days artifacts**: task progress, PR numbers, "phase N done" belong in git/issues, not in memory.
+- **Declarative facts, not self-directives**: "User prefers concise replies" ✓ — "Always reply concisely" ✗. Imperative phrasing gets re-read as a directive in unrelated later contexts.
+
 ### Before saving
 
 Always `recall()` with the title/topic first — if a near-duplicate exists, update it (`overwrite=true`) instead of creating a new one.

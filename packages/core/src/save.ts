@@ -56,6 +56,14 @@ export const SaveMemoryInput = z.object({
    */
   sensitivity: z.enum(["private", "team", "public"]).optional(),
   /**
+   * Write-Provenance (#158): `user-directed` wenn der Mensch das Speichern
+   * explizit angeordnet hat („merk dir das") — solche Memories sind für
+   * automatisierte Lifecycle-Pässe (Curator, Konsolidierung) unantastbar.
+   * Weglassen = `agent-session` (autonomer Save im Sessionfluss).
+   * `capture-review` stempelt der Post-Session-Capture-Pass (#157).
+   */
+  write_origin: z.enum(["user-directed", "agent-session", "capture-review"]).optional(),
+  /**
    * Memory-Lifecycle (#74): optionale Ablauf-/Review-Felder. `stale_status`
    * wird vom Vault-Loader computet, ist hier aber akzeptiert damit die
    * Mac-App es explizit setzen kann (z.B. manuelles „obsolete").
@@ -286,14 +294,17 @@ export async function saveMemory(
   // #188: Ein Overwrite ohne explizite aliases darf die bestehenden
   // Obsidian-Aliases des Files nicht verlieren — Doc-Sidecars tragen ihre
   // doc-id als Alias, damit [[<doc-id>]]-Links in Obsidian auflösen.
+  // #158: gleiche Regel für write_origin — ein Refresh ohne explizite Angabe
+  // darf ein user-directed Memory nicht zum Curation-Kandidaten degradieren.
   // Best-effort: ein unlesbares File blockt den Save nicht.
   let aliases = input.aliases;
-  if (aliases === undefined && exists) {
+  let existingOrigin: string | undefined;
+  if (exists && (aliases === undefined || input.write_origin === undefined)) {
     try {
       const existingRaw = await readFile(filePath, "utf8");
-      aliases = coerceAliases(
-        (matter(existingRaw).data as Record<string, unknown> | undefined)?.aliases,
-      );
+      const data = matter(existingRaw).data as Record<string, unknown> | undefined;
+      if (aliases === undefined) aliases = coerceAliases(data?.aliases);
+      if (typeof data?.write_origin === "string") existingOrigin = data.write_origin;
     } catch {
       // korrupt/parallel gelöscht → nichts zu erhalten
     }
@@ -326,6 +337,9 @@ export async function saveMemory(
     ...(aliases && aliases.length > 0 ? { aliases } : {}),
     related_via: input.related_via ?? [],
     sensitivity: input.sensitivity ?? "team",
+    // #158: Provenance-Stempel — Bestands-Memories ohne Feld gelten als
+    // agent-session (Backfill per Default-Semantik, kein Massen-Rewrite)
+    write_origin: input.write_origin ?? existingOrigin ?? "agent-session",
     ...(input.valid_until ? { valid_until: input.valid_until } : {}),
     ...(input.expires_after_days ? { expires_after_days: input.expires_after_days } : {}),
     ...(input.last_reviewed_at ? { last_reviewed_at: input.last_reviewed_at } : {}),

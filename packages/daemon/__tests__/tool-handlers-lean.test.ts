@@ -320,6 +320,52 @@ test("save_memory returns advisory save_quality with low score for generic trigg
   }
 });
 
+test("save_memory admission rules (#159): negative claim without fix + imperative lead flagged", async () => {
+  const { deps, close } = await makeDeps();
+  try {
+    const res = await saveMemoryHandler(deps, {
+      title: "Never use the chrome extension — it is broken",
+      type: "lesson",
+      summary: "The chrome extension does not work in the flaky-panel environment when starting a capture run.",
+      body: "It failed twice during the capture experiments in the panel environment.",
+      topic_path: ["lean-test", "admission"],
+      tags: ["admission-rules"],
+      scope: "lean-test",
+      recall_when: ["about to start a capture run in the flaky panel environment"],
+    });
+    assert.ok(
+      res.save_quality.issues.some((i) => i.includes("negative capability claim")),
+      "broken-claim without a fix should be flagged",
+    );
+    assert.ok(
+      res.save_quality.issues.some((i) => i.includes("imperative phrasing")),
+      "imperative lead should be flagged",
+    );
+
+    // the same failure WITH a fix in the body passes the negative-claim rule
+    const fixed = await saveMemoryHandler(deps, {
+      title: "chrome extension needs the debug bridge enabled",
+      type: "lesson",
+      summary: "The extension refused connections until the debug bridge flag was enabled — fix: enable it in setup.",
+      body: "**Why:** bridge flag off by default. **How to apply:** enable chrome://flags debug bridge before capture runs.",
+      topic_path: ["lean-test", "admission"],
+      tags: ["admission-rules"],
+      scope: "lean-test",
+      recall_when: ["chrome extension refuses connections during capture setup"],
+    });
+    assert.ok(
+      !fixed.save_quality.issues.some((i) => i.includes("negative capability claim")),
+      "captured fix must not be flagged",
+    );
+    assert.ok(
+      !fixed.save_quality.issues.some((i) => i.includes("imperative phrasing")),
+      "declarative title must not be flagged",
+    );
+  } finally {
+    await close();
+  }
+});
+
 test("save_memory save_quality does not surface private duplicate candidates by default", async () => {
   const { deps, close } = await makeDeps();
   try {

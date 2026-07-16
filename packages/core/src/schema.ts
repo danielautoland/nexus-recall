@@ -141,6 +141,15 @@ export const FrontmatterSchema = z.object({
    * `private` als Override).
    */
   sensitivity: z.enum(["private", "team", "public"]).default("team"),
+  /**
+   * Write-Provenance (#158): wer hat das Memory verfasst.
+   * - `user-directed`: explizit vom Menschen diktiert („merk dir das") —
+   *   für automatisierte Lifecycle-Pässe (Curator, Konsolidierung) tabu.
+   * - `agent-session`: vom Agenten im Sessionfluss erfasst. Default-Semantik
+   *   für alle Bestands-Memories ohne Feld.
+   * - `capture-review`: aus einem Post-Session-Review-Pass (#157).
+   */
+  write_origin: z.enum(["user-directed", "agent-session", "capture-review"]).optional(),
   source: z.string().optional(),
   confidence: z.number().min(0).max(1).default(1.0),
   created: dateString,

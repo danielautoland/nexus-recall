@@ -44,6 +44,9 @@ function memories(): Array<Record<string, unknown>> {
     { id: "tax", title: "Old unused lesson", created: iso(120), topic_path: ["css", "grid"], related: [] },
     // Floored: same usage profile, must be protected.
     { id: "floored", title: "Floored state", created: iso(120), topic_path: ["ops"], related: [] },
+    // User-directed (#158): same context-tax profile, exempt from lifecycle
+    // passes by provenance — must never show up as candidate or demotion.
+    { id: "dictated", title: "User-dictated preference", created: iso(120), topic_path: ["prefs"], related: [], write_origin: "user-directed" },
     // Young: same usage profile, grace period.
     { id: "young", title: "Fresh lesson", created: iso(3), topic_path: ["css", "grid"], related: [] },
     // Engaged recently.
@@ -57,6 +60,7 @@ async function seedUsage(root: string): Promise<void> {
   await recordUsage(root, [
     ...surfacedALot("tax"),
     ...surfacedALot("floored"),
+    ...surfacedALot("dictated"),
     ...surfacedALot("young"),
     ...surfacedALot("used"),
     { id: "used", kind: "acted_on", ts: iso(2) },

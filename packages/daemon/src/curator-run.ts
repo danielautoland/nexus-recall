@@ -90,8 +90,12 @@ function collectFacts(vault: VaultLike, flooredIds: Set<string>): CuratorMemoryF
       // engagement path (read_document records no usage — they would demote
       // deterministically AND stack with DOC_TYPE_DAMPING to 0.25); taxonomy
       // conventions are injected via <vault-taxonomy>, not load_memory, so
-      // they are equally engagement-blind.
-      protected: mem.fm.type === "doc" || mem.fm.scope === "taxonomy",
+      // they are equally engagement-blind. user-directed memories (#158) are
+      // untouchable for automated lifecycle passes by definition.
+      protected:
+        mem.fm.type === "doc" ||
+        mem.fm.scope === "taxonomy" ||
+        mem.fm.write_origin === "user-directed",
     });
   }
   return facts;
