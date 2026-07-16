@@ -41,6 +41,7 @@
   --map-flow: rgba(190, 242, 255, 0.95);
   --map-flow-tail: rgba(190, 242, 255, 0);
   --map-flow-blend: lighter;
+  --dim-wash: rgba(4, 7, 14, 0.55);
 }
 
 :root[data-theme="light"] {
@@ -75,6 +76,7 @@
   --map-flow: rgba(9, 96, 118, 0.9);
   --map-flow-tail: rgba(9, 96, 118, 0);
   --map-flow-blend: source-over;
+  --dim-wash: rgba(240, 235, 224, 0.5);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -144,6 +146,22 @@ html, body {
 }
 
 /* ── search ────────────────────────────────────────────────────── */
+/* active search dims + blurs everything except the search UI itself —
+   the results and the copilot live in the topbar, above this wash */
+#search-dim {
+  position: fixed;
+  inset: 0;
+  z-index: 26; /* over panels (20) + inspector (25), under the topbar (30) */
+  background: var(--dim-wash);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#search-dim.on { opacity: 1; pointer-events: auto; }
+
+#searchbox.expanded { flex-basis: 860px; }
 #searchbox {
   position: relative;
   flex: 0 1 660px;
@@ -159,7 +177,7 @@ html, body {
   backdrop-filter: var(--panel-blur);
   -webkit-backdrop-filter: var(--panel-blur);
   box-shadow: var(--shadow);
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, flex-basis 0.35s ease;
 }
 #searchbox:focus-within { border-color: var(--accent); }
 .search-icon { width: 15px; height: 15px; color: var(--text-dim); flex: none; }
@@ -180,7 +198,9 @@ html, body {
 #search-results {
   position: absolute;
   top: calc(100% + 8px);
-  left: 0; right: 0;
+  /* the absolute box anchors inside the searchbox's 1px border — pull one
+     pixel out on both sides so the edges line up flush */
+  left: -1px; right: -1px;
   list-style: none;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -198,9 +218,7 @@ html, body {
   gap: 10px;
   padding: 9px 14px;
   cursor: pointer;
-  border-top: 1px solid var(--panel-border);
 }
-#search-results li:first-child { border-top: 0; }
 #search-results li:hover, #search-results li.active { background: var(--accent-soft); }
 #search-results .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 #search-results .r-title {
@@ -507,6 +525,8 @@ body.panel-pinned #topbar { right: 250px; }
   transition: background 0.12s ease;
 }
 #legend li:hover { background: var(--accent-soft); }
+#legend li.active { background: var(--accent-soft); }
+#legend li.active .name { color: var(--accent); }
 #legend .dot {
   width: 9px; height: 9px;
   border-radius: 50%;
@@ -756,7 +776,73 @@ body.inspector-open #minimap { left: 432px; }
 #search-results li.divider:hover { background: var(--chip-bg); }
 #search-results li.divider.ai { color: var(--accent); background: var(--accent-soft); }
 #search-results li.divider.ai:hover { background: var(--accent-soft); }
-#search-results li.ai-row { border-left: 2px solid var(--accent); }
+/* copilot finds sit on top, unmistakably highlighted */
+#search-results li.agent-row { background: var(--accent-soft); }
+#search-results li.agent-row .r-title { font-weight: 600; }
+
+/* ── search copilot: chat beside the results ───────────────────── */
+#search-chat {
+  position: absolute;
+  top: -1px; /* flush with the searchbox's top edge — no dead air beside it */
+  left: calc(100% + 10px);
+  width: 330px;
+  height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--shadow);
+}
+#search-chat[hidden] { display: none !important; }
+#chat-title {
+  padding: 6px 12px;
+  font: 9px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+#chat-log {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+#chat-log:empty::before {
+  content: "nothing found? describe it — I'll dig through the vault.";
+  font-size: 12px;
+  color: var(--text-dim);
+}
+#chat-log .msg {
+  max-width: 88%;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+#chat-log .msg.user { align-self: flex-end; background: var(--accent-soft); color: var(--text); }
+#chat-log .msg.ai { align-self: flex-start; background: var(--chip-bg); color: var(--text); }
+#chat-log .msg.sys { align-self: flex-start; color: var(--text-dim); font-style: italic; padding: 0 2px; }
+#chat-log .msg.sys.err { color: #d06a6a; font-style: normal; }
+#chat-form {
+  border-top: 1px solid var(--panel-border);
+}
+#chat-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 10px 12px;
+  font: 13px var(--font-display);
+  color: var(--text);
+}
+#chat-input::placeholder { color: var(--text-dim); }
 .ai-badge {
   flex: none;
   font: 9px var(--font-mono);
@@ -766,8 +852,14 @@ body.inspector-open #minimap { left: 432px; }
   padding: 1px 5px;
 }
 
-/* ── ring view hint ────────────────────────────────────────────── */
-#ring-hint {
+/* the semantic view hides the structure row — hidden must beat .seg's
+   explicit display (same trap as the cropper) */
+#structure-switch[hidden],
+#structure-label[hidden] { display: none !important; }
+
+/* ── view hints (ring, semantic) ───────────────────────────────── */
+#ring-hint,
+#semantic-hint {
   position: fixed;
   bottom: 34px;
   left: 50%;

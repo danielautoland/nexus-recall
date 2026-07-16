@@ -293,6 +293,9 @@ export function createSimulation(graph, width, height, savedAnchors = null) {
   function separateClouds(draggedKey = null) {
     let movedAny = false;
     const EASE = 0.16;
+    const BACK_EASE = 0.045; // gravity-back: far softer than the evasion
+    const BACK_MAX = 4.5; // px/frame cap — distant clouds drift, never race
+    const BAND = 1.35; // comfort orbit: min distance + 35% buffer
     for (let i = 0; i < centerList.length; i++) {
       for (let j = i + 1; j < centerList.length; j++) {
         const a = centerList[i];
@@ -306,7 +309,21 @@ export function createSimulation(graph, width, height, savedAnchors = null) {
           dy = 0.5;
           d = 1;
         }
-        if (d >= minD - 0.5) continue;
+        if (d >= minD - 0.5) {
+          // gravity back: the dragged cloud is the field's anchor — anything
+          // it pushed away (or left behind) drifts gently back in until it
+          // rests inside the comfort band. The dead zone between push and
+          // pull keeps the orbit calm — no flutter between the two forces.
+          if (draggedKey === null) continue;
+          if (a.key !== draggedKey && b.key !== draggedKey) continue;
+          const band = minD * BAND;
+          if (d <= band) continue;
+          const pull = Math.min((d - band) * BACK_EASE, BACK_MAX);
+          if (a.key === draggedKey) shiftCluster(b.key, -(dx / d) * pull, -(dy / d) * pull);
+          else shiftCluster(a.key, (dx / d) * pull, (dy / d) * pull);
+          movedAny = true;
+          continue;
+        }
         const push = (minD - d) * EASE;
         let wa = 0.5; // nobody dragged: both give way
         if (a.key === draggedKey) wa = 0; // the grabbed cloud never yields

@@ -1,7 +1,8 @@
 import { probeDaemon, formatStatus, type DaemonProbe } from "./helpers.js";
 import { ADAPTERS } from "./registry.js";
 import { probeOllama } from "./ollama.js";
-import { getEmbeddingProvider, getApiToken, type EmbeddingProviderName } from "../settings.js";
+import { getEmbeddingProvider, getApiToken, getUiEnabled, type EmbeddingProviderName } from "../settings.js";
+import { mapUrl } from "./map-cmd.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -12,6 +13,7 @@ interface StatusResult {
   daemon: { status: string; message: string };
   semanticRecall: { configured: string; active: string; detail: string };
   apiToken: { set: boolean };
+  vaultMap: { enabled: boolean; url: string };
   surfaces: Record<string, { status: string; message: string }>;
 }
 
@@ -26,6 +28,7 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     daemon: { status: "unknown", message: "" },
     semanticRecall: { configured: "unset", active: "unknown", detail: "" },
     apiToken: { set: false },
+    vaultMap: { enabled: false, url: mapUrl() },
     surfaces: {},
   };
 
@@ -64,6 +67,16 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
   if (!options.quiet && !options.json) {
     printLine(
       `${"api token".padEnd(15)} ${tokenSet ? "✓ set (browser/REST enabled)" : "· not set (loopback only)"}`,
+    );
+  }
+
+  // Vault map (#207) — the discovery line: where the map lives, or how to
+  // get it. Local-only feature, never flips the exit code.
+  const uiOn = await getUiEnabled();
+  statusResult.vaultMap = { enabled: uiOn, url: mapUrl() };
+  if (!options.quiet && !options.json) {
+    printLine(
+      `${"vault map".padEnd(15)} ${uiOn ? `✓ ${mapUrl()}` : "· off (open + enable: bastra map)"}`,
     );
   }
 

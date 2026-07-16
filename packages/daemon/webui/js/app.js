@@ -11,6 +11,8 @@ import { createInspector } from "./inspector.js";
 import { createSearch } from "./search.js";
 import { createMinimap } from "./minimap.js";
 import { createRingView } from "./managers/ring-view.js";
+import { createSemanticView } from "./managers/semantic-view.js";
+import { createSearchChat } from "./managers/search-chat.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -30,11 +32,10 @@ async function main() {
   }
 
   // ── structure mode: fine clusters ↔ memory building blocks (groups).
-  // A display model, not a view — it applies to clouds AND ring alike.
-  const STRUCTURE_KEY = "bastra-vault-map-structure";
-  let structureMode = localStorage.getItem(STRUCTURE_KEY) === "blocks" ? "blocks" : "clusters";
+  // A display model, not a view — but each view opens with the structure it
+  // reads best in: clouds fine-grained, ring/semantic in building blocks.
+  let structureMode = "clusters"; // clouds default; view switches re-apply
   for (const n of graph.nodes) n.baseCluster = n.cluster; // fine layer, kept
-  if (structureMode === "blocks") for (const n of graph.nodes) n.cluster = n.group;
   const activeGrouping = () => (structureMode === "blocks" ? graph.groups : graph.clusters);
   let hues = clusterHues(activeGrouping());
 
@@ -115,6 +116,11 @@ async function main() {
   // in the ring-view manager; this file only orchestrates the switch and
   // owns the node-position transition.
   const VIEW_KEY = "bastra-vault-map-view";
+  // the structure a view opens with: clouds carry the fine clusters, the
+  // ring reads best in the six building blocks. The semantic view has no
+  // structure choice at all — positions are meaning, grouping only recolors,
+  // so it stays pinned to the readable block palette (switch hidden there).
+  const VIEW_STRUCTURE = { clouds: "clusters", ring: "blocks", semantic: "blocks" };
   let currentView = "clouds";
   let viewTransition = null; // { t0, ms, from, to, noFit?, done? }
   let cloudSnapshot = null; // node positions to return to
@@ -132,6 +138,10 @@ async function main() {
     },
     onDrillChange: (state) => {
       drillScope = state; // legend + signals focus on the drilled area
+      if (clusterFilter) {
+        clusterFilter = null; // its match belongs to the previous scope
+        applyFilter();
+      }
       renderDrillSwitcher(state);
       renderLegend();
       renderSignals();
@@ -139,6 +149,8 @@ async function main() {
   });
   let drillScope = null; // active drill state (both modes) for sidebar scoping
   const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
+
+  const semanticView = createSemanticView({ sim, renderer });
 
   // ── drill switcher (sidebar): appears for instance-mode areas like
   // PROJECTS. Revealed AFTER the wheel's fan-out settles, with a short
@@ -190,45 +202,106 @@ async function main() {
   $("#drill-prev").addEventListener("click", () => stepInstance(-1));
   $("#drill-next").addEventListener("click", () => stepInstance(1));
 
-  function switchView(v) {
-    if (v === currentView || viewTransition) return;
+  let viewLoading = false; // semantic layout fetch in flight — don't re-enter
+  async function switchView(v) {
+    if (v === currentView || viewTransition || viewLoading) return;
+    // fetch the semantic layout first — it can fail (no embeddings yet),
+    // and then the current view must stay untouched
+    let semTargets = null;
+    if (v === "semantic") {
+      viewLoading = true;
+      try {
+        semTargets = await semanticView.enter();
+      } catch (err) {
+        const hint = $("#hint");
+        hint.textContent = `semantic view unavailable — ${err.message}`;
+        hint.classList.remove("fade");
+        setTimeout(() => hint.classList.add("fade"), 5000);
+        return;
+      } finally {
+        viewLoading = false;
+      }
+    }
+    // capture AFTER any await — the clouds keep drifting while the layout
+    // loads, and a stale snapshot would snap them back at flight start
     const from = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
     let to;
-    let noFit = false;
+    if (currentView === "clouds") cloudSnapshot = from;
+    if (currentView === "ring") ringView.exit();
+    if (currentView === "semantic") semanticView.exit();
+    // every view opens in its default structure — BEFORE the enter, so the
+    // ring computes its wheel over the right grouping
+    if (structureMode !== VIEW_STRUCTURE[v]) applyStructure(VIEW_STRUCTURE[v]);
+    $("#structure-label").hidden = $("#structure-switch").hidden = v === "semantic";
     if (v === "ring") {
-      cloudSnapshot = from;
-      to = ringView.enter();
-      noFit = true; // the ring glides its own camera — no end snap
-    } else {
-      to = cloudSnapshot ?? from;
-      ringView.exit();
-      sim.reheat(0.3); // clouds settle again; centroids re-anchor the labels
+      to = ringView.enter(); // glides its own camera via flyToRing
+    } else if (v === "clouds") {
+      // settle the clouds OFF-SCREEN: start from the last arrangement,
+      // re-anchor for the active grouping, run the physics to rest — the
+      // flight target IS the final layout, so the landing hands over to the
+      // live physics seamlessly instead of snapping
+      for (const n of sim.nodes) {
+        const p = cloudSnapshot?.get(n.id);
+        if (p) {
+          n.x = p.x;
+          n.y = p.y;
+        }
+        n.vx = 0;
+        n.vy = 0;
+      }
+      sim.regroup(loadAnchors());
+      for (let i = 0; i < 220 && sim.tick(); i++);
+      to = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+      userTouched = false; // allow the settled layout to claim the camera
+      warmupFrames = 25; // the boot-warmup snap-fit must never fire again
       wasBusy = true;
+    } else {
+      to = semTargets;
+      void semanticView.enter(); // re-arm the flags a ring exit reset; cached → sync
+    }
+    if (v !== "ring") {
+      // camera glides to the new layout WHILE the nodes fly — never an end
+      // snap. Same padding/cap as fitAll, so a later settle-fit is a no-op.
+      interactions.flyToBounds([...to.values()], { padding: 90, maxScale: 1.6, ms: 950 });
     }
     currentView = v;
     localStorage.setItem(VIEW_KEY, v);
     $("#view-switch")
       .querySelectorAll("button")
       .forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-    viewTransition = { t0: performance.now(), ms: 950, from, to, noFit };
+    viewTransition = { t0: performance.now(), ms: 950, from, to, noFit: true };
   }
 
   $("#view-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-view]");
-    if (b) switchView(b.dataset.view);
+    if (b) void switchView(b.dataset.view);
   });
 
-  /** Neighborhood of a node: itself + everything it connects to. */
+  /** Neighborhood of a node: itself + everything it connects to — including
+   *  the unwritten connections while the semantic view is showing them. */
   function neighborhoodOf(node) {
     const pts = [node];
-    for (const e of sim.edges) {
-      if (e.s.id === node.id) pts.push(e.t);
-      if (e.t.id === node.id) pts.push(e.s);
+    const lists = currentView === "semantic" ? [sim.edges, semanticView.getEdges()] : [sim.edges];
+    for (const list of lists) {
+      for (const e of list) {
+        if (e.s.id === node.id) pts.push(e.t);
+        if (e.t.id === node.id) pts.push(e.s);
+      }
     }
     return pts;
   }
 
   function select(node, fly = true) {
+    // a stale hover (mouse parked over the canvas since before the search)
+    // would win over the new focus and light up the WRONG node's strands
+    renderer.setHover(null);
+    // picking a memory ends the cluster-filter lens — the selection's own
+    // neighborhood lighting takes over, undimmed
+    if (node && clusterFilter) {
+      clusterFilter = null;
+      applyFilter();
+      renderLegend();
+    }
     renderer.setFocus(node);
     document.body.classList.toggle("inspector-open", node !== null);
     if (!node) {
@@ -344,16 +417,29 @@ async function main() {
     window.ctxmenu.show(items, ev);
   });
 
-  // ── search: instant title match + the daemon's semantic recall ──
-  createSearch($("#search"), $("#search-results"), sim.nodes, {
+  // ── search: instant title match + the daemon's semantic recall.
+  // While the search is open the map dims/blurs, the box widens, and the
+  // copilot chat docks beside the results to deepen the search.
+  const searchApi = createSearch($("#search"), $("#search-results"), sim.nodes, {
     colorOf,
     onPick: (n) => select(n, true),
     aiSearch: async (q) =>
       (await fetchSemanticSearch(q)).map((h) => sim.byId.get(h.id)).filter(Boolean),
+    onOpenChange: (open) => {
+      $("#search-dim").classList.toggle("on", open);
+      $("#searchbox").classList.toggle("expanded", open);
+      searchChat.setVisible(open);
+    },
+  });
+  const searchChat = createSearchChat({
+    panel: $("#search-chat"),
+    sim,
+    onHits: (found) => searchApi.setAgentHits(found),
   });
 
   // ── legend + panels ────────────────────────────────────────────
   const legendEl = $("#legend");
+  let clusterFilter = null; // { key, match } — the legend's click-toggle filter
   function renderLegend() {
     legendEl.innerHTML = "";
     // inside a drill the legend focuses on the wheel's segments; the numbers
@@ -376,9 +462,18 @@ async function main() {
       const match = scoped
         ? (n) => drillScope.matchKey(n) === c.key
         : (n) => n.cluster === c.key;
+      li.classList.toggle("active", clusterFilter?.key === c.key);
       li.addEventListener("mouseenter", () => renderer.setHighlight(match, scoped ? null : c.key));
       li.addEventListener("mouseleave", () => renderer.setHighlight(null));
+      // click = toggle a persistent cluster filter (ANDed with the other
+      // filters): another entry switches over, the same entry releases.
+      // Selecting a node on the map releases it too (see select()).
       li.addEventListener("click", () => {
+        const on = clusterFilter?.key !== c.key;
+        clusterFilter = on ? { key: c.key, match } : null;
+        applyFilter();
+        renderLegend();
+        if (!on) return;
         if (scoped) {
           interactions.flyToBounds(visibleNodes().filter(match), { padding: 80, maxScale: 2.4 });
         } else {
@@ -394,7 +489,7 @@ async function main() {
   let signalKey = null; // "memories" | "ghosts" | "bridges" | "care" | null
   let timeDays = null; // 7 | 30 | 90 | null
   function applyFilter() {
-    if (signalKey === null && timeDays === null) {
+    if (signalKey === null && timeDays === null && clusterFilter === null) {
       renderer.setFilter(null);
       return;
     }
@@ -402,6 +497,7 @@ async function main() {
       ? new Date(Date.now() - timeDays * 86400e3).toISOString().slice(0, 10)
       : null;
     renderer.setFilter((n) => {
+      if (clusterFilter !== null && !clusterFilter.match(n)) return false;
       if (cutoff !== null && !(n.updated && n.updated >= cutoff)) return false;
       if (signalKey === "memories" && n.kind === "ghost") return false;
       if (signalKey === "ghosts" && n.kind !== "ghost") return false;
@@ -515,23 +611,31 @@ async function main() {
   });
 
   // ── structure switch: reassign clusters, recolor, reorganize animated ──
-  function setStructure(mode) {
-    if (mode === structureMode || viewTransition) return;
+  /** Reassign + recolor only — no re-layout. View switches use this to apply
+   *  their default structure before computing the target layout. */
+  function applyStructure(mode) {
     structureMode = mode;
-    localStorage.setItem(STRUCTURE_KEY, mode);
     $("#structure-switch")
       .querySelectorAll("button")
       .forEach((b) => b.classList.toggle("active", b.dataset.structure === mode));
     for (const n of sim.nodes) n.cluster = mode === "blocks" ? n.group : n.baseCluster;
     hues = clusterHues(activeGrouping());
     renderer.setHues(hues);
+    if (clusterFilter) {
+      clusterFilter = null; // its keys belong to the previous grouping
+      applyFilter();
+    }
     renderLegend();
+  }
+  function setStructure(mode) {
+    if (mode === structureMode || viewTransition) return;
+    applyStructure(mode);
     if (currentView === "ring") {
       // structure change resets any drill and recomputes the whole wheel
       const { from, to } = ringView.refreshForStructure();
       viewTransition = { t0: performance.now(), ms: 950, from, to, noFit: true };
       cloudSnapshot = null; // stale under the new grouping
-    } else {
+    } else if (currentView === "clouds") {
       // clouds reorganize themselves through the physics — animated by nature
       sim.regroup(loadAnchors());
       wasBusy = true;
@@ -596,7 +700,8 @@ async function main() {
   }
   interactions.fitAll();
   requestAnimationFrame(frame);
-  if (localStorage.getItem(VIEW_KEY) === "ring") switchView("ring");
+  const savedView = localStorage.getItem(VIEW_KEY);
+  if (savedView === "ring" || savedView === "semantic") void switchView(savedView);
 
   setTimeout(() => $("#hint").classList.add("fade"), 6000);
 }

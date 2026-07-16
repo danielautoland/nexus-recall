@@ -31,6 +31,7 @@ import {
   type UpdateMode,
 } from "../settings.js";
 import type { ParsedArgs } from "./types.js";
+import { mapUrl } from "./map-cmd.js";
 
 const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language", "ui.enabled"] as const;
 type KnownKey = (typeof KNOWN_KEYS)[number];
@@ -166,6 +167,7 @@ async function cmdConfigSet(key: KnownKey, value: string | null): Promise<number
       }
       await setUiEnabled(on);
       process.stdout.write(`✓ ui.enabled = ${on}\n  stored in ${settingsFilePath()}\n`);
+      if (on) process.stdout.write(`  vault map: ${mapUrl()} (or just: bastra map)\n`);
       if (on) {
         process.stdout.write("  vault map: http://127.0.0.1:6723/ui (no daemon restart needed)\n");
       }

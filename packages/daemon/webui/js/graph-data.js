@@ -18,6 +18,24 @@ export async function fetchNode(id) {
 }
 
 /** Semantic search — the daemon's hybrid recall (BM25 + embeddings). */
+export async function fetchSemanticLayout() {
+  const res = await fetch("/api/v1/graph/semantic");
+  if (res.status === 503) throw new Error("the embedding index is still warming up");
+  if (!res.ok) throw new Error(`semantic layout fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function postChat(message, history) {
+  const res = await fetch("/ui/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `chat failed: ${res.status}`);
+  return data;
+}
+
 export async function fetchSemanticSearch(query) {
   const res = await fetch(`/ui/search?q=${encodeURIComponent(query)}`);
   if (!res.ok) return [];

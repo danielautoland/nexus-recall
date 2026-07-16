@@ -316,6 +316,13 @@ export class EmbeddingIndex {
     return this.vectors.size;
   }
 
+  /** Read-only view of all stored vectors (id → vector), for consumers that
+   *  do pure math over the whole set (#207 semantic map). Live map — do not
+   *  mutate, and don't hold it across awaits (the index keeps writing). */
+  snapshot(): ReadonlyMap<string, Float32Array> {
+    return this.vectors;
+  }
+
   /** Anzahl Memories die noch auf Embedding warten (Backfill-Queue). */
   pendingSize(): number {
     return this.pendingQueue.size;
@@ -579,7 +586,7 @@ function buildEmbedText(m: Memory): string {
   return parts.filter((p) => p && p.length > 0).join("\n");
 }
 
-function cosine(a: Float32Array, b: Float32Array): number {
+export function cosine(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
   let na = 0;

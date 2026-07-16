@@ -57,7 +57,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { buildGraph } from "@bastra-recall/core";
+import { buildGraph, buildSemanticLayout, type SemanticLayout } from "@bastra-recall/core";
 import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
@@ -96,6 +96,7 @@ import {
   handleUiVaultImagePost,
   handleHookCare,
 } from "./webui.js";
+import { handleUiChat, type ChatFn } from "./webui-chat.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
@@ -135,6 +136,12 @@ export interface HttpOptions {
   /** Circuit-Breaker-Zustand (#165) für /health. null = kein Breaker aktiv
    *  (embeddings off). */
   embeddingBreaker?: () => EmbeddingBreakerSnapshot | null;
+  /** Live vector snapshot für die semantic map (#207). Getter, weil der
+   *  Index erst nach dem Boot attacht. null = embeddings off / not ready. */
+  embeddingVectors?: () => ReadonlyMap<string, Float32Array> | null;
+  /** Lokaler Chat-Client für den Such-Copiloten (#207). null = kein lokales
+   *  Generierungsmodell verfügbar → /ui/chat antwortet 503. */
+  uiChat?: ChatFn | null;
   /** Curator-Deps (#155/#156) für die /curator/*-Loopback-Endpoints. */
   curator?: CuratorRunDeps;
 }
@@ -267,6 +274,9 @@ export function gateApiRequest(p: {
 export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   const { port, vault, telemetry, version, toolDeps, documentWriteEnabled, onActivity } = opts;
   const { search } = toolDeps;
+  // #207: the semantic layout is the one genuinely heavy read (PCA + kNN over
+  // every vector) — cache it per server, refreshed at most once a minute.
+  let semanticCache: { at: number; body: SemanticLayout } | null = null;
 
   // env wins (ops override); else the token minted by `bastra token` in
   // cli-settings.json. Empty = no token issued → browser clients are rejected.
@@ -518,6 +528,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       handleUiSearch(res, url, search).catch(() => sendJson(res, 500, { error: "ui error" }));
       return;
     }
+    // Search copilot (#207): chat that deepens a search — local Ollama
+    // generation model only, loopback-only like the rest of /ui.
+    if (method === "POST" && url === "/ui/chat") {
+      const getBody = (id: string) => {
+        const m = vault.get(id);
+        return m && m.fm.sensitivity !== "private" ? m.body : null;
+      };
+      handleUiChat(req, res, { search, chat: opts.uiChat ?? null, getBody }).catch(() =>
+        sendJson(res, 500, { error: "ui error" }),
+      );
+      return;
+    }
     // Ring-view center emblem (#207): stored as vault-image.<ext> at the
     // vault root — an open file like everything else the daemon writes.
     // Path-only match: the viewer cache-busts with ?ts=.
@@ -580,6 +602,25 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         if (u.pathname === "/api/v1/graph") {
           try {
             sendJson(res, 200, buildGraph(vault));
+          } catch (err) {
+            sendJson(res, 500, { error: (err as Error).message });
+          }
+          return;
+        }
+        // #207: the semantic layer — PCA positions by meaning + the
+        // connections you never wrote (close in embedding space, no explicit
+        // edge). 503 until the embedding index has vectors.
+        if (u.pathname === "/api/v1/graph/semantic") {
+          const vecs = opts.embeddingVectors?.() ?? null;
+          if (!vecs || vecs.size === 0) {
+            sendJson(res, 503, { error: "embeddings not ready" });
+            return;
+          }
+          try {
+            if (!semanticCache || Date.now() - semanticCache.at > 60_000) {
+              semanticCache = { at: Date.now(), body: buildSemanticLayout(buildGraph(vault), vecs) };
+            }
+            sendJson(res, 200, semanticCache.body);
           } catch (err) {
             sendJson(res, 500, { error: (err as Error).message });
           }

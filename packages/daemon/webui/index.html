@@ -11,6 +11,7 @@
   <div id="stage">
     <canvas id="map"></canvas>
   </div>
+  <div id="search-dim"></div>
 
   <header id="topbar">
     <div class="wordmark">
@@ -23,6 +24,7 @@
       <div id="view-switch" role="group" aria-label="View">
         <button data-view="clouds" class="active">Clouds</button>
         <button data-view="ring">Ring</button>
+        <button data-view="semantic">Semantic</button>
       </div>
       <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>
@@ -32,6 +34,14 @@
              placeholder="Search the vault — sentences welcome…" aria-label="Search the vault" />
       <kbd>/</kbd>
       <ul id="search-results" hidden></ul>
+      <div id="search-chat" hidden>
+        <div id="chat-title">copilot — deepen the search</div>
+        <div id="chat-log"></div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="ask, refine, dig deeper…" aria-label="Chat with the vault copilot" />
+        </form>
+      </div>
     </div>
 
     <div class="topbar-right">
@@ -80,7 +90,7 @@
 
       <section class="panel-section" id="filters-section">
         <h2 class="section-title">Filters</h2>
-        <div class="filter-label">Structure</div>
+        <div class="filter-label" id="structure-label">Structure</div>
         <div id="structure-switch" class="seg">
           <button data-structure="clusters" class="active">clusters</button>
           <button data-structure="blocks">blocks</button>
@@ -134,6 +144,7 @@
     </div>
   </div>
   <div id="ring-hint" hidden>click an area's name in the band to browse into it · click the center to set a vault image</div>
+  <div id="semantic-hint" hidden>arranged by meaning · dashed strands are connections you never wrote</div>
 
   <div id="tooltip" hidden></div>
   <div id="hint">drag to pan · scroll to zoom · click a node to inspect · drag a label to move its cloud</div>

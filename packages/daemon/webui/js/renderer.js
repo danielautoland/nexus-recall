@@ -14,12 +14,14 @@ export function createRenderer(canvas, sim, initialHues) {
   let focus = null; // clicked/selected node
   let lastPivotId = null; // flow animation: detect pivot changes …
   let pivotSince = 0; // … so the pulses ease in instead of popping
+  let focusSince = 0; // focus beacon: birth burst + sonar timing
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
   let decorFn = null; // view decor (ring guides, center emblem), world space
   let quietEdges = false; // ring view: no ambient edges, only the active node's
   let clusterLabels = true; // ring view draws names curved in the band instead
+  let semEdges = null; // semantic view: unwritten connections, dashed layer
   const labelBounds = new Map(); // cluster key → world-space label box (drag handle)
 
   function readTheme() {
@@ -104,9 +106,11 @@ export function createRenderer(canvas, sim, initialHues) {
     const pivot = hover ?? focus;
     if (!pivot) return null;
     const set = new Set([pivot.id]);
-    for (const e of sim.edges) {
-      if (e.s.id === pivot.id) set.add(e.t.id);
-      if (e.t.id === pivot.id) set.add(e.s.id);
+    for (const list of semEdges ? [sim.edges, semEdges] : [sim.edges]) {
+      for (const e of list) {
+        if (e.s.id === pivot.id) set.add(e.t.id);
+        if (e.t.id === pivot.id) set.add(e.s.id);
+      }
     }
     return set;
   }
@@ -147,6 +151,26 @@ export function createRenderer(canvas, sim, initialHues) {
       if (isActive) ctx.lineWidth = 1 / camera.scale;
     }
 
+    // ── unwritten connections (semantic view) ──
+    // The discoveries of this view: dashed strands between notes that mean
+    // the same thing but were never linked. Ambient strength follows the
+    // similarity; the active node's discoveries light up fully.
+    if (semEdges) {
+      ctx.lineWidth = 1 / camera.scale;
+      ctx.setLineDash([5 / camera.scale, 5 / camera.scale]);
+      ctx.strokeStyle = theme.bridge;
+      for (const e of semEdges) {
+        const isActive = pivotId !== null && (e.s.id === pivotId || e.t.id === pivotId);
+        if (active && !isActive) continue;
+        ctx.globalAlpha = isActive ? 0.9 : 0.1 + Math.min(0.25, (e.sim - 0.6) * 0.8);
+        if (isActive) ctx.lineWidth = 1.5 / camera.scale;
+        strokeEdge(e);
+        ctx.globalAlpha = 1;
+        if (isActive) ctx.lineWidth = 1 / camera.scale;
+      }
+      ctx.setLineDash([]);
+    }
+
     // a quiet sheen glides along the active strands, under the nodes
     if (pivotId !== null) drawFlow(now, pivotId);
 
@@ -156,10 +180,11 @@ export function createRenderer(canvas, sim, initialHues) {
       const fade = n.ringFade ?? 1; // fan-out crossfade multiplier
       if (fade <= 0.02) continue;
       let r = drawRadius(n);
-      const dimmed =
-        (active && !active.has(n.id)) ||
-        (highlightFn !== null && !highlightFn(n)) ||
-        (filterFn !== null && !filterFn(n));
+      // a legend hover is a PREVIEW — while it lasts it outranks the active
+      // filter and the focus neighborhood, else its nodes could never light up
+      const dimmed = highlightFn !== null
+        ? !highlightFn(n)
+        : (active && !active.has(n.id)) || (filterFn !== null && !filterFn(n));
       // filter matches breathe: statically drawn nodes get a soft pulse so
       // "what did this filter select" is visible at a glance
       const filterHit = !dimmed && filterFn !== null && filterFn(n);
@@ -217,14 +242,34 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.stroke();
       }
 
-      // focus ring
+      // focus beacon — the click echoes: a bright birth burst, then calm
+      // sonar rings breathing outward, so the picked thought stays findable
+      // in the crowd without shouting
       if (focus && n.id === focus.id) {
+        const age = now - focusSince;
         ctx.globalAlpha = 1;
         ctx.strokeStyle = theme.edgeHi;
         ctx.lineWidth = 1.6 / camera.scale;
         ctx.beginPath();
         ctx.arc(n.x, n.y, r + 4.5, 0, Math.PI * 2);
         ctx.stroke();
+        for (let p = 0; p < 2; p++) {
+          const t = (age / 1800 + p * 0.5) % 1;
+          ctx.globalAlpha = (1 - t) * 0.55;
+          ctx.lineWidth = (1.8 - t * 1.2) / camera.scale;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r + 4.5 + t * 22, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        if (age < 600) {
+          const t = age / 600;
+          ctx.globalAlpha = (1 - t) * 0.9;
+          ctx.strokeStyle = theme.flow;
+          ctx.lineWidth = (2.2 - t * 1.4) / camera.scale;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r + 4 + t * 30, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
       ctx.globalAlpha = 1;
     }
@@ -276,7 +321,7 @@ export function createRenderer(canvas, sim, initialHues) {
     ctx.globalCompositeOperation = theme.flowBlend;
     ctx.lineWidth = 1.6 / camera.scale;
     let k = 0;
-    for (const e of sim.edges) {
+    for (const e of semEdges ? [...sim.edges, ...semEdges] : sim.edges) {
       if (e.s.id !== pivotId && e.t.id !== pivotId) continue;
       if (e.s.ringHidden || e.t.ringHidden) continue;
       k++;
@@ -351,7 +396,10 @@ export function createRenderer(canvas, sim, initialHues) {
     toWorld,
     refreshTheme,
     setHover: (n) => (hover = n),
-    setFocus: (n) => (focus = n),
+    setFocus: (n) => {
+      if ((n?.id ?? null) !== (focus?.id ?? null)) focusSince = performance.now();
+      focus = n;
+    },
     getFocus: () => focus,
     setHighlight: (fn, labelKey = null) => {
       highlightFn = fn;
@@ -361,6 +409,7 @@ export function createRenderer(canvas, sim, initialHues) {
     setDecor: (fn) => (decorFn = fn),
     setQuietEdges: (on) => (quietEdges = on),
     setBendCenter: (pt) => (bendCenter = pt),
+    setSemanticEdges: (list) => (semEdges = list),
     setClusterLabelsVisible: (on) => (clusterLabels = on),
     setHues: (h) => (hues = h),
   };

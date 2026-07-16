@@ -52,6 +52,10 @@ export function createInteractions(canvas, renderer, sim, { onSelect, onHoverCha
   });
 
   canvas.addEventListener("pointerup", (ev) => {
+    // stray release: the press began on other UI (e.g. a search result that
+    // hid itself on pointerdown) — treating it as a canvas click would wipe
+    // the selection that click just made
+    if (!dragging) return;
     dragging = false;
     canvas.classList.remove("dragging");
     if (dragCluster) {

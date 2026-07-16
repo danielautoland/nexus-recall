@@ -72,7 +72,7 @@ export function parseCareFile(content: string): CareEntry[] {
   return out;
 }
 
-function sendJsonPlain(res: ServerResponse, status: number, payload: unknown): void {
+export function sendJsonPlain(res: ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(body);
@@ -97,8 +97,12 @@ export async function handleUiSearch(
   }
   try {
     const hits = await search.recallHybrid(q, { k: 8, allow_private: false });
+    // only hits that stand close to the top score make it into the type-ahead:
+    // the long tail of a hybrid search is keyword noise and reads as fuzz
+    const floor = hits.length ? Math.max(100, hits[0].score * 0.85) : 0;
+    const confident = hits.filter((h) => h.score >= floor).slice(0, 5);
     sendJsonPlain(res, 200, {
-      hits: hits.map((h) => ({ id: h.id, title: h.title, type: h.type, score: h.score })),
+      hits: confident.map((h) => ({ id: h.id, title: h.title, type: h.type, score: h.score })),
     });
   } catch (err) {
     sendJsonPlain(res, 500, { error: (err as Error).message });

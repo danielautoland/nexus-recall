@@ -400,6 +400,12 @@ async function main(): Promise<void> {
           embedding: embeddingStatus,
           embeddingHealth: () => embIdxForHealth?.runtimeHealth() ?? null,
           embeddingBreaker: () => embeddingBreaker?.snapshot(Date.now()) ?? null,
+          embeddingVectors: () => embIdxForHealth?.snapshot() ?? null,
+          // Such-Copilot (#207): gleiche lokale Gen-Model-Auflösung wie
+          // doc2query; ohne Ollama bleibt /ui/chat aus (503).
+          uiChat: ollama
+            ? ollamaChat({ baseURL: ollama.baseURL, model: await resolveGenerationModel(), timeoutMs: 45_000 })
+            : null,
           curator: { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
         });
 
