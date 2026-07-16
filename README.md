@@ -233,6 +233,12 @@ bastra config set docs.language de    # language the docs are written in (defaul
 
 With `docs.mode` set, the session hook injects the capture instruction: when a user-facing feature area is **completely finished** (works end-to-end, commit landed), the agent creates or refreshes that area's doc — written for the end user, no code internals. Developer-facing state (file maps, architecture) stays in `project-fact` memories. Docs are searchable via `find_document`; in the default `recall` they rank deliberately below memories so long doc bodies never crowd out lessons. Full details: **[Product Docs](https://github.com/n0mad-ai/bastra-recall/wiki/Product-Docs)** (wiki).
 
+### Vault map (optional)
+
+`bastra map` opens an interactive, local-only map of your vault in the browser (`http://127.0.0.1:6723/ui`). Three views: **Clouds** (force layout along your folder structure), **Ring** (a drill-down wheel over the memory building blocks — projects, people, self, knowledge, rules, artifacts), and **Semantic** (arranged by embedding meaning, with dashed strands for *connections you never wrote*). The search combines instant matches, hybrid recall, and a local **search copilot** you can chat with to deepen a search — grounded in your notes, powered by the same local Ollama model as doc2query, nothing leaves the machine. Care flags mark memories for a cleanup session right from the map. Off by default; `bastra map` offers to enable it (`ui.enabled`).
+
+Full details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (wiki).
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -521,6 +527,12 @@ bastra config set docs.language de    # Sprache der Doku (Default: en)
 ```
 
 Mit gesetztem `docs.mode` injiziert der Session-Hook die Capture-Anweisung: Wenn ein User-facing Feature-Bereich **komplett fertig** ist (läuft end-to-end, Commit gelandet), legt der Agent die Doku des Bereichs an bzw. frischt sie auf — geschrieben für den Endnutzer, keine Code-Interna. Entwickler-Stand (File-Maps, Architektur) bleibt in `project-fact`-Memories. Doku ist über `find_document` suchbar; im Default-`recall` rankt sie bewusst unter den Memories, damit lange Doku-Bodies keine Lessons verdrängen. Details: **[Product Docs](https://github.com/n0mad-ai/bastra-recall/wiki/Product-Docs)** (Wiki).
+
+### Vault-Map (optional)
+
+`bastra map` öffnet eine interaktive, rein lokale Karte deines Vaults im Browser (`http://127.0.0.1:6723/ui`). Drei Ansichten: **Clouds** (Force-Layout entlang deiner Ordnerstruktur), **Ring** (ein Drill-Down-Rad über die Gedächtnis-Grundbausteine — Projekte, Personen, Selbst, Wissen, Regeln, Artefakte) und **Semantic** (angeordnet nach Embedding-Bedeutung, mit gestrichelten Strängen für *Verbindungen, die du nie geschrieben hast*). Die Suche kombiniert Sofort-Treffer, Hybrid-Recall und einen lokalen **Search-Copiloten**, mit dem du chattend tiefer suchen kannst — gegroundet auf deinen Notizen, angetrieben vom selben lokalen Ollama-Modell wie doc2query, nichts verlässt die Maschine. Care-Flags markieren Memories direkt aus der Karte für eine Pflege-Session. Standardmäßig aus; `bastra map` bietet das Aktivieren an (`ui.enabled`).
+
+Details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (Wiki).
 
 ### Updates
 
