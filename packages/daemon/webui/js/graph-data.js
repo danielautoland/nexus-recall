@@ -36,6 +36,17 @@ export async function postImport(text, source) {
   return data;
 }
 
+export async function postImportVault(dir, label) {
+  const res = await fetch("/ui/import-vault", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir, label }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `import failed: ${res.status}`);
+  return data;
+}
+
 export async function fetchOnboarding() {
   const res = await fetch("/ui/onboarding");
   if (!res.ok) throw new Error(`onboarding: ${res.status}`);
@@ -114,9 +125,10 @@ export function clusterColor(hues, key, sat, light) {
 }
 
 /** Node radius from degree — sqrt so hubs read big without dwarfing notes.
- *  Ghosts get a bigger base: they carry no fill, so they need size to read. */
+ *  Ghosts get a bigger base: they carry no fill, so they need size to read.
+ *  Skills sit between: solid but often low-degree, so they get size too. */
 export function nodeRadius(node) {
-  const base = node.kind === "ghost" ? 5.2 : 2.6;
+  const base = node.kind === "ghost" ? 5.2 : node.kind === "skill" ? 4.2 : 2.6;
   return Math.min(base + Math.sqrt(node.degree) * 1.7, 15);
 }
 

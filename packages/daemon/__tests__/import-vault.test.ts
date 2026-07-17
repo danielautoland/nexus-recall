@@ -1,0 +1,232 @@
+/**
+ * Tests für den Folder-Import (#215): `importVault` mappt einen fremden
+ * Memory-Ordner deterministisch in den isolierten `memories/imported/<label>/`
+ * -Subtree — tolerant gegen die CC-Format-Varianz (flat `type:` vs. nested
+ * `metadata.type`, wikilinks-or-not, frontmatter-los) und ohne Review-Gate.
+ *
+ * Runner: `tsx --test __tests__/import-vault.test.ts`
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import matter from "gray-matter";
+import { importVault, listSubdirs } from "../src/import-vault.js";
+
+async function tmp(prefix: string): Promise<string> {
+  return mkdtemp(join(tmpdir(), prefix));
+}
+
+async function writeSrc(dir: string, rel: string, content: string): Promise<void> {
+  const full = join(dir, rel);
+  await mkdir(dirname(full), { recursive: true });
+  await writeFile(full, content, "utf8");
+}
+
+async function readMem(vault: string, folder: string, id: string): Promise<{ data: Record<string, unknown>; body: string }> {
+  const raw = await readFile(join(vault, folder, `${id}.md`), "utf8");
+  const { data, content } = matter(raw);
+  return { data: data as Record<string, unknown>, body: content };
+}
+
+test("CC flat type: maps name/description/type into an isolated namespaced memory", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(
+      src,
+      "feedback_no_double_borders.md",
+      "---\nname: Keine doppelten Borders\ndescription: IMMER prüfen dass keine doppelten Borders entstehen\ntype: feedback\n---\nBody text here.",
+    );
+    const r = await importVault(vault, src, { label: "ccmem" });
+    assert.equal(r.scanned, 1);
+    assert.equal(r.imported, 1);
+    assert.equal(r.byAdapter.claudeCode, 1);
+    assert.equal(r.folder, "memories/imported/ccmem");
+    const id = r.ids[0];
+    assert.equal(id, "ccmem-feedback-no-double-borders");
+    const { data } = await readMem(vault, r.folder, id);
+    assert.equal(data.type, "meta-working"); // feedback → meta-working
+    assert.equal(data.title, "Keine doppelten Borders");
+    assert.equal(data.scope, "ccmem");
+    assert.equal(data.summary, "IMMER prüfen dass keine doppelten Borders entstehen");
+    assert.ok((data.recall_when as string[]).includes("IMMER prüfen dass keine doppelten Borders entstehen"));
+    assert.deepEqual(data.topic_path, ["imported", "ccmem"]);
+    assert.equal(data.write_origin, "user-directed");
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("CC nested metadata.type is honored too (format variance)", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(
+      src,
+      "project_windows.md",
+      "---\nname: Windows strategy\ndescription: Ship the windows build via CI\nmetadata:\n  type: project\n---\nDetails.",
+    );
+    const r = await importVault(vault, src, { label: "x" });
+    const { data } = await readMem(vault, r.folder, r.ids[0]);
+    assert.equal(data.type, "project-fact"); // project → project-fact
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("frontmatter-less file falls to the generic adapter (title from H1, summary from paragraph)", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(src, "team-setup.md", "# Team setup\n\nWe use Supabase for auth and storage.\n");
+    const r = await importVault(vault, src, { label: "legacy" });
+    assert.equal(r.imported, 1);
+    assert.equal(r.byAdapter.generic, 1);
+    const { data } = await readMem(vault, r.folder, r.ids[0]);
+    assert.equal(data.title, "Team setup");
+    assert.equal(data.summary, "We use Supabase for auth and storage.");
+    assert.equal(data.type, "reference");
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("broken/cyrillic YAML degrades to a generic import instead of dropping the file", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    // unbalanced bracket → js-yaml throws → safeParse falls back to no-frontmatter
+    await writeSrc(src, "note.md", "---\ntags: [unclosed «кириллица»\n---\n\nActual content survives.\n");
+    const r = await importVault(vault, src, { label: "cyr" });
+    assert.equal(r.imported, 1);
+    assert.equal(r.skipped.length, 0);
+    assert.equal(r.byAdapter.generic, 1);
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("isolation: MEMORY.md is skipped and body wikilinks are namespaced (no bare-name leak)", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(src, "MEMORY.md", "# Index\n- [x](a.md)\n");
+    await writeSrc(
+      src,
+      "a.md",
+      "---\nname: Alpha\ndescription: links to beta\ntype: project\n---\nSee [[beta]] for details.",
+    );
+    const r = await importVault(vault, src, { label: "iso" });
+    assert.equal(r.scanned, 1); // MEMORY.md not counted
+    const { data } = await readMem(vault, r.folder, r.ids[0]);
+    // wikilink [[beta]] must be namespaced to [[iso-beta]] → related holds the
+    // namespaced id, never the bare "beta" (which could hit a real memory).
+    assert.ok((data.related as string[]).includes("iso-beta"));
+    assert.ok(!(data.related as string[]).includes("beta"));
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("unknown type falls back to reference; dry-run writes nothing", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(src, "weird.md", "---\nname: Weird\ndescription: d\ntype: banana\n---\nb");
+    const dry = await importVault(vault, src, { label: "d", dryRun: true });
+    assert.equal(dry.imported, 1);
+    assert.equal(dry.dryRun, true);
+    await assert.rejects(readMem(vault, dry.folder, dry.ids[0])); // nothing on disk
+    const real = await importVault(vault, src, { label: "d" });
+    const { data } = await readMem(vault, real.folder, real.ids[0]);
+    assert.equal(data.type, "reference");
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("frontmatter-less index hub is skipped as navigation, prose note still imports", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    // hand-maintained index: sectioned link list, no frontmatter (zzalli's 4/4 case)
+    const indexLines = ["# vault index", "## projects"];
+    for (let i = 0; i < 20; i++) indexLines.push(`- [note ${i}](note-${i}.md) — one-line hook`);
+    indexLines.push("## semantic", "- [[some-note]] deep link", "- [[other-note]] deep link");
+    await writeSrc(src, "index-projects.md", indexLines.join("\n"));
+    // a real prose note without frontmatter that mentions two links
+    await writeSrc(
+      src,
+      "supabase-details.md",
+      "# Supabase setup\n\nWe use Supabase for auth, see [[project-auth]].\n\nStorage buckets are documented in [docs](docs.md). The service key rotates monthly.\nBackups run nightly via cron.\n",
+    );
+    const r = await importVault(vault, src, { label: "hub" });
+    assert.equal(r.scanned, 2);
+    assert.equal(r.imported, 1);
+    assert.equal(r.skipped.length, 1);
+    assert.match(r.skipped[0].reason, /index\/navigation/);
+    assert.ok(r.skipped[0].path.endsWith("index-projects.md"));
+    assert.equal(r.ids[0], "hub-supabase-details");
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("a file WITH declared frontmatter is never treated as an index hub", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    const links = Array.from({ length: 15 }, (_, i) => `- [[target-${i}]]`).join("\n");
+    await writeSrc(src, "linkheavy.md", `---\nname: Link heavy\ndescription: a legit memory full of links\ntype: project\n---\n${links}\n`);
+    const r = await importVault(vault, src, { label: "lh" });
+    assert.equal(r.imported, 1); // declared frontmatter wins
+    assert.equal(r.skipped.length, 0);
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("listSubdirs: dirs only, dotdirs after visible ones, md counts, parent chain", async () => {
+  const root = await tmp("iv-fs-");
+  try {
+    await mkdir(join(root, "b-visible"), { recursive: true });
+    await mkdir(join(root, ".claude"), { recursive: true });
+    await mkdir(join(root, "a-vault"), { recursive: true });
+    await mkdir(join(root, "node_modules"), { recursive: true });
+    await writeFile(join(root, "a-vault", "note.md"), "# n");
+    await writeFile(join(root, "loose-file.md"), "# f"); // files never listed
+    const r = await listSubdirs(root);
+    assert.deepEqual(r.dirs.map((d) => d.name), ["a-vault", "b-visible", ".claude"]);
+    assert.equal(r.dirs[0].md, 1);
+    assert.equal(r.dirs[1].md, 0);
+    assert.ok(r.parent);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("re-import is idempotent (stable id, overwrite in place)", async () => {
+  const src = await tmp("iv-src-");
+  const vault = await tmp("iv-vault-");
+  try {
+    await writeSrc(src, "reference_cookies.md", "---\nname: Cookies\ndescription: akamai cookies\ntype: reference\n---\nx");
+    const first = await importVault(vault, src, { label: "r" });
+    const second = await importVault(vault, src, { label: "r" });
+    assert.deepEqual(first.ids, second.ids);
+    assert.equal(second.imported, 1);
+    assert.equal(second.skipped.length, 0);
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});

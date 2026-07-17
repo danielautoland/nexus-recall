@@ -709,6 +709,21 @@ body.panel-pinned #topbar { right: 250px; }
 .care-submit:hover { background: var(--accent); color: var(--bg); }
 .care-submit:active { transform: scale(0.96); }
 
+.skill-declare {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.skill-declare:hover { border-color: var(--accent); color: var(--accent); }
+.skill-declare:disabled { opacity: 0.6; cursor: default; }
+
 /* ── filters section (static, no accordion) ────────────────────── */
 .section-title {
   display: block;
@@ -1045,6 +1060,99 @@ body.inspector-open #minimap { left: 432px; }
 }
 #import-actions button:hover { border-color: var(--accent); color: var(--accent); }
 #import-stage:disabled { opacity: 0.5; cursor: default; }
+
+#import-vault-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--panel-border);
+}
+#import-vault-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+#import-vault-help code { color: var(--text); }
+#import-vault-row {
+  display: flex;
+  gap: 8px;
+}
+#import-vault-dir, #import-vault-label {
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  font: 12.5px var(--font-mono);
+  outline: none;
+}
+#import-vault-dir { flex: 2; }
+#import-vault-label { flex: 1; min-width: 0; }
+#import-vault-dir:focus, #import-vault-label:focus { border-color: var(--accent); }
+#import-vault-run {
+  padding: 8px 14px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+#import-vault-run:hover { border-color: var(--accent); color: var(--accent); }
+#import-vault-run:disabled { opacity: 0.5; cursor: default; }
+#import-vault-status { font-size: 12px; color: var(--text-dim); }
+#import-vault-status.ok { color: var(--accent); }
+#import-vault-status.err { color: #d06a6a; }
+#import-vault-browse {
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+#import-vault-browse:hover { color: var(--accent); border-color: var(--accent); }
+#import-vault-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--panel-border);
+  padding: 8px 10px;
+}
+#import-vault-browser-path {
+  font: 11px var(--font-mono);
+  color: var(--text-dim);
+  word-break: break-all;
+}
+#import-vault-browser-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+#import-vault-browser-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  font: 12px var(--font-mono);
+  color: var(--text);
+  cursor: pointer;
+}
+#import-vault-browser-list li:hover { background: var(--accent-soft); color: var(--accent); }
+#import-vault-browser-list li.up { color: var(--text-dim); }
+#import-vault-browser-list li .count { color: var(--text-dim); font-size: 11px; }
+#import-vault-browser-actions { display: flex; justify-content: flex-end; }
+#import-vault-use {
+  padding: 5px 12px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+#import-vault-use:hover { background: var(--accent); color: var(--bg); }
 
 /* ── onboarding interview: seed a fresh vault ─────────────────── */
 #onboarding-modal[hidden] { display: none !important; } /* explicit display beats [hidden] otherwise */

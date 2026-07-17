@@ -182,6 +182,30 @@
         <button id="import-cancel">Close</button>
         <button id="import-stage">Stage for review</button>
       </div>
+
+      <div id="import-vault-section">
+        <h2 class="section-title">…or import a whole folder</h2>
+        <p id="import-vault-help">Point at a folder of memory files — e.g. a Claude Code memory dir
+          (<code>~/.claude/projects/&lt;repo&gt;/memory</code>). It's converted and imported into its
+          own isolated set under <code>memories/imported/</code>; <strong>nothing existing is touched</strong>,
+          and no per-item review is needed. Delete or re-import the whole set anytime.</p>
+        <div id="import-vault-row">
+          <input type="text" id="import-vault-dir" spellcheck="false"
+                 placeholder="/path/to/a/memory/folder" />
+          <button id="import-vault-browse">Browse…</button>
+          <input type="text" id="import-vault-label" spellcheck="false"
+                 placeholder="label (optional)" />
+          <button id="import-vault-run">Import folder</button>
+        </div>
+        <div id="import-vault-browser" hidden>
+          <div id="import-vault-browser-path"></div>
+          <ul id="import-vault-browser-list"></ul>
+          <div id="import-vault-browser-actions">
+            <button id="import-vault-use">Use this folder</button>
+          </div>
+        </div>
+        <span id="import-vault-status"></span>
+      </div>
     </div>
   </div>
 

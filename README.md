@@ -255,9 +255,14 @@ Your other AI tools already know you — `bastra import` brings that head start 
 bastra import memories.txt         # a memory list: ChatGPT / Claude / Gemini export, free text — or paste via `bastra import -`
 bastra import conversations.json   # a full data export (ChatGPT / Claude) — queued for chunk-wise mining
 bastra import rules                # local rules files: CLAUDE.md, AGENTS.md, .cursorrules, .cursor/rules/, ~/.claude/CLAUDE.md
+bastra import vault <dir>          # a whole folder of memory files (e.g. a Claude Code memory dir) — no review needed
 ```
 
-A `conversations.json` never stages raw chat history: only **your own messages** are kept (assistant turns dropped), queued locally under `~/.bastra/` — it never leaves the machine, is deleted when mining completes, and `bastra import clear` discards it anytime. Your AI session combs the queue chunk-wise (`bastra import mine`) and stages candidate lessons, decisions and preferences for your review. The vault map carries a visual import dialog (topbar ↓) for the paste path.
+A `conversations.json` never stages raw chat history: only **your own messages** are kept (assistant turns dropped), queued locally under `~/.bastra/` — it never leaves the machine, is deleted when mining completes, and `bastra import clear` discards it anytime. Your AI session combs the queue chunk-wise (`bastra import mine`) and stages candidate lessons, decisions and preferences for your review. The vault map carries a visual import dialog (topbar ↓) for the paste path and the folder path.
+
+`import vault` is the fourth path and skips the gate on purpose: a folder of already-structured memory files (Claude Code's `name`/`description`/`type` frontmatter — both its variants — or plain markdown notes) carries every field a memory needs, so it maps deterministically. The set lands isolated under `memories/imported/<label>/` with its own scope and namespaced ids — nothing existing is read or modified, re-import is idempotent, and deleting that one folder removes the whole set.
+
+Link targets that live on another surface (say, your Claude Code skills) can be declared once with `bastra skills add <id>` — declared ids render as solid nodes in the map's own **skills ring** instead of "unwritten" ghosts, and the curator stops reporting them as dangling links. No path, no folder scan, no sync: the id is the whole declaration (also available on any ghost node in the map — "Mark as skill").
 
 ### Feedback
 
@@ -578,9 +583,14 @@ Deine anderen AI-Tools kennen dich schon — `bastra import` nimmt diesen Vorspr
 bastra import memories.txt         # eine Memory-Liste: ChatGPT- / Claude- / Gemini-Export, Freitext — oder Paste via `bastra import -`
 bastra import conversations.json   # ein kompletter Daten-Export (ChatGPT / Claude) — wird für Chunk-weises Mining gequeued
 bastra import rules                # lokale Rules-Dateien: CLAUDE.md, AGENTS.md, .cursorrules, .cursor/rules/, ~/.claude/CLAUDE.md
+bastra import vault <dir>          # ein ganzer Ordner Memory-Dateien (z.B. ein Claude-Code-Memory-Dir) — ohne Review
 ```
 
-Eine `conversations.json` staged nie rohe Chat-History: Nur **deine eigenen Messages** bleiben (Assistant-Antworten fliegen raus), lokal gequeued unter `~/.bastra/` — verlässt nie die Maschine, wird nach dem Mining gelöscht, `bastra import clear` verwirft jederzeit. Deine AI-Session kämmt die Queue Chunk-weise durch (`bastra import mine`) und staged Kandidaten-Lessons, -Entscheidungen und -Präferenzen für deine Review. Die Vault-Map hat einen visuellen Import-Dialog (Topbar ↓) für den Paste-Weg.
+Eine `conversations.json` staged nie rohe Chat-History: Nur **deine eigenen Messages** bleiben (Assistant-Antworten fliegen raus), lokal gequeued unter `~/.bastra/` — verlässt nie die Maschine, wird nach dem Mining gelöscht, `bastra import clear` verwirft jederzeit. Deine AI-Session kämmt die Queue Chunk-weise durch (`bastra import mine`) und staged Kandidaten-Lessons, -Entscheidungen und -Präferenzen für deine Review. Die Vault-Map hat einen visuellen Import-Dialog (Topbar ↓) für den Paste-Weg und den Ordner-Weg.
+
+`import vault` ist der vierte Weg und überspringt das Gate bewusst: Ein Ordner bereits strukturierter Memory-Dateien (Claude Codes `name`/`description`/`type`-Frontmatter — beide Varianten — oder schlichte Markdown-Notizen) trägt jedes Feld, das ein Memory braucht, und mappt deshalb deterministisch. Der Satz landet isoliert unter `memories/imported/<label>/` mit eigenem Scope und namespaced ids — nichts Bestehendes wird gelesen oder verändert, Re-Import ist idempotent, und das Löschen dieses einen Ordners entfernt den ganzen Satz.
+
+Link-Ziele, die auf einer anderen Surface leben (etwa deine Claude-Code-Skills), deklarierst du einmal mit `bastra skills add <id>` — deklarierte ids erscheinen als solide Knoten im eigenen **Skills-Ring** der Map statt als „unwritten"-Ghosts, und der Curator meldet sie nicht mehr als dangling links. Kein Pfad, kein Ordner-Scan, kein Sync: Die id ist die ganze Deklaration (auch auf jedem Ghost-Knoten in der Map — „Mark as skill").
 
 ### Feedback
 

@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-17
+
+### Added
+- **Folder import** (#215): **`bastra import vault <dir> [label]`** — import a
+  whole folder of foreign memory files in one command, no per-item review.
+  A tolerant Claude-Code adapter reads both frontmatter variants (flat
+  `type:` and nested `metadata.type`), files with or without `[[wikilinks]]`,
+  and frontmatter-less legacy notes (YAML errors degrade gracefully instead
+  of dropping the file); anything else falls back to a generic markdown
+  adapter (title from the first H1 or filename, summary from the first
+  paragraph). The CC `description` field — the format's declared recall cue —
+  maps straight onto `summary` + `recall_when`, so a known format imports
+  deterministically. Everything lands isolated under
+  `memories/imported/<label>/` with namespaced ids and its own scope:
+  nothing existing is read or modified, re-import is idempotent, and
+  deleting that one folder removes the whole set. Hand-maintained index
+  files (frontmatter-less link lists) are recognized as navigation and
+  skipped — they don't become nodes and don't inflate the ghost count.
+  The map's import dialog grew a matching folder section with a directory
+  picker (`POST /ui/import-vault`, `GET /ui/fs` — directory names only,
+  loopback + ui-gated).
+- **Skills ring** (#215): **`bastra skills <list|add|remove>`** — a
+  declare-once registry (`~/.bastra/skills.json`) for link targets that live
+  on another surface, e.g. Claude Code skills. Declared ids render as solid
+  nodes in the map's own `skills` ring instead of dashed "unwritten" ghosts,
+  keep their place even when the last live link drops, and the curator stops
+  reporting them as dangling links. Also available in the map: **"Mark as
+  skill"** on any ghost node (`/ui/skills`). No path, no folder scan, no
+  sync — the id is the whole declaration.
+
 ## [0.8.0] — 2026-07-16
 
 ### Added
@@ -470,6 +500,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.1]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.1
 [0.8.0]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.0
 [0.7.9]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.9
 [0.7.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.8

@@ -94,6 +94,27 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
         submit.disabled = false;
         submit.textContent = "failed — retry";
       }
+      return;
+    }
+    // "mark as skill" (#215): declare the ghost target as living on another
+    // surface — it joins the skills ring on the next graph load.
+    const skillBtn = ev.target.closest("button.skill-declare");
+    if (skillBtn && current) {
+      skillBtn.disabled = true;
+      skillBtn.textContent = "declaring…";
+      try {
+        const res = await fetch("/ui/skills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: current.id }),
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        skillBtn.textContent = "✓ declared — reloading…";
+        setTimeout(() => location.reload(), 600);
+      } catch {
+        skillBtn.disabled = false;
+        skillBtn.textContent = "failed — retry";
+      }
     }
   });
 
@@ -120,9 +141,10 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
   }
 
   function kicker(node) {
+    const kindLabel = node.kind === "ghost" ? "unwritten" : node.kind === "skill" ? "skill" : node.type;
     return `<div class="insp-kicker">
       <span class="dot" style="background:${clusterColorOf(node)}"></span>
-      <span>${esc(node.cluster)}</span><span>·</span><span>${esc(node.kind === "ghost" ? "unwritten" : node.type)}</span>
+      <span>${esc(node.cluster)}</span><span>·</span><span>${esc(kindLabel)}</span>
     </div>`;
   }
 
@@ -154,7 +176,24 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
         ${node.bridge ? "Several clusters point here: a connection worth writing down." : "Following the links below shows who expects it."}</div>
         ${node.bridge ? chips(node.bridge) : ""}
         ${linkList("Linked from", node.linked_by)}
+        <div class="insp-section-title">Not a note?</div>
+        <div class="ghost-note">If this id is a skill or doc living on another surface, declare it —
+        it becomes a solid node in the skills ring instead of an unwritten ghost.</div>
+        <button class="skill-declare">Mark as skill</button>
         ${careBlock(node)}
+      `;
+      return;
+    }
+
+    if (node.kind === "skill") {
+      contentEl.innerHTML = `
+        ${kicker(node)}
+        <div class="insp-title">${esc(node.title)}</div>
+        <div class="ghost-note">Declared skill — it lives on another surface; the vault only references
+        it. ${esc(node.summary || "")}</div>
+        ${node.bridge ? chips(node.bridge) : ""}
+        ${linkList("Linked from", node.linked_by)}
+        <div class="insp-meta">undeclare via <code>bastra skills remove ${esc(node.id)}</code></div>
       `;
       return;
     }

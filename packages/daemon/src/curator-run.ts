@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { listFloors } from "./floors.js";
+import { listSkills } from "./skills-registry.js";
 import {
   applyDecision,
   decideStale,
@@ -141,7 +142,7 @@ async function collectFloorReview(vault: VaultLike, nowMs: number): Promise<Repo
   return out.sort((a, b) => b.weeksSinceAffirm - a.weeksSinceAffirm);
 }
 
-function collectConflictsAndDangling(vault: VaultLike): {
+function collectConflictsAndDangling(vault: VaultLike, skillIds: Set<string> = new Set()): {
   conflicts: ReportConflictCluster[];
   dangling: ReportDanglingLink[];
 } {
@@ -183,7 +184,9 @@ function collectConflictsAndDangling(vault: VaultLike): {
       }
     }
     for (const t of targets) {
-      if (!ids.has(t)) dangling.push({ fromId: id, target: t });
+      // Declared skills (#215) live on another surface by design — a link to
+      // one is a reference, not a dangling link to fix.
+      if (!ids.has(t) && !skillIds.has(t)) dangling.push({ fromId: id, target: t });
     }
   }
 
@@ -337,7 +340,7 @@ async function runCuratorPassInner(
       reason,
     })),
     floors: await collectFloorReview(deps.vault, nowMs),
-    ...collectConflictsAndDangling(deps.vault),
+    ...collectConflictsAndDangling(deps.vault, new Set((await listSkills()).map((s) => s.id))),
     emptyFiles: await collectEmptyFiles(deps.vaultRoot),
     flagged: collectFlaggedCaptures(deps.vault),
     ...(mode !== "acting" ? { pendingReview: true } : {}),

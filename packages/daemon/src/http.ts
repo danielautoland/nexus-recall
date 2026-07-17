@@ -98,6 +98,8 @@ import {
 } from "./webui.js";
 import { handleUiChat, type ChatFn } from "./webui-chat.js";
 import { handleHookImport, handleUiImport } from "./import-review.js";
+import { handleUiImportVault, handleUiFsBrowse } from "./import-vault.js";
+import { listSkills, handleUiSkills } from "./skills-registry.js";
 import { handleHookOnboarding, handleUiOnboarding } from "./onboarding.js";
 import { handleSessionContext } from "./session-context.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
@@ -534,6 +536,27 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       handleUiImport(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "import error" }));
       return;
     }
+    // Folder import (#215): the map's sibling of `bastra import vault <dir>` —
+    // ingest a whole memory folder into the isolated imported/ subtree, then
+    // reconcile so the new nodes show on the map at once. Writes directly (no
+    // staging), but only into memories/imported/.
+    if (method === "POST" && url === "/ui/import-vault") {
+      handleUiImportVault(req, res, toolDeps.vaultPath, () => vault.reconcile()).catch(() =>
+        sendJson(res, 500, { error: "import error" }),
+      );
+      return;
+    }
+    // Skills registry (#215): list + declare ("mark as skill" on a ghost) —
+    // classifies the node into the skills ring on the next graph render.
+    if ((method === "GET" || method === "POST") && url === "/ui/skills") {
+      handleUiSkills(req, res).catch(() => sendJson(res, 500, { error: "skills error" }));
+      return;
+    }
+    // Folder picker for the import dialog (#215): directory names only.
+    if (method === "GET" && url.startsWith("/ui/fs")) {
+      handleUiFsBrowse(req, res).catch(() => sendJson(res, 500, { error: "fs error" }));
+      return;
+    }
     if (method === "POST" && url === "/ui/annotate") {
       handleUiAnnotate(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
       return;
@@ -635,11 +658,11 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         // The viewer contract: the web UI, the Mac app, and external tools
         // all render from this same JSON (#140: no privileged viewer).
         if (u.pathname === "/api/v1/graph") {
-          try {
-            sendJson(res, 200, buildGraph(vault));
-          } catch (err) {
-            sendJson(res, 500, { error: (err as Error).message });
-          }
+          // Declared skills (#215) classify ghost targets into the skills
+          // ring — one small JSON read, same viewer contract for everyone.
+          listSkills()
+            .then((skills) => sendJson(res, 200, buildGraph(vault, skills)))
+            .catch((err: Error) => sendJson(res, 500, { error: err.message }));
           return;
         }
         // #207: the semantic layer — PCA positions by meaning + the
@@ -651,14 +674,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
             sendJson(res, 503, { error: "embeddings not ready" });
             return;
           }
-          try {
+          (async () => {
             if (!semanticCache || Date.now() - semanticCache.at > 60_000) {
-              semanticCache = { at: Date.now(), body: buildSemanticLayout(buildGraph(vault), vecs) };
+              const skills = await listSkills();
+              semanticCache = { at: Date.now(), body: buildSemanticLayout(buildGraph(vault, skills), vecs) };
             }
             sendJson(res, 200, semanticCache.body);
-          } catch (err) {
-            sendJson(res, 500, { error: (err as Error).message });
-          }
+          })().catch((err: Error) => sendJson(res, 500, { error: err.message }));
           return;
         }
         // #207: full body of one node for the map inspector. Same sensitivity

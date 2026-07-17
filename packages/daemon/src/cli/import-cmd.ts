@@ -24,6 +24,7 @@ import {
 } from "../import-review.js";
 import { findRulesFiles, extractRulesCandidates } from "../import-rules.js";
 import { parseConversationExport, buildQueue, readNextChunk, clearQueue, queueStatus } from "../import-mining.js";
+import { importVault } from "../import-vault.js";
 import { resolveVault } from "./helpers.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -39,6 +40,7 @@ async function readStdin(): Promise<string> {
 
 export async function cmdImport(args: ParsedArgs): Promise<number> {
   if (args.surface === "rules") return cmdImportRules(args);
+  if (args.surface === "vault") return cmdImportVault(args);
   if (args.surface === "mine") return cmdImportMine();
   if (args.surface === "clear") return cmdImportClear();
 
@@ -174,6 +176,59 @@ async function cmdImportRules(args: ParsedArgs): Promise<number> {
   }
   const result = await stageImport(vault.path, "rules", all);
   printStaged(result, "rules");
+  return 0;
+}
+
+/**
+ * #215: import a whole folder of foreign memory files (Claude Code memory
+ * dir, or any markdown notes) directly — no review gate. Lands in its own
+ * isolated `memories/imported/<label>/` subtree; nothing existing is touched.
+ *   bastra import vault <dir> [label] [--dry-run]
+ */
+async function cmdImportVault(args: ParsedArgs): Promise<number> {
+  const dir = args.positional[2];
+  if (!dir) {
+    process.stderr.write(
+      "usage: bastra import vault <dir> [label] [--dry-run]\n" +
+        "  imports a folder of memory files (e.g. a Claude Code memory dir) into\n" +
+        "  memories/imported/<label>/ — deterministic, no per-item review.\n" +
+        "  label   namespace for this batch (default: the folder's name)\n",
+    );
+    return 2;
+  }
+  const vault = await resolveVault({ dryRun: false, vaultPath: args.vaultPath });
+  if ("error" in vault) {
+    process.stderr.write(`${vault.error}\n`);
+    return 1;
+  }
+  const label = args.positional[3];
+  let result;
+  try {
+    result = await importVault(vault.path, dir, { label, dryRun: args.dryRun });
+  } catch (err) {
+    process.stderr.write(`error: ${(err as Error).message}\n`);
+    return 1;
+  }
+  const verb = result.dryRun ? "would import" : "imported";
+  process.stdout.write(
+    `✓ ${verb} ${result.imported}/${result.scanned} file(s) → ${result.folder}/ ` +
+      `(scope: ${result.scope})\n` +
+      `  ${result.byAdapter.claudeCode} via Claude-Code adapter · ${result.byAdapter.generic} generic markdown` +
+      (result.skipped.length > 0 ? ` · ${result.skipped.length} skipped` : "") +
+      `\n`,
+  );
+  for (const s of result.skipped.slice(0, 10)) {
+    process.stdout.write(`  · skipped ${basename(s.path)}: ${s.reason}\n`);
+  }
+  if (result.skipped.length > 10) {
+    process.stdout.write(`  · …and ${result.skipped.length - 10} more\n`);
+  }
+  if (!result.dryRun && result.imported > 0) {
+    process.stdout.write(
+      `  the running daemon indexes them automatically; delete the whole set anytime\n` +
+        `  by removing the ${result.folder}/ folder.\n`,
+    );
+  }
   return 0;
 }
 

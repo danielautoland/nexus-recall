@@ -49,6 +49,7 @@ export type { Memory, MemoryType, Frontmatter } from "./schema.js";
 export { truncateSummaryTo, clampSummary, SUMMARY_MAX } from "./summary.js";
 
 export { buildGraph, clusterKeyFor, groupKeyFor, subKeyFor } from "./graph.js";
+export type { SkillRef } from "./graph.js";
 export type { VaultGraph, GraphNode, GraphEdge, GraphCluster } from "./graph.js";
 export { buildSemanticLayout } from "./graph-semantic.js";
 export type { SemanticLayout } from "./graph-semantic.js";

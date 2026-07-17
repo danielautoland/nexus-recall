@@ -7,7 +7,7 @@
  *  @param {HTMLElement} deps.modal    the #import-modal container
  *  @param {HTMLElement} deps.opener   the topbar button that opens it */
 
-import { postImport } from "../graph-data.js";
+import { postImport, postImportVault } from "../graph-data.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -109,6 +109,94 @@ export function createImportDialog({ modal, opener }) {
     } finally {
       busy = false;
       stageBtn.disabled = false;
+    }
+  });
+
+  // Folder import (#215): a whole memory folder → its own isolated set, no
+  // review. The daemon reads the path locally (loopback), so a plain text
+  // path is all we need — no file upload.
+  const vaultDirEl = $("#import-vault-dir");
+  const vaultLabelEl = $("#import-vault-label");
+  const vaultRunBtn = $("#import-vault-run");
+  const vaultStatusEl = $("#import-vault-status");
+
+  // folder picker: navigable directory list from GET /ui/fs (dirs only) —
+  // click descends, ".." ascends, "Use this folder" fills the path field
+  const browserEl = $("#import-vault-browser");
+  const browserPathEl = $("#import-vault-browser-path");
+  const browserListEl = $("#import-vault-browser-list");
+  let browsePath = null;
+
+  async function loadBrowser(path) {
+    const res = await fetch(`/ui/fs${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? `browse failed: ${res.status}`);
+    browsePath = data.path;
+    browserPathEl.textContent = data.path;
+    browserListEl.innerHTML = "";
+    if (data.parent) {
+      const up = document.createElement("li");
+      up.textContent = "..";
+      up.className = "up";
+      up.addEventListener("click", () => loadBrowser(data.parent).catch((e) => setVaultStatus(e.message, "err")));
+      browserListEl.append(up);
+    }
+    for (const d of data.dirs) {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = d.name;
+      li.append(name);
+      if (d.md > 0) {
+        const count = document.createElement("span");
+        count.className = "count";
+        count.textContent = `${d.md} md`;
+        li.append(count);
+      }
+      li.addEventListener("click", () => loadBrowser(d.path).catch((e) => setVaultStatus(e.message, "err")));
+      browserListEl.append(li);
+    }
+  }
+
+  $("#import-vault-browse").addEventListener("click", () => {
+    if (!browserEl.hidden) {
+      browserEl.hidden = true;
+      return;
+    }
+    browserEl.hidden = false;
+    loadBrowser(vaultDirEl.value.trim() || null).catch(() =>
+      loadBrowser(null).catch((e) => setVaultStatus(e.message, "err")),
+    );
+  });
+
+  $("#import-vault-use").addEventListener("click", () => {
+    if (browsePath) vaultDirEl.value = browsePath;
+    browserEl.hidden = true;
+  });
+
+  function setVaultStatus(text, cls = "") {
+    vaultStatusEl.textContent = text;
+    vaultStatusEl.className = cls;
+  }
+
+  vaultRunBtn.addEventListener("click", async () => {
+    const dir = vaultDirEl.value.trim();
+    if (!dir || busy) return;
+    busy = true;
+    vaultRunBtn.disabled = true;
+    setVaultStatus("importing…");
+    try {
+      const r = await postImportVault(dir, vaultLabelEl.value.trim() || undefined);
+      setVaultStatus(
+        `✓ imported ${r.imported}/${r.scanned} into ${r.folder}/` +
+          (r.skipped > 0 ? ` · ${r.skipped} skipped` : ""),
+        "ok",
+      );
+    } catch (err) {
+      setVaultStatus(err.message, "err");
+    } finally {
+      busy = false;
+      vaultRunBtn.disabled = false;
     }
   });
 

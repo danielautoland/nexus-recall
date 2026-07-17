@@ -209,6 +209,20 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.arc(n.x, n.y, rr, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
+      } else if (n.kind === "skill") {
+        // declared skill (#215): solid core + solid outline ring — reads as
+        // "real, but living elsewhere" (vs the dashed unwritten ghost)
+        ctx.fillStyle = color;
+        ctx.globalAlpha = nodeAlpha * 0.55;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r * 0.62, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = nodeAlpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.6 / camera.scale;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        ctx.stroke();
       } else {
         if (theme.glowAlpha > 0.02 && !dimmed) {
           const g = ctx.createRadialGradient(n.x, n.y, r * 0.4, n.x, n.y, r * 3);
