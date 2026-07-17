@@ -31,6 +31,9 @@ export const OpenDocumentArgs = z.object({
 export const documentTools = [
   {
     name: "find_document",
+    // Read-only annotation: lands in the bulk-approvable "Read-only tools"
+    // permission group of clients like Claude Desktop.
+    annotations: { readOnlyHint: true, destructiveHint: false },
     description:
       "Search the user's document vault (PDFs, notes, contracts, code) " +
       "and return top-3 hits with id, title, summary and score. " +
@@ -54,6 +57,7 @@ export const documentTools = [
   },
   {
     name: "read_document",
+    annotations: { readOnlyHint: true, destructiveHint: false },
     description:
       "Load a document's metadata + extracted text by id (returned from " +
       "find_document). Use this before quoting or summarizing.",

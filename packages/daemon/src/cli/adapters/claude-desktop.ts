@@ -17,6 +17,31 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
 
+/**
+ * One-time autonomy setup, printed after install. Claude Desktop has no
+ * hook system (no SessionStart/PreToolUse), so proactive recall/save rests
+ * on three user-side switches; the personal-preferences prompt follows the
+ * pattern the official MCP memory reference server canonizes ("begin every
+ * chat by retrieving…"). The forwarder covers the rest automatically
+ * (server instructions, read-only tool annotations, first-call session
+ * context for hookless clients).
+ */
+const DESKTOP_AUTONOMY_NOTE =
+  "make Desktop use memory ON ITS OWN (one-time, ~2 min):\n" +
+  "    1. Settings → Connectors → bastra-recall → tool access: \"Always available\"\n" +
+  "       (keeps the memory tools and their guidance always in Claude's context)\n" +
+  "    2. On the first tool call pick \"Allow always\" — recall/load/find are read-only\n" +
+  "    3. Settings → Profile → personal preferences (\"Instructions for Claude\") — paste:\n" +
+  "       ┄┄┄\n" +
+  "       Memory: I use bastra-recall (local MCP). Begin every conversation by silently\n" +
+  "       retrieving context with its recall tool. Before answering anything about my past,\n" +
+  "       projects, documents or preferences, search bastra-recall first (recall +\n" +
+  "       find_document) — before any other lookup. When I state a durable preference,\n" +
+  "       rule, decision or fact worth keeping, save it via save_memory without being\n" +
+  "       asked, then confirm in one short line.\n" +
+  "       ┄┄┄\n" +
+  "       Full guide: https://github.com/n0mad-ai/bastra-recall/wiki/Claude-Desktop";
+
 async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
   const configPath = CLAUDE_DESKTOP_CONFIG;
   const vault = await resolveVault(opts);
@@ -40,7 +65,10 @@ async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
   if (mcpMatches && skillResult.status === "already-installed") {
     return {
       status: "already-installed",
-      message: "MCP server and skill both already in place",
+      message:
+        "MCP server and skill both already in place\n" +
+        "  · autonomy guide (make Desktop recall & save on its own): " +
+        "https://github.com/n0mad-ai/bastra-recall/wiki/Claude-Desktop",
       configPath,
     };
   }
@@ -65,6 +93,7 @@ async function claudeDesktopInstall(opts: InstallOpts): Promise<InstallResult> {
   lines.push(mcpMatches ? "mcp: already matches" : `mcp: registered '${SERVER_KEY}'`);
   lines.push(`skill: ${skillResult.detail}`);
   lines.push("restart Claude Desktop to activate");
+  lines.push(DESKTOP_AUTONOMY_NOTE);
 
   return {
     status: "installed",

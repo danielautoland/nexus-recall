@@ -99,6 +99,7 @@ import {
 import { handleUiChat, type ChatFn } from "./webui-chat.js";
 import { handleHookImport, handleUiImport } from "./import-review.js";
 import { handleHookOnboarding, handleUiOnboarding } from "./onboarding.js";
+import { handleSessionContext } from "./session-context.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
@@ -545,6 +546,16 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
     if ((method === "GET" || method === "POST") && url === "/ui/onboarding") {
       handleUiOnboarding(req, res, toolDeps.vaultPath, vault.size()).catch(() => sendJson(res, 500, { error: "onboarding error" }));
+      return;
+    }
+    // Session-context for hookless clients (Claude Desktop, Cursor): the MCP
+    // forwarder appends this to the FIRST tool result of a client session —
+    // the same context the SessionStart hook injects in Claude Code.
+    // Loopback-only (Host-Gate above), read-only, no auth — like /hook/care.
+    if (method === "GET" && url === "/hook/session-context") {
+      handleSessionContext(req, res, toolDeps, vault).catch(() =>
+        sendJson(res, 500, { error: "session-context error" }),
+      );
       return;
     }
     // Semantic search for the map's search box (#207) — hybrid recall, lean.

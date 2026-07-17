@@ -210,6 +210,57 @@ async function callDaemon(tool: string, args: unknown): Promise<unknown> {
   return body;
 }
 
+/**
+ * Server instructions (MCP InitializeResult.instructions): loaded into the
+ * model's context at session start by Claude Code (official channel, works
+ * like a skill description); currently ignored by Claude Desktop, but free
+ * to ship and live the day Anthropic wires it up. Kept compact — in Claude
+ * Code the skill + hooks already carry the long form.
+ */
+const SERVER_INSTRUCTIONS =
+  "bastra-recall is the user's persistent local memory. Treat it as YOUR long-term memory and use it " +
+  "without being asked: (1) At the start of a conversation and before acting on a task, call `recall` " +
+  "with the topic — durable preferences, lessons, decisions and project facts live there. (2) For ANY " +
+  "question about the user's past, projects, documents, people or preferences ('find…', 'where is…', " +
+  "'when did I…', 'how much was…'), search `recall` + `find_document` BEFORE any other lookup tool. " +
+  "(3) When the user states a durable rule or preference, finalizes a decision, or a hard-won fix " +
+  "lands, save it via `save_memory` immediately and acknowledge in one short line. recall returns lean " +
+  "candidates — call `load_memory` only for the hits you actually need.";
+
+/**
+ * Session-context inject for hookless clients (Claude Desktop, Cursor): the
+ * forwarder process lives exactly one client session, so the FIRST tool call
+ * of this process ≈ session start — its result gets the same context block
+ * the SessionStart hook injects in Claude Code (pinned memories, durable
+ * user hints, conventions, open care/import/onboarding state). Claude Code
+ * sessions are skipped: the prompt-hook stamps cc_session_id into the
+ * statusline feed, which hookless clients never have. 404 = old daemon
+ * without the endpoint → give up for this session; transient error → retry
+ * on the next call. Opt out with BASTRA_MCP_SESSION_CONTEXT=0.
+ */
+let sessionContextPending = process.env.BASTRA_MCP_SESSION_CONTEXT !== "0";
+
+async function maybeSessionContextItem(): Promise<{ type: "text"; text: string } | null> {
+  if (!sessionContextPending) return null;
+  if (typeof liveStatusline.cc_session_id === "string" && liveStatusline.cc_session_id) {
+    sessionContextPending = false; // Claude Code — the SessionStart hook already injected
+    return null;
+  }
+  try {
+    const resp = await fetchWithTimeout(`${DAEMON_URL}/hook/session-context`, {}, 1200);
+    if (resp.status === 404) {
+      sessionContextPending = false;
+      return null;
+    }
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as { context?: string };
+    sessionContextPending = false;
+    return typeof body.context === "string" && body.context ? { type: "text", text: body.context } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   // Best-effort: Daemon hochziehen wenn er fehlt. NICHT awaited (#78): der
   // Stdio-Server connected sofort (Client-initialize hängt nicht am Boot);
@@ -233,8 +284,8 @@ async function main(): Promise<void> {
   });
 
   const server = new Server(
-    { name: "bastra-recall-mcp", version: "0.7.9" },
-    { capabilities: { tools: {} } },
+    { name: "bastra-recall-mcp", version: "0.8.0" },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -362,8 +413,12 @@ async function main(): Promise<void> {
         );
         liveStatusline.last_phrase_at = Date.now();
         flushStatusline();
+        const sessionContext = await maybeSessionContextItem();
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [
+            { type: "text", text: JSON.stringify(result, null, 2) },
+            ...(sessionContext ? [sessionContext] : []),
+          ],
         };
       } catch (err) {
         // On error: clear current-recall marks so the statusline doesn't
@@ -418,9 +473,11 @@ async function main(): Promise<void> {
       // recall-only, so the statusline shows "N calls · Xms" for load_memory).
       liveStatusline.total_ms += Date.now() - toolStartedAt;
       flushStatusline();
+      const sessionContext = await maybeSessionContextItem();
       return {
         content: [
           { type: "text", text: JSON.stringify(result, null, 2) },
+          ...(sessionContext ? [sessionContext] : []),
         ],
       };
     } catch (err) {

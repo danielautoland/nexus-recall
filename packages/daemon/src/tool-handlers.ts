@@ -797,11 +797,19 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** MCP tool annotations. readOnlyHint groups the read tools into the
+   *  bulk-approvable "Read-only tools" permission category in clients like
+   *  Claude Desktop — the one server-side lever against approval friction. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 }
+
+/** Read tools: no vault mutation, safe to run unsupervised. */
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false } as const;
 
 export const MEMORY_TOOL_DEFS: ToolDef[] = [
   {
     name: "recall",
+    annotations: READ_ONLY,
     description:
       "Search the memory vault. Returns top-k matching memorys " +
       "(id, title, type, scope, summary, score). " +
@@ -876,6 +884,7 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
   },
   {
     name: "load_memory",
+    annotations: READ_ONLY,
     description:
       "Load the content (frontmatter + body) of a single memory by id. " +
       "Step 2 of the recall flow — call this only for the candidates " +

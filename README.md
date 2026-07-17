@@ -263,6 +263,10 @@ A `conversations.json` never stages raw chat history: only **your own messages**
 
 `bastra feedback bug` / `bastra feedback idea` opens a prefilled GitHub issue form in your browser. The bug form carries a sanitized diagnostics block — version, OS, Node, embedding mode, vault size; never file paths, never vault content — and you review and submit it yourself. The vault map links both forms in its sidebar.
 
+### Claude Desktop — autonomous memory without hooks
+
+Claude Desktop has no hook system, so bastra makes memory autonomous through the MCP layer itself: the forwarder ships **server instructions** (the official session-start channel in Claude Code's engine), marks the read tools with **read-only annotations** (bulk-approvable in Desktop's permission UI), and appends the **session context** — pinned memories, durable preferences, conventions, open care/import/onboarding state — to the *first* tool result of every Desktop session, the same context the SessionStart hook injects in Claude Code. One-time setup on your side (tool access "Always available", "Allow always", a short memory prompt in your personal preferences) is printed by `bastra install claude-desktop` and documented in **[Claude Desktop](https://github.com/n0mad-ai/bastra-recall/wiki/Claude-Desktop)** (wiki). The Desktop app's **Code tab** shares Claude Code's configuration — hooks, skill and CLAUDE.md apply there unchanged.
+
 ### Updating
 
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
@@ -581,6 +585,10 @@ Eine `conversations.json` staged nie rohe Chat-History: Nur **deine eigenen Mess
 ### Feedback
 
 `bastra feedback bug` / `bastra feedback idea` öffnet ein vorausgefülltes GitHub-Issue-Formular im Browser. Das Bug-Formular trägt einen sanitisierten Diagnose-Block — Version, OS, Node, Embedding-Modus, Vault-Größe; nie Dateipfade, nie Vault-Inhalte — und du prüfst und sendest es selbst. Die Vault-Map verlinkt beide Formulare in ihrer Sidebar.
+
+### Claude Desktop — autonomes Gedächtnis ohne Hooks
+
+Claude Desktop hat kein Hook-System, also macht bastra das Gedächtnis über die MCP-Schicht selbst autonom: Der Forwarder liefert **Server-Instructions** (der offizielle Session-Start-Kanal der Claude-Code-Engine), markiert die Lese-Tools mit **Read-only-Annotations** (in Desktops Permission-UI gesammelt freigebbar) und hängt den **Session-Kontext** — gepinnte Memories, dauerhafte Präferenzen, Konventionen, offene Care-/Import-/Onboarding-Stände — an das *erste* Tool-Result jeder Desktop-Session, derselbe Kontext, den in Claude Code der SessionStart-Hook injiziert. Das einmalige Setup auf deiner Seite (Tool-Zugriff „Always available", „Allow always", ein kurzer Memory-Prompt in den persönlichen Präferenzen) druckt `bastra install claude-desktop` und steht in **[Claude Desktop](https://github.com/n0mad-ai/bastra-recall/wiki/Claude-Desktop)** (Wiki). Der **Code-Tab** der Desktop-App teilt die Claude-Code-Konfiguration — Hooks, Skill und CLAUDE.md gelten dort unverändert.
 
 ### Updates
 
