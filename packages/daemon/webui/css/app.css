@@ -236,7 +236,7 @@ html, body {
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .stat { font: 12px var(--font-mono); color: var(--text-dim); }
 
-#theme-toggle, #inspector-close {
+#theme-toggle, #inspector-close, #import-open {
   display: grid;
   place-items: center;
   width: 34px; height: 34px;
@@ -249,9 +249,9 @@ html, body {
   cursor: pointer;
   transition: transform 0.1s ease, border-color 0.15s ease;
 }
-#theme-toggle:hover, #inspector-close:hover { border-color: var(--accent); }
-#theme-toggle:active, #inspector-close:active { transform: scale(0.92); }
-#theme-toggle svg { width: 17px; height: 17px; }
+#theme-toggle:hover, #inspector-close:hover, #import-open:hover { border-color: var(--accent); }
+#theme-toggle:active, #inspector-close:active, #import-open:active { transform: scale(0.92); }
+#theme-toggle svg, #import-open svg { width: 17px; height: 17px; }
 :root[data-theme="dark"] .icon-moon { display: none; }
 :root[data-theme="light"] .icon-sun { display: none; }
 
@@ -538,7 +538,7 @@ body.panel-pinned #topbar { right: 250px; }
 #panel-footer {
   flex: none;
   padding: 12px 18px;
-  border-top: 1px solid var(--panel-border);
+  border-top: 1px dashed var(--panel-border);
 }
 #reset-layout {
   width: 100%;
@@ -852,6 +852,27 @@ body.inspector-open #minimap { left: 432px; }
   padding: 1px 5px;
 }
 
+/* feedback links — pinned above the footer's divider border */
+#feedback-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 18px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+#feedback-row a {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+#feedback-row a:hover { color: var(--accent); }
+#feedback-row svg { width: 13px; height: 13px; flex: none; }
+
 /* the semantic view hides the structure row — hidden must beat .seg's
    explicit display (same trap as the cropper) */
 #structure-switch[hidden],
@@ -945,6 +966,86 @@ body.inspector-open #minimap { left: 432px; }
   100% { background: transparent; }
 }
 
+/* ── import dialog (#208): the visual sibling of `bastra import` ── */
+#import-modal[hidden] { display: none !important; } /* explicit display beats [hidden] otherwise */
+#import-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* the approved dim format (search overlay): themed wash + blur */
+  background: var(--dim-wash);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+#import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, calc(100vw - 48px));
+  padding: 18px 22px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--shadow);
+}
+#import-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+#import-help code { color: var(--text); }
+#import-text {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  font: 12.5px var(--font-mono);
+  line-height: 1.5;
+  outline: none;
+}
+#import-text:focus { border-color: var(--accent); }
+#import-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#import-choose {
+  padding: 5px 10px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+#import-choose:hover { color: var(--accent); border-color: var(--accent); }
+#import-status { font-size: 12px; color: var(--text-dim); }
+#import-status.ok { color: var(--accent); }
+#import-status.err { color: #d06a6a; }
+#import-actions {
+  display: flex;
+  gap: 8px;
+}
+#import-actions button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+#import-actions button:hover { border-color: var(--accent); color: var(--accent); }
+#import-stage:disabled { opacity: 0.5; cursor: default; }
+
 /* ── emblem cropper modal ──────────────────────────────────────── */
 #cropper[hidden] { display: none !important; } /* explicit display beats [hidden] otherwise */
 #cropper {
@@ -954,7 +1055,10 @@ body.inspector-open #minimap { left: 432px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
+  /* the approved dim format (search overlay): themed wash + blur */
+  background: var(--dim-wash);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 #cropper-box {
   display: flex;

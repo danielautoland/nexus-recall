@@ -15,7 +15,7 @@ export function mapUrl(): string {
   return `http://127.0.0.1:${port}/ui`;
 }
 
-function openInBrowser(url: string): void {
+export function openInBrowser(url: string): void {
   const [cmd, ...args] =
     process.platform === "darwin"
       ? ["open", url]

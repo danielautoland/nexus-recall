@@ -46,6 +46,12 @@
 
     <div class="topbar-right">
       <span id="stat-count" class="stat" title="memories in the vault">—</span>
+      <button id="import-open" aria-label="Import memories from other AI tools" title="Import memories — seed the vault from ChatGPT, Claude, Gemini…">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v10m0 0l-4-4m4 4l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
       <button id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">
         <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"
@@ -125,6 +131,15 @@
         </div></div>
       </section>
     </div>
+    <div id="feedback-row">
+      <a id="feedback-bug" href="https://github.com/n0mad-ai/bastra-recall/issues/new?template=bug_report.yml" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 10a3 3 0 0 1 6 0v4a3 3 0 0 1-6 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="7" x2="12" y2="5"/><line x1="9" y1="8" x2="7" y2="6"/><line x1="15" y1="8" x2="17" y2="6"/><line x1="8.6" y1="12" x2="5.5" y2="12"/><line x1="15.4" y1="12" x2="18.5" y2="12"/><line x1="9" y1="16" x2="7" y2="18"/><line x1="15" y1="16" x2="17" y2="18"/></g></svg>
+        report a bug</a>
+      <span>·</span>
+      <a id="feedback-idea" href="https://github.com/n0mad-ai/bastra-recall/issues/new?template=feature_request.yml" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-3.9 10.55c.7.62.9 1.45.9 2.45h6c0-1 .2-1.83.9-2.45A6 6 0 0 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="10" y1="19" x2="14" y2="19"/><line x1="10.6" y1="21.5" x2="13.4" y2="21.5"/></g></svg>
+        suggest an idea</a>
+    </div>
     <div id="panel-footer">
       <button id="reset-layout" title="Discard the saved arrangement and re-layout all clouds">Reset layout</button>
     </div>
@@ -143,6 +158,33 @@
       </div>
     </div>
   </div>
+  <div id="import-modal" hidden>
+    <div id="import-box">
+      <h2 class="section-title">Import memories</h2>
+      <p id="import-help">Paste a memory list from another AI tool — one fact per line. Candidates are staged
+        for review in <code>import-review.md</code>; your next AI session distills accepted ones with you.
+        <strong>Nothing is saved without your accept.</strong><br>
+        <span id="import-source-hint"></span></p>
+      <div id="import-source" class="seg">
+        <button data-source="chatgpt" class="active">ChatGPT</button>
+        <button data-source="claude">Claude</button>
+        <button data-source="gemini">Gemini</button>
+        <button data-source="text">Text</button>
+      </div>
+      <textarea id="import-text" rows="10" spellcheck="false"
+                placeholder="- Prefers concise replies without preamble&#10;- Works at a small AI startup in Berlin&#10;…"></textarea>
+      <div id="import-file-row">
+        <input type="file" id="import-file" accept=".txt,.md,.json" hidden />
+        <button id="import-choose">…or choose a file</button>
+        <span id="import-status"></span>
+      </div>
+      <div id="import-actions">
+        <button id="import-cancel">Close</button>
+        <button id="import-stage">Stage for review</button>
+      </div>
+    </div>
+  </div>
+
   <div id="ring-hint" hidden>click an area's name in the band to browse into it · click the center to set a vault image</div>
   <div id="semantic-hint" hidden>arranged by meaning · dashed strands are connections you never wrote</div>
 

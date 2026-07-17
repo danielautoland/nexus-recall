@@ -26,6 +26,8 @@ import { cmdToken } from "./cli/token.js";
 import { cmdCommons } from "./cli/commons.js";
 import { cmdBridges } from "./cli/bridges.js";
 import { cmdMap } from "./cli/map-cmd.js";
+import { cmdImport } from "./cli/import-cmd.js";
+import { cmdFeedback } from "./cli/feedback-cmd.js";
 import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
@@ -55,6 +57,8 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "map":
     case "ui":
       return cmdMap();
+    case "import": return cmdImport(args);
+    case "feedback": return cmdFeedback(args);
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
       return 2;

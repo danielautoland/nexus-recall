@@ -210,6 +210,31 @@ async function main(): Promise<void> {
     }
   }
 
+  // Import review (#208): candidates staged by `bastra import` from other AI
+  // tools' memories. Standing instruction — the user never has to explain
+  // the distillation workflow to their agent.
+  let importBlock = "";
+  if (responses.some((r) => r.resp !== null)) {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    const openImports = await fetchCareCount(url, Math.min(150, remainingMs), "/hook/import");
+    if (openImports > 0) {
+      importBlock =
+        `\n<import-review>\n` +
+        `The vault has ${openImports} open import candidate(s) in import-review.md (at the vault ` +
+        `root) — memories exported from other AI tools (ChatGPT, Claude, Gemini, …), staged by ` +
+        `\`bastra import\` and awaiting distillation. When the user asks to work off the import ` +
+        `list (any phrasing), read that file and go through the open "- [ ]" entries TOGETHER ` +
+        `with the user, in blocks: for each accepted candidate save a REAL memory via save_memory ` +
+        `— proper type, concrete recall_when including an ask-trigger in the user's own ` +
+        `vocabulary, dedupe against existing memories first, admission rules apply (capture fixes ` +
+        `not failures, declarative facts not imperatives, skip stale artifacts) — and stamp ` +
+        `write_origin: "capture-review". Tick finished lines to "- [x]"; tick rejected ones too, ` +
+        `appending " — skipped". Never distill unprompted; if onboarding or importing comes up, ` +
+        `mention the open count.\n` +
+        `</import-review>`;
+    }
+  }
+
   // Best-effort update probe — only when we already have a daemon reachable.
   // Strict budget: 200 ms; if nothing back, we just skip the block.
   //
@@ -288,7 +313,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const extras = taxonomyBlock + careBlock + updateBlock + pendingBlock + dokuBlock;
+  const extras = taxonomyBlock + careBlock + importBlock + updateBlock + pendingBlock + dokuBlock;
   // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
   // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
   const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";
@@ -477,12 +502,13 @@ function formatTaxonomyBlock(conventions: ConventionLean[]): string {
   );
 }
 
-/** Open vault-care flag count — same budget discipline as fetchTaxonomy. */
-function fetchCareCount(baseUrl: string, timeoutMs: number): Promise<number> {
+/** Open-count from a /hook/* endpoint (care, import) — same budget
+ *  discipline as fetchTaxonomy. */
+function fetchCareCount(baseUrl: string, timeoutMs: number, path = "/hook/care"): Promise<number> {
   return new Promise((resolve_) => {
     let url: URL;
     try {
-      url = new URL("/hook/care", baseUrl);
+      url = new URL(path, baseUrl);
     } catch {
       resolve_(0);
       return;

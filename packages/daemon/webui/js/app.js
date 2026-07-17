@@ -13,6 +13,7 @@ import { createMinimap } from "./minimap.js";
 import { createRingView } from "./managers/ring-view.js";
 import { createSemanticView } from "./managers/semantic-view.js";
 import { createSearchChat } from "./managers/search-chat.js";
+import { createImportDialog } from "./managers/import-dialog.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -437,6 +438,9 @@ async function main() {
     onHits: (found) => searchApi.setAgentHits(found),
   });
 
+  // ── import dialog: seed the vault from other AI tools, visually ──
+  createImportDialog({ modal: $("#import-modal"), opener: $("#import-open") });
+
   // ── legend + panels ────────────────────────────────────────────
   const legendEl = $("#legend");
   let clusterFilter = null; // { key, match } — the legend's click-toggle filter
@@ -561,6 +565,22 @@ async function main() {
       kv("daemon", `v${h.version}`, true) +
       kv("semantic recall", h.semantic_recall, h.semantic_recall === "on") +
       kv("embedding", h.embedding_mode);
+    // prefill the bug-report form with the same sanitized block `bastra
+    // feedback bug` sends — version/OS/embedding/vault size, never content
+    const diag = [
+      `version:    ${h.version}`,
+      `os:         ${navigator.platform}`,
+      `embedding:  ${h.embedding_mode}`,
+      `vault_size: ${h.vault_size}`,
+      `via:        vault map`,
+    ].join("\n");
+    const params = new URLSearchParams({
+      template: "bug_report.yml",
+      "bastra-version": h.version,
+      os: navigator.platform,
+      "doctor-output": diag,
+    });
+    $("#feedback-bug").href = `https://github.com/n0mad-ai/bastra-recall/issues/new?${params.toString()}`;
   });
 
   // ── sidebar state: collapsed / pinned / accordion, persisted ────

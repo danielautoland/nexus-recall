@@ -99,7 +99,7 @@ const DEFAULT_HTTP_PORT = 6723;
 const CLI_COMMANDS = new Set([
   "install", "uninstall", "doctor", "update", "status",
   "config", "embeddings", "models", "token", "commons", "bridges",
-  "map", "ui", "help", "version",
+  "map", "ui", "import", "feedback", "help", "version",
 ]);
 const firstArg = process.argv[2];
 if (firstArg && (CLI_COMMANDS.has(firstArg) || /^(--help|-h|--version|-v)$/.test(firstArg))) {

@@ -97,6 +97,7 @@ import {
   handleHookCare,
 } from "./webui.js";
 import { handleUiChat, type ChatFn } from "./webui-chat.js";
+import { handleHookImport, handleUiImport } from "./import-review.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
@@ -517,6 +518,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // like /ui, gated on ui.enabled inside the handlers.
     if (method === "GET" && url === "/ui/annotations") {
       handleUiAnnotations(res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+    // Import review (#208): open candidate count for the session hook —
+    // loopback-only like /hook/care.
+    if (method === "GET" && url === "/hook/import") {
+      handleHookImport(res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "import error" }));
+      return;
+    }
+    // Visual import (#208): the map's import dialog stages candidates the
+    // same way `bastra import` does. Staging only, never saves memories.
+    if (method === "POST" && url === "/ui/import") {
+      handleUiImport(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "import error" }));
       return;
     }
     if (method === "POST" && url === "/ui/annotate") {

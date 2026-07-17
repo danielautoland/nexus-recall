@@ -62,6 +62,15 @@ Commands:
   map                        Open the vault map in the browser — an interactive
                              graph of your memory (local only; offers to enable
                              it when off). Alias: ui
+  import <file|-> [source]   Seed the vault from another AI tool's memories
+                             (ChatGPT/Claude/Gemini list or free text): stages
+                             candidates in import-review.md for review — your
+                             next AI session distills accepted ones with you;
+                             nothing is saved without your accept
+  feedback <bug|idea>        Open a prefilled GitHub issue form in the browser.
+                             'bug' includes a sanitized diagnostics block
+                             (version, OS, embedding mode, vault size — never
+                             vault content); you review and submit it yourself
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)

@@ -25,6 +25,17 @@ export async function fetchSemanticLayout() {
   return res.json();
 }
 
+export async function postImport(text, source) {
+  const res = await fetch("/ui/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, source }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `import failed: ${res.status}`);
+  return data;
+}
+
 export async function postChat(message, history) {
   const res = await fetch("/ui/chat", {
     method: "POST",
