@@ -284,7 +284,7 @@ async function main(): Promise<void> {
   });
 
   const server = new Server(
-    { name: "bastra-recall-mcp", version: "0.8.0" },
+    { name: "bastra-recall-mcp", version: "0.8.1" },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
