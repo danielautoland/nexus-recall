@@ -13,8 +13,12 @@ const $ = (sel) => document.querySelector(sel);
 
 // per-source guidance: where THIS tool keeps its memory list
 const SOURCE_HINTS = {
-  chatgpt: "ChatGPT: Settings → Personalization → Manage memories — copy the list and paste it here.",
-  claude: "Claude: Settings → Memory — copy your memory text and paste it here.",
+  chatgpt:
+    "ChatGPT: Settings → Personalization → Manage memories — copy the list and paste it here. " +
+    "Full chat history (conversations.json)? Run `bastra import <file>` in a terminal instead.",
+  claude:
+    "Claude: Settings → Memory — copy your memory text and paste it here. " +
+    "Full chat history (conversations.json)? Run `bastra import <file>` in a terminal instead.",
   gemini: "Gemini: Settings → Saved Info — copy the entries and paste them here.",
   text: "Any plain list works — one fact per line, bullets and numbering are fine.",
 };

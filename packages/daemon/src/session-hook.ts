@@ -195,7 +195,7 @@ async function main(): Promise<void> {
   let careBlock = "";
   if (responses.some((r) => r.resp !== null)) {
     const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    const openCare = await fetchCareCount(url, Math.min(150, remainingMs));
+    const openCare = (await fetchOpenCounts(url, Math.min(150, remainingMs))).open;
     if (openCare > 0) {
       careBlock =
         `\n<vault-care>\n` +
@@ -210,28 +210,45 @@ async function main(): Promise<void> {
     }
   }
 
-  // Import review (#208): candidates staged by `bastra import` from other AI
-  // tools' memories. Standing instruction — the user never has to explain
-  // the distillation workflow to their agent.
+  // Import review (#208) + mining queue (#211): candidates staged by
+  // `bastra import`, and a queued conversations.json awaiting chunk-wise
+  // mining. Standing instruction — the user never has to explain either
+  // workflow to their agent.
   let importBlock = "";
   if (responses.some((r) => r.resp !== null)) {
     const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    const openImports = await fetchCareCount(url, Math.min(150, remainingMs), "/hook/import");
-    if (openImports > 0) {
-      importBlock =
-        `\n<import-review>\n` +
-        `The vault has ${openImports} open import candidate(s) in import-review.md (at the vault ` +
-        `root) — memories exported from other AI tools (ChatGPT, Claude, Gemini, …), staged by ` +
-        `\`bastra import\` and awaiting distillation. When the user asks to work off the import ` +
-        `list (any phrasing), read that file and go through the open "- [ ]" entries TOGETHER ` +
-        `with the user, in blocks: for each accepted candidate save a REAL memory via save_memory ` +
-        `— proper type, concrete recall_when including an ask-trigger in the user's own ` +
-        `vocabulary, dedupe against existing memories first, admission rules apply (capture fixes ` +
-        `not failures, declarative facts not imperatives, skip stale artifacts) — and stamp ` +
-        `write_origin: "capture-review". Tick finished lines to "- [x]"; tick rejected ones too, ` +
-        `appending " — skipped". Never distill unprompted; if onboarding or importing comes up, ` +
-        `mention the open count.\n` +
-        `</import-review>`;
+    const imports = await fetchOpenCounts(url, Math.min(150, remainingMs), "/hook/import");
+    const parts: string[] = [];
+    if (imports.open > 0) {
+      parts.push(
+        `The vault has ${imports.open} open import candidate(s) in import-review.md (at the vault ` +
+          `root) — memories exported from other AI tools (ChatGPT, Claude, Gemini, …), staged by ` +
+          `\`bastra import\` and awaiting distillation. When the user asks to work off the import ` +
+          `list (any phrasing), read that file and go through the open "- [ ]" entries TOGETHER ` +
+          `with the user, in blocks: for each accepted candidate save a REAL memory via save_memory ` +
+          `— proper type, concrete recall_when including an ask-trigger in the user's own ` +
+          `vocabulary, dedupe against existing memories first, admission rules apply (capture fixes ` +
+          `not failures, declarative facts not imperatives, skip stale artifacts) — and stamp ` +
+          `write_origin: "capture-review". Tick finished lines to "- [x]"; tick rejected ones too, ` +
+          `appending " — skipped". Never distill unprompted; if onboarding or importing comes up, ` +
+          `mention the open count.`,
+      );
+    }
+    if (imports.queued > 0) {
+      parts.push(
+        `A conversations.json export with ${imports.queued} conversation(s) is queued for mining ` +
+          `(\`bastra import\`, #211). When the user asks to mine the imported chat history (any ` +
+          `phrasing), loop: run \`bastra import mine\` — it prints one chunk of the user's OWN ` +
+          `messages — distill durable lessons, decisions and preferences into one-line candidate ` +
+          `facts (skip one-off tasks, stale facts, code/log dumps), stage them by piping the lines ` +
+          `to \`bastra import - <source>\` as the chunk footer shows, and continue until the queue ` +
+          `is drained; then offer to distill import-review.md together. Mining stages candidates ` +
+          `ONLY — never save_memory directly from mined chunks. If onboarding or importing comes ` +
+          `up, mention the queue.`,
+      );
+    }
+    if (parts.length > 0) {
+      importBlock = `\n<import-review>\n` + parts.join("\n\n") + `\n</import-review>`;
     }
   }
 
@@ -502,15 +519,21 @@ function formatTaxonomyBlock(conventions: ConventionLean[]): string {
   );
 }
 
-/** Open-count from a /hook/* endpoint (care, import) — same budget
+interface OpenCounts {
+  open: number;
+  /** Mining-queue depth (#211) — only /hook/import reports it, else 0. */
+  queued: number;
+}
+
+/** Open-counts from a /hook/* endpoint (care, import) — same budget
  *  discipline as fetchTaxonomy. */
-function fetchCareCount(baseUrl: string, timeoutMs: number, path = "/hook/care"): Promise<number> {
+function fetchOpenCounts(baseUrl: string, timeoutMs: number, path = "/hook/care"): Promise<OpenCounts> {
   return new Promise((resolve_) => {
     let url: URL;
     try {
       url = new URL(path, baseUrl);
     } catch {
-      resolve_(0);
+      resolve_({ open: 0, queued: 0 });
       return;
     }
     const req = request(
@@ -520,16 +543,19 @@ function fetchCareCount(baseUrl: string, timeoutMs: number, path = "/hook/care")
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", () => {
           try {
-            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { open?: unknown };
-            resolve_(typeof parsed.open === "number" ? parsed.open : 0);
+            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { open?: unknown; queued?: unknown };
+            resolve_({
+              open: typeof parsed.open === "number" ? parsed.open : 0,
+              queued: typeof parsed.queued === "number" ? parsed.queued : 0,
+            });
           } catch {
-            resolve_(0);
+            resolve_({ open: 0, queued: 0 });
           }
         });
       },
     );
     req.on("timeout", () => req.destroy(new Error("timeout")));
-    req.on("error", () => resolve_(0));
+    req.on("error", () => resolve_({ open: 0, queued: 0 }));
     req.end();
   });
 }

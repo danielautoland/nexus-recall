@@ -16,9 +16,10 @@ import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
+import { queueStatus } from "./import-mining.js";
 
 export const IMPORT_FILE = "import-review.md";
-export const IMPORT_SOURCES = ["chatgpt", "claude", "gemini", "text"] as const;
+export const IMPORT_SOURCES = ["chatgpt", "claude", "gemini", "text", "rules"] as const;
 export type ImportSource = (typeof IMPORT_SOURCES)[number];
 
 const IMPORT_HEADER = `# Import Review
@@ -53,14 +54,15 @@ export function parseImportFile(content: string): ImportEntry[] {
   return out;
 }
 
-/** Conversation exports are the P2 milestone — reject them with a pointer
- *  instead of silently staging thousands of raw chat turns. */
+/** Conversation exports never stage raw — the CLI queues them for chunk-wise
+ *  mining (#211, `bastra import mine`); the map dialog points there. */
 export class ConversationExportError extends Error {
   constructor() {
     super(
-      "this looks like a conversation export (chat history) — mining those is a later stage. " +
-        "For now, paste/export your memory LIST: ChatGPT → Settings → Personalization → " +
-        "Manage memories; Claude → Settings → memory text.",
+      "this looks like a conversation export (chat history) — run " +
+        "`bastra import <path/to/conversations.json>` in a terminal to queue it for " +
+        "chunk-wise mining. To paste a memory LIST instead: ChatGPT → Settings → " +
+        "Personalization → Manage memories; Claude → Settings → memory text.",
     );
   }
 }
@@ -184,11 +186,12 @@ export async function countOpenImports(vaultPath: string): Promise<number> {
   }
 }
 
-/** GET /hook/import — open candidate count for the session hook. Loopback-
- *  only like /hook/care; deliberately NOT gated on ui.enabled (the file may
- *  exist from CLI use alone). */
+/** GET /hook/import — open candidate count + mining-queue depth (#211) for
+ *  the session hook. Loopback-only like /hook/care; deliberately NOT gated
+ *  on ui.enabled (the file may exist from CLI use alone). */
 export async function handleHookImport(res: ServerResponse, vaultPath: string): Promise<void> {
-  sendJsonPlain(res, 200, { open: await countOpenImports(vaultPath), file: IMPORT_FILE });
+  const [open, queue] = await Promise.all([countOpenImports(vaultPath), queueStatus()]);
+  sendJsonPlain(res, 200, { open, file: IMPORT_FILE, queued: queue.remaining });
 }
 
 /** POST /ui/import — the visual sibling of `bastra import` (#208): the map's

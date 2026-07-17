@@ -66,7 +66,13 @@ Commands:
                              (ChatGPT/Claude/Gemini list or free text): stages
                              candidates in import-review.md for review — your
                              next AI session distills accepted ones with you;
-                             nothing is saved without your accept
+                             nothing is saved without your accept.
+                             A conversations.json data export is queued locally
+                             instead; the AI session mines it chunk-wise
+  import rules               Stage local rules files (CLAUDE.md, AGENTS.md,
+                             .cursorrules, .cursor/rules/, ~/.claude/CLAUDE.md)
+  import <mine|clear>        Print the next mining chunk for the AI session /
+                             discard the local mining queue
   feedback <bug|idea>        Open a prefilled GitHub issue form in the browser.
                              'bug' includes a sanitized diagnostics block
                              (version, OS, embedding mode, vault size — never
