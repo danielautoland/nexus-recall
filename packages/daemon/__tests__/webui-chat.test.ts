@@ -33,6 +33,13 @@ test("parseAnswer: strict JSON, fenced JSON, and garbage fallback", () => {
   const garbage = parseAnswer("I could not produce JSON but here is text.");
   assert.equal(garbage.parsed, false);
   assert.match(garbage.reply, /could not produce/);
+
+  // truncated JSON (model stopped mid-output): the reply value must be
+  // rescued — raw JSON prefix in the chat is the bug this pins
+  const truncated = parseAnswer('{"reply": "Die Konventionen umfassen: Vier Schichten und die 500er-Richt');
+  assert.equal(truncated.parsed, false);
+  assert.equal(truncated.reply, "Die Konventionen umfassen: Vier Schichten und die 500er-Richt");
+  assert.ok(!truncated.reply.includes('{"reply"'), "no raw JSON leaks to the chat");
 });
 
 function memoryMarkdown(id: string, title: string, body: string): string {

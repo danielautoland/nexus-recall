@@ -78,7 +78,7 @@ export function buildAnswerPrompt(
     `User question: "${message}"`,
     "Reply with STRICT JSON, nothing else:",
     '{"reply": "<2-5 sentences in the user\'s language, grounded ONLY in the notes above — quote their actual rules/content where it answers the question, never invent>", "relevant": ["<ids of the notes that actually answer the question>"]}',
-    'If none of the notes fit, say so briefly in "reply" and return "relevant": [].',
+    'If none of the notes fit, say the SEARCH did not surface it and suggest a sharper search term — never claim the thing does not exist (the vault may hold it under different words). Return "relevant": [] in that case.',
   ].join("\n\n");
 }
 
@@ -109,8 +109,20 @@ export function parseAnswer(raw: string): { reply: string; relevant: string[]; p
         return { reply: json.reply.trim(), relevant, parsed: true };
       }
     } catch {
-      /* fall through to the raw-text fallback */
+      /* fall through to the reply-value rescue below */
     }
+  }
+  // truncated/malformed JSON: the reply VALUE is usually intact even when the
+  // closing braces never arrived — extract it so raw JSON never hits the chat
+  const replyValue = raw.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (replyValue) {
+    let text: string;
+    try {
+      text = JSON.parse(`"${replyValue[1]}"`) as string;
+    } catch {
+      text = replyValue[1]; // ends mid-escape — keep it readable as-is
+    }
+    if (text.trim()) return { reply: text.trim(), relevant: [], parsed: false };
   }
   return { reply: raw.trim(), relevant: [], parsed: false };
 }
