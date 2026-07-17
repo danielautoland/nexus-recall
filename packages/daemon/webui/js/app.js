@@ -14,6 +14,7 @@ import { createRingView } from "./managers/ring-view.js";
 import { createSemanticView } from "./managers/semantic-view.js";
 import { createSearchChat } from "./managers/search-chat.js";
 import { createImportDialog } from "./managers/import-dialog.js";
+import { createOnboardingDialog } from "./managers/onboarding-dialog.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -440,6 +441,9 @@ async function main() {
 
   // ── import dialog: seed the vault from other AI tools, visually ──
   createImportDialog({ modal: $("#import-modal"), opener: $("#import-open") });
+
+  // ── onboarding interview: a fresh vault offers to seed itself ──
+  createOnboardingDialog({ modal: $("#onboarding-modal") });
 
   // ── legend + panels ────────────────────────────────────────────
   const legendEl = $("#legend");

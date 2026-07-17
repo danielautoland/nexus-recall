@@ -36,6 +36,23 @@ export async function postImport(text, source) {
   return data;
 }
 
+export async function fetchOnboarding() {
+  const res = await fetch("/ui/onboarding");
+  if (!res.ok) throw new Error(`onboarding: ${res.status}`);
+  return res.json();
+}
+
+export async function postOnboarding(body) {
+  const res = await fetch("/ui/onboarding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `onboarding failed: ${res.status}`);
+  return data;
+}
+
 export async function postChat(message, history) {
   const res = await fetch("/ui/chat", {
     method: "POST",

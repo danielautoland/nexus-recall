@@ -243,6 +243,10 @@ Full details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault
 
 Memories age: titles go stale, duplicates creep in, ghosts point at notes you never wrote. bastra-recall turns tending the vault into a two-step loop instead of a chore. From any node's inspector on the vault map you flag a memory — *delete*, *edit*, *write* (for ghosts), or *note* — and the flags land as checkbox lines in an open `vault-care.md` at the vault root. Your **next AI session sees the open flags automatically** (session hook) and offers to work the list off with you: one guided cleanup pass, your call on every item. No hidden state, no separate app — a markdown checklist any editor can open.
 
+### Onboarding — five minutes to a warm start
+
+A fresh vault offers to seed itself. Pick what your memory will mainly hold — code & projects, company & decisions, life & knowledge, or a mix — and answer a handful of persona-aware questions; every answer becomes a profile memory your AI recalls from day one. Three surfaces, one interview: the vault map auto-opens it on a fresh vault, `bastra onboard` runs it in the terminal, and your AI session offers it conversationally — the most adaptive of the three, it follows up where an answer is thin. Skippable everywhere, never asked twice.
+
 ### Importing memories — skip the cold start
 
 Your other AI tools already know you — `bastra import` brings that head start along instead of starting cold. Three paths, one gate: candidates land as checkbox lines in `import-review.md` at the vault root, and your **next AI session distills accepted ones with you** — proper type, concrete triggers, deduped against what the vault already holds. Nothing is saved without your accept.
@@ -557,6 +561,10 @@ Details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)
 ### Vault-Pflege — jetzt markieren, später aufräumen
 
 Memories altern: Titel veralten, Dubletten schleichen sich ein, Ghosts zeigen auf nie geschriebene Notizen. bastra-recall macht aus der Vault-Pflege einen Zwei-Schritt-Loop statt einer lästigen Pflicht. Aus dem Inspector jeder Node auf der Vault-Map markierst du ein Memory — *delete*, *edit*, *write* (für Ghosts) oder *note* — und die Flags landen als Checkbox-Zeilen in einer offenen `vault-care.md` im Vault-Root. Deine **nächste AI-Session sieht die offenen Flags automatisch** (Session-Hook) und bietet an, die Liste gemeinsam abzuarbeiten: ein geführter Aufräum-Durchgang, jede Entscheidung bleibt bei dir. Kein versteckter State, keine Extra-App — eine Markdown-Checkliste, die jeder Editor öffnen kann.
+
+### Onboarding — in fünf Minuten zum Warmstart
+
+Ein frischer Vault bietet an, sich selbst zu befüllen. Du wählst, was dein Gedächtnis hauptsächlich halten soll — Code & Projekte, Firma & Entscheidungen, Leben & Wissen oder ein Mix — und beantwortest eine Handvoll persona-bewusster Fragen; jede Antwort wird ein Profil-Memory, das deine KI vom ersten Tag an abruft. Drei Oberflächen, ein Interview: Die Vault-Map öffnet es bei frischem Vault automatisch, `bastra onboard` führt es im Terminal, und deine AI-Session bietet es im Gespräch an — die adaptivste der drei, sie hakt nach, wo eine Antwort dünn ist. Überall überspringbar, nie doppelt gefragt.
 
 ### Memories importieren — den Kaltstart überspringen
 

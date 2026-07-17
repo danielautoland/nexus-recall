@@ -98,6 +98,7 @@ import {
 } from "./webui.js";
 import { handleUiChat, type ChatFn } from "./webui-chat.js";
 import { handleHookImport, handleUiImport } from "./import-review.js";
+import { handleHookOnboarding, handleUiOnboarding } from "./onboarding.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
@@ -534,6 +535,16 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
     if (method === "POST" && url === "/ui/annotate") {
       handleUiAnnotate(req, res, toolDeps.vaultPath).catch(() => sendJson(res, 500, { error: "ui error" }));
+      return;
+    }
+    // Onboarding interview: needed-flag for the session hook (loopback, not
+    // ui-gated) and the map dialog's catalog + answer submission (ui-gated).
+    if (method === "GET" && url === "/hook/onboarding") {
+      handleHookOnboarding(res, toolDeps.vaultPath, vault.size()).catch(() => sendJson(res, 500, { error: "onboarding error" }));
+      return;
+    }
+    if ((method === "GET" || method === "POST") && url === "/ui/onboarding") {
+      handleUiOnboarding(req, res, toolDeps.vaultPath, vault.size()).catch(() => sendJson(res, 500, { error: "onboarding error" }));
       return;
     }
     // Semantic search for the map's search box (#207) — hybrid recall, lean.

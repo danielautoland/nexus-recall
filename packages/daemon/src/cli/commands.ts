@@ -73,6 +73,9 @@ Commands:
                              .cursorrules, .cursor/rules/, ~/.claude/CLAUDE.md)
   import <mine|clear>        Print the next mining chunk for the AI session /
                              discard the local mining queue
+  onboard                    5-minute interview that seeds a fresh vault:
+                             persona-aware questions, every answer becomes a
+                             profile memory ('onboard skip' stops the nudge)
   feedback <bug|idea>        Open a prefilled GitHub issue form in the browser.
                              'bug' includes a sanitized diagnostics block
                              (version, OS, embedding mode, vault size — never

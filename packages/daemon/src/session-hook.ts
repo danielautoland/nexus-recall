@@ -252,6 +252,33 @@ async function main(): Promise<void> {
     }
   }
 
+  // Onboarding interview: a fresh vault (few memories, no marker) gets a
+  // standing offer to seed itself — the session model interviews adaptively,
+  // which no form can. Offered, never pushed.
+  let onboardingBlock = "";
+  if (responses.some((r) => r.resp !== null)) {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    if (await fetchOnboardingNeeded(url, Math.min(150, remainingMs))) {
+      onboardingBlock =
+        `\n<vault-onboarding>\n` +
+        `This vault is fresh and the onboarding interview hasn't run. Offer it ONCE at a natural ` +
+        `moment (e.g. after the first task, or right away if the user seems to be exploring): a ` +
+        `~5-minute interview that seeds the vault with who the user is. If they agree, interview ` +
+        `adaptively — one question at a time, follow up where an answer is thin, let them skip ` +
+        `anything: (1) what the memory will mainly hold — code & projects / company & decisions / ` +
+        `personal life & knowledge / a mix; (2) how to address them — name, language, tone; ` +
+        `(3) hard always/never rules; (4-6) persona follow-ups (developer: stack, active projects, ` +
+        `workflow · business: company & role, key people, what to prepare or watch · personal: ` +
+        `day-to-day world, never-forget items, current goals · mixed: stack, role, world); ` +
+        `(7) anything else, freeform. Save each answer immediately via save_memory — the user ` +
+        `answered in person, so write_origin: "user-directed", concrete recall_when triggers ` +
+        `including an ask-trigger in the user's own words. When finished run \`bastra onboard done\`; ` +
+        `if the user declines run \`bastra onboard skip\` and never bring it up again. Also mention ` +
+        `\`bastra import\` if they have memories in other AI tools.\n` +
+        `</vault-onboarding>`;
+    }
+  }
+
   // Best-effort update probe — only when we already have a daemon reachable.
   // Strict budget: 200 ms; if nothing back, we just skip the block.
   //
@@ -330,7 +357,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const extras = taxonomyBlock + careBlock + importBlock + updateBlock + pendingBlock + dokuBlock;
+  const extras = taxonomyBlock + careBlock + importBlock + onboardingBlock + updateBlock + pendingBlock + dokuBlock;
   // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
   // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
   const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";
@@ -556,6 +583,41 @@ function fetchOpenCounts(baseUrl: string, timeoutMs: number, path = "/hook/care"
     );
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", () => resolve_({ open: 0, queued: 0 }));
+    req.end();
+  });
+}
+
+/** GET /hook/onboarding → needed-flag. Same budget discipline; false on
+ *  any error (an unreachable daemon must never nudge). */
+function fetchOnboardingNeeded(baseUrl: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve_) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/onboarding", baseUrl);
+    } catch {
+      resolve_(false);
+      return;
+    }
+    const req = request(
+      { method: "GET", hostname: url.hostname, port: url.port || 80, path: url.pathname, timeout: timeoutMs },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { needed?: unknown };
+            resolve_(parsed.needed === true);
+          } catch {
+            resolve_(false);
+          }
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve_(false);
+    });
+    req.on("error", () => resolve_(false));
     req.end();
   });
 }
