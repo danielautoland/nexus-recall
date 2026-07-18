@@ -155,7 +155,7 @@ async function main() {
   let drillScope = null; // active drill state (both modes) for sidebar scoping
   const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
 
-  const semanticView = createSemanticView({ sim, renderer });
+  const semanticView = createSemanticView({ sim, renderer, getInteractions: () => interactions });
   const orbitView = createOrbitView({
     sim,
     renderer,
@@ -791,8 +791,7 @@ async function main() {
     const from = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
     semanticView.setMode(b.dataset.smode);
     renderSemanticModeSwitch();
-    // Flugziel = Projektion zum Landezeitpunkt, damit der 3D-Tick nahtlos übernimmt
-    const to = semanticView.targetsForMode(b.dataset.smode, performance.now() + 700);
+    const to = semanticView.targetsForMode(b.dataset.smode);
     interactions.flyToBounds([...to.values()], { padding: 90, maxScale: 1.6, ms: 700 });
     viewTransition = { t0: performance.now(), ms: 700, from, to, noFit: true };
   });

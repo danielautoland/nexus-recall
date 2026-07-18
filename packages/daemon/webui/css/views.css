@@ -156,6 +156,9 @@
 
 /* the recenter control is the one interactive bit inside the orbit hint */
 #orbit-hint { pointer-events: auto; }
+#semantic-hint { pointer-events: auto; }
+#semantic-depth-controls[hidden] { display: none; }
+#semantic-spin,
 #orbit-recenter {
   padding: 2px 8px;
   border: 1px solid var(--panel-border);

@@ -15,8 +15,9 @@ import { fetchSemanticLayout, nodeRadius } from "../graph-data.js";
 const $ = (sel) => document.querySelector(sel);
 const GOLDEN = 2.399963; // radians — deterministic scatter for fallbacks
 const MODE_KEY = "bastra-vault-map-semantic-mode";
-const SPIN = 0.045; // rad/s auto-drift of the 3D cloud
-const PITCH = -0.32;
+const SPIN_KEY = "bastra-vault-map-semantic-spin";
+const SPIN = 0.045; // rad/s auto-drift — OPT-IN (spin button in the hint)
+const PITCH_MAX = 1.1;
 
 export function createSemanticView(deps) {
   let layout = null; // server response, fetched once per session
@@ -25,6 +26,13 @@ export function createSemanticView(deps) {
   let semEdges = []; // unwritten connections with node refs
   let mode = localStorage.getItem(MODE_KEY) === "3d" ? "3d" : "2d";
   let active = false; // view currently entered (tick guard)
+  // Navigation wie im Orbit (Daniels Regel: nie Dauerrotation ohne
+  // Steuerung): Drag rotiert, Shift-Drag pannt, Auto-Spin ist eine OPTION
+  // und default aus.
+  let yaw = 0.6;
+  let pitch = -0.32;
+  let autoSpin = localStorage.getItem(SPIN_KEY) === "on";
+  let lastNow = 0;
 
   /** World targets from the unit-square layout: scale to a box that grows
    *  with the vault, place vectorless notes/ghosts near their linked
@@ -101,15 +109,15 @@ export function createSemanticView(deps) {
     return pts;
   }
 
-  /** Orbit-style perspective projection of the rotated meaning cloud. */
-  function projectAll(now, intoMap = null) {
+  /** Orbit-style perspective projection of the meaning cloud at the CURRENT
+   *  camera angles (drag-controlled; auto-spin only nudges yaw when on). */
+  function projectAll(intoMap = null) {
     const cx = innerWidth / 2;
     const cy = innerHeight / 2;
-    const yaw = now / 1000 * SPIN;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
-    const cosP = Math.cos(PITCH);
-    const sinP = Math.sin(PITCH);
+    const cosP = Math.cos(pitch);
+    const sinP = Math.sin(pitch);
     const side = Math.max(760, Math.sqrt(layout.positions.length) * 64);
     for (const n of deps.sim.nodes) {
       const p = points3d.get(n.id);
@@ -146,31 +154,62 @@ export function createSemanticView(deps) {
     }
   }
 
-  /** Per-frame drive in 3D mode — no-op in 2D or outside the view. */
+  /** Depth-Interaktion an/aus: Drag rotiert (Shift-Drag fällt aufs Pannen
+   *  zurück — exakt das Orbit-Muster), Hint zeigt die Steuerung + Spin-Knopf. */
+  function applyDepthState() {
+    const depth = active && mode === "3d";
+    deps.getInteractions?.().setDragDelegate(
+      depth
+        ? (dx, dy, ev) => {
+            if (ev?.shiftKey) return false; // shift-drag = pan through space
+            yaw += dx * 0.005;
+            pitch = Math.min(Math.max(pitch + dy * 0.004, -PITCH_MAX), PITCH_MAX);
+            projectAll();
+          }
+        : null,
+    );
+    if (depth) deps.renderer.setDrawOrder(byDepth);
+    else clearDepthCues();
+    const controls = $("#semantic-depth-controls");
+    if (controls) controls.hidden = !depth;
+    renderSpinButton();
+  }
+
+  function renderSpinButton() {
+    const b = $("#semantic-spin");
+    if (b) b.textContent = `↻ spin: ${autoSpin ? "on" : "off"}`;
+  }
+
+  $("#semantic-spin")?.addEventListener("click", () => {
+    autoSpin = !autoSpin;
+    localStorage.setItem(SPIN_KEY, autoSpin ? "on" : "off");
+    renderSpinButton();
+  });
+
+  /** Per-frame drive in 3D mode — projects at the current angles; auto-spin
+   *  (opt-in) nudges the yaw, dragging works with spin on or off. */
   function tick(now) {
+    const dt = lastNow > 0 ? Math.min((now - lastNow) / 1000, 0.1) : 0;
+    lastNow = now;
     if (!active || mode !== "3d") return;
-    projectAll(now);
+    if (autoSpin) yaw += dt * SPIN;
+    projectAll();
   }
 
   /** Target positions for a mode switch — the caller animates the flight. */
-  function targetsForMode(m, now) {
+  function targetsForMode(m) {
     if (m === "3d") {
       const map = new Map();
-      projectAll(now, map);
+      projectAll(map);
       return map;
     }
     return targets;
   }
 
-  function setMode(m, now) {
+  function setMode(m) {
     mode = m === "3d" ? "3d" : "2d";
     localStorage.setItem(MODE_KEY, mode);
-    if (!active) return;
-    if (mode === "3d") {
-      deps.renderer.setDrawOrder(byDepth);
-    } else {
-      clearDepthCues();
-    }
+    if (active) applyDepthState();
   }
 
   /** Radius-aware separation on the target map — PCA packs the middle
@@ -221,14 +260,14 @@ export function createSemanticView(deps) {
     active = true;
     deps.renderer.setSemanticEdges(semEdges);
     deps.renderer.setClusterLabelsVisible(false); // clusters interleave here
-    if (mode === "3d") deps.renderer.setDrawOrder(byDepth);
+    applyDepthState();
     $("#semantic-hint").hidden = false;
-    return targetsForMode(mode, performance.now());
+    return targetsForMode(mode);
   }
 
   function exit() {
     active = false;
-    clearDepthCues();
+    applyDepthState(); // löst Drag-Delegate + Depth-Cues + Controls
     deps.renderer.setSemanticEdges(null);
     deps.renderer.setClusterLabelsVisible(true);
     $("#semantic-hint").hidden = true;
