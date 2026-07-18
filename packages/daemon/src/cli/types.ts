@@ -60,6 +60,9 @@ export interface ParsedArgs {
   // cli-settings.json in one step (so onboarding is a single command). null =
   // flag absent → `bastra token` behaves exactly as before.
   origin: string | null;
+  // `install claude-desktop --extension`: hand the .mcpb Desktop Extension
+  // to Claude Desktop instead of writing the config-file registration.
+  extension: boolean;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];

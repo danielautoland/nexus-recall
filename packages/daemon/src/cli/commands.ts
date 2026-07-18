@@ -13,6 +13,7 @@ import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embedding
 import { sweepSharedSkill } from "./skill.js";
 import { removeRuntimeBase } from "./stable-runtime.js";
 import { runInstallWizard, shouldRunWizard } from "./wizard.js";
+import { cmdInstallExtension } from "./extension-install.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
@@ -29,6 +30,10 @@ Commands:
   install                    Guided setup (interactive): pick vault, clients,
                              semantic recall from selection lists
   install <surface|all>      Register bastra-recall with the AI client
+  install claude-desktop --extension
+                             Hand the .mcpb Desktop Extension to Claude
+                             Desktop instead (logo + vault picker; one
+                             Install click stays in Desktop's dialog)
   uninstall <surface|all>    Remove the registration (the shared skill is
                              removed once no surface references it anymore)
   update                     brew upgrade (if brew-installed) + re-register +
@@ -146,6 +151,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     staged: false,
     ollama: null,
     origin: null,
+    extension: false,
     positional: [],
   };
 
@@ -162,6 +168,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--with-stop-hook") result.withStopHook = true; // kept for compat — now the default
     else if (a === "--no-stop-hook") result.withStopHook = false;
     else if (a === "--staged") result.staged = true;
+    else if (a === "--extension") result.extension = true;
     else if (a === "--ollama") result.ollama = "auto";
     else if (a === "--no-ollama") result.ollama = "skip";
     else if (a === "--vault") {
@@ -239,6 +246,16 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
   if (args.showHelp) {
     showHelp();
     return 0;
+  }
+
+  // `--extension` (#218): the .mcpb Desktop Extension path — claude-desktop
+  // only; Desktop's own dialog owns the final Install click.
+  if (args.extension) {
+    if (args.surface !== "claude-desktop") {
+      process.stderr.write("error: --extension is only available for 'bastra install claude-desktop'\n");
+      return 2;
+    }
+    return cmdInstallExtension(args);
   }
 
   // Bare `bastra install` on a terminal → guided setup (selection lists for
