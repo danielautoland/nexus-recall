@@ -284,7 +284,22 @@ async function main(): Promise<void> {
   });
 
   const server = new Server(
-    { name: "bastra-recall-mcp", version: "0.8.1" },
+    {
+      name: "bastra-recall-mcp",
+      title: "Bastra Recall",
+      version: "0.8.1",
+      // serverInfo icons (MCP spec 2025-11-25, SEP-973): the standardized
+      // logo channel. Claude Desktop does not render it for config-file
+      // servers yet — shipped so the logo appears the day it does; the
+      // .mcpb extension carries the same icon via its manifest already.
+      icons: [
+        {
+          src: "https://raw.githubusercontent.com/n0mad-ai/bastra-recall/main/packages/daemon/mcpb/icon.png",
+          mimeType: "image/png",
+          sizes: ["512x512"],
+        },
+      ],
+    },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
