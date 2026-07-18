@@ -116,6 +116,10 @@ The `recall_when` field is the bridge between save and recall: when saving, the 
 
 The vault grows its own structure. When recent memories keep forming the same ad-hoc cluster (people, places, tools, …) without a home, the stop hook suggests recording a **convention** — a memory in the reserved scope `taxonomy` that fixes the cluster's folder, `topic_path` shape and tags. Active conventions are injected at session start and are binding for future saves. `save_memory` takes a `folder` argument so cluster members get a real folder (e.g. `memories/people/`), and re-saving with a changed folder *moves* the file (the old copy lands in the vault trash, recoverable). All of it lives per-vault on the free axes — the `type` schema stays fixed. Details: [docs/taxonomy.md](./docs/taxonomy.md).
 
+### Valence & reflex — memory that feels and fires
+
+Memories can carry an emotional charge: `salience` (0–1) and `emotion` (`frustration` | `success` | `risk` | `neutral`), stamped by the capture rules when a moment is hot — recurring frustration, a hard-won fix, an explicit "remember this well". High-salience memories age slower, may rank higher (shadow-mode first, lift-gated), and glow in the vault map with the emotion as their color. On top sits the **reflex lane**: promote a memory to `recall_mode: reflex` — always your explicit call, the curator only *proposes* candidates from usage evidence — and it self-injects (strictly budgeted, max 2 per prompt) whenever one of its `recall_when` triggers hard-matches what you type, no lookup query needed. Full details: **[Valence & Reflex](https://github.com/n0mad-ai/bastra-recall/wiki/Valence-and-Reflex)** (wiki).
+
 ### Install
 
 Three paths, in order of friction. bastra-recall is self-contained: the daemon, the MCP server, the REST gateway, the `bastra` CLI, and the Skill all ship in this repo — nothing else needed for full vault functionality.
@@ -441,6 +445,10 @@ Das `recall_when`-Feld ist die Brücke zwischen Save und Recall: beim Speichern 
 ### Selbstlernende Taxonomie
 
 Der Vault baut sich seine Struktur selbst. Wenn jüngste Memories wiederholt dasselbe Ad-hoc-Cluster bilden (Personen, Orte, Tools, …), ohne dass es eine Heimat hat, schlägt der Stop-Hook vor, eine **Konvention** festzuhalten — ein Memory im reservierten Scope `taxonomy`, das Ordner, `topic_path`-Form und Tags des Clusters festlegt. Aktive Konventionen werden bei Session-Start injiziert und sind für künftige Saves bindend. `save_memory` nimmt ein `folder`-Argument, damit Cluster-Mitglieder einen echten Ordner bekommen (z.B. `memories/people/`); ein erneutes Speichern mit geändertem Ordner *verschiebt* die Datei (die alte Kopie landet recoverbar im Vault-Trash). Alles lebt pro Vault auf den freien Achsen — das `type`-Schema bleibt fix. Details: [docs/taxonomy.md](./docs/taxonomy.md).
+
+### Valenz & Reflex — Gedächtnis mit Gefühl
+
+Memories können emotionale Ladung tragen: `salience` (0–1) und `emotion` (`frustration` | `success` | `risk` | `neutral`), gestempelt von den Capture-Regeln, wenn ein Moment heiß ist — wiederkehrende Frustration, ein hart erkämpfter Fix, ein explizites „merk dir das gut". Hoch-saliente Memories altern langsamer, dürfen höher ranken (erst Shadow-Mode, lift-gated) und glühen in der Vault-Map in ihrer Emotionsfarbe. Obendrauf die **Reflex-Lane**: Wird ein Memory auf `recall_mode: reflex` promotet — immer deine explizite Entscheidung, der Curator schlägt Kandidaten nur aus Nutzungs-Evidenz *vor* — injiziert es sich selbst (streng budgetiert, max. 2 pro Prompt), sobald einer seiner `recall_when`-Trigger hart auf deine Eingabe matcht, ganz ohne Suchanfrage. Details: **[Valence & Reflex](https://github.com/n0mad-ai/bastra-recall/wiki/Valence-and-Reflex)** (Wiki).
 
 ### Installation
 

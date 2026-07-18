@@ -31,11 +31,14 @@ import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR } from "./statusline-
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
 import {
+  bumpShown,
   decideBackoff,
+  getLoadedMarkerMtime,
   loadSessionState,
   recordSourceEmit,
   recordSourceSuppressed,
   saveSessionState,
+  shouldDropHit,
   wasEmitConsumed,
 } from "./session-state.js";
 
@@ -111,6 +114,21 @@ interface RecallResponse {
   vault_size: number;
   latency_ms: number;
   recall_id: string;
+}
+
+/** #217 Reflex-Lane: lean hit vom /hook/reflex-Endpoint. */
+export interface PromptReflexHit {
+  id: string;
+  title: string;
+  type: string;
+  scope: string;
+  summary: string;
+  matched_phrase: string;
+}
+
+interface ReflexResponse {
+  hits: PromptReflexHit[];
+  recall_id: string | null;
 }
 
 export type DetectedMode = "retrieval" | "none" | "generic";
@@ -231,27 +249,20 @@ async function main(): Promise<void> {
     detectedMode = "none";
   }
 
-  if (detectedMode === "none") {
-    emitEmpty();
-    await writeTelemetry({
-      detected_mode: "none",
-      prompt_chars: prompt.length,
-      daemon_url: null,
-      daemon_reachable: false,
-      hint_count: 0,
-      top_score: null,
-      latency_ms_total: Date.now() - startedAt,
-      status: "ok",
-      error: null,
-    });
-    return;
-  }
-
   const project = detectProject(payload.cwd ?? process.cwd());
   const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
   const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
   const url = httpURL ?? `http://127.0.0.1:${httpPort}`;
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+
+  // #217 Reflex-Lane: feuert unabhängig vom Retrieval-Gate — auch bei
+  // detectedMode "none". Parallel zum bedingten Recall, sonst sprengt die
+  // Serialisierung das 250-ms-Budget. Fehler → still keine Reflex-Hits.
+  const reflexPromise: Promise<ReflexResponse | null> = postReflex(
+    url,
+    { context: prompt, project, session_id: payload.session_id ?? null },
+    remainingMs,
+  ).catch(() => null);
 
   // For "generic" mode we only show top-tier hits, so request fewer (k=3).
   const k = detectedMode === "retrieval" ? 5 : 3;
@@ -260,23 +271,26 @@ async function main(): Promise<void> {
   let resp: RecallResponse | null = null;
   let status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" = "ok";
   let errMsg: string | null = null;
-  try {
-    resp = await postRecall(
-      url,
-      { query: prompt, project, k, tool_name: "UserPromptSubmit", session_id: payload.session_id ?? null },
-      remainingMs,
-    );
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    if (e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH") {
-      status = "daemon-unreachable";
-    } else if (e.message === "timeout") {
-      status = "timeout";
-    } else {
-      status = "error";
-      errMsg = e.message ?? String(err);
+  if (detectedMode !== "none") {
+    try {
+      resp = await postRecall(
+        url,
+        { query: prompt, project, k, tool_name: "UserPromptSubmit", session_id: payload.session_id ?? null },
+        remainingMs,
+      );
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH") {
+        status = "daemon-unreachable";
+      } else if (e.message === "timeout") {
+        status = "timeout";
+      } else {
+        status = "error";
+        errMsg = e.message ?? String(err);
+      }
     }
   }
+  const reflexResp = await reflexPromise;
 
   const filtered: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
@@ -287,55 +301,91 @@ async function main(): Promise<void> {
   }
   if (resp && filtered.length === 0) status = "no-hits";
 
+  const sessionId = payload.session_id ?? "";
+  const state = await loadSessionState(sessionId);
+
+  // #217: Session-Dedup für Reflex-Hits (max 1×/4h pro Memory, wie hook.ts).
+  // Danach id-Dedup gegen die Recall-Liste — Reflex ist das vom User
+  // verdrahtete, stärkere Signal und behält den Hit.
+  const rawReflexHits: PromptReflexHit[] = Array.isArray(reflexResp?.hits) ? reflexResp.hits : [];
+  const reflexKept: PromptReflexHit[] = [];
+  for (const h of rawReflexHits) {
+    const loadedMtime = await getLoadedMarkerMtime(h.id);
+    if (shouldDropHit(state.shown[h.id], loadedMtime)) continue;
+    reflexKept.push(h);
+  }
+  const reflexIds = new Set(reflexKept.map((h) => h.id));
+  const recallHits = filtered.filter((h) => !reflexIds.has(h.id));
+
   let backoffStreak = 0;
   let suppressed = false;
   let suppressedTokensEst = 0;
-  if (filtered.length === 0) {
-    emitEmpty();
-  } else {
+  let consumedForEmit = false;
+  let recallBlock: string | null = null;
+  if (recallHits.length > 0) {
     // #161 empty-streak backoff (see session-state.ts): unconsumed injection
     // streaks widen the cadence; any load of an emitted candidate resets.
     // REQUIRED-band hits bypass suppression (decideBackoff hasRequired), and
     // retrieval mode is exempt entirely — the user explicitly asked for a
     // lookup, answering it is never noise. Streak bookkeeping stays regular
-    // either way; only consumption resets the streak.
-    const sessionId = payload.session_id ?? "";
-    const state = await loadSessionState(sessionId);
+    // either way; only consumption resets the streak. Reflex-Hits laufen
+    // an diesem Backoff komplett vorbei (#217): vom User verdrahtet = nie Noise.
     const entry = state.sources?.[BACKOFF_SOURCE];
-    const consumed = await wasEmitConsumed(entry);
-    const hasRequired = filtered.some((h) => h.score >= MUST_LOAD_SCORE);
-    const decision = decideBackoff(entry, consumed, hasRequired);
+    consumedForEmit = await wasEmitConsumed(entry);
+    const hasRequired = recallHits.some((h) => h.score >= MUST_LOAD_SCORE);
+    const decision = decideBackoff(entry, consumedForEmit, hasRequired);
     backoffStreak = decision.streak;
     suppressed = detectedMode === "retrieval" ? false : decision.suppress;
-    const block = formatHintBlock(filtered, project, detectedMode);
+    const block = formatHintBlock(recallHits, project, detectedMode);
     if (suppressed) {
-      // Suppressed emits {} exactly like the empty path (#161).
+      // Suppressed drops only the recall block (#161); reflex still emits.
       suppressedTokensEst = Math.ceil(block.length / 4);
       recordSourceSuppressed(state, BACKOFF_SOURCE);
-      await saveSessionState(sessionId, state);
-      emitEmpty();
     } else {
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: "UserPromptSubmit",
-            additionalContext: block,
-          },
-        }),
-      );
-      recordSourceEmit(state, BACKOFF_SOURCE, filtered.map((h) => h.id), consumed);
-      await saveSessionState(sessionId, state);
-      // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-      await reportHinted(url, filtered.map((h) => h.id));
+      recallBlock = block;
     }
+  }
+
+  const reflexBlock = reflexKept.length > 0 ? formatReflexBlock(reflexKept, project) : null;
+  const blocks = [reflexBlock, recallBlock].filter((b): b is string => b !== null);
+  if (blocks.length === 0) {
+    emitEmpty();
+  } else {
+    emitOnce(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: blocks.join("\n"),
+        },
+      }),
+    );
+  }
+
+  // State-Bookkeeping in einem Save: Backoff-Streak nur für die
+  // prompt-lookup-Lane, Reflex bucht nur die Session-Dedup.
+  if (recallBlock) {
+    recordSourceEmit(state, BACKOFF_SOURCE, recallHits.map((h) => h.id), consumedForEmit);
+  }
+  for (const h of reflexKept) bumpShown(state, h.id);
+  if (recallHits.length > 0 || reflexKept.length > 0) {
+    await saveSessionState(sessionId, state);
+  }
+  // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
+  const injectedIds = [
+    ...(reflexBlock ? reflexKept.map((h) => h.id) : []),
+    ...(recallBlock ? recallHits.map((h) => h.id) : []),
+  ];
+  if (injectedIds.length > 0) {
+    await reportHinted(url, injectedIds);
   }
 
   await writeTelemetry({
     detected_mode: detectedMode,
     prompt_chars: prompt.length,
     daemon_url: url,
-    daemon_reachable: resp !== null,
-    hint_count: suppressed ? 0 : filtered.length,
+    daemon_reachable: resp !== null || reflexResp !== null,
+    hint_count: suppressed ? 0 : recallHits.length,
+    reflex_hint_count: reflexKept.length,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     backoff_streak: backoffStreak,
@@ -346,8 +396,19 @@ async function main(): Promise<void> {
   });
 }
 
+// Ein-Emit-Kontrakt: Claude Code parst stdout als EIN JSON-Dokument. Der
+// unref'te Kill-Switch kann feuern, während main() nach dem Block-Emit noch
+// saveSessionState/reportHinted awaitet — ohne Guard schriebe er ein zweites
+// "{}" HINTER den Block und machte den Output unparsebar (Review-Finding #217).
+let stdoutEmitted = false;
+function emitOnce(payload: string): void {
+  if (stdoutEmitted) return;
+  stdoutEmitted = true;
+  process.stdout.write(payload);
+}
+
 function emitEmpty(): void {
-  process.stdout.write("{}");
+  emitOnce("{}");
 }
 
 function formatHintLine(h: RecallHit): string {
@@ -398,6 +459,24 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
   return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
+/**
+ * #217 Reflex-Block: eigener trigger="reflex"-Frame, damit das Modell die
+ * Herkunft (vom User verdrahteter Trigger, kein Score-Ranking) erkennt.
+ */
+export function formatReflexBlock(hits: PromptReflexHit[], project: string | null): string {
+  const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
+  const head = `<recall-hints surface="claude-code" trigger="reflex"${projAttr}>`;
+  const sections: string[] = [
+    `Reflex memories: the user wired these to fire when their trigger matches ` +
+      `a prompt — this prompt matched. load_memory(id) before answering:`,
+  ];
+  for (const h of hits) {
+    const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
+    sections.push(`- ${h.id} (${h.type}, trigger "${h.matched_phrase}"): ${summary}`);
+  }
+  return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), `</recall-hints>`].join("\n");
+}
+
 function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -427,10 +506,28 @@ function postRecall(
   body: RecallRequestBody,
   timeoutMs: number,
 ): Promise<RecallResponse> {
+  return postJson<RecallResponse>(baseUrl, "/hook/recall", body, timeoutMs);
+}
+
+/** #217 Reflex-Lane: gleicher Loopback-POST, eigener Endpoint. */
+function postReflex(
+  baseUrl: string,
+  body: { context: string; project: string | null; session_id: string | null },
+  timeoutMs: number,
+): Promise<ReflexResponse> {
+  return postJson<ReflexResponse>(baseUrl, "/hook/reflex", body, timeoutMs);
+}
+
+function postJson<T>(
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     let url: URL;
     try {
-      url = new URL("/hook/recall", baseUrl);
+      url = new URL(path, baseUrl);
     } catch (err) {
       reject(err);
       return;
@@ -458,7 +555,7 @@ function postRecall(
             return;
           }
           try {
-            resolve(JSON.parse(data) as RecallResponse);
+            resolve(JSON.parse(data) as T);
           } catch {
             reject(new Error("invalid JSON response from daemon"));
           }
@@ -482,6 +579,8 @@ interface PromptHookTelemetry {
   daemon_url: string | null;
   daemon_reachable: boolean;
   hint_count: number;
+  /** #217: Reflex-Hits, die nach Session-Dedup injiziert wurden. */
+  reflex_hint_count?: number;
   top_score: number | null;
   latency_ms_total: number;
   /** #161: resolved streak of this event's backoff decision. */

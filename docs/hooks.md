@@ -106,7 +106,19 @@ Non-retrieval prompts emit `{}` by default. Set `BASTRA_PROMPT_HOOK_MODE=all`
 to also recall on generic prompts (only score ≥ 100 hits surface — much
 higher noise gate).
 
-Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, …).
+**Reflex lane (#217):** independent of the retrieval gate, every non-trivial
+prompt is POSTed to `/hook/reflex` (parallel to the recall call, same
+250 ms budget). The daemon hard-matches the prompt against the
+`recall_when` phrases of memories with `recall_mode: "reflex"`
+(deterministic token-AND, no fuzzy/prefix), budgets to
+`BASTRA_REFLEX_MAX_PER_TURN` (default 2) and returns lean hits. The hook
+renders them as a `<recall-hints … trigger="reflex">` block ahead of the
+lookup block. Reflex hits bypass the #161 backoff (user-wired = never
+noise) but respect the per-session dedup (max 1×/4h per memory).
+Kill switch: `BASTRA_REFLEX=off` or `reflex.enabled: false` in
+`cli-settings.json`. Every firing is traced as a `hook_reflex` event.
+
+Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, …).
 
 ### `bastra-recall-todo-hook` (#36)
 
@@ -272,5 +284,10 @@ new MCP tool):
 | `BASTRA_LOG_PATH`             | `~/.bastra/logs` | Telemetry log directory                                       |
 | `BASTRA_DRIFT_WINDOW_DAYS`    | `14`             | Drift detector: how far back "recent memories" reaches        |
 | `BASTRA_DRIFT_MIN_CLUSTER`    | `3`              | Drift detector: distinct memories before a cluster is flagged |
+| `BASTRA_REFLEX`               | `on`             | `off` disables the reflex lane (#217)                         |
+| `BASTRA_REFLEX_MAX_PER_TURN`  | `2`              | Reflex injection budget per prompt (clamp 1–5)                |
+| `BASTRA_REFLEX_PROMOTION_MIN` | `3`              | Acted-on recalls (30d) before the curator proposes a reflex promotion |
+| `BASTRA_SALIENCE_RANK`        | `shadow`         | `off` \| `shadow` \| `live` — salience ranking multiplier (#217, lift-gated) |
+| `BASTRA_SALIENCE_RANK_CAP`    | `0.25`           | Max salience score boost (`1 + salience × cap`)               |
 
 All `BASTRA_*` vars accept a legacy `NEXUS_*` fallback for migration.

@@ -542,6 +542,15 @@ export class SearchIndex {
       let mult = STALE_MULTIPLIERS[entry.status];
       if (this.curatorDemotions.has(h.id)) mult *= CURATOR_DEMOTION_MULTIPLIER;
       if (!opts.type && h.type === "doc") mult *= DOC_TYPE_DAMPING;
+      // #217: Salience boostet nur im Live-Modus (default: shadow-only im
+      // Daemon). Prozess-statisch schalten — nie pro Request. Case-insensitiv
+      // wie salienceRankMode() im Daemon — sonst schaltet "LIVE" beide Lanes
+      // still aus (Review-Finding).
+      if ((process.env.BASTRA_SALIENCE_RANK ?? "").toLowerCase() === "live") {
+        const sal =
+          typeof fm.salience === "number" ? Math.min(Math.max(fm.salience, 0), 1) : 0;
+        if (sal > 0) mult *= 1 + sal * salienceRankCap();
+      }
       if (mult !== 1.0) h.score = round(h.score * mult);
     }
     const direct = hits.filter((h) => h.hop !== "1-hop");
@@ -730,6 +739,19 @@ export const CURATOR_DEMOTION_MULTIPLIER = 0.5;
  */
 export const DOC_TYPE_DAMPING = 0.5;
 
+/**
+ * #217 Valenz: begrenzter Salience-Multiplikator (1 + salience × CAP).
+ * Default ist SHADOW-only — der Daemon loggt die would-be-Reihenfolge
+ * (salience-shadow.ts), live wird erst via BASTRA_SALIENCE_RANK=live nach
+ * Lift-Nachweis geschaltet (Disziplin wie #160). Env wird pro Aufruf
+ * gelesen (testfreundlich), darf aber nie pro Request umgeschaltet werden —
+ * der Query-Cache cached das post-staleness-Ranking.
+ */
+export function salienceRankCap(): number {
+  const raw = Number(process.env.BASTRA_SALIENCE_RANK_CAP ?? "0.25");
+  return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.25;
+}
+
 export function computeStaleness(
   fm: Record<string, unknown>,
   now: Date = new Date(),
@@ -754,8 +776,15 @@ export function computeStaleness(
     typeof fm.expires_after_days === "number" ? (fm.expires_after_days as number) : null;
   const typeDefault =
     type in DEFAULT_EXPIRATION_DAYS ? DEFAULT_EXPIRATION_DAYS[type] : null;
-  const days = userOverride ?? typeDefault;
+  let days = userOverride ?? typeDefault;
   if (days == null || days <= 0) return "fresh";
+
+  // #217 Valenz: hohe Salience altert langsamer — emotional aufgeladene
+  // Memories verblassen zuletzt. salience 1 = doppelte Lebensdauer.
+  // `valid_until` bleibt unberührt (explizites User-Datum gewinnt).
+  const salience =
+    typeof fm.salience === "number" ? Math.min(Math.max(fm.salience, 0), 1) : 0;
+  if (salience > 0) days = days * (1 + salience);
 
   if (touch <= 0) return "fresh";
   const secondsSinceTouch = (now.getTime() - touch) / 1000;

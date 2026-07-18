@@ -30,7 +30,7 @@
 
 #live-cards {
   position: fixed;
-  right: 18px;
+  right: 24px;
   bottom: 18px;
   z-index: 40;
   display: flex;
@@ -38,7 +38,10 @@
   gap: 10px;
   width: 280px;
   pointer-events: none;
+  transition: right 0.28s ease;
 }
+/* angedockte Sidebar (sichtbar/gepinnt): Cards rücken an ihre linke Kante */
+body.panel-open #live-cards { right: 284px; }
 .live-card {
   pointer-events: auto;
   padding: 10px 12px;
@@ -114,4 +117,112 @@
 @keyframes live-count-bump {
   0% { color: var(--accent); transform: scale(1.25); }
   100% { color: var(--text-dim); transform: scale(1); }
+}
+
+/* ── notice kinds: add=accent, change=amber, delete=red, read=dim ── */
+.live-card.kind-change { border-left-color: #d9a441; }
+.live-card.kind-change .live-star,
+.live-card.kind-change .live-label { color: #d9a441; }
+.live-card.kind-delete { border-left-color: #d96459; cursor: default; }
+.live-card.kind-delete .live-star,
+.live-card.kind-delete .live-label { color: #d96459; }
+.live-card.kind-read { border-left-color: var(--text-dim); }
+.live-card.kind-read .live-star,
+.live-card.kind-read .live-label { color: var(--text-dim); }
+
+/* ── session history: topbar button + panel ─────────────────────── */
+#live-history-toggle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px; height: 34px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text-dim);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.15s ease;
+}
+#live-history-toggle svg { width: 16px; height: 16px; }
+#live-history-toggle:hover { border-color: var(--accent); color: var(--text); }
+#live-history-toggle:active { transform: scale(0.92); }
+#live-history-toggle.open { border-color: var(--accent); color: var(--accent); }
+#live-history-count {
+  position: absolute;
+  top: -5px; right: -5px;
+  min-width: 15px; height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg, #0b1016);
+  font: 700 9.5px var(--font-mono);
+  line-height: 15px;
+  text-align: center;
+}
+#live-history[hidden] { display: none; }
+#live-history {
+  position: fixed;
+  top: 62px;
+  right: 24px;
+  z-index: 45;
+  width: 320px;
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--shadow);
+  transition: right 0.28s ease;
+}
+body.panel-open #live-history { right: 284px; }
+#live-history .lh-head {
+  padding: 9px 12px;
+  font: 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  border-bottom: 1px solid var(--panel-border);
+}
+#live-history .lh-session { color: var(--text-dim); letter-spacing: 0.1em; }
+#live-history-list { overflow-y: auto; }
+.lh-row {
+  display: grid;
+  grid-template-columns: 16px 62px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--panel-border);
+}
+.lh-row:last-child { border-bottom: 0; }
+.lh-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.lh-row.kind-delete { cursor: default; }
+.lh-row.kind-delete:hover { background: transparent; }
+.lh-kind-icon { text-align: center; color: var(--accent); font-size: 12px; }
+.lh-row.kind-change .lh-kind-icon { color: #d9a441; }
+.lh-row.kind-delete .lh-kind-icon { color: #d96459; }
+.lh-row.kind-read .lh-kind-icon { color: var(--text-dim); }
+.lh-kind {
+  font: 9.5px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+.lh-title {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lh-row.kind-delete .lh-title { text-decoration: line-through; color: var(--text-dim); }
+.lh-time { font: 10px var(--font-mono); color: var(--text-dim); }
+.lh-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
 }

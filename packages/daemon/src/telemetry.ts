@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { readJoinStateSync, writeJoinState } from "./telemetry-join-store.js";
+import type { SalienceShadow } from "./salience-shadow.js";
 
 /**
  * Migration-aware default log directory: prefer `~/.bastra/logs`, aber
@@ -33,6 +34,7 @@ export type TelemetryEvent =
   | LoadMemoryEvent
   | SaveMemoryEvent
   | HookRecallEvent
+  | HookReflexEvent
   | HookActEvent
   | RecallEpisodeEvent
   | OllamaLifecycleEvent;
@@ -91,6 +93,9 @@ export interface RecallEvent extends BaseEvent {
    *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
    *  stats separate degraded from normal recalls. */
   embedding_degraded?: boolean;
+  /** #217: would-be re-ranking under the salience multiplier (shadow mode).
+   *  Absent when no served hit carries salience or the mode isn't shadow. */
+  salience_shadow?: SalienceShadow;
 }
 
 export interface LoadMemoryEvent extends BaseEvent {
@@ -184,6 +189,27 @@ export interface HookRecallEvent extends BaseEvent {
   candidate_pool?: { id: string; score: number }[];
   /** #165: served BM25-only because the embedding circuit breaker was open. */
   embedding_degraded?: boolean;
+  /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
+  salience_shadow?: SalienceShadow;
+}
+
+/** #217 Phase 2: Reflex-Injektion ohne aktive Query (POST /hook/reflex) —
+ *  jede Feuerung ist execution-traced: welcher Trigger hart gematcht hat,
+ *  wie groß der Reflex-Pool war, was nach dem Budget-Cut serviert wurde. */
+export interface HookReflexEvent extends BaseEvent {
+  kind: "hook_reflex";
+  /** null = kein Hit serviert → bewusst keine recall_id gemintet, damit der
+   *  follows_recall-Join (≤5min) nicht von jedem Prompt verwässert wird. */
+  recall_id: string | null;
+  context_chars: number;
+  project: string | null;
+  /** Anzahl reflex-markierter Memories im Vault (Match-Grundmenge). */
+  reflex_pool: number;
+  /** alle harten Matches VOR dem Budget-Cut. */
+  matched: { id: string; phrase: string }[];
+  /** nach Budget-Cut tatsächlich zurückgegebene ids. */
+  served: string[];
+  latency_ms: number;
 }
 
 /**
@@ -434,12 +460,21 @@ export class Telemetry {
     return { turn_id: fallback, turn_source: "inferred" };
   }
 
+  /** Live-Notices (#216): optionaler Hook der Map — jede geladene Memory
+   *  wird dort als "read"-Ereignis angezeigt. Best-effort, nie werfend. */
+  onMemoryLoaded?: (id: string) => void;
+
   recordLoadedMemory(payload: {
     memory_id: string;
     distinctive_tokens: string[];
     hook_hint: { recall_id: string; score: number | null } | null;
     session_id?: string | null;
   }): void {
+    try {
+      this.onMemoryLoaded?.(payload.memory_id);
+    } catch {
+      /* Notices dürfen einen Load nie brechen */
+    }
     const tokens = new Set(payload.distinctive_tokens);
     // Usage BEFORE the token gate: the gate only decides whether an acted_on
     // episode is matchable — a load is a load. Without this, terse memories
@@ -575,6 +610,21 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "hook_recall",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  async logHookReflex(
+    // session_id optional wie bei logHookAct: der Hook liefert die echte
+    // Claude-Session-id mit — sie überschreibt die Daemon-Boot-UUID, sonst
+    // ist ein per-Session-Join gegen Transcripts strukturell unmöglich.
+    payload: Omit<HookReflexEvent, "kind" | "ts" | "session_id"> & { session_id?: string },
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "hook_reflex",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

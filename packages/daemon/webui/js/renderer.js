@@ -3,7 +3,7 @@
  *  Calm by default: edges are near-invisible until a node is hovered or
  *  focused, then its neighborhood lights up and the rest dims. */
 
-import { clusterColor, nodeRadius, glowSprite } from "./graph-data.js";
+import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE } from "./graph-data.js";
 
 export function createRenderer(canvas, sim, initialHues) {
   const ctx = canvas.getContext("2d");
@@ -16,6 +16,7 @@ export function createRenderer(canvas, sim, initialHues) {
   let pivotSince = 0; // … so the pulses ease in instead of popping
   let focusSince = 0; // focus beacon: birth burst + sonar timing
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
+  const flashes = new Map(); // live-notice flash (#216): id → {color, born, life}
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
   let decorFn = null; // view decor (ring guides, center emblem), world space
@@ -221,6 +222,7 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.globalAlpha = nodeAlpha;
       }
 
+
       if (n.kind === "ghost") {
         const rr = r * (filterHit ? pulse * 1.15 : pulse);
         // tinted backing disc — the dashed outline alone was too faint
@@ -252,7 +254,24 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        if (theme.glowAlpha > 0.02 && !dimmed) {
+        // #217 Valenz: emotional heiße Memories brennen wie ein kleiner Stern.
+        // Bewusst NICHT an theme.glowAlpha gekoppelt (0.14–0.35 dämpft alles
+        // in den Hintergrund) und mit Screen-px-Mindestgröße — muss auch weit
+        // rausgezoomt und neben großen Hubs auf einen Blick referenzierbar
+        // sein. Zweistufig wie die Supernova (drawBurstAt): weiter Hof in der
+        // Emotionsfarbe + heller Kern, beide atmen langsam.
+        const sal = typeof n.salience === "number" ? Math.min(Math.max(n.salience, 0), 1) : 0;
+        if (sal > 0 && !dimmed) {
+          const emo = EMOTION_CORE[n.emotion] ?? color;
+          const breath = 1 + 0.14 * Math.sin(now / 380 + n.idx * 1.3);
+          const outer = Math.max(r * 3.2, (16 + sal * 30) / camera.scale) * breath;
+          ctx.globalAlpha = nodeAlpha * (0.28 + sal * 0.38);
+          ctx.drawImage(glowSprite(emo), n.x - outer, n.y - outer, outer * 2, outer * 2);
+          const inner = outer * 0.55;
+          ctx.globalAlpha = Math.min(1, nodeAlpha * (0.5 + sal * 0.45));
+          ctx.drawImage(glowSprite(emo, theme.label), n.x - inner, n.y - inner, inner * 2, inner * 2);
+          ctx.globalAlpha = nodeAlpha;
+        } else if (theme.glowAlpha > 0.02 && !dimmed) {
           // pre-rendered sprite — a per-node radial gradient every frame was
           // the #1 frame-budget hotspot (hundreds of allocations)
           ctx.globalAlpha = nodeAlpha * theme.glowAlpha;
@@ -263,6 +282,16 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
         ctx.fill();
+        if (n.heat && !dimmed) {
+          // #217: Usage-Heat (#154) — oft angewandte Memories tragen einen
+          // hellen Kern; die zweite Demand-Uhr neben dem Salience-Glow.
+          ctx.globalAlpha = nodeAlpha * n.heat * 0.5;
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r * 0.45, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = nodeAlpha;
+        }
       }
 
       // bridge halo — connections the folder tree doesn't show. The offsets
@@ -309,6 +338,39 @@ export function createRenderer(canvas, sim, initialHues) {
           ctx.stroke();
         }
       }
+      ctx.globalAlpha = 1;
+    }
+
+    // live-notice flashes (#216): ÜBER der Node-Ebene — in dichten Galaxien
+    // würde ein Halo im Painter's-Order sonst von Nachbarn verdeckt. Erst
+    // ein expandierender Ring (das bewährte Supernova-Zitat), dann ein
+    // pulsierender Halo in der Kind-Farbe, beides mit Screen-px-Floors.
+    for (const [id, f] of flashes) {
+      const n = sim.byId.get(id);
+      if (!n || n.ringHidden) {
+        flashes.delete(id);
+        continue;
+      }
+      const t = (now - f.born) / f.life;
+      if (t >= 1) {
+        flashes.delete(id);
+        continue;
+      }
+      const r = drawRadius(n);
+      const ringT = Math.min((now - f.born) / 900, 1);
+      if (ringT < 1) {
+        const ringR = Math.max(r * 2, 10 / camera.scale) + ringT * (80 / camera.scale);
+        ctx.globalAlpha = 0.75 * (1 - ringT);
+        ctx.lineWidth = 2.2 / camera.scale;
+        ctx.strokeStyle = f.color;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      const ease = 1 - t * t;
+      const fr = Math.max(r * 4, 36 / camera.scale) * (1 + 0.15 * Math.sin(now / 160));
+      ctx.globalAlpha = Math.min(1, 0.9 * ease);
+      ctx.drawImage(glowSprite(f.color, theme.label), n.x - fr, n.y - fr, fr * 2, fr * 2);
       ctx.globalAlpha = 1;
     }
 
@@ -441,6 +503,9 @@ export function createRenderer(canvas, sim, initialHues) {
     pickClusterLabel,
     toWorld,
     refreshTheme,
+    /** Live-Notice (#216): Node blitzt kurz in der Kind-Farbe auf. */
+    flashNode: (id, color, lifeMs = 5000) =>
+      flashes.set(id, { color, born: performance.now(), life: lifeMs }),
     setHover: (n) => (hover = n),
     setFocus: (n) => {
       if ((n?.id ?? null) !== (focus?.id ?? null)) focusSince = performance.now();

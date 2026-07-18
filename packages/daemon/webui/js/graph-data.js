@@ -142,6 +142,14 @@ export function clusterColor(hues, key, sat, light) {
   return `hsl(${h.toFixed(1)} ${sat} ${light})`;
 }
 
+/** #217 Valenz: emotion → heißer Glow-Core. Cluster-Fill bleibt die
+ *  Karten-Identität; das Gefühl sitzt im Kern des Glows. neutral = kein Core. */
+export const EMOTION_CORE = {
+  frustration: "hsl(8 70% 60%)",
+  success: "hsl(140 55% 55%)",
+  risk: "hsl(45 85% 60%)",
+};
+
 /** Pre-rendered glow sprites (#216): per-frame createRadialGradient is a
  *  classic canvas frame-killer (hundreds of allocations + rasterizations per
  *  frame). Render each glow ONCE to a small offscreen canvas, keyed by its

@@ -39,6 +39,13 @@ export interface GraphNode {
   bridge?: string[];
   /** ghosts/skills only: ids of the existing memories that link to it */
   linked_by?: string[];
+  /** #217 Valenz: emotionale Salience 0..1 — Renderer skaliert den Glow. */
+  salience?: number;
+  /** #217 Valenz: Ton des Erfassungsmoments — färbt den Glow-Core. */
+  emotion?: string;
+  /** #217 Phase 3: Usage-Heat 0..1 (#154-Sidecar). Wird vom DAEMON beim
+   *  Serve gestampt — buildGraph selbst bleibt reine Vault-Projektion. */
+  heat?: number;
 }
 
 /**
@@ -253,6 +260,9 @@ export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
       degree: degree.get(id) ?? 0,
       kind: m.fm.type === "doc" ? "doc" : "memory",
       ...(bridge ? { bridge } : {}),
+      // #217: nur echte Memories tragen Valenz; Ghost-/Skill-Nodes bleiben ohne.
+      ...(typeof m.fm.salience === "number" ? { salience: m.fm.salience } : {}),
+      ...(m.fm.emotion ? { emotion: m.fm.emotion } : {}),
     };
   });
 

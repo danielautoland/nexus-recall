@@ -3,7 +3,7 @@
  *  persists to localStorage and re-reads the --map-* palette so the canvas
  *  recolors with the chrome. */
 
-import { fetchGraph, fetchHealth, fetchAnnotations, postAnnotation, fetchSemanticSearch, clusterHues, clusterColor } from "./graph-data.js";
+import { fetchGraph, fetchHealth, fetchAnnotations, postAnnotation, fetchSemanticSearch, fetchNode, clusterHues, clusterColor, nodeRadius } from "./graph-data.js";
 import { createSimulation } from "./simulation.js";
 import { createRenderer } from "./renderer.js";
 import { createInteractions } from "./interactions.js";
@@ -332,6 +332,58 @@ async function main() {
     document.body.classList.remove("inspector-open"),
   );
 
+  /** Live-Lane (#216/#217): Memory öffnen, auch wenn es erst NACH dem
+   *  Seiten-Load geboren wurde — dann existiert noch kein Sim-Node und der
+   *  Inspector bekommt den frisch gefetchten Node direkt. */
+  async function openMemoryById(id) {
+    const n = sim.byId.get(id);
+    if (n) {
+      select(n);
+      return;
+    }
+    try {
+      const full = await fetchNode(id);
+      document.body.classList.add("inspector-open");
+      inspector.show({ kind: "memory", ...full });
+    } catch {
+      // noch nicht indexiert — der nächste Klick nach dem Reload trifft
+    }
+  }
+
+  /** Live-Lane (#217): Newborn als ECHTEN Sim-Node adoptieren, sobald die
+   *  Supernova erscheint — klickbar, hoverbar, glüht mit Valenz, und bleibt
+   *  nach dem Verglühen an Ort und Stelle (kein Reload nötig). */
+  function adoptLiveNode(u) {
+    if (sim.byId.has(u.id)) return;
+    const anchor = sim.centers.get(u.cluster);
+    const node = {
+      id: u.id,
+      title: u.title,
+      type: u.type,
+      scope: u.scope ?? u.cluster,
+      cluster: u.cluster,
+      baseCluster: u.cluster,
+      group: "other",
+      sub: "general",
+      tags: [],
+      summary: u.summary,
+      updated: new Date().toISOString().slice(0, 10),
+      degree: 0,
+      kind: u.type === "doc" ? "doc" : "memory",
+      ...(typeof u.salience === "number" ? { salience: u.salience } : {}),
+      ...(u.emotion ? { emotion: u.emotion } : {}),
+      x: (anchor?.x ?? innerWidth / 2) + (Math.random() - 0.5) * 40,
+      y: (anchor?.y ?? innerHeight / 2) + (Math.random() - 0.5) * 40,
+      vx: 0,
+      vy: 0,
+      idx: sim.nodes.length,
+    };
+    node.cr = nodeRadius(node) + 3.5;
+    sim.nodes.push(node);
+    sim.byId.set(u.id, node);
+    sim.reheat?.();
+  }
+
   /** Screen areas covered by UI — fits/flights center in the free rectangle. */
   function mapInsets() {
     const inspectorOpen = !$("#inspector").hidden || document.body.classList.contains("inspector-open");
@@ -346,6 +398,17 @@ async function main() {
 
   const interactions = createInteractions(canvas, renderer, sim, {
     onSelect: (n, sx, sy) => {
+      // universe: solange eine Supernova brennt, gewinnt ihr Stern jeden
+      // Klick in seinem Radius — sonst öffnet der Node-Pick den nächsten
+      // ÜBERLAPPENDEN Nachbarn statt des Newborns unter dem Stern
+      if (currentView === "orbit" && sx !== undefined) {
+        const w = renderer.toWorld(sx, sy);
+        const burst = orbitView.pickBurst(w.x, w.y);
+        if (burst) {
+          void openMemoryById(burst.id);
+          return;
+        }
+      }
       if (n) {
         select(n);
         return;
@@ -369,6 +432,11 @@ async function main() {
           if (ringView.updateHover(renderer.toWorld(x, y))) canvas.style.cursor = "pointer";
         } else {
           ringView.clearHover();
+        }
+        // Live-Supernovae sind klickbar → Zeigefinger auch über dem Stern
+        if (currentView === "orbit") {
+          const w = renderer.toWorld(x, y);
+          if (orbitView.pickBurst(w.x, w.y)) canvas.style.cursor = "pointer";
         }
         return;
       }
@@ -459,7 +527,15 @@ async function main() {
   createAreasManager({ modal: $("#areas-modal"), opener: $("#areas-open") });
 
   // ── live updates: new memories appear as supernovae + preview cards ──
-  createLiveUpdates({ orbitView, sim, renderer, getView: () => currentView, switchView });
+  createLiveUpdates({
+    orbitView,
+    sim,
+    renderer,
+    getView: () => currentView,
+    switchView,
+    openMemory: openMemoryById,
+    adoptNode: adoptLiveNode,
+  });
 
   // ── mindspace recenter: one press (or C) fits the universe back in view ──
   function recenterOrbit() {
@@ -628,6 +704,8 @@ async function main() {
     panel.classList.toggle("pinned", panelState.pinned);
     panel.classList.toggle("collapsed", !panelState.pinned && panelState.collapsed);
     document.body.classList.toggle("panel-pinned", panelState.pinned);
+    // Live-Cards + History docken an die linke Kante der sichtbaren Sidebar
+    document.body.classList.toggle("panel-open", panelState.pinned || !panelState.collapsed);
     document.querySelectorAll(".panel-section[data-acc]").forEach((sec) => {
       sec.classList.toggle("closed", Boolean(panelState.closed[sec.dataset.acc]));
     });

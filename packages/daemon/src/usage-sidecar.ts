@@ -42,6 +42,28 @@ export interface UsageEntry {
 
 export type UsageAggregate = Record<string, UsageEntry>;
 
+/**
+ * #217 Phase 3: Usage-Heat 0..1 pro Memory — log-skaliert (log1p) relativ
+ * zum heißesten Memory; loaded zählt einfach, acted_on doppelt. Die zweite
+ * Demand-Uhr neben der Valenz: der Daemon stampt sie beim Graph-Serve auf
+ * die Nodes (core/graph.ts bleibt reine Vault-Projektion).
+ */
+export function computeHeat(usage: UsageAggregate): Record<string, number> {
+  const raw = new Map<string, number>();
+  let max = 0;
+  for (const [id, e] of Object.entries(usage)) {
+    const w = (e.loaded ?? 0) + 2 * (e.acted_on ?? 0);
+    if (w <= 0) continue;
+    const v = Math.log1p(w);
+    raw.set(id, v);
+    if (v > max) max = v;
+  }
+  if (max <= 0) return {};
+  const out: Record<string, number> = {};
+  for (const [id, v] of raw) out[id] = Math.round((v / max) * 100) / 100;
+  return out;
+}
+
 const USAGE_DIR = join(".bastra", "usage");
 const EVENTS_FILE = "events.jsonl";
 const COMPACTING_FILE = "events.compacting.jsonl";

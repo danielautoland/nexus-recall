@@ -283,3 +283,26 @@ test("sharedRecall: clearSharedRecallLanguage actually removes the override (not
     assert.equal(await getSharedRecallEnabled(path), true, "enabled flag must survive the clear");
   });
 });
+
+test("reflex (#217): valid block persists, invalid maxPerTurn dropped", async () => {
+  await withTempFile(async (path) => {
+    await writeFile(
+      path,
+      JSON.stringify({ update: { mode: "notify" }, reflex: { enabled: false, maxPerTurn: 3 } }),
+      "utf8",
+    );
+    const s = await readSettings(path);
+    assert.deepEqual(s.reflex, { enabled: false, maxPerTurn: 3 });
+
+    await writeFile(
+      path,
+      JSON.stringify({ update: { mode: "notify" }, reflex: { enabled: true, maxPerTurn: 99 } }),
+      "utf8",
+    );
+    const invalid = await readSettings(path);
+    assert.deepEqual(invalid.reflex, { enabled: true }, "out-of-range maxPerTurn must be dropped");
+
+    await writeFile(path, JSON.stringify({ update: { mode: "notify" } }), "utf8");
+    assert.equal((await readSettings(path)).reflex, undefined, "absent block stays absent");
+  });
+});

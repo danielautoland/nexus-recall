@@ -606,12 +606,35 @@ export function createOrbitView(deps) {
         )
       : { px: (rnd(h, 173) - 0.5) * R, py: (rnd(h, 179) - 0.5) * R * 0.5, pz: (rnd(h, 181) - 0.5) * R };
     bursts.set(entry.id, { world, born: performance.now(), entry });
+    // #217: der Newborn wird SOFORT echter Bewohner des Universums — als
+    // Disc-Mitglied seiner Galaxie an der Burst-Position. Der Stern brennt
+    // nur noch als Effekt darüber; nach dem Verglühen bleibt der Node, und
+    // Klick/Hover treffen von Anfang an ein reales Memory.
+    if (g && !universe.disc.has(entry.id) && !universe.planets.has(entry.id)) {
+      universe.disc.set(entry.id, {
+        center: g.center,
+        basis: g.basis,
+        x: (rnd(h, 173) - 0.5) * g.r * 1.3,
+        y: (rnd(h, 179) - 0.5) * g.r * 1.3,
+        z: (rnd(h, 181) - 0.5) * g.r * 0.3,
+        spin: g.spin,
+      });
+    }
+  }
+
+  /** Live-Position eines Bursts: adoptierte Newborns rotieren mit ihrer
+   *  Disc (worldPos) — der Stern bleibt am Node kleben statt wegzudriften. */
+  function burstWorld(id, b, tSec) {
+    if (universe.disc.has(id) || universe.planets.has(id)) {
+      return worldPos(id, tSec) ?? b.world;
+    }
+    return b.world;
   }
 
   function focusBurst(id) {
     const b = bursts.get(id);
     if (!b) return;
-    const pr = project(b.world, trigNow(), innerWidth / 2, innerHeight / 2);
+    const pr = project(burstWorld(id, b, performance.now() / 1000), trigNow(), innerWidth / 2, innerHeight / 2);
     deps.getInteractions().flyTo(pr.x, pr.y, 2.2, 900);
   }
 
@@ -627,13 +650,37 @@ export function createOrbitView(deps) {
         bursts.delete(id);
         continue;
       }
-      const pr = project(b.world, trig, cx, cy);
+      const pr = project(burstWorld(id, b, now / 1000), trig, cx, cy);
       drawBurstAt(ctx, camera, theme, pr.x, pr.y, depthScale(pr), age, Math.max(depthFade(pr.d), 0.35));
     }
   }
 
   const listBursts = () =>
     [...bursts.entries()].map(([id, b]) => ({ id, born: b.born, cluster: b.entry.cluster }));
+
+  /** Hit-Test für Live-Bursts: der Stern ist bis zu 2 Minuten das einzige
+   *  Visual des neugeborenen Memorys — er muss klickbar sein. Nimmt
+   *  WORLD-Koordinaten (renderer.toWorld) und spiegelt die gezeichnete
+   *  Sterngröße aus drawBurstAt (starR ≈ max(7·depthScale, 10/camScale)). */
+  function pickBurst(wx, wy) {
+    if (!universe) return null;
+    const trig = trigNow();
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const camScale = deps.renderer.camera?.scale ?? 1;
+    let best = null;
+    let bestD = Infinity;
+    for (const [id, b] of bursts) {
+      const pr = project(burstWorld(id, b, performance.now() / 1000), trig, cx, cy);
+      const hitR = Math.max(7 * depthScale(pr), 10 / camScale) * 2.6;
+      const d = Math.hypot(wx - pr.x, wy - pr.y);
+      if (d < hitR && d < bestD) {
+        best = b.entry;
+        bestD = d;
+      }
+    }
+    return best;
+  }
 
   // ── lifecycle ──────────────────────────────────────────────────────
   function enter() {
@@ -674,5 +721,5 @@ export function createOrbitView(deps) {
     apply(now / 1000);
   }
 
-  return { enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts };
+  return { enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts, pickBurst };
 }

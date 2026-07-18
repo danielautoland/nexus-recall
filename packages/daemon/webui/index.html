@@ -56,6 +56,13 @@
       <button id="live-toggle" aria-label="Toggle live updates" title="Live updates">
         <span class="live-dot"></span>
       </button>
+      <button id="live-history-toggle" aria-label="Live history" title="Live history — alle Live-Ereignisse dieser Session">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span id="live-history-count" hidden>0</span>
+      </button>
       <button id="areas-open" aria-label="Manage vault areas" title="Areas — create, rename or delete the vault's areas (projects etc.)">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
@@ -260,6 +267,10 @@
   <div id="orbit-hint" hidden>drag to rotate · shift-drag to pan · scroll to fly in/out · <button id="orbit-recenter" title="Fit the whole universe back into view (C)">⌖ recenter · C</button></div>
 
   <div id="live-cards"></div>
+  <div id="live-history" hidden>
+    <div class="lh-head">live history <span class="lh-session">this session</span></div>
+    <div id="live-history-list"></div>
+  </div>
 
   <div id="tooltip" hidden></div>
   <div id="hint">drag to pan · scroll to zoom · click a node to inspect · drag a label to move its cloud</div>

@@ -11,9 +11,16 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runCuratorPass, sanitizeRunResultForHttp, type CuratorRunDeps } from "../src/curator-run.js";
+import {
+  collectConsolidationCandidates,
+  collectReflexCandidates,
+  runCuratorPass,
+  sanitizeRunResultForHttp,
+  type CuratorRunDeps,
+} from "../src/curator-run.js";
 import { recordUsage } from "../src/usage-sidecar.js";
 import { loadCuratorState } from "../src/curator.js";
+import type { TelemetryEvent } from "../src/learned-recall/harvest.js";
 
 const NOW = Date.parse("2026-07-03T12:00:00Z");
 const iso = (daysAgo: number) => new Date(NOW - daysAgo * 86_400_000).toISOString();
@@ -236,4 +243,78 @@ test("run without any usage data demotes nothing (zero usage ≠ stale)", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// ─── #217: Reflex-Promotion + Konsolidierung ────────────────────────────────
+
+test("reflex promotion (#217): repeated acted_on recalls become candidates, cooldown suppresses re-nag", async () => {
+  const vault = fakeVault([
+    { id: "hot", title: "Hot memory", created: iso(60), topic_path: ["css"], related: [] },
+    { id: "already-reflex", title: "Wired", created: iso(60), topic_path: ["css"], related: [], recall_mode: "reflex" },
+    { id: "warm", title: "Warm memory", created: iso(60), topic_path: ["css"], related: [] },
+  ]);
+  const episode = (recallId: string, memoryId: string): TelemetryEvent[] => [
+    { kind: "hook_recall", recall_id: recallId, query: "tailwind grid layout" },
+    { kind: "recall_episode", recall_id: recallId, memory_id: memoryId, acted_on: true },
+  ];
+  const events: TelemetryEvent[] = [
+    ...episode("r1", "hot"),
+    ...episode("r2", "hot"),
+    ...episode("r3", "hot"),
+    ...episode("r4", "already-reflex"),
+    ...episode("r5", "already-reflex"),
+    ...episode("r6", "already-reflex"),
+    ...episode("r7", "warm"),
+    ...episode("r8", "warm"),
+  ];
+
+  const cands = await collectReflexCandidates(vault, { stale: {} }, NOW, events);
+  assert.deepEqual(cands, [{ id: "hot", title: "Hot memory", count: 3 }],
+    "3× acted_on → Kandidat; reflex-markiert und <3× nie");
+
+  const cooled = await collectReflexCandidates(
+    vault, { stale: {}, reflex_suggested: { hot: iso(5) } }, NOW, events,
+  );
+  assert.equal(cooled.length, 0, "innerhalb 30d nicht erneut vorschlagen");
+
+  const matured = await collectReflexCandidates(
+    vault, { stale: {}, reflex_suggested: { hot: iso(45) } }, NOW, events,
+  );
+  assert.equal(matured.length, 1, "nach Ablauf des Cooldowns wieder vorschlagbar");
+});
+
+test("consolidation (#217): ≥3 old same-topic project-facts cluster once, protected classes excluded", () => {
+  const pf = (id: string, ageDays: number): Record<string, unknown> => ({
+    id,
+    title: `Episode ${id}`,
+    type: "project-fact",
+    scope: "bastra",
+    topic_path: ["webui", "areas", "deep"],
+    created: iso(ageDays),
+    related: [],
+  });
+  const vault = fakeVault([
+    pf("e1", 40),
+    pf("e2", 50),
+    pf("e3", 60),
+    pf("young", 5), // zu jung → zählt nicht in den Cluster
+    { ...pf("dict", 40), write_origin: "user-directed" }, // Schutzklasse
+    { ...pf("other", 40), topic_path: ["cli"] }, // anderer Cluster-Key, allein
+    { ...pf("lesson", 40), type: "lesson" }, // kein project-fact
+  ]);
+
+  const clusters = collectConsolidationCandidates(vault, { stale: {} }, NOW);
+  assert.equal(clusters.length, 1);
+  // Key ist "\0"-gejoint (kollisionssicher wie collectConflictsAndDangling),
+  // label die menschenlesbare Form; topic_path wird auf 2 Ebenen gekappt.
+  assert.equal(clusters[0].key, "bastra\u0000webui\u0000areas");
+  assert.equal(clusters[0].label, "bastra / webui / areas");
+  assert.deepEqual(clusters[0].ids, ["e1", "e2", "e3"]);
+
+  const cooled = collectConsolidationCandidates(
+    vault,
+    { stale: {}, consolidation_suggested: { "bastra\u0000webui\u0000areas": iso(5) } },
+    NOW,
+  );
+  assert.equal(cooled.length, 0, "Cluster-Cooldown verhindert Re-Nag");
 });

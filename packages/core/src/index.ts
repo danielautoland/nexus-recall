@@ -8,7 +8,7 @@
 export { Vault } from "./vault.js";
 export type { VaultEvent, VaultListener } from "./vault.js";
 
-export { SearchIndex } from "./search.js";
+export { SearchIndex, salienceRankCap } from "./search.js";
 export type { RecallHit, RecallOptions } from "./search.js";
 
 export {

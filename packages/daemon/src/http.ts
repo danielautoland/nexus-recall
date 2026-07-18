@@ -61,6 +61,9 @@ import { buildGraph, buildSemanticLayout, type SemanticLayout } from "@bastra-re
 import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
+import { computeSalienceShadow } from "./salience-shadow.js";
+import { handleHookReflex } from "./reflex.js";
+import { computeHeat, readUsage } from "./usage-sidecar.js";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -286,6 +289,8 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   let semanticCache: { at: number; body: SemanticLayout } | null = null;
   // #216: fresh-memory buffer for the map's live mode (supernova + card)
   const liveUpdates = createLiveUpdates(vault);
+  // "read"-Notices (#216): jeder load_memory landet als Live-Ereignis in der Map
+  telemetry.onMemoryLoaded = (id) => liveUpdates.notifyRead(id);
 
   // env wins (ops override); else the token minted by `bastra token` in
   // cli-settings.json. Empty = no token issued → browser clients are rejected.
@@ -404,6 +409,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
 
     if (method === "POST" && url === "/hook/recall") {
       handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang, toolDeps.embeddingDegraded);
+      return;
+    }
+
+    // #217 Reflex-Lane: hartes recall_when-Matching ohne aktive Query, nur
+    // über reflex-markierte Memories. Loopback-only wie /hook/recall.
+    if (method === "POST" && url === "/hook/reflex") {
+      handleHookReflex(req, res, t0, vault, telemetry);
       return;
     }
 
@@ -677,9 +689,18 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         if (u.pathname === "/api/v1/graph") {
           // Declared skills (#215) classify ghost targets into the skills
           // ring — one small JSON read, same viewer contract for everyone.
-          listSkills()
-            .then((skills) => sendJson(res, 200, buildGraph(vault, skills)))
-            .catch((err: Error) => sendJson(res, 500, { error: err.message }));
+          // #217: plus Usage-Heat-Join aus dem #154-Sidecar (Daemon-Substrat;
+          // buildGraph bleibt reine Vault-Projektion).
+          (async () => {
+            const skills = await listSkills();
+            const graph = buildGraph(vault, skills);
+            const heat = computeHeat(await readUsage(toolDeps.vaultPath));
+            for (const n of graph.nodes) {
+              const h = heat[n.id];
+              if (h) n.heat = h;
+            }
+            sendJson(res, 200, graph);
+          })().catch((err: Error) => sendJson(res, 500, { error: err.message }));
           return;
         }
         // #207: the semantic layer — PCA positions by meaning + the
@@ -994,6 +1015,11 @@ function handleHookRecall(
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
           // #165: pre-recall festgehalten, siehe oben / recallHandler.
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,
+          // #217: would-be Salience-Reihenfolge (shadow-only).
+          salience_shadow: computeSalienceShadow(
+            hits,
+            (id) => vault.get(id)?.fm as Record<string, unknown> | undefined,
+          ),
         }),
       );
 

@@ -86,6 +86,12 @@ export interface CliSettings {
   // serves the static viewer on /ui (loopback-only). Read per-request, so
   // toggling does not require a daemon restart.
   ui?: { enabled: boolean };
+  // Reflex-Lane (#217): undefined = enabled (Reflex feuert nur auf Memories,
+  // die der User explizit auf recall_mode:"reflex" promotet hat — der Opt-in
+  // liegt am Memory, nicht am Feature). maxPerTurn deckelt die Injektionen
+  // pro Prompt (default 2, clamp 1..5). Env gewinnt: BASTRA_REFLEX=off,
+  // BASTRA_REFLEX_MAX_PER_TURN.
+  reflex?: { enabled?: boolean; maxPerTurn?: number };
 }
 
 /**
@@ -152,7 +158,7 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (raw.trim() === "") return { update: { mode: DEFAULT_UPDATE_MODE } };
 
-  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; cors?: { origins?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown }; ui?: { enabled?: unknown } };
+  let data: { update?: { mode?: unknown }; embedding?: { provider?: unknown }; ollama?: { autostart?: unknown }; api?: { token?: unknown }; cors?: { origins?: unknown }; commons?: { enabled?: unknown }; sharedRecall?: { enabled?: unknown; language?: unknown }; docs?: { mode?: unknown; language?: unknown }; generation?: { model?: unknown }; ui?: { enabled?: unknown }; reflex?: { enabled?: unknown; maxPerTurn?: unknown } };
   try {
     data = JSON.parse(raw);
   } catch (e) {
@@ -251,6 +257,20 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
   }
   if (typeof data?.ui?.enabled === "boolean") {
     settings.ui = { enabled: data.ui.enabled };
+  }
+  if (data?.reflex !== undefined) {
+    // Invalid values drop to undefined (= defaults), same policy as docs.
+    const reflex: { enabled?: boolean; maxPerTurn?: number } = {};
+    if (typeof data.reflex.enabled === "boolean") reflex.enabled = data.reflex.enabled;
+    const mpt = data.reflex.maxPerTurn;
+    if (typeof mpt === "number" && Number.isInteger(mpt) && mpt >= 1 && mpt <= 5) {
+      reflex.maxPerTurn = mpt;
+    } else if (mpt !== undefined) {
+      process.stderr.write(
+        `[bastra-recall] cli-settings.json: ignoring invalid reflex.maxPerTurn ${JSON.stringify(mpt)} (expected integer 1-5)\n`,
+      );
+    }
+    if (reflex.enabled !== undefined || reflex.maxPerTurn !== undefined) settings.reflex = reflex;
   }
   return settings;
 }

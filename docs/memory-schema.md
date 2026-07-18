@@ -166,6 +166,18 @@ These optional fields affect staleness and recall ranking:
 
 Staleness is computed lazily during recall. Stale and expired memories are downranked; obsolete memories are removed from normal search results.
 
+### Valence And Reflex Fields (#217)
+
+Optional fields modelling the human-memory axes *feeling* and *reflex*:
+
+| Field | Meaning |
+|---|---|
+| `salience` | `0`–`1`: how emotionally charged the capture moment was. High salience slows aging (effective expiration days × `1 + salience`) and may rank higher — the ranking multiplier runs shadow-only by default and goes live only via `BASTRA_SALIENCE_RANK=live` after a measured lift (`salience-lift` eval). |
+| `emotion` | Tone of the capture moment: `frustration`, `success`, `risk`, `neutral`. Drives the capture rules and tints the glow core in the vault map. |
+| `recall_mode` | `reflex` or `deliberate` (absent = `deliberate`). Reflex memories may self-inject — budgeted, max 2 per turn — when one of their `recall_when` phrases hard-matches a prompt (deterministic token match, no fuzzy scoring). Set `reflex` ONLY after the user explicitly confirmed a promotion; the curator proposes candidates via the pending-suggestions relay, it never wires them itself. |
+
+Capture rules: frustration signals ("schon wieder", emphatic caps) → `emotion: frustration`, `salience: 0.8`; a hard-won fix after >2 iterations → `emotion: success`, `salience: 0.7`; explicit user marking ("merk dir das gut") → `salience: 0.9`. Omit all three fields for routine saves — never invent them. On overwrite without these fields, existing values are preserved (same rule as `write_origin`).
+
 ## Privacy Field
 
 `sensitivity` controls which callers can see a memory:

@@ -32,6 +32,11 @@ export interface CuratorState {
   observed_since?: string;
   /** memory id → demotion record. Presence = score-only demotion active. */
   stale: Record<string, StaleEntry>;
+  /** #217: memory id → ISO des letzten Reflex-Promotion-Vorschlags —
+   *  Re-Nag-Schutz, der Curator schlägt dieselbe id max. 1×/30d vor. */
+  reflex_suggested?: Record<string, string>;
+  /** #217 Phase 3: Cluster-Key → ISO des letzten Konsolidierungs-Vorschlags. */
+  consolidation_suggested?: Record<string, string>;
 }
 
 const CURATOR_DIR = join(".bastra", "curator");

@@ -81,6 +81,15 @@ export const SaveMemoryInput = z.object({
   content_size: z.number().int().nonnegative().optional(),
   source: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
+  /**
+   * Valenz + Reflex (#217). `salience`/`emotion` nur setzen, wenn eine
+   * Capture-Regel feuert; `recall_mode: "reflex"` nur nach expliziter
+   * User-Bestätigung. Bei Overwrite ohne Angabe bleiben Bestandswerte
+   * erhalten (gleiche Regel wie write_origin).
+   */
+  salience: z.number().min(0).max(1).optional(),
+  emotion: z.enum(["frustration", "success", "risk", "neutral"]).optional(),
+  recall_mode: z.enum(["reflex", "deliberate"]).optional(),
   affects_files: z.array(z.string()).optional(),
   issues: z.array(z.string()).optional(),
   // id becomes the filename (`<id>.md`) — same path-safety bar as scope.
@@ -299,12 +308,45 @@ export async function saveMemory(
   // Best-effort: ein unlesbares File blockt den Save nicht.
   let aliases = input.aliases;
   let existingOrigin: string | undefined;
-  if (exists && (aliases === undefined || input.write_origin === undefined)) {
+  // #217: Valenz/Reflex überleben einen Refresh ohne explizite Angabe —
+  // sonst wipet jedes Agent-Overwrite die vom User bestätigte Achse.
+  let salience: number | undefined = input.salience;
+  let emotion: string | undefined = input.emotion;
+  let recallMode: string | undefined = input.recall_mode;
+  if (
+    exists &&
+    (aliases === undefined ||
+      input.write_origin === undefined ||
+      salience === undefined ||
+      emotion === undefined ||
+      recallMode === undefined)
+  ) {
     try {
       const existingRaw = await readFile(filePath, "utf8");
       const data = matter(existingRaw).data as Record<string, unknown> | undefined;
       if (aliases === undefined) aliases = coerceAliases(data?.aliases);
       if (typeof data?.write_origin === "string") existingOrigin = data.write_origin;
+      if (
+        salience === undefined &&
+        typeof data?.salience === "number" &&
+        data.salience >= 0 &&
+        data.salience <= 1
+      ) {
+        salience = data.salience;
+      }
+      if (
+        emotion === undefined &&
+        typeof data?.emotion === "string" &&
+        ["frustration", "success", "risk", "neutral"].includes(data.emotion)
+      ) {
+        emotion = data.emotion;
+      }
+      if (
+        recallMode === undefined &&
+        (data?.recall_mode === "reflex" || data?.recall_mode === "deliberate")
+      ) {
+        recallMode = data.recall_mode;
+      }
     } catch {
       // korrupt/parallel gelöscht → nichts zu erhalten
     }
@@ -348,6 +390,10 @@ export async function saveMemory(
     ...(input.content_size != null ? { content_size: input.content_size } : {}),
     ...(input.source ? { source: input.source } : {}),
     confidence: input.confidence ?? 1,
+    // #217: `!= null` statt truthy — salience 0 ist ein gültiger Wert.
+    ...(salience != null ? { salience } : {}),
+    ...(emotion != null ? { emotion } : {}),
+    ...(recallMode != null ? { recall_mode: recallMode } : {}),
     created: today,
     updated: today,
     affects_files: input.affects_files ?? [],

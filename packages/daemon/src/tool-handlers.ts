@@ -28,6 +28,7 @@ import {
   formatInjectionAdvisory,
 } from "@bastra-recall/core";
 import { Telemetry, fireAndForget } from "./telemetry.js";
+import { computeSalienceShadow } from "./salience-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
@@ -266,6 +267,12 @@ export async function recallHandler(
   const hits = rawHits.filter((h) => h.score >= floor);
   const droppedBelowFloor = rawHits.length - hits.length;
 
+  // #217: would-be Salience-Reihenfolge (shadow-only, servierte Hits bleiben).
+  const salienceShadow = computeSalienceShadow(
+    hits,
+    (id) => deps.vault.get(id)?.fm as Record<string, unknown> | undefined,
+  );
+
   const recallId = deps.telemetry.newRecallId();
   fireAndForget(
     deps.telemetry.logRecall({
@@ -285,6 +292,7 @@ export async function recallHandler(
         expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
       candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
       embedding_degraded: embeddingDegraded ? true : undefined,
+      salience_shadow: salienceShadow,
     }),
   );
 
@@ -328,6 +336,11 @@ const LEAN_FRONTMATTER_KEYS = [
   "related",
   "created",
   "updated",
+  // #217: Valenz + Reflex — das Modell muss beim Anwenden/Promoten den
+  // Ist-Zustand sehen (z.B. recall_mode vor einem Promotion-Confirm).
+  "salience",
+  "emotion",
+  "recall_mode",
 ] as const;
 
 /** Projiziert die volle Frontmatter auf die lean-Teilmenge. Unbekannte/
@@ -919,7 +932,8 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "\n" +
       "STRONG SIGNALS — save without confirmation, then 1-line ack:\n" +
       "- User expresses repetition/frustration about a recurring issue " +
-      "  ('wieder', 'schon wieder', 'wie oft', emphatic caps) → lesson\n" +
+      "  ('wieder', 'schon wieder', 'wie oft', emphatic caps) → lesson, " +
+      "  emotion:'frustration', salience:0.8\n" +
       "- User states an explicit durable rule ('immer X', 'nie Y', 'bei " +
       "  diesem Projekt nutzen wir Z') → preference / workflow\n" +
       "- User corrects a recurring tendency in your behavior → " +
@@ -929,7 +943,15 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "- User confirms a workflow ('lass uns das immer so machen') → " +
       "  workflow\n" +
       "- A bug got fixed after >2 iterations with non-obvious root " +
-      "  cause → lesson (capture the FAILED PATH too, not just the fix)\n" +
+      "  cause → lesson (capture the FAILED PATH too, not just the fix), " +
+      "  emotion:'success', salience:0.7\n" +
+      "- User marks something as important ('das ist wichtig', 'merk dir " +
+      "  das gut') → salience:0.9 on the memory you save\n" +
+      "\n" +
+      "VALENCE (#217): salience/emotion mark how emotionally charged the " +
+      "capture moment was — high salience ages slower and may rank higher. " +
+      "Set them ONLY when a capture rule above fires or the user marks " +
+      "importance; never invent them. Omit both for routine saves.\n" +
       "\n" +
       "ANTI-SIGNALS — do NOT save:\n" +
       "- One-off task descriptions ('baue mir bitte X') — that's a " +
@@ -1116,6 +1138,34 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
           type: "number",
           description:
             "0-1, default 1. Lower if the lesson is tentative.",
+        },
+        salience: {
+          type: "number",
+          description:
+            "0-1 (#217): how emotionally charged the capture moment was. " +
+            "Set ONLY when a capture rule fires (frustration 0.8, hard-won " +
+            "fix 0.7, 'merk dir das gut' 0.9). High salience ages slower. " +
+            "Omit for routine saves. On overwrite without this field, the " +
+            "existing value is preserved.",
+        },
+        emotion: {
+          type: "string",
+          enum: ["frustration", "success", "risk", "neutral"],
+          description:
+            "Tone of the capture moment (#217): 'frustration' (recurring " +
+            "pain), 'success' (hard-won fix), 'risk' (near-miss / danger), " +
+            "'neutral'. Only alongside salience. On overwrite without this " +
+            "field, the existing value is preserved.",
+        },
+        recall_mode: {
+          type: "string",
+          enum: ["reflex", "deliberate"],
+          description:
+            "#217: 'reflex' lets this memory self-inject (budgeted) when a " +
+            "recall_when trigger hard-matches a prompt — set 'reflex' ONLY " +
+            "after the user explicitly confirmed a promotion, never " +
+            "autonomously. Absent = 'deliberate'. On overwrite without this " +
+            "field, the existing value is preserved.",
         },
         id: {
           type: "string",

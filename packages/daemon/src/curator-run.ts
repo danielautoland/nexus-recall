@@ -24,6 +24,10 @@ import {
   type CuratorState,
 } from "./curator.js";
 import { compactUsage, readUsage, type UsageAggregate } from "./usage-sidecar.js";
+import { readEventLog, reconstructReaches, type TelemetryEvent } from "./learned-recall/harvest.js";
+import { logDirFor } from "./telemetry.js";
+import { writePendingSuggestion } from "./pending-suggestions.js";
+import { envInt } from "./env.js";
 import {
   writeVaultHealthReport,
   type ReportConflictCluster,
@@ -35,6 +39,20 @@ import {
 
 /** Floors older than this without a real affirm land in the report. */
 const FLOOR_REVIEW_WEEKS = 4;
+
+// ─── #217: Reflex-Promotion + Konsolidierung (Vorschlags-Relay) ─────────────
+// Der Curator VERDRAHTET nie selbst — er schreibt <reflex-candidate>- und
+// <consolidation-candidate>-Blöcke in die Pending-Suggestions; der Agent der
+// nächsten Session fragt den User, und erst dessen explizites Ja führt zum
+// save_memory. Gleiche Relay-Mechanik wie <save-eval>/<taxonomy-drift>.
+
+/** Dieselbe id/Cluster max. 1×/30d vorschlagen. */
+const SUGGEST_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+/** Max. Reflex-Vorschläge pro Pass — die nächste Session soll nicht fluten. */
+const REFLEX_MAX_PER_PASS = 2;
+/** Konsolidierung: Cluster-Mindestgröße + Mindestalter der Episoden. */
+const CONSOLIDATION_MIN_CLUSTER = 3;
+const CONSOLIDATION_MIN_AGE_DAYS = 30;
 
 interface VaultLike {
   list(): Array<{ fm: Record<string, unknown>; body?: string }>;
@@ -268,6 +286,109 @@ export async function runCuratorPass(
   }
 }
 
+/**
+ * #217 Phase 2: Reflex-Kandidaten aus der Telemetrie — Memories, die im
+ * Fenster wiederholt (≥ BASTRA_REFLEX_PROMOTION_MIN, default 3) nach einem
+ * Recall acted_on waren und noch nicht reflex sind. `events` ist für Tests
+ * injizierbar; default liest das echte Event-Log (30 Tage).
+ */
+export async function collectReflexCandidates(
+  vault: VaultLike,
+  state: CuratorState,
+  nowMs: number,
+  events?: TelemetryEvent[],
+): Promise<{ id: string; title: string; count: number }[]> {
+  // logDirFor (nicht der harvest-Default): honoriert NEXUS_LOG_PATH + das
+  // Legacy-Verzeichnis ~/.nexus-recall/logs — sonst liest die Promotion auf
+  // Migrations-Layouts ein leeres Verzeichnis (Review-Finding #217).
+  const evts = events ?? (await readEventLog(logDirFor(), 30));
+  const counts = new Map<string, number>();
+  for (const r of reconstructReaches(evts)) {
+    counts.set(r.memoryId, (counts.get(r.memoryId) ?? 0) + 1);
+  }
+  const min = Math.max(1, envInt("BASTRA_REFLEX_PROMOTION_MIN", 3));
+  const out: { id: string; title: string; count: number }[] = [];
+  for (const [id, count] of counts) {
+    if (count < min) continue;
+    const mem = vault.get(id);
+    if (!mem) continue;
+    if (mem.fm.recall_mode === "reflex") continue;
+    const suggestedAt = state.reflex_suggested?.[id];
+    if (suggestedAt && nowMs - Date.parse(suggestedAt) < SUGGEST_COOLDOWN_MS) continue;
+    out.push({ id, title: str(mem.fm.title) ?? id, count });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out.slice(0, REFLEX_MAX_PER_PASS);
+}
+
+export function formatReflexCandidateBlock(c: { id: string; title: string; count: number }): string {
+  return [
+    `<reflex-candidate memory-id="${c.id}" evidence="${c.count} acted-on recalls in 30d">`,
+    `Ask the user whether to promote "${c.title}" to reflex recall — it would ` +
+      `then self-inject (budgeted, max 2/turn) whenever one of its recall_when ` +
+      `triggers hard-matches a prompt. ONLY on an explicit yes: load_memory` +
+      `("${c.id}"), then save_memory with overwrite:true, the unchanged fields ` +
+      `and recall_mode:"reflex". Never promote without explicit confirmation.`,
+    `</reflex-candidate>`,
+  ].join("\n");
+}
+
+/**
+ * #217 Phase 3: episodische Häufungen — ≥3 project-facts gleicher
+ * scope+topic_path[0..1], alle älter als 30 Tage, nicht obsolete, nicht
+ * user-directed (Schutzklasse wie bei Demotions). Liefert max. 1 Cluster
+ * pro Pass; die Destillation zur Lesson macht der Agent MIT dem User.
+ */
+export function collectConsolidationCandidates(
+  vault: VaultLike,
+  state: CuratorState,
+  nowMs: number,
+): { key: string; label: string; scope: string; ids: string[] }[] {
+  const clusters = new Map<string, { label: string; scope: string; ids: string[] }>();
+  const cutoffMs = nowMs - CONSOLIDATION_MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
+  for (const mem of vault.list()) {
+    const fm = mem.fm;
+    if (fm.type !== "project-fact") continue;
+    if (fm.obsolete === true) continue;
+    if (fm.write_origin === "user-directed") continue;
+    const id = str(fm.id);
+    const scope = str(fm.scope);
+    if (!id || !scope) continue;
+    const createdMs = Date.parse(String(fm.created ?? ""));
+    if (!Number.isFinite(createdMs) || createdMs > cutoffMs) continue;
+    const tp = Array.isArray(fm.topic_path) ? fm.topic_path.slice(0, 2).map(String) : [];
+    // "\0"-Join wie collectConflictsAndDangling: Segmente mit "/" dürfen
+    // nicht mit gesplitteten Varianten kollidieren.
+    const key = [scope, ...tp].join("\u0000");
+    const cluster = clusters.get(key) ?? { label: [scope, ...tp].join(" / "), scope, ids: [] };
+    cluster.ids.push(id);
+    clusters.set(key, cluster);
+  }
+  const out: { key: string; label: string; scope: string; ids: string[] }[] = [];
+  for (const [key, c] of clusters) {
+    if (c.ids.length < CONSOLIDATION_MIN_CLUSTER) continue;
+    const suggestedAt = state.consolidation_suggested?.[key];
+    if (suggestedAt && nowMs - Date.parse(suggestedAt) < SUGGEST_COOLDOWN_MS) continue;
+    out.push({ key, label: c.label, scope: c.scope, ids: c.ids.sort() });
+  }
+  // größter Cluster zuerst; nur einer pro Pass wird vorgeschlagen
+  out.sort((a, b) => b.ids.length - a.ids.length);
+  return out;
+}
+
+export function formatConsolidationBlock(c: { label: string; scope: string; ids: string[] }): string {
+  return [
+    `<consolidation-candidate scope="${c.scope}" ids="${c.ids.join(",")}">`,
+    `These ${c.ids.length} project-facts share the topic "${c.label}" and are ` +
+      `all older than ${CONSOLIDATION_MIN_AGE_DAYS} days — episodic memory ready for semantic ` +
+      `consolidation. With the user: load the members, distill ONE lesson ` +
+      `that captures the durable pattern (link each episode via [[id]] ` +
+      `wikilinks), save it, and leave the episodes in place — the curator ` +
+      `handles their decay. Skip silently if the user declines.`,
+    `</consolidation-candidate>`,
+  ].join("\n");
+}
+
 async function runCuratorPassInner(
   deps: CuratorRunDeps,
   opts: { force?: boolean; dryRun?: boolean; lastActivityMs?: number; nowMs?: number },
@@ -323,6 +444,28 @@ async function runCuratorPassInner(
   const firstEverRun = !state.last_run_at;
   const mode: CuratorRunResult["mode"] = dryRun ? "dry-run" : firstEverRun ? "review-first" : "acting";
   if (mode === "acting") {
+    // #217: Vorschlags-Relay (nie stilles Selbst-Verdrahten) — Reflex-
+    // Kandidaten + Konsolidierungs-Cluster für die nächste Session, mit
+    // Cooldown-Stempel im State. Best-effort: ein Relay-Fehler bricht den
+    // Pass nicht.
+    try {
+      const blocks: string[] = [];
+      for (const c of await collectReflexCandidates(deps.vault, nextState, nowMs)) {
+        blocks.push(formatReflexCandidateBlock(c));
+        nextState.reflex_suggested = { ...(nextState.reflex_suggested ?? {}), [c.id]: nowIso };
+      }
+      const cluster = collectConsolidationCandidates(deps.vault, nextState, nowMs)[0];
+      if (cluster) {
+        blocks.push(formatConsolidationBlock(cluster));
+        nextState.consolidation_suggested = {
+          ...(nextState.consolidation_suggested ?? {}),
+          [cluster.key]: nowIso,
+        };
+      }
+      if (blocks.length > 0) await writePendingSuggestion(blocks.join("\n"));
+    } catch {
+      /* suggestions are best-effort */
+    }
     await saveCuratorState(deps.vaultRoot, nextState);
     deps.setDemotions(Object.keys(nextState.stale));
   } else if (mode === "review-first") {

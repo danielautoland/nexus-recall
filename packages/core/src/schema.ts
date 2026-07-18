@@ -152,6 +152,21 @@ export const FrontmatterSchema = z.object({
   write_origin: z.enum(["user-directed", "agent-session", "capture-review"]).optional(),
   source: z.string().optional(),
   confidence: z.number().min(0).max(1).default(1.0),
+  /**
+   * Valenz (#217): emotionale Salience des Erfassungsmoments.
+   * - `salience` 0..1: wie stark der Moment nachwirken soll. Hohe Salience
+   *   verlangsamt das Altern (computeStaleness) und rankt höher (shadow-first,
+   *   live nur env-gated).
+   * - `emotion`: Ton des Moments; gespeist aus den Capture-Regeln (Frustration,
+   *   hart erkämpfter Fix, Risiko); färbt den Glow-Core im Mindspace.
+   * - `recall_mode`: `reflex` = darf ohne aktive Query injiziert werden, wenn
+   *   ein recall_when-Trigger hart auf den Prompt matcht (budgetiert, nur nach
+   *   expliziter User-Bestätigung setzen). Absent = `deliberate` — bewusst
+   *   KEIN zod-Default, sonst schreibt jeder Re-Save das Feld in alle Files.
+   */
+  salience: z.number().min(0).max(1).optional(),
+  emotion: z.enum(["frustration", "success", "risk", "neutral"]).optional(),
+  recall_mode: z.enum(["reflex", "deliberate"]).optional(),
   created: dateString,
   updated: dateString,
   // Optional augmentation fields (see docs/memory-schema.md)

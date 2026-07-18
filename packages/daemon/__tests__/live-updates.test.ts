@@ -102,3 +102,76 @@ test("live updates: add events buffer, since filters, overwrite refreshes, ui ga
     await rm(settingsDir, { recursive: true, force: true });
   }
 });
+
+test("live updates: change/delete/read kinds with anti-spam rules (#216)", async () => {
+  const vaultDir = await mkdtemp(join(tmpdir(), "live-kinds-"));
+  const settingsDir = await mkdtemp(join(tmpdir(), "live-kinds-settings-"));
+  const settingsPath = join(settingsDir, "cli-settings.json");
+  await writeFile(settingsPath, JSON.stringify({ ui: { enabled: true } }));
+  const memDir = join(vaultDir, "memories", "projects", "live-test");
+  await mkdir(memDir, { recursive: true });
+  // zwei Bestands-Memories, die VOR der Live-Subscription existieren —
+  // ihre adds sieht der Buffer nie, nur spätere Events
+  const f1 = join(memDir, "old-note.md");
+  const f2 = join(memDir, "quiet-note.md");
+  await writeFile(f1, memoryMarkdown("old-note", "Old note"));
+  await writeFile(f2, memoryMarkdown("quiet-note", "Quiet note"));
+  const vault = new Vault(vaultDir);
+  await vault.init();
+  const live = createLiveUpdates(vault);
+
+  const server = createServer((req, res) => {
+    void live.handleUiUpdates(req, res, settingsPath);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  const call = (): Promise<{ updates: LiveUpdate[] }> =>
+    new Promise((resolve, reject) => {
+      const rq = request({ hostname: "127.0.0.1", port, path: "/ui/updates?since=0", method: "GET" }, (res) => {
+        let raw = "";
+        res.on("data", (c) => (raw += c));
+        res.on("end", () => resolve(JSON.parse(raw)));
+      });
+      rq.on("error", reject);
+      rq.end();
+    });
+  const entry = (updates: LiveUpdate[], id: string) => updates.find((u) => u.id === id);
+
+  try {
+    // change auf ein Bestands-Memory (kein frischer add-Eintrag) → "updated"
+    await writeFile(f1, memoryMarkdown("old-note", "Old note v2"));
+    await vault.reindexFile(f1);
+    let r = await call();
+    assert.equal(entry(r.updates, "old-note")?.kind, "change");
+    assert.equal(entry(r.updates, "old-note")?.title, "Old note v2");
+
+    // zweiter change kurz danach: Daten frisch, aber KEIN Re-Announce (at bleibt)
+    const atBefore = entry(r.updates, "old-note")!.at;
+    await writeFile(f1, memoryMarkdown("old-note", "Old note v3"));
+    await vault.reindexFile(f1);
+    r = await call();
+    assert.equal(entry(r.updates, "old-note")?.title, "Old note v3");
+    assert.equal(entry(r.updates, "old-note")?.at, atBefore, "same-kind burst must not re-announce");
+
+    // read auf ein unangetastetes Memory → "read"-Notice
+    live.notifyRead("quiet-note");
+    r = await call();
+    assert.equal(entry(r.updates, "quiet-note")?.kind, "read");
+
+    // read verdrängt nie eine heißere Notice
+    live.notifyRead("old-note");
+    r = await call();
+    assert.equal(entry(r.updates, "old-note")?.kind, "change");
+
+    // delete gewinnt immer; Titel kommt aus dem letzten bekannten Eintrag
+    vault.forgetFile(f1);
+    r = await call();
+    assert.equal(entry(r.updates, "old-note")?.kind, "delete");
+    assert.equal(entry(r.updates, "old-note")?.title, "Old note v3");
+  } finally {
+    live.stop();
+    server.close();
+    await rm(vaultDir, { recursive: true, force: true });
+    await rm(settingsDir, { recursive: true, force: true });
+  }
+});

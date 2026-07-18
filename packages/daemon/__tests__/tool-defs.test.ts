@@ -37,6 +37,19 @@ test("save_memory declares body as a required string (#132 guarantee)", () => {
   );
 });
 
+test("save_memory declares valence + reflex params as optional (#217)", () => {
+  const save = tool("save_memory");
+  assert.equal(save.inputSchema.properties?.salience?.type, "number");
+  assert.equal(save.inputSchema.properties?.emotion?.type, "string");
+  assert.equal(save.inputSchema.properties?.recall_mode?.type, "string");
+  for (const field of ["salience", "emotion", "recall_mode"]) {
+    assert.ok(
+      !save.inputSchema.required?.includes(field),
+      `${field} must stay optional — valence is capture-rule-driven, never mandatory`,
+    );
+  }
+});
+
 test("every tool def has a name and an object inputSchema", () => {
   for (const d of ALL_TOOL_DEFS as ToolDef[]) {
     assert.equal(typeof d.name, "string");

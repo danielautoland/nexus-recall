@@ -8,7 +8,9 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -16,8 +18,10 @@ import {
   effectiveScoreFloor,
   extractPrompt,
   formatHintBlock,
+  formatReflexBlock,
   isTrivialPrompt,
   MUST_LOAD_SCORE,
+  type PromptReflexHit,
   type RecallHit,
 } from "../src/prompt-hook.ts";
 import { decideBackoff, type SourceBackoff } from "../src/session-state.ts";
@@ -132,6 +136,27 @@ test("formatHintBlock — separates strong vs OPTIONAL by score", () => {
   assert.ok(!block.includes("not allowed"), "must not use coercive 'not allowed' wording");
 });
 
+test("formatReflexBlock — reflex frame with matched trigger phrase (#217)", () => {
+  const hits: PromptReflexHit[] = [
+    {
+      id: "reflex-css-lesson",
+      title: "CSS-Spezifität",
+      type: "lesson",
+      scope: "all-projects",
+      summary: "Inline style schlägt Tailwind-Hover immer.",
+      matched_phrase: "tailwind grid",
+    },
+  ];
+  const block = formatReflexBlock(hits, "myproject");
+  assert.match(block, /<recall-hints surface="claude-code" trigger="reflex"/);
+  assert.match(block, /project="myproject"/);
+  assert.match(block, /reflex-css-lesson \(lesson, trigger "tailwind grid"\)/);
+  assert.match(block, /load_memory\(id\) before answering/);
+  assert.match(block, /<\/recall-hints>/);
+  // Hints must read as non-coercive, wie formatHintBlock.
+  assert.ok(!block.includes("REQUIRED"));
+});
+
 // ─── Integration test via mock daemon ────────────────────────────────────
 
 function startMockDaemon(handler: (req: IncomingMessage, res: ServerResponse) => void) {
@@ -177,10 +202,15 @@ test("integration — retrieval prompt yields recall-hints block", async () => {
     let body = "";
     req.on("data", (c: Buffer) => (body += c.toString()));
     req.on("end", () => {
-      // The hook now also fires a /hook/hinted usage ping (#154) — only the
-      // recall request is what this test asserts on.
+      // The hook now also fires a /hook/hinted usage ping (#154) and the
+      // reflex probe (#217) — only the recall request is what this test
+      // asserts on; the reflex lane answers empty here.
       if (req.url === "/hook/recall") received = { url: req.url, body: JSON.parse(body) };
       res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === "/hook/reflex") {
+        res.end('{"hits":[],"recall_id":null}');
+        return;
+      }
       res.end(
         JSON.stringify({
           hits: [
@@ -232,10 +262,16 @@ test("integration — retrieval prompt yields recall-hints block", async () => {
 });
 
 test("integration — non-retrieval prompt emits empty object", async () => {
-  let hit = false;
-  const daemon = await startMockDaemon((_req, res) => {
-    hit = true;
+  // #217: die Reflex-Lane pingt den Daemon jetzt bei JEDEM non-trivialen
+  // Prompt — nur der Recall-Endpoint darf ohne Retrieval-Signal still bleiben.
+  let recallCalled = false;
+  const daemon = await startMockDaemon((req, res) => {
+    if (req.url === "/hook/recall") recallCalled = true;
     res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/reflex") {
+      res.end('{"hits":[],"recall_id":null}');
+      return;
+    }
     res.end('{"hits":[],"vault_size":0,"latency_ms":1,"recall_id":"x"}');
   });
   try {
@@ -248,9 +284,69 @@ test("integration — non-retrieval prompt emits empty object", async () => {
       { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
     );
     assert.equal(stdout.trim(), "{}");
-    assert.equal(hit, false, "daemon must not be called when no retrieval signal");
+    assert.equal(recallCalled, false, "recall must not be called when no retrieval signal");
   } finally {
     await daemon.close();
+  }
+});
+
+test("integration — reflex hit fires without a retrieval signal (#217)", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-reflex-state-"));
+  let recallCalled = false;
+  let hintedIds: string[] | null = null;
+  const daemon = await startMockDaemon((req, res) => {
+    let body = "";
+    req.on("data", (c: Buffer) => (body += c.toString()));
+    req.on("end", () => {
+      if (req.url === "/hook/recall") recallCalled = true;
+      if (req.url === "/hook/hinted") hintedIds = (JSON.parse(body) as { ids: string[] }).ids;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === "/hook/reflex") {
+        res.end(
+          JSON.stringify({
+            hits: [
+              {
+                id: "reflex-css-lesson",
+                title: "CSS-Spezifität",
+                type: "lesson",
+                scope: "all-projects",
+                summary: "Inline style schlägt Tailwind-Hover immer.",
+                matched_phrase: "tailwind grid",
+              },
+            ],
+            recall_id: "reflex-1",
+          }),
+        );
+        return;
+      }
+      res.end('{"ok":true}');
+    });
+  });
+  try {
+    const { stdout } = await runHook(
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt: "lass uns das tailwind grid implementieren",
+        cwd: process.cwd(),
+        session_id: "reflex-session",
+      },
+      {
+        BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+        BASTRA_HOOK_STATE_DIR: stateDir,
+      },
+    );
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { additionalContext?: string };
+    };
+    const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
+    assert.match(ctx, /trigger="reflex"/);
+    assert.match(ctx, /reflex-css-lesson/);
+    assert.match(ctx, /trigger "tailwind grid"/);
+    assert.equal(recallCalled, false, "no retrieval signal → recall stays silent");
+    assert.deepEqual(hintedIds, ["reflex-css-lesson"], "reflex injection counts as surfaced");
+  } finally {
+    await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
   }
 });
 

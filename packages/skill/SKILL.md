@@ -56,14 +56,17 @@ Skipping straight to `conversation_search` or `web_search` on a "find my …" qu
 
 | Signal | German cue | Memory `type` |
 |---|---|---|
-| User-frustration about a recurring issue | "wieder", "schon wieder", "wie oft", CAPS | `lesson` |
+| User-frustration about a recurring issue | "wieder", "schon wieder", "wie oft", CAPS | `lesson` + `emotion: frustration`, `salience: 0.8` |
 | Explicit durable rule | "immer X", "nie Y", "bei diesem Projekt nutzen wir Z" | `preference` / `workflow` |
 | Correction of a recurring tendency | "du denkst zu kompliziert bei CSS", "halt einfacher" | `meta-working` |
 | Architectural decision finalized after weighing options | "ok, dann nehmen wir Drizzle" | `decision` |
 | Workflow confirmation | "super, lass uns das immer so machen" | `workflow` |
-| Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too, not just the fix) |
+| Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too, not just the fix) + `emotion: success`, `salience: 0.7` |
+| User marks something as important | "das ist wichtig", "merk dir das gut" | `salience: 0.9` on the memory being saved |
 | **Feature / coding block completion** (multi-file feature done, sub-system stabilized, refactor finalized, issue closed with code) | — | `project-fact` (see Project topology below) |
 | **Substantive exchange with a person/contributor** (Discord / dev.to / GitHub thread — not one-liners or acks) | — | split: identity → `memories/people`, content → `project-fact` |
+
+**Valence (#217):** `salience` (0–1) + `emotion` (`frustration` | `success` | `risk` | `neutral`) record how emotionally charged the capture moment was — the same signals that already *trigger* a save now get *stored*. High salience ages slower and may rank higher. Set them ONLY when a rule above fires or the user marks importance; never invent them, omit both for routine saves.
 
 After a real back-and-forth with a contributor lands (not a trivial reply): memorize it autonomously on **two rails**. (1) **Identity** — update the person's canonical memo: one memory per handle, `folder: memories/people`, deduped with `[[wikilinks]]` (the People convention below). (2) **Content** — save the exchange's substance + any decisions as a `project-fact` (a project-scoped fact routes to `memories/projects/<project>/` by default) that links the person via `[[handle]]`. Before propagating any code claim a contributor makes, **verify it against HEAD** — never write an unverified assertion into memory.
 
@@ -91,6 +94,7 @@ Always `recall()` with the title/topic first — if a near-duplicate exists, upd
 - **Summary** — one sentence with the gist; aim ~250–300 chars, core in the first 160 (the lean-recall snippet). Hard cap 400 — auto-truncated if over, never rejected, so keep it short.
 - **Body** — lead with the rule/fact, then `**Why:**` (root cause / reason / incident) and `**How to apply:**` (when this kicks in). For lessons, capture the failure path **and** the fix.
 - **`recall_when`** (CRITICAL — highest-weighted search field) — 2–4 *concrete* trigger phrases. *"about to write a Tailwind grid"* beats *"CSS questions"*. Without good `recall_when`, the memory is dead weight.
+- **`salience` / `emotion`** — only when a capture rule fires (frustration 0.8, hard-won fix 0.7, "merk dir das gut" 0.9); never invent them. `recall_mode: "reflex"` only after the user explicitly confirmed a promotion — never autonomously.
 
 ### After saving — ack format
 

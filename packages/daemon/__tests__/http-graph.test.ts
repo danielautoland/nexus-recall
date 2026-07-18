@@ -15,11 +15,12 @@ import { request, createServer } from "node:http";
 import { Vault, SearchIndex, buildGraph } from "@bastra-recall/core";
 import { startHttpServer } from "../src/http.js";
 import { Telemetry } from "../src/telemetry.js";
+import { recordUsage } from "../src/usage-sidecar.js";
 import { handleWebUi, handleUiAnnotate, handleUiAnnotations, parseCareFile, CARE_FILE } from "../src/webui.js";
 
 function memoryMarkdown(
   id: string,
-  opts: { related?: string[]; sensitivity?: string } = {},
+  opts: { related?: string[]; sensitivity?: string; salience?: number; emotion?: string } = {},
 ): string {
   const ts = new Date().toISOString();
   const related = (opts.related ?? []).map((r) => `  - ${r}`).join("\n");
@@ -38,6 +39,8 @@ function memoryMarkdown(
     `  - ${id}`,
     ...(opts.related?.length ? ["related:", related] : []),
     ...(opts.sensitivity ? [`sensitivity: ${opts.sensitivity}`] : []),
+    ...(opts.salience != null ? [`salience: ${opts.salience}`] : []),
+    ...(opts.emotion ? [`emotion: ${opts.emotion}`] : []),
     `created: ${ts}`,
     `updated: ${ts}`,
     "---",
@@ -68,7 +71,10 @@ async function buildTestVault(): Promise<{ dir: string; vault: Vault }> {
   await mkdir(people, { recursive: true });
   await mkdir(beta, { recursive: true });
   // a1/a2 → ghost-x (majority cluster), p1 → ghost-x (second cluster)
-  await writeFile(join(alpha, "a1.md"), memoryMarkdown("a1", { related: ["a2", "ghost-x"] }));
+  await writeFile(
+    join(alpha, "a1.md"),
+    memoryMarkdown("a1", { related: ["a2", "ghost-x"], salience: 0.9, emotion: "frustration" }),
+  );
   await writeFile(join(alpha, "a2.md"), memoryMarkdown("a2", { related: ["ghost-x"] }));
   await writeFile(join(people, "p1.md"), memoryMarkdown("p1", { related: ["ghost-x"] }));
   // b1 bridges alpha + people (two foreign clusters)
@@ -92,6 +98,13 @@ test("buildGraph: clusters, ghosts, bridges, private filter", async () => {
     assert.equal(a1.cluster, "alpha", "projects/<scope> is its own cluster");
     const p1 = g.nodes.find((n) => n.id === "p1")!;
     assert.equal(p1.cluster, "people");
+
+    // #217 Valenz: salience/emotion reach the node; absent stays absent
+    assert.equal(a1.salience, 0.9);
+    assert.equal(a1.emotion, "frustration");
+    const a2 = g.nodes.find((n) => n.id === "a2")!;
+    assert.equal(a2.salience, undefined);
+    assert.equal(a2.emotion, undefined);
 
     // ghost-x exists only as a link target → ghost node with both linkers
     const ghost = g.nodes.find((n) => n.id === "ghost-x")!;
@@ -130,6 +143,11 @@ test("buildGraph: clusters, ghosts, bridges, private filter", async () => {
 
 test("GET /api/v1/graph + /api/v1/graph/node over loopback", async () => {
   const { dir, vault } = await buildTestVault();
+  // #217 Phase 3: Usage-Heat — a1 wurde geladen + angewandt, a2 nie.
+  await recordUsage(dir, [
+    { id: "a1", kind: "loaded", ts: new Date().toISOString() },
+    { id: "a1", kind: "acted_on", ts: new Date().toISOString() },
+  ]);
   const search = new SearchIndex(vault);
   search.start();
   const telemetry = new Telemetry();
@@ -149,6 +167,12 @@ test("GET /api/v1/graph + /api/v1/graph/node over loopback", async () => {
     const graph = JSON.parse(g.body);
     assert.ok(Array.isArray(graph.nodes) && Array.isArray(graph.edges));
     assert.ok(graph.nodes.some((n: { kind: string }) => n.kind === "ghost"));
+
+    // Heat erreicht den genutzten Node (einziger Nutzer → normiert auf 1),
+    // ungenutzte Nodes bleiben ohne das Feld.
+    const nodes = graph.nodes as { id: string; heat?: number }[];
+    assert.equal(nodes.find((n) => n.id === "a1")?.heat, 1);
+    assert.equal(nodes.find((n) => n.id === "a2")?.heat, undefined);
 
     const node = await httpGet(handle.port!, "/api/v1/graph/node?id=a1");
     assert.equal(node.status, 200);

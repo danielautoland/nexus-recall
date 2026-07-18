@@ -1,17 +1,23 @@
 /** Live updates (#216) — an on/off live mode for the map: the daemon buffers
- *  freshly saved memories (GET /ui/updates), this manager polls every few
- *  seconds and turns each one into a supernova in the universe view plus a
- *  preview card with a live seconds-since-birth counter.
+ *  vault events (GET /ui/updates), this manager polls every few seconds and
+ *  turns them into notices. "add" additionally becomes a supernova in the
+ *  universe view + an adopted real sim node; "change" patches the node live,
+ *  "delete" hides it, "read" is a pure notice.
+ *
+ *  Every notice also lands in the SESSION HISTORY — toggled via the topbar
+ *  clock button (#live-history-toggle), so vanished cards stay reviewable.
  *
  *  Toggle lives in the topbar (#live-toggle), state persists in localStorage.
  *  Polling only runs while the toggle is on.
  *
  *  @param {object} deps
  *  @param {object} deps.orbitView          spawnBurst/focusBurst/renderBursts
- *  @param {object} deps.sim                simulation (cluster anchors for flat views)
+ *  @param {object} deps.sim                simulation (nodes/byId, cluster anchors)
  *  @param {object} deps.renderer           overlay hook
  *  @param {() => string} deps.getView      current view key
- *  @param {(v: string) => void} deps.switchView  jump to the universe on card click */
+ *  @param {(v: string) => void} deps.switchView  jump to the universe on card click
+ *  @param {(id: string) => void} deps.openMemory open the memory in the inspector
+ *  @param {(u: object) => void} deps.adoptNode   add the newborn as a real sim node */
 
 import { drawBurstAt, BURST_LIFE } from "./orbit-view.js";
 
@@ -20,14 +26,27 @@ const LIVE_KEY = "bastra-vault-map-live";
 const POLL_MS = 5000;
 const CARD_LIFE_MS = 120000; // matches the burst lifetime
 const MAX_CARDS_PER_POLL = 4;
+const HISTORY_MAX = 300;
+
+const KIND_META = {
+  add: { label: "new memory", icon: "✦" },
+  change: { label: "updated", icon: "✎", flash: "hsl(40 65% 55%)" },
+  delete: { label: "deleted", icon: "✕", flash: "hsl(8 65% 58%)" },
+  read: { label: "read", icon: "◉", flash: "hsl(210 35% 68%)" },
+};
 
 export function createLiveUpdates(deps) {
   const toggle = $("#live-toggle");
   const cardsEl = $("#live-cards");
+  const historyBtn = $("#live-history-toggle");
+  const historyEl = $("#live-history");
+  const historyList = $("#live-history-list");
+  const historyCount = $("#live-history-count");
   let on = (localStorage.getItem(LIVE_KEY) ?? "on") === "on";
-  let since = Date.now(); // only memories saved AFTER opening the map count
+  let since = Date.now(); // only events AFTER opening the map count
   let pollTimer = 0;
-  let known = new Set(); // ids already announced
+  let known = new Set(); // "id:at" already announced (at changes per push)
+  const history = []; // session-scope, newest first
 
   function render() {
     toggle.classList.toggle("on", on);
@@ -36,17 +55,72 @@ export function createLiveUpdates(deps) {
       : "Live updates OFF — click to watch new memories appear live.";
   }
 
+  // ── session history ────────────────────────────────────────────────
+  const timeOf = (ms) =>
+    new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  function recordHistory(u) {
+    history.unshift({ ...u, seenAt: Date.now() });
+    if (history.length > HISTORY_MAX) history.pop();
+    historyCount.textContent = String(history.length);
+    historyCount.hidden = history.length === 0;
+    if (!historyEl.hidden) renderHistory();
+  }
+
+  function renderHistory() {
+    if (history.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "lh-empty";
+      empty.textContent = "no live events this session yet";
+      historyList.replaceChildren(empty);
+      return;
+    }
+    historyList.replaceChildren(
+      ...history.map((h) => {
+        const meta = KIND_META[h.kind] ?? KIND_META.add;
+        const row = document.createElement("div");
+        row.className = `lh-row kind-${h.kind}`;
+        const icon = document.createElement("span");
+        icon.className = "lh-kind-icon";
+        icon.textContent = meta.icon;
+        const label = document.createElement("span");
+        label.className = "lh-kind";
+        label.textContent = meta.label;
+        const title = document.createElement("span");
+        title.className = "lh-title";
+        title.textContent = h.title;
+        title.title = h.title;
+        const time = document.createElement("span");
+        time.className = "lh-time";
+        time.textContent = timeOf(h.seenAt);
+        row.append(icon, label, title, time);
+        if (h.kind !== "delete") {
+          row.addEventListener("click", () => deps.openMemory?.(h.id));
+        }
+        return row;
+      }),
+    );
+  }
+
+  historyBtn.addEventListener("click", () => {
+    historyEl.hidden = !historyEl.hidden;
+    historyBtn.classList.toggle("open", !historyEl.hidden);
+    if (!historyEl.hidden) renderHistory();
+  });
+
+  // ── notice cards ───────────────────────────────────────────────────
   function card(entry) {
+    const meta = KIND_META[entry.kind] ?? KIND_META.add;
     const li = document.createElement("div");
-    li.className = "live-card";
+    li.className = `live-card kind-${entry.kind}`;
     const head = document.createElement("div");
     head.className = "live-head";
     const star = document.createElement("span");
     star.className = "live-star";
-    star.textContent = "✦";
+    star.textContent = meta.icon;
     const label = document.createElement("span");
     label.className = "live-label";
-    label.textContent = "new memory";
+    label.textContent = meta.label;
     const age = document.createElement("span");
     age.className = "live-age";
     age.dataset.born = String(Date.now());
@@ -62,19 +136,31 @@ export function createLiveUpdates(deps) {
     const title = document.createElement("div");
     title.className = "live-title";
     title.textContent = entry.title;
-    const meta = document.createElement("div");
-    meta.className = "live-meta";
-    meta.textContent = `${entry.type} · ${entry.cluster}`;
-    const summary = document.createElement("div");
-    summary.className = "live-summary";
-    summary.textContent = entry.summary;
-    li.append(head, title, meta, summary);
-    li.addEventListener("click", () => {
-      const wasOrbit = deps.getView() === "orbit";
-      if (!wasOrbit) deps.switchView("orbit");
-      // after a view switch the flight needs a beat before refocusing
-      setTimeout(() => deps.orbitView.focusBurst(entry.id), wasOrbit ? 0 : 1100);
-    });
+    const meta2 = document.createElement("div");
+    meta2.className = "live-meta";
+    meta2.textContent = [entry.type, entry.cluster].filter(Boolean).join(" · ");
+    li.append(head, title, meta2);
+    if (entry.summary) {
+      const summary = document.createElement("div");
+      summary.className = "live-summary";
+      summary.textContent = entry.summary;
+      li.append(summary);
+    }
+    if (entry.kind !== "delete") {
+      li.addEventListener("click", () => {
+        if (entry.kind === "add") {
+          const wasOrbit = deps.getView() === "orbit";
+          if (!wasOrbit) deps.switchView("orbit");
+          // after a view switch the flight needs a beat before refocusing
+          setTimeout(() => {
+            deps.orbitView.focusBurst(entry.id);
+            deps.openMemory?.(entry.id);
+          }, wasOrbit ? 0 : 1100);
+        } else {
+          deps.openMemory?.(entry.id);
+        }
+      });
+    }
     cardsEl.prepend(li);
     setTimeout(() => {
       li.classList.add("fade");
@@ -82,12 +168,13 @@ export function createLiveUpdates(deps) {
     }, CARD_LIFE_MS);
   }
 
-  // topbar memory counter follows live: +1 per newborn, with a tiny pulse
-  function bumpCounter(n) {
+  // topbar memory counter follows live: ±1 per birth/death, with a tiny pulse
+  function bumpCounter(delta) {
+    if (delta === 0) return;
     const el = $("#stat-count");
     const cur = parseInt(el.textContent, 10);
     if (Number.isNaN(cur)) return; // health not loaded yet — next reload catches up
-    el.textContent = `${cur + n} memories`;
+    el.textContent = `${cur + delta} memories`;
     el.classList.remove("bump");
     void el.offsetWidth; // restart the animation
     el.classList.add("bump");
@@ -98,10 +185,41 @@ export function createLiveUpdates(deps) {
     li.className = "live-card";
     const title = document.createElement("div");
     title.className = "live-title";
-    title.textContent = `+${count} more new memories`;
+    title.textContent = `+${count} more live events`;
     li.append(title);
     cardsEl.prepend(li);
     setTimeout(() => li.remove(), 20000);
+  }
+
+  // ── live sync into the running map ─────────────────────────────────
+  function applyToSim(u) {
+    if (u.kind === "add") {
+      // erst als echten Node adoptieren (#217), dann den Stern darüber zünden
+      deps.adoptNode?.(u);
+      deps.orbitView.spawnBurst(u);
+      return;
+    }
+    const n = deps.sim.byId.get(u.id);
+    if (!n) return;
+    // der Node leuchtet kurz in der Kind-Farbe auf — das Ereignis ist in der
+    // Map verortbar, nicht nur als Card am Rand
+    const flash = KIND_META[u.kind]?.flash;
+    if (flash) deps.renderer.flashNode?.(n.id, flash);
+    if (u.kind === "change") {
+      n.title = u.title;
+      n.summary = u.summary;
+      if (typeof u.salience === "number") n.salience = u.salience;
+      else delete n.salience;
+      if (u.emotion) n.emotion = u.emotion;
+      else delete n.emotion;
+    } else if (u.kind === "delete") {
+      // rot aufflammen lassen, dann verschwinden (soft-remove: aus Draw/Pick
+      // raus + nicht mehr adressierbar)
+      deps.sim.byId.delete(u.id);
+      setTimeout(() => {
+        n.ringHidden = true;
+      }, 1400);
+    }
   }
 
   async function poll() {
@@ -111,14 +229,17 @@ export function createLiveUpdates(deps) {
       if (!res.ok) return;
       const data = await res.json();
       since = data.now ?? Date.now();
-      const fresh = (data.updates ?? []).filter((u) => !known.has(u.id));
-      fresh.forEach((u) => known.add(u.id));
-      for (const u of fresh.slice(0, MAX_CARDS_PER_POLL)) {
-        deps.orbitView.spawnBurst(u);
-        card(u);
+      const fresh = (data.updates ?? []).filter((u) => !known.has(`${u.id}:${u.at}`));
+      fresh.forEach((u) => known.add(`${u.id}:${u.at}`));
+      for (const u of fresh) {
+        applyToSim(u);
+        recordHistory(u);
       }
+      for (const u of fresh.slice(0, MAX_CARDS_PER_POLL)) card(u);
       if (fresh.length > MAX_CARDS_PER_POLL) summaryCard(fresh.length - MAX_CARDS_PER_POLL);
-      if (fresh.length > 0) bumpCounter(fresh.length);
+      bumpCounter(
+        fresh.filter((u) => u.kind === "add").length - fresh.filter((u) => u.kind === "delete").length,
+      );
     } catch {
       // daemon briefly away — next poll retries
     }
