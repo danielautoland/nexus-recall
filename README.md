@@ -72,7 +72,7 @@ One daemon ↔ many AI clients
   - All clients share the same vault, index, telemetry stream
 ```
 
-The Claude Code reflex layer ships with six quiet hooks by default, all
+The Claude Code reflex layer ships with seven quiet hooks by default, all
 speaking to the daemon's loopback HTTP endpoint:
 
 - **`PreToolUse`** (`bastra-recall-hook`) — fires before every `Write`/`Edit`/`MultiEdit`/`NotebookEdit`. Topic-detects from the tool intent and injects `<recall-hints>` as `additionalContext`.
@@ -239,7 +239,7 @@ With `docs.mode` set, the session hook injects the capture instruction: when a u
 
 ### Vault map (optional)
 
-`bastra map` opens an interactive, local-only map of your vault in the browser (`http://127.0.0.1:6723/ui`). Three views: **Clouds** (force layout along your folder structure), **Ring** (a drill-down wheel over the memory building blocks — projects, people, self, knowledge, rules, artifacts), and **Semantic** (arranged by embedding meaning, with dashed strands for *connections you never wrote*). The search combines instant matches, hybrid recall, and a local **search copilot** you can chat with to deepen a search — grounded in your notes, powered by the same local Ollama model as doc2query, nothing leaves the machine. Care flags mark memories for a cleanup session right from the map. Off by default; `bastra map` offers to enable it (`ui.enabled`).
+`bastra map` opens an interactive, local-only map of your vault in the browser (`http://127.0.0.1:6723/ui`). Four views: **Mindspace** (the default — your vault as a navigable universe: galaxies, solar systems, nebulae and shooting stars, recenter with `C`), **Clouds** (force layout along your folder structure), **Ring** (a drill-down wheel over the memory building blocks, with a **meta ring** for taxonomy conventions and declared skills), and **Semantic** (arranged by embedding meaning, with dashed strands for *connections you never wrote*). The search combines instant matches, hybrid recall, and a local **search copilot** you can chat with to deepen a search — grounded in your notes, powered by the same local Ollama model as doc2query, nothing leaves the machine. An opt-in **live mode** shows new memories as supernovas and reads/changes/deletes as typed notices, with a **session history** panel of everything that happened while you watched; nodes carry an emotion-colored **valence glow** and a usage-**heat core**. An **areas manager** creates, renames and deletes top-level areas right in the browser (trash, never hard-delete), and care flags mark memories for a cleanup session right from the map. Off by default; `bastra map` offers to enable it (`ui.enabled`).
 
 Full details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (wiki).
 
@@ -402,7 +402,7 @@ Ein Daemon ↔ viele AI-Clients
   - Alle Clients teilen denselben Vault, Index und Telemetry-Stream
 ```
 
-Der Claude-Code-Reflex-Layer installiert standardmäßig sechs ruhige Hooks, die
+Der Claude-Code-Reflex-Layer installiert standardmäßig sieben ruhige Hooks, die
 den lokalen HTTP-Endpoint des Daemons nutzen:
 
 - **`PreToolUse`** (`bastra-recall-hook`) — feuert vor jedem `Write`/`Edit`/`MultiEdit`/`NotebookEdit`. Erkennt das Thema aus dem Tool-Aufruf und injiziert `<recall-hints>` als `additionalContext`.
@@ -571,7 +571,7 @@ Mit gesetztem `docs.mode` injiziert der Session-Hook die Capture-Anweisung: Wenn
 
 ### Vault-Map (optional)
 
-`bastra map` öffnet eine interaktive, rein lokale Karte deines Vaults im Browser (`http://127.0.0.1:6723/ui`). Drei Ansichten: **Clouds** (Force-Layout entlang deiner Ordnerstruktur), **Ring** (ein Drill-Down-Rad über die Gedächtnis-Grundbausteine — Projekte, Personen, Selbst, Wissen, Regeln, Artefakte) und **Semantic** (angeordnet nach Embedding-Bedeutung, mit gestrichelten Strängen für *Verbindungen, die du nie geschrieben hast*). Die Suche kombiniert Sofort-Treffer, Hybrid-Recall und einen lokalen **Search-Copiloten**, mit dem du chattend tiefer suchen kannst — gegroundet auf deinen Notizen, angetrieben vom selben lokalen Ollama-Modell wie doc2query, nichts verlässt die Maschine. Care-Flags markieren Memories direkt aus der Karte für eine Pflege-Session. Standardmäßig aus; `bastra map` bietet das Aktivieren an (`ui.enabled`).
+`bastra map` öffnet eine interaktive, rein lokale Karte deines Vaults im Browser (`http://127.0.0.1:6723/ui`). Vier Ansichten: **Mindspace** (der Default — dein Vault als navigierbares Universum: Galaxien, Sonnensysteme, Nebel und Sternschnuppen, Recenter mit `C`), **Clouds** (Force-Layout entlang deiner Ordnerstruktur), **Ring** (ein Drill-Down-Rad über die Gedächtnis-Grundbausteine, mit einem **Meta-Ring** für Taxonomie-Konventionen und deklarierte Skills) und **Semantic** (angeordnet nach Embedding-Bedeutung, mit gestrichelten Strängen für *Verbindungen, die du nie geschrieben hast*). Die Suche kombiniert Sofort-Treffer, Hybrid-Recall und einen lokalen **Search-Copiloten**, mit dem du chattend tiefer suchen kannst — gegroundet auf deinen Notizen, angetrieben vom selben lokalen Ollama-Modell wie doc2query, nichts verlässt die Maschine. Ein Opt-in-**Live-Modus** zeigt neue Memories als Supernovas und Reads/Änderungen/Löschungen als typisierte Notices, mit einem **Session-History**-Panel über alles, was während des Zuschauens passierte; Nodes tragen einen emotions-gefärbten **Valence-Glow** und einen Nutzungs-**Heat-Core**. Ein **Areas-Manager** legt Überbereiche direkt im Browser an, benennt sie um und löscht sie (Trash, nie hart), und Care-Flags markieren Memories direkt aus der Karte für eine Pflege-Session. Standardmäßig aus; `bastra map` bietet das Aktivieren an (`ui.enabled`).
 
 Details: **[Vault Map](https://github.com/n0mad-ai/bastra-recall/wiki/Vault-Map)** (Wiki).
 

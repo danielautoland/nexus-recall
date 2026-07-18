@@ -6,9 +6,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-07-18
+
+### Added
+- **Mindspace view** (#216): the map's new default view — a real universe over
+  your vault: volume-spread galaxies, subgalaxies, solar systems, dwarfs,
+  nebulae, background stars and shooting stars, fully mouse-navigable
+  (recenter via button or hotkey `C`).
+- **Areas manager** (#216): create, rename and delete top-level areas right in
+  the browser — scopes are rewritten across memories, `dokumentationen/<scope>`
+  follows, deletion goes to the vault trash, never hard-deletes.
+- **Meta ring** (#216): taxonomy conventions and declared skills render as a
+  superordinate ring level above the content rings.
+- **Live updates** (#216/#217): an opt-in live mode (persisted topbar toggle) —
+  new memories land as a supernova with preview card and seconds counter,
+  reads/changes/deletes show as typed live notices with anti-spam rules, node
+  flashes per notice kind, and newborn nodes join the running simulation
+  clickable. A **session history** panel behind a topbar button lists what
+  happened while you watched.
+- **Human-like memory axes** (#217): optional `salience`, `emotion` and
+  `recall_mode` frontmatter. High salience slows staleness aging; ranking gets
+  a bounded salience multiplier in SHADOW mode by default (would-be re-ranking
+  is logged, goes live only via `BASTRA_SALIENCE_RANK=live` after a measured
+  lift). The map shows an emotion-colored **valence glow** and a usage-**heat
+  core** per node.
+- **Reflex lane** (#217): `POST /hook/reflex` matches prompts
+  deterministically against the `recall_when` of `recall_mode: "reflex"`
+  memories (token-AND, budgeted, per-session dedup) — the prompt hook fires it
+  in parallel on every non-trivial prompt. Promotion stays user-confirmed: the
+  curator proposes reflex candidates (≥3 acted-on recalls/30d) and
+  episodic→semantic consolidation clusters via the pending-suggestions relay,
+  never self-wiring.
+- **Claude Desktop Extension** (#218): `bastra-recall-<version>.mcpb` —
+  double-click install with the Bastra logo and a vault-folder picker; every
+  GitHub release now carries the bundle as an asset, and
+  **`bastra install claude-desktop --extension`** is the CLI on-ramp (fetch →
+  dedupe config registration → open Desktop's install dialog). The MCP
+  handshake now also ships `serverInfo.icons` + `title` (spec 2025-11-25) for
+  the day Desktop renders them.
+
+### Changed
+- The map's CSS moved from one `app.css` to 15 module files (aggregator only
+  `@import`s); the renderer uses glow sprites and viewport culling instead of
+  per-frame gradients (#216).
+
 ## [0.8.1] — 2026-07-17
 
 ### Added
+- **Onboarding interview** (#212): a fresh vault offers to seed itself — pick
+  what your memory will mainly hold (developer / business / personal / mixed)
+  and answer a handful of persona-aware questions; every answer becomes a
+  profile memory immediately (`write_origin: "user-directed"`). Three
+  surfaces, one catalog: the vault map auto-opens the wizard, `bastra onboard`
+  runs it in the terminal, and the session hook guides an adaptive interview.
+- **Import staging** (#208): `bastra import <file|->` stages memory lists from
+  ChatGPT / Claude / Gemini exports (or free text) as checkbox candidates in
+  `import-review.md` — the next AI session distills accepted ones WITH the
+  user; nothing is saved without an accept. The map carries a visual import
+  dialog (topbar ↓).
+- **Chat-history mining** (#211): `bastra import <conversations.json>`
+  recognizes the official ChatGPT/Claude data exports, keeps only the USER's
+  own messages and queues them locally under `~/.bastra/`; the session combs
+  the queue chunk-wise via `bastra import mine` and stages candidates through
+  the same review gate. `bastra import clear` discards; the queue is deleted
+  on drain.
+- **Rules-file import** (#209): `bastra import rules` stages the list lines of
+  local instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`,
+  `.cursor/rules/`, `~/.claude/CLAUDE.md`) through the same gate.
+- **Feedback channel** (#210): `bastra feedback <bug|idea>` opens a prefilled
+  GitHub issue form (sanitized diagnostics — never paths, never content); the
+  map links both forms in its sidebar.
+- **Claude Desktop autonomy** (#214): the forwarder ships MCP server
+  instructions in the handshake, marks the read tools with
+  `readOnlyHint`/`destructiveHint` annotations (bulk-approvable in Desktop's
+  permission UI), and appends the session context — pinned memories, durable
+  preferences, conventions, open care/import/onboarding state — to the FIRST
+  tool result of every hookless client session (`GET /hook/session-context`;
+  Claude Code sessions are detected and skipped;
+  `BASTRA_MCP_SESSION_CONTEXT=0` opts out).
+
 - **Folder import** (#215): **`bastra import vault <dir> [label]`** — import a
   whole folder of foreign memory files in one command, no per-item review.
   A tolerant Claude-Code adapter reads both frontmatter variants (flat
@@ -35,6 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reporting them as dangling links. Also available in the map: **"Mark as
   skill"** on any ghost node (`/ui/skills`). No path, no folder scan, no
   sync — the id is the whole declaration.
+
+### Fixed
+- **Search copilot** (`/ui/chat`): a truncated model response no longer leaks
+  raw JSON into the chat (reply-value rescue), and the copilot never claims a
+  memory "does not exist" — it says the search didn't surface it.
 
 ## [0.8.0] — 2026-07-16
 
@@ -500,6 +581,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.2]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.2
 [0.8.1]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.1
 [0.8.0]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.0
 [0.7.9]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.7.9

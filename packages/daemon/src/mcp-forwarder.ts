@@ -287,7 +287,7 @@ async function main(): Promise<void> {
     {
       name: "bastra-recall-mcp",
       title: "Bastra Recall",
-      version: "0.8.1",
+      version: "0.8.2",
       // serverInfo icons (MCP spec 2025-11-25, SEP-973): the standardized
       // logo channel. Claude Desktop does not render it for config-file
       // servers yet — shipped so the logo appears the day it does; the
