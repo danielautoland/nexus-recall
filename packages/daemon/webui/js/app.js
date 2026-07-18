@@ -12,9 +12,12 @@ import { createSearch } from "./search.js";
 import { createMinimap } from "./minimap.js";
 import { createRingView } from "./managers/ring-view.js";
 import { createSemanticView } from "./managers/semantic-view.js";
+import { createOrbitView } from "./managers/orbit-view.js";
 import { createSearchChat } from "./managers/search-chat.js";
 import { createImportDialog } from "./managers/import-dialog.js";
 import { createOnboardingDialog } from "./managers/onboarding-dialog.js";
+import { createAreasManager } from "./managers/areas-manager.js";
+import { createLiveUpdates } from "./managers/live-updates.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -122,7 +125,7 @@ async function main() {
   // ring reads best in the six building blocks. The semantic view has no
   // structure choice at all — positions are meaning, grouping only recolors,
   // so it stays pinned to the readable block palette (switch hidden there).
-  const VIEW_STRUCTURE = { clouds: "clusters", ring: "blocks", semantic: "blocks" };
+  const VIEW_STRUCTURE = { clouds: "clusters", ring: "blocks", semantic: "blocks", orbit: "clusters" };
   let currentView = "clouds";
   let viewTransition = null; // { t0, ms, from, to, noFit?, done? }
   let cloudSnapshot = null; // node positions to return to
@@ -153,6 +156,13 @@ async function main() {
   const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
 
   const semanticView = createSemanticView({ sim, renderer });
+  const orbitView = createOrbitView({
+    sim,
+    renderer,
+    getInteractions: () => interactions,
+    getHues: () => hues,
+    getSatLight: () => [sat, light],
+  });
 
   // ── drill switcher (sidebar): appears for instance-mode areas like
   // PROJECTS. Revealed AFTER the wheel's fan-out settles, with a short
@@ -231,10 +241,11 @@ async function main() {
     if (currentView === "clouds") cloudSnapshot = from;
     if (currentView === "ring") ringView.exit();
     if (currentView === "semantic") semanticView.exit();
+    if (currentView === "orbit") orbitView.exit();
     // every view opens in its default structure — BEFORE the enter, so the
     // ring computes its wheel over the right grouping
     if (structureMode !== VIEW_STRUCTURE[v]) applyStructure(VIEW_STRUCTURE[v]);
-    $("#structure-label").hidden = $("#structure-switch").hidden = v === "semantic";
+    $("#structure-label").hidden = $("#structure-switch").hidden = v === "semantic" || v === "orbit";
     if (v === "ring") {
       to = ringView.enter(); // glides its own camera via flyToRing
     } else if (v === "clouds") {
@@ -257,6 +268,8 @@ async function main() {
       userTouched = false; // allow the settled layout to claim the camera
       warmupFrames = 25; // the boot-warmup snap-fit must never fire again
       wasBusy = true;
+    } else if (v === "orbit") {
+      to = orbitView.enter();
     } else {
       to = semTargets;
       void semanticView.enter(); // re-arm the flags a ring exit reset; cached → sync
@@ -441,6 +454,23 @@ async function main() {
 
   // ── import dialog: seed the vault from other AI tools, visually ──
   createImportDialog({ modal: $("#import-modal"), opener: $("#import-open") });
+
+  // ── areas manager: create/rename/delete the vault's top-level areas ──
+  createAreasManager({ modal: $("#areas-modal"), opener: $("#areas-open") });
+
+  // ── live updates: new memories appear as supernovae + preview cards ──
+  createLiveUpdates({ orbitView, sim, renderer, getView: () => currentView, switchView });
+
+  // ── mindspace recenter: one press (or C) fits the universe back in view ──
+  function recenterOrbit() {
+    if (currentView !== "orbit") return;
+    interactions.flyToBounds(sim.nodes.map((n) => ({ x: n.x, y: n.y })), { padding: 90, maxScale: 1.6, ms: 700 });
+  }
+  $("#orbit-recenter").addEventListener("click", recenterOrbit);
+  addEventListener("keydown", (ev) => {
+    if (ev.target.matches?.("input, textarea")) return;
+    if (ev.key === "c" || ev.key === "C") recenterOrbit();
+  });
 
   // ── onboarding interview: a fresh vault offers to seed itself ──
   createOnboardingDialog({ modal: $("#onboarding-modal") });
@@ -707,6 +737,8 @@ async function main() {
     }
     // fan-out crossfade: the non-drilled areas dissolve/reappear in place
     ringView.tick(now);
+    // orbit view: rotation + depth projection, paused during view flights
+    if (!viewTransition && currentView === "orbit") orbitView.tick(now);
     // clouds physics pauses while any fly/fan-out animation is running
     if (!viewTransition && !ringView.isAnimating() && currentView === "clouds") {
       const busy = sim.tick();
@@ -724,8 +756,10 @@ async function main() {
   }
   interactions.fitAll();
   requestAnimationFrame(frame);
-  const savedView = localStorage.getItem(VIEW_KEY);
-  if (savedView === "ring" || savedView === "semantic") void switchView(savedView);
+  // Mindspace (the universe) is the home view — first visit lands there;
+  // afterwards the last-used view wins as before
+  const savedView = localStorage.getItem(VIEW_KEY) ?? "orbit";
+  if (savedView === "ring" || savedView === "semantic" || savedView === "orbit") void switchView(savedView);
 
   setTimeout(() => $("#hint").classList.add("fade"), 6000);
 }

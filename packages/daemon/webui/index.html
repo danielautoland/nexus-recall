@@ -22,6 +22,7 @@
 
     <div id="searchbox">
       <div id="view-switch" role="group" aria-label="View">
+        <button data-view="orbit">Mindspace</button>
         <button data-view="clouds" class="active">Clouds</button>
         <button data-view="ring">Ring</button>
         <button data-view="semantic">Semantic</button>
@@ -50,6 +51,16 @@
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 3v10m0 0l-4-4m4 4l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button id="live-toggle" aria-label="Toggle live updates" title="Live updates">
+        <span class="live-dot"></span>
+      </button>
+      <button id="areas-open" aria-label="Manage vault areas" title="Areas — create, rename or delete the vault's areas (projects etc.)">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
+                fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M12 11v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
       </button>
       <button id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">
@@ -225,8 +236,30 @@
     </div>
   </div>
 
+  <div id="areas-modal" hidden>
+    <div id="areas-box">
+      <h2 class="section-title">Vault areas</h2>
+      <p id="areas-help">The vault's top-level areas — projects and folders like people. Rename and
+        delete move whole folders; memory ids (and their links) stay intact. <strong>Delete moves the
+        area into the vault trash</strong> (<code>.bastra/trash/areas/</code>), nothing is destroyed.
+        System areas are locked.</p>
+      <ul id="areas-list"></ul>
+      <div id="areas-create-row">
+        <input type="text" id="areas-create-name" spellcheck="false" placeholder="new project area…" />
+        <button id="areas-create">Create</button>
+      </div>
+      <span id="areas-status"></span>
+      <div id="areas-actions">
+        <button id="areas-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="ring-hint" hidden>click an area's name in the band to browse into it · click the center to set a vault image</div>
   <div id="semantic-hint" hidden>arranged by meaning · dashed strands are connections you never wrote</div>
+  <div id="orbit-hint" hidden>drag to rotate · shift-drag to pan · scroll to fly in/out · <button id="orbit-recenter" title="Fit the whole universe back into view (C)">⌖ recenter · C</button></div>
+
+  <div id="live-cards"></div>
 
   <div id="tooltip" hidden></div>
   <div id="hint">drag to pan · scroll to zoom · click a node to inspect · drag a label to move its cloud</div>

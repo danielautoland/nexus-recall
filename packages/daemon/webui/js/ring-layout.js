@@ -22,11 +22,24 @@ export function computeRingLayout(nodes, width, height, opts = {}) {
   const R_CENTER = 64; // emblem disc
   const R0 = R_CENTER + 38; // first wedge row
 
+  // Meta level (#216): rules (taxonomy/conventions) and skills are the layer
+  // that frames the content — they get their own outer band, not a wedge
+  // between the content blocks. Detected by group, GROUPED by keyOf so the
+  // segment names match the active legend keys in both structure modes.
+  // Ghost check runs first: an unwritten note linked from a rules memory
+  // stays on the unwritten orbit.
+  const isMeta = opts.metaOf ?? ((n) => n.group === "rules" || n.group === "skills");
   const ghosts = [];
   const byCluster = new Map();
+  const metaByKey = new Map();
   for (const n of nodes) {
     if (n.kind === "ghost") {
       ghosts.push(n);
+    } else if (isMeta(n)) {
+      const key = keyOf(n);
+      const l = metaByKey.get(key) ?? [];
+      l.push(n);
+      metaByKey.set(key, l);
     } else {
       const key = keyOf(n);
       const l = byCluster.get(key) ?? [];
@@ -59,10 +72,10 @@ export function computeRingLayout(nodes, width, height, opts = {}) {
    *  wedge borders: a node wider than the arc is pushed outward until the
    *  arc is wide enough (and clamped as a last resort). Returns the outer
    *  edge. */
-  function packWedge(members, a0, span) {
+  function packWedge(members, a0, span, startR = R0) {
     members.sort((a, b) => (a.cr ?? 6) - (b.cr ?? 6)); // small inside
     let i = 0;
-    let rowInner = R0;
+    let rowInner = startR;
     while (i < members.length) {
       // narrow wedge + big node → move the row outward where the arc is wider
       const firstEr = (members[i].cr ?? 6) * ringScaleAt(rowInner);
@@ -131,10 +144,45 @@ export function computeRingLayout(nodes, width, height, opts = {}) {
   }
   const band = { rInner: bandInner, rOuter: bandInner + 30 };
 
+  // ── the meta band (#216): the framing layer — rules + skills — as its own
+  // outer wheel level, built with the exact wedge→label-band mechanics of the
+  // main wheel, just radially offset. null when the layout holds no meta
+  // nodes (drill layouts), so the decor fades it out for free.
+  let metaBand = null;
+  if (metaByKey.size > 0) {
+    const metaR0 = band.rOuter + 24;
+    const metaEntries = [...metaByKey.entries()].sort((a, b) => b[1].length - a[1].length);
+    const mUsable = TAU - GAP * metaEntries.length;
+    const mWeights = metaEntries.map(([, l]) => Math.sqrt(l.length));
+    const mSum = mWeights.reduce((s, w) => s + w, 0) || 1;
+    const mRaw = mWeights.map((w) => Math.max((w / mSum) * mUsable, 0.09));
+    const mScale = mUsable / mRaw.reduce((s, x) => s + x, 0);
+    const metaSegments = [];
+    // start offset keeps meta names away from the UNWRITTEN label at 12 o'clock
+    let mAngle = -Math.PI / 2 + 0.35;
+    let metaMaxOuter = metaR0;
+    metaEntries.forEach(([key, members], mi) => {
+      const span = mRaw[mi] * mScale;
+      const outer = packWedge(members, mAngle, span, metaR0);
+      metaMaxOuter = Math.max(metaMaxOuter, outer);
+      metaSegments.push({ key, a0: mAngle, a1: mAngle + span, outer, b0: mAngle - GAP / 2, b1: mAngle + span + GAP / 2 });
+      const mid = mAngle + span / 2;
+      const midR = (metaR0 + outer) / 2;
+      centers.set(key, { x: cx + Math.cos(mid) * midR, y: cy + Math.sin(mid) * midR });
+      mAngle += span + GAP;
+    });
+    let metaInner = metaMaxOuter + 10;
+    for (const seg of metaSegments) {
+      const needed = (seg.key.length * 9.5 + 14) / ((seg.a1 - seg.a0) * 0.92);
+      metaInner = Math.max(metaInner, needed);
+    }
+    metaBand = { rInner: metaInner, rOuter: metaInner + 26, segments: metaSegments };
+  }
+
   // ── the one enclosing orbit: unwritten notes (dashed, like their nodes) ──
   const orbits = [];
   if (ghosts.length) {
-    const orbitR = band.rOuter + 40;
+    const orbitR = (metaBand ? metaBand.rOuter : band.rOuter) + 40;
     ghosts.forEach((n, i) => {
       n.ringScale = 1;
       const a = -Math.PI / 2 + (TAU * i) / ghosts.length;
@@ -143,13 +191,18 @@ export function computeRingLayout(nodes, width, height, opts = {}) {
     orbits.push({ key: "unwritten", label: "unwritten", r: orbitR, dashed: true });
   }
 
-  const outerRadius = orbits.length ? orbits[orbits.length - 1].r : band.rOuter;
+  const outerRadius = orbits.length
+    ? orbits[orbits.length - 1].r
+    : metaBand
+      ? metaBand.rOuter
+      : band.rOuter;
 
   return {
     positions,
     centers,
     segments,
     band,
+    metaBand,
     outerRadius,
     // rInner: the extra inner ring staggering the gap between emblem and wedges
     center: { x: cx, y: cy, r: R_CENTER, r0: R0, rInnerRing: R_CENTER + 16 },

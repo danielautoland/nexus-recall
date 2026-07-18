@@ -100,6 +100,8 @@ import { handleUiChat, type ChatFn } from "./webui-chat.js";
 import { handleHookImport, handleUiImport } from "./import-review.js";
 import { handleUiImportVault, handleUiFsBrowse } from "./import-vault.js";
 import { listSkills, handleUiSkills } from "./skills-registry.js";
+import { handleUiAreas } from "./webui-areas.js";
+import { createLiveUpdates } from "./live-updates.js";
 import { handleHookOnboarding, handleUiOnboarding } from "./onboarding.js";
 import { handleSessionContext } from "./session-context.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
@@ -282,6 +284,8 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   // #207: the semantic layout is the one genuinely heavy read (PCA + kNN over
   // every vector) — cache it per server, refreshed at most once a minute.
   let semanticCache: { at: number; body: SemanticLayout } | null = null;
+  // #216: fresh-memory buffer for the map's live mode (supernova + card)
+  const liveUpdates = createLiveUpdates(vault);
 
   // env wins (ops override); else the token minted by `bastra token` in
   // cli-settings.json. Empty = no token issued → browser clients are rejected.
@@ -555,6 +559,19 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // Folder picker for the import dialog (#215): directory names only.
     if (method === "GET" && url.startsWith("/ui/fs")) {
       handleUiFsBrowse(req, res).catch(() => sendJson(res, 500, { error: "fs error" }));
+      return;
+    }
+    // Live updates (#216): freshly saved memories for the map's live mode.
+    if (method === "GET" && url.startsWith("/ui/updates")) {
+      liveUpdates.handleUiUpdates(req, res).catch(() => sendJson(res, 500, { error: "updates error" }));
+      return;
+    }
+    // Areas manager (#216): list / create / rename / delete the vault's
+    // top-level areas. Bulk folder moves heal with one reconcile.
+    if ((method === "GET" || method === "POST") && url === "/ui/areas") {
+      handleUiAreas(req, res, toolDeps.vaultPath, () => vault.reconcile()).catch(() =>
+        sendJson(res, 500, { error: "areas error" }),
+      );
       return;
     }
     if (method === "POST" && url === "/ui/annotate") {

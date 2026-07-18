@@ -1,0 +1,117 @@
+/* ── live updates (#216): toggle + supernova preview cards ─────── */
+#live-toggle {
+  display: grid;
+  place-items: center;
+  width: 34px; height: 34px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.15s ease;
+}
+#live-toggle:hover { border-color: var(--accent); }
+#live-toggle:active { transform: scale(0.92); }
+#live-toggle .live-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+#live-toggle.on .live-dot {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.7; }
+}
+
+#live-cards {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 280px;
+  pointer-events: none;
+}
+.live-card {
+  pointer-events: auto;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  animation: live-in 0.45s var(--ease-fly);
+  transition: opacity 0.9s ease, border-color 0.15s ease;
+}
+.live-card:hover { border-color: var(--accent); }
+.live-card.fade { opacity: 0; }
+@keyframes live-in {
+  from { transform: translateX(40px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.live-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.live-star { color: var(--accent); font-size: 13px; }
+.live-label {
+  font: 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+}
+.live-age {
+  margin-left: auto;
+  font: 11px var(--font-mono);
+  color: var(--text-dim);
+}
+.live-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.live-close:hover { color: var(--accent); }
+.live-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.live-meta {
+  font: 10.5px var(--font-mono);
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.live-summary {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* topbar counter pulse when a newborn memory bumps it */
+#stat-count.bump {
+  display: inline-block; /* transform needs a box on the inline stat */
+  animation: live-count-bump 0.9s ease;
+}
+@keyframes live-count-bump {
+  0% { color: var(--accent); transform: scale(1.25); }
+  100% { color: var(--text-dim); transform: scale(1); }
+}

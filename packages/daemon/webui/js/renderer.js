@@ -3,7 +3,7 @@
  *  Calm by default: edges are near-invisible until a node is hovered or
  *  focused, then its neighborhood lights up and the rest dims. */
 
-import { clusterColor, nodeRadius } from "./graph-data.js";
+import { clusterColor, nodeRadius, glowSprite } from "./graph-data.js";
 
 export function createRenderer(canvas, sim, initialHues) {
   const ctx = canvas.getContext("2d");
@@ -19,6 +19,8 @@ export function createRenderer(canvas, sim, initialHues) {
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
   let decorFn = null; // view decor (ring guides, center emblem), world space
+  let drawOrder = null; // node paint order (orbit view: back-to-front)
+  let overlayFn = null; // drawn after nodes (live supernovae) — every view
   let quietEdges = false; // ring view: no ambient edges, only the active node's
   let clusterLabels = true; // ring view draws names curved in the band instead
   let semEdges = null; // semantic view: unwritten connections, dashed layer
@@ -141,8 +143,22 @@ export function createRenderer(canvas, sim, initialHues) {
     for (const e of sim.edges) {
       if (e.s.ringHidden || e.t.ringHidden) continue; // drilled away (ring browser)
       const isActive = pivotId !== null && (e.s.id === pivotId || e.t.id === pivotId);
-      if (quietEdges && !isActive) continue; // ring: strands only on hover/focus
-      if (active && !isActive) continue; // calm: hide unrelated edges entirely
+      // second hop: the connections AT the strands' target nodes light up
+      // too — dimmer, so the eye still reads the direct strands first
+      const isSecondary = !isActive && active !== null && (active.has(e.s.id) || active.has(e.t.id));
+      if (quietEdges && !isActive && !isSecondary) continue; // ring/orbit: strands only on hover/focus
+      if (active && !isActive && !isSecondary) continue; // calm: hide unrelated edges entirely
+      if (isSecondary) {
+        // the target node's own connections: ordinary strand ink, dashed —
+        // quietly showing the real link, never competing with the direct rays
+        ctx.strokeStyle = theme.edge;
+        ctx.globalAlpha = Math.min((now - pivotSince) / 450, 1);
+        ctx.setLineDash([4 / camera.scale, 4 / camera.scale]);
+        strokeEdge(e);
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        continue;
+      }
       ctx.strokeStyle = isActive ? theme.edgeHi : theme.edge;
       if (!isActive && e.s.cluster !== e.t.cluster) ctx.globalAlpha = 0.3;
       if (isActive) ctx.lineWidth = 1.5 / camera.scale;
@@ -175,7 +191,10 @@ export function createRenderer(canvas, sim, initialHues) {
     if (pivotId !== null) drawFlow(now, pivotId);
 
     // ── nodes ──
-    for (const n of sim.nodes) {
+    // painter's order for the orbit view: back-to-front by depth, so front
+    // nodes genuinely occlude the ones behind them
+    const nodeList = drawOrder ? [...sim.nodes].sort(drawOrder) : sim.nodes;
+    for (const n of nodeList) {
       if (n.ringHidden) continue; // drilled away (ring browser)
       const fade = n.ringFade ?? 1; // fan-out crossfade multiplier
       if (fade <= 0.02) continue;
@@ -192,6 +211,15 @@ export function createRenderer(canvas, sim, initialHues) {
       const nodeAlpha = (dimmed ? theme.dim : 1) * fade;
       ctx.globalAlpha = nodeAlpha;
       const color = colorOf(n);
+
+      // impact glow: the nodes where the active strands land breathe with a
+      // soft round halo — no ring, no crosshair, just light
+      if (active !== null && n.id !== pivotId && active.has(n.id)) {
+        const gr = Math.max(r * 3.2, 16 / camera.scale);
+        ctx.globalAlpha = nodeAlpha * (0.4 + 0.14 * Math.sin(now / 260));
+        ctx.drawImage(glowSprite(theme.edgeHi), n.x - gr, n.y - gr, gr * 2, gr * 2);
+        ctx.globalAlpha = nodeAlpha;
+      }
 
       if (n.kind === "ghost") {
         const rr = r * (filterHit ? pulse * 1.15 : pulse);
@@ -225,14 +253,10 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.stroke();
       } else {
         if (theme.glowAlpha > 0.02 && !dimmed) {
-          const g = ctx.createRadialGradient(n.x, n.y, r * 0.4, n.x, n.y, r * 3);
-          g.addColorStop(0, color);
-          g.addColorStop(1, "transparent");
+          // pre-rendered sprite — a per-node radial gradient every frame was
+          // the #1 frame-budget hotspot (hundreds of allocations)
           ctx.globalAlpha = nodeAlpha * theme.glowAlpha;
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(n.x, n.y, r * 3, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.drawImage(glowSprite(color), n.x - r * 3, n.y - r * 3, r * 6, r * 6);
           ctx.globalAlpha = nodeAlpha;
         }
         ctx.fillStyle = color;
@@ -287,6 +311,9 @@ export function createRenderer(canvas, sim, initialHues) {
       }
       ctx.globalAlpha = 1;
     }
+
+    // ── overlay (live supernovae): after nodes, in every view ──
+    if (overlayFn) overlayFn(ctx, camera, theme, now);
 
     // ── cluster labels (also the drag handles — bounds cached per frame) ──
     if (!clusterLabels) {
@@ -349,6 +376,8 @@ export function createRenderer(canvas, sim, initialHues) {
       // cross-cloud strands get the same compact glint as short local ones,
       // and enough of them that the next pass is never far away
       const W = Math.min(60, dist * 0.4) / dist; // half-width as a fraction
+      // one wave every ~280 px — the SAME density on the mindspace's long
+      // rays as on short local strands (a cap here visibly thinned them out)
       const count = 1 + Math.floor(dist / 280);
       // unhurried, and each strand at its own slightly different pace —
       // organic drift instead of a synchronized march
@@ -384,7 +413,10 @@ export function createRenderer(canvas, sim, initialHues) {
       const dx = n.x - p.x;
       const dy = n.y - p.y;
       const d = Math.sqrt(dx * dx + dy * dy) - drawRadius(n) - slop / camera.scale;
-      if (d < 0 && d < bestD) {
+      // on overlapping hits the FRONT node wins (orbit depth), so the tooltip
+      // never names a node hidden behind the one actually seen
+      const depth = n.orbitDepth ?? 0;
+      if (d < 0 && (best === null ? d < bestD : depth < (best.orbitDepth ?? 0) || (depth === (best.orbitDepth ?? 0) && d < bestD))) {
         bestD = d;
         best = n;
       }
@@ -421,6 +453,8 @@ export function createRenderer(canvas, sim, initialHues) {
     },
     setFilter: (fn) => (filterFn = fn),
     setDecor: (fn) => (decorFn = fn),
+    setDrawOrder: (fn) => (drawOrder = fn),
+    setOverlay: (fn) => (overlayFn = fn),
     setQuietEdges: (on) => (quietEdges = on),
     setBendCenter: (pt) => (bendCenter = pt),
     setSemanticEdges: (list) => (semEdges = list),

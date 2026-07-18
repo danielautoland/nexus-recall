@@ -11,6 +11,7 @@ export function createInteractions(canvas, renderer, sim, { onSelect, onHoverCha
   let lastX = 0;
   let lastY = 0;
   let dragCluster = null; // cluster key while a cloud is being dragged
+  let dragDelegate = null; // orbit view: background drags rotate instead of pan; returning false falls back to panning (shift-drag)
   let flight = null; // { fromX, fromY, fromS, toX, toY, toS, t0, ms }
 
   canvas.addEventListener("pointerdown", (ev) => {
@@ -34,6 +35,9 @@ export function createInteractions(canvas, renderer, sim, { onSelect, onHoverCha
       if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
       if (dragCluster) {
         sim.shiftCluster(dragCluster, dx / camera.scale, dy / camera.scale);
+      } else if (dragDelegate && dragDelegate(dx, dy, ev) !== false) {
+        // delegate consumed the drag (orbit rotation); false = fall through
+        flight = null;
       } else {
         camera.x += dx;
         camera.y += dy;
@@ -179,5 +183,5 @@ export function createInteractions(canvas, renderer, sim, { onSelect, onHoverCha
     camera.y = ins.top + availH / 2 - ((minY + maxY) / 2) * scale;
   }
 
-  return { flyTo, flyToBounds, flyToCluster, step, fitAll, draggedCluster: () => dragCluster };
+  return { flyTo, flyToBounds, flyToCluster, step, fitAll, draggedCluster: () => dragCluster, setDragDelegate: (fn) => (dragDelegate = fn) };
 }

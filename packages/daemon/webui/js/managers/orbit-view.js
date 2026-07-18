@@ -1,0 +1,678 @@
+/** Orbit view (#216), v5 — the universe, rebuilt on audit findings + canvas
+ *  best practices (see the audit/research pass, 2026-07-18):
+ *
+ *  Structure (unchanged in spirit):
+ *    galaxies (areas) spread irregularly through a volume, tilted spiral
+ *    discs with slow self-rotation · dwarf galaxies for small areas · some
+ *    galaxies inside animated nebulae · subgalaxies (sub-areas) on satellite
+ *    rings · solar systems where a hub memory carries orbiting satellites ·
+ *    two star populations (background shell + intergalactic drifters) ·
+ *    twinkle, a shooting star, and live supernova bursts.
+ *
+ *  The audit fixes baked in:
+ *    - build() groups by n.baseCluster: the structure mode can never poison
+ *      the universe again (spawnBurst used to build it under "blocks")
+ *    - one shared depth scale + front fade for nodes AND decor — no more
+ *      hard perspective clamp freezing the near side
+ *    - enter() computes flight targets at landing time (+0.95 s) and stamps
+ *      depth attributes immediately — no pop when the flight ends
+ *    - galaxy labels use screen-px floors like every other text
+ *    - all glows draw from pre-rendered sprites (glowSprite) in one additive
+ *      batch (theme.flowBlend) — the per-frame gradient storm is gone
+ *    - viewport culling for stars, galaxies, systems; orbit rings at 17 pts
+ *    - bursts dim with depth; decor fades in with the entry flight
+ *    - planet speed calmed (OMEGA) so hover targets stay catchable
+ *
+ *  Navigation: drag rotates (around the universe's own center), shift-drag
+ *  pans, scroll zooms. Hover/click keep working — real screen positions land
+ *  in n.x/n.y every frame.
+ *
+ *  @param {object} deps
+ *  @param {object} deps.sim              simulation (nodes, edges)
+ *  @param {object} deps.renderer         canvas renderer (decor, drawOrder, camera)
+ *  @param {() => object} deps.getInteractions  drag delegate for rotation
+ *  @param {() => Map} deps.getHues       active cluster→hue map
+ *  @param {() => [string, string]} deps.getSatLight  theme HSL parts */
+
+import { clusterColor, glowSprite } from "../graph-data.js";
+
+const $ = (sel) => document.querySelector(sel);
+const GOLDEN = 2.399963; // radians — Fibonacci / phyllotaxis step
+const PITCH_MAX = 1.25;
+const SUN_DEGREE = 5;
+const PLANET_DEGREE = 3;
+const MAX_PLANETS = 7;
+const ORBIT_BASE = 16;
+const ORBIT_STEP = 10;
+const OMEGA = 0.35; // rad/s at the innermost ring — calm, hover-catchable
+const DISC_SPIN = 0.032;
+const DWARF_MAX = 4;
+const SHOOTING_EVERY = 24000;
+
+/** Deterministic pseudo-random in [0,1) from an index — stable per session. */
+const rnd = (i, salt = 1) => {
+  const x = Math.sin(i * 127.1 + salt * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+/** Seconds a newborn-memory star stays highlighted (canvas + card agree). */
+export const BURST_LIFE = 120;
+
+/** Supernova primitive — flash → shockwave ring → pulsing newborn star with
+ *  a live seconds readout. Screen-px floors on every size; `dim` lets the
+ *  universe view recede far-side bursts. */
+export function drawBurstAt(ctx, camera, theme, x, y, scale, age, dim = 1) {
+  const fadeOut = (age > BURST_LIFE - 8 ? Math.max((BURST_LIFE - age) / 8, 0) : 1) * dim;
+  if (fadeOut <= 0.02) return;
+  const S = (world, minPx) => Math.max(world * scale, minPx / camera.scale);
+  if (age < 2.2) {
+    const t = age / 2.2;
+    const ringR = 4 / camera.scale + t * S(90, 150);
+    ctx.globalAlpha = 0.55 * (1 - t) * dim;
+    ctx.lineWidth = 2 / camera.scale;
+    ctx.strokeStyle = theme.accent;
+    ctx.beginPath();
+    ctx.arc(x, y, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+    const flashR = S(26 - t * 14, 44 - t * 20);
+    ctx.globalAlpha = 0.9 * (1 - t * 0.4) * dim;
+    ctx.drawImage(glowSprite(theme.accent, theme.label), x - flashR, y - flashR, flashR * 2, flashR * 2);
+  }
+  if (age >= 2.2) {
+    const k = (age % 3) / 3;
+    const br = k * S(60, 110);
+    ctx.globalAlpha = 0.3 * (1 - k) * fadeOut;
+    ctx.lineWidth = 1.4 / camera.scale;
+    ctx.strokeStyle = theme.accent;
+    ctx.beginPath();
+    ctx.arc(x, y, br, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const pulse = 1 + 0.22 * Math.sin(age * 3.1);
+  const starR = S(7, 10) * pulse;
+  ctx.globalAlpha = 0.85 * fadeOut;
+  ctx.drawImage(glowSprite(theme.accent, theme.label), x - starR * 2.4, y - starR * 2.4, starR * 4.8, starR * 4.8);
+  ctx.globalAlpha = 0.9 * fadeOut;
+  ctx.lineWidth = 1.2 / camera.scale;
+  ctx.strokeStyle = theme.accent;
+  const g = starR * 2.2;
+  ctx.beginPath();
+  ctx.moveTo(x - g, y);
+  ctx.lineTo(x + g, y);
+  ctx.moveTo(x, y - g);
+  ctx.lineTo(x, y + g);
+  ctx.stroke();
+  const fontPx = Math.max(10 * scale, 11 / camera.scale);
+  ctx.font = `700 ${fontPx}px "SF Mono", ui-monospace, monospace`;
+  ctx.textAlign = "center";
+  ctx.lineWidth = 3 / camera.scale;
+  ctx.strokeStyle = theme.labelHalo;
+  const label = `✦ ${Math.floor(age)}s`;
+  ctx.strokeText(label, x, y + starR * 2.4 + fontPx);
+  ctx.fillStyle = theme.accent;
+  ctx.fillText(label, x, y + starR * 2.4 + fontPx);
+  ctx.globalAlpha = 1;
+}
+
+export function createOrbitView(deps) {
+  let universe = null;
+  let stars = null;
+  let R = 0;
+  let yaw = 0.7;
+  let pitch = -0.35;
+  let enterAt = 0; // decor fades in with the entry flight
+  const bursts = new Map(); // id → {world, born, entry}
+
+  // ── linear algebra bits ────────────────────────────────────────────
+  const add = (a, b) => ({ px: a.px + b.px, py: a.py + b.py, pz: a.pz + b.pz });
+  const scale3 = (a, s) => ({ px: a.px * s, py: a.py * s, pz: a.pz * s });
+  const cross = (a, b) => ({
+    px: a.py * b.pz - a.pz * b.py,
+    py: a.pz * b.px - a.px * b.pz,
+    pz: a.px * b.py - a.py * b.px,
+  });
+  const norm = (a) => {
+    const l = Math.hypot(a.px, a.py, a.pz) || 1;
+    return { px: a.px / l, py: a.py / l, pz: a.pz / l };
+  };
+  const inPlane = (center, basis, x, y, z = 0) =>
+    add(add(center, add(scale3(basis.u, x), scale3(basis.v, y))), scale3(basis.w, z));
+
+  function discBasis(seed) {
+    const a = rnd(seed, 3) * Math.PI * 2;
+    const b = (rnd(seed, 7) - 0.5) * 1.6;
+    const w = { px: Math.sin(b) * Math.cos(a), py: Math.cos(b), pz: Math.sin(b) * Math.sin(a) };
+    const ref = Math.abs(w.py) < 0.9 ? { px: 0, py: 1, pz: 0 } : { px: 1, py: 0, pz: 0 };
+    const u = norm(cross(ref, w));
+    const v = cross(w, u);
+    return { u, v, w };
+  }
+
+  // ── universe construction ──────────────────────────────────────────
+  function build() {
+    universe = { disc: new Map(), planets: new Map(), galaxies: [], systems: [] };
+
+    const adj = new Map();
+    const link = (a, b) => {
+      const l = adj.get(a.id) ?? [];
+      l.push(b);
+      adj.set(a.id, l);
+    };
+    for (const e of deps.sim.edges) {
+      link(e.s, e.t);
+      link(e.t, e.s);
+    }
+
+    // ALWAYS group by the stable fine layer (baseCluster) — n.cluster follows
+    // the active structure mode, and a build under "blocks" (e.g. triggered
+    // by a live update while in ring view) used to poison the whole universe
+    const clusterOf = (n) => n.baseCluster ?? n.cluster;
+    const groups = new Map();
+    for (const n of deps.sim.nodes) {
+      const key = clusterOf(n);
+      const l = groups.get(key) ?? [];
+      l.push(n);
+      groups.set(key, l);
+    }
+    const entries = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+    R = Math.max(520, Math.cbrt(deps.sim.nodes.length) * 190);
+
+    const VOL = { x: R * 1.6, y: R * 0.8, z: R * 1.4 };
+    const sampleVolume = (seed) => {
+      const u = rnd(seed, 61) * Math.PI * 2;
+      const v = Math.acos(2 * rnd(seed, 67) - 1);
+      const rr3 = Math.cbrt(rnd(seed, 71));
+      return {
+        px: Math.sin(v) * Math.cos(u) * rr3 * VOL.x,
+        py: Math.cos(v) * rr3 * VOL.y,
+        pz: Math.sin(v) * Math.sin(u) * rr3 * VOL.z,
+      };
+    };
+    const dist3 = (a, b) => Math.hypot(a.px - b.px, a.py - b.py, a.pz - b.pz);
+    const placedCenters = [];
+
+    entries.forEach(([key, members], ci) => {
+      let center = null;
+      let bestScore = -1;
+      for (let k = 0; k < 24; k++) {
+        const cand = sampleVolume(ci * 131 + k);
+        const score = placedCenters.length
+          ? Math.min(...placedCenters.map((p) => dist3(p, cand)))
+          : dist3(cand, { px: 0, py: 0, pz: 0 }) + VOL.x;
+        if (score > bestScore) {
+          bestScore = score;
+          center = cand;
+        }
+      }
+      placedCenters.push(center);
+
+      const dwarf = members.length <= DWARF_MAX;
+      const discR = dwarf ? Math.max(30, Math.sqrt(members.length) * 18) : Math.max(60, Math.sqrt(members.length) * 30);
+      const basis = discBasis(ci + 1);
+      const spin = DISC_SPIN * (0.4 + rnd(ci, 89) * 0.6) * (rnd(ci, 91) > 0.5 ? 1 : -1);
+      const nebula = !dwarf && rnd(ci, 95) > 0.62
+        ? Array.from({ length: 3 }, (_, bi) => ({
+            ox: (rnd(ci * 7 + bi, 101) - 0.5) * discR * 1.6,
+            oy: (rnd(ci * 7 + bi, 103) - 0.5) * discR * 1.6,
+            r: discR * (0.7 + rnd(ci * 7 + bi, 107) * 0.9),
+            phase: rnd(ci * 7 + bi, 109) * Math.PI * 2,
+            drift: 0.05 + rnd(ci * 7 + bi, 113) * 0.1,
+          }))
+        : null;
+      universe.galaxies.push({
+        key, center, basis, r: discR, count: members.length,
+        dwarf, nebula, spin, phase: rnd(ci, 151) * Math.PI * 2,
+        sx: 0, sy: 0, d: 0, scale: 1,
+      });
+
+      const subs = new Map();
+      for (const n of members) {
+        const s = n.sub && n.sub !== "general" ? n.sub : "";
+        const l = subs.get(s) ?? [];
+        l.push(n);
+        subs.set(s, l);
+      }
+      const subKeys = [...subs.keys()].filter((s) => s !== "" && subs.get(s).length >= 3);
+      const coreMembers = members.filter((n) => !subKeys.includes(n.sub));
+      layoutDisc(coreMembers, center, basis, discR, adj, ci * 97 + 1, spin, dwarf);
+      subKeys.forEach((sk, si) => {
+        const subMembers = subs.get(sk);
+        const subR = Math.max(34, Math.sqrt(subMembers.length) * 18);
+        const ring = {
+          parent: center,
+          ringR: discR * 1.55 + si * 24,
+          phase: si * GOLDEN + rnd(ci, 11) * Math.PI * 2,
+          omega: 0.006 * (0.5 + rnd(ci * 7 + si, 157) * 0.8) * (rnd(ci * 7 + si, 163) > 0.5 ? 1 : -1),
+          zoff: (rnd(si + ci, 13) - 0.5) * discR * 0.4,
+        };
+        layoutDisc(subMembers, null, basis, subR, adj, ci * 97 + si * 13 + 2, spin, false, ring);
+      });
+    });
+
+    stars = [];
+    for (let i = 0; i < 480; i++) {
+      const sy = 1 - (2 * (i + 0.5)) / 480;
+      const sr = Math.sqrt(Math.max(0, 1 - sy * sy));
+      const sa = i * GOLDEN * 1.7;
+      const shell = R * (2.4 + rnd(i, 17) * 1.2);
+      stars.push({
+        px: Math.cos(sa) * sr * shell, py: sy * shell, pz: Math.sin(sa) * sr * shell,
+        size: 0.5 + rnd(i, 19) * 1.1,
+        alpha: 0.06 + rnd(i, 23) * 0.26,
+        bright: rnd(i, 29) > 0.97,
+        tw: rnd(i, 31) * Math.PI * 2,
+      });
+    }
+    for (let i = 0; i < 260; i++) {
+      const p = sampleVolume(i * 977 + 5);
+      stars.push({
+        px: p.px * 1.15, py: p.py * 1.15, pz: p.pz * 1.15,
+        size: 0.7 + rnd(i, 73) * 1.4,
+        alpha: 0.1 + rnd(i, 79) * 0.3,
+        bright: rnd(i, 83) > 0.94,
+        tw: rnd(i, 87) * Math.PI * 2,
+      });
+    }
+  }
+
+  function layoutDisc(members, center, basis, discR, adj, seed, spin, dwarf, ring = null) {
+    if (!members.length) return;
+    const claimed = new Set();
+    const memberSet = new Set(members);
+
+    const suns = dwarf
+      ? []
+      : members
+          .filter((n) => (n.degree ?? 0) >= SUN_DEGREE)
+          .sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0))
+          .slice(0, Math.max(1, Math.floor(Math.sqrt(members.length) / 1.6)));
+
+    for (const sun of suns) {
+      const sats = (adj.get(sun.id) ?? [])
+        .filter((m) => memberSet.has(m) && !claimed.has(m.id) && m !== sun && (m.degree ?? 0) <= PLANET_DEGREE)
+        .slice(0, MAX_PLANETS);
+      if (sats.length < 2) continue;
+      claimed.add(sun.id);
+      const local = spiralLocal(discR, claimed.size * 7 + seed, 0.25 + rnd(seed + claimed.size, 31) * 0.55, dwarf);
+      universe.disc.set(sun.id, { center, ring, basis, ...local, spin });
+      const rings = [];
+      sats.forEach((p, pi) => {
+        claimed.add(p.id);
+        const orbitR = ORBIT_BASE + pi * ORBIT_STEP;
+        rings.push(orbitR);
+        universe.planets.set(p.id, {
+          sunId: sun.id,
+          basis,
+          orbitR,
+          phase: pi * GOLDEN + rnd(seed + pi, 37) * Math.PI * 2,
+          omega: (OMEGA / Math.pow(orbitR / ORBIT_BASE, 1.5)) * (rnd(seed + pi, 41) > 0.5 ? 1 : -1),
+        });
+      });
+      universe.systems.push({ sunId: sun.id, basis, rings, pulse: rnd(seed, 167) * Math.PI * 2, sunWorld: null, sx: 0, sy: 0, d: 0, scale: 1 });
+    }
+
+    const field = members.filter((n) => !claimed.has(n.id));
+    field.forEach((n, i) => {
+      const t = (i + 0.5) / field.length;
+      const local = spiralLocal(discR, i + seed, t, dwarf);
+      universe.disc.set(n.id, { center, ring, basis, ...local, spin });
+    });
+  }
+
+  function spiralLocal(discR, i, t, dwarf) {
+    if (dwarf) {
+      const angle = i * GOLDEN;
+      const radius = discR * Math.sqrt(t) * (0.8 + rnd(i, 59) * 0.3);
+      return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: (rnd(i, 53) - 0.5) * discR * 0.3 };
+    }
+    const arm = i % 2;
+    const angle = t * 3.6 + arm * Math.PI + (rnd(i, 43) - 0.5) * 0.65;
+    const radius = discR * (0.12 + 0.88 * t) * (0.86 + rnd(i, 47) * 0.28);
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: (rnd(i, 53) - 0.5) * discR * 0.22 };
+  }
+
+  // ── world positions (time-dependent) ───────────────────────────────
+  function worldPos(id, tSec) {
+    const orbit = universe.planets.get(id);
+    if (orbit) {
+      const sunWorld = worldPos(orbit.sunId, tSec);
+      if (!sunWorld) return null;
+      const a = orbit.phase + orbit.omega * tSec;
+      return inPlane(sunWorld, orbit.basis, Math.cos(a) * orbit.orbitR, Math.sin(a) * orbit.orbitR);
+    }
+    const p = universe.disc.get(id);
+    if (!p) return null;
+    const center = p.ring
+      ? inPlane(
+          p.ring.parent,
+          p.basis,
+          Math.cos(p.ring.phase + p.ring.omega * tSec) * p.ring.ringR,
+          Math.sin(p.ring.phase + p.ring.omega * tSec) * p.ring.ringR,
+          p.ring.zoff,
+        )
+      : p.center;
+    const a = p.spin * tSec;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    return inPlane(center, p.basis, p.x * cos - p.y * sin, p.x * sin + p.y * cos, p.z);
+  }
+
+  // ── projection + ONE depth model for nodes and decor ───────────────
+  function project(p, trig, cx, cy) {
+    const x1 = p.px * trig.cosY + p.pz * trig.sinY;
+    const z1 = -p.px * trig.sinY + p.pz * trig.cosY;
+    const y2 = p.py * trig.cosP - z1 * trig.sinP;
+    const z2 = p.py * trig.sinP + z1 * trig.cosP;
+    const d = z2 / (R * 1.35);
+    const persp = 1 / (1 + Math.max(d, -1.2) * 0.42);
+    return { x: cx + x1 * persp, y: cy + y2 * persp, d, scale: persp };
+  }
+
+  /** Shared clamps: nodes and decor scale identically, and instead of the
+   *  perspective clamp freezing the near side, everything closer than
+   *  d≈-1.1 dissolves (front fade). */
+  const depthScale = (pr) => Math.min(Math.max(pr.scale, 0.55), 1.5);
+  const frontFade = (d) => (d < -1.1 ? Math.max(0, (d + 1.35) / 0.25) : 1);
+  const depthFade = (d) => Math.min(Math.max(1 - (d + 1) * 0.4, 0.25), 1) * frontFade(d);
+
+  const trigNow = () => ({
+    cosY: Math.cos(yaw),
+    sinY: Math.sin(yaw),
+    cosP: Math.cos(pitch),
+    sinP: Math.sin(pitch),
+  });
+
+  /** Visible world rect (with margin) for cheap offscreen culling. */
+  function viewRect(margin) {
+    const cam = deps.renderer.camera;
+    const l = -cam.x / cam.scale - margin;
+    const t = -cam.y / cam.scale - margin;
+    return { l, t, r: l + innerWidth / cam.scale + margin * 2, b: t + innerHeight / cam.scale + margin * 2 };
+  }
+  const inView = (v, x, y) => x >= v.l && x <= v.r && y >= v.t && y <= v.b;
+
+  function apply(tSec, intoMap = null) {
+    if (!universe) return;
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const trig = trigNow();
+    for (const n of deps.sim.nodes) {
+      const p = worldPos(n.id, tSec);
+      if (!p) continue;
+      const pr = project(p, trig, cx, cy);
+      if (intoMap) {
+        intoMap.set(n.id, { x: pr.x, y: pr.y });
+      } else {
+        n.x = pr.x;
+        n.y = pr.y;
+      }
+      // depth attributes are stamped in BOTH paths, so the entry flight
+      // already renders true sizes/alphas — no snap on landing
+      n.orbitDepth = pr.d;
+      n.ringScale = depthScale(pr);
+      n.ringFade = Math.min(Math.max(1 - (pr.d + 1) * 0.4, 0.3), 1) * frontFade(pr.d);
+    }
+    for (const g of universe.galaxies) {
+      const pr = project(g.center, trig, cx, cy);
+      g.sx = pr.x;
+      g.sy = pr.y;
+      g.d = pr.d;
+      g.scale = depthScale(pr);
+    }
+    for (const s of universe.systems) {
+      s.sunWorld = worldPos(s.sunId, tSec);
+      const pr = project(s.sunWorld, trig, cx, cy);
+      s.sx = pr.x;
+      s.sy = pr.y;
+      s.d = pr.d;
+      s.scale = depthScale(pr);
+    }
+  }
+
+  // ── decor ──────────────────────────────────────────────────────────
+  function decor(ctx, camera, theme, now) {
+    if (!universe) return;
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const trig = trigNow();
+    const tSec = now / 1000;
+    const [sat, light] = deps.getSatLight();
+    const hues = deps.getHues();
+    // the whole backdrop eases in with the entry flight — no frame-1 pop
+    const fadeIn = Math.min((now - enterAt) / 950, 1);
+    const view = viewRect(120 / camera.scale);
+
+    // starfield — culled, twinkling brights, screen-constant sizes
+    ctx.fillStyle = theme.label;
+    for (const s of stars) {
+      const pr = project(s, trig, cx, cy);
+      if (!inView(view, pr.x, pr.y)) continue;
+      const r = s.size / camera.scale;
+      const twinkle = s.bright ? 0.75 + 0.25 * Math.sin(tSec * 2.1 + s.tw) : 1;
+      ctx.globalAlpha = s.alpha * twinkle * (pr.d > 0 ? 0.55 : 1) * frontFade(pr.d) * fadeIn;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, s.bright ? r * 1.8 : r, 0, Math.PI * 2);
+      ctx.fill();
+      if (s.bright) {
+        ctx.globalAlpha *= 0.4;
+        ctx.lineWidth = 0.6 / camera.scale;
+        ctx.strokeStyle = theme.label;
+        const g = 5 / camera.scale;
+        ctx.beginPath();
+        ctx.moveTo(pr.x - g, pr.y);
+        ctx.lineTo(pr.x + g, pr.y);
+        ctx.moveTo(pr.x, pr.y - g);
+        ctx.lineTo(pr.x, pr.y + g);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // one shooting star every ~24 s
+    {
+      const epoch = Math.floor(now / SHOOTING_EVERY);
+      const t = (now % SHOOTING_EVERY) / SHOOTING_EVERY;
+      if (t < 0.055) {
+        const p = t / 0.055;
+        const s0 = {
+          px: (rnd(epoch, 121) - 0.5) * R * 2.6,
+          py: (rnd(epoch, 127) - 0.5) * R * 1.4,
+          pz: (rnd(epoch, 131) - 0.5) * R * 2.2,
+        };
+        const dir = norm({ px: rnd(epoch, 137) - 0.5, py: rnd(epoch, 139) - 0.5, pz: rnd(epoch, 149) - 0.5 });
+        const head = add(s0, scale3(dir, p * R * 0.9));
+        const tail = add(s0, scale3(dir, Math.max(p - 0.12, 0) * R * 0.9));
+        const a = project(head, trig, cx, cy);
+        const b = project(tail, trig, cx, cy);
+        const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        grad.addColorStop(0, theme.label);
+        grad.addColorStop(1, "transparent");
+        ctx.globalAlpha = 0.5 * Math.sin(p * Math.PI) * fadeIn;
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 1.1 / camera.scale;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // galaxies back-to-front, all glow via sprites in ONE additive batch
+    // ("lighter" on dark theme sums overlapping light like real light;
+    // the light theme's flowBlend stays source-over)
+    ctx.globalCompositeOperation = theme.flowBlend;
+    const sorted = [...universe.galaxies].sort((a, b) => b.d - a.d);
+    for (const g of sorted) {
+      if (!inView(view, g.sx, g.sy)) continue;
+      const color = clusterColor(hues, g.key, sat, light);
+      const depthAlpha = depthFade(g.d) * fadeIn;
+      if (depthAlpha <= 0.02) continue;
+
+      if (g.nebula) {
+        for (const b of g.nebula) {
+          const wob = b.phase + tSec * b.drift;
+          const wx = b.ox + Math.cos(wob) * g.r * 0.22;
+          const wy = b.oy + Math.sin(wob * 0.8) * g.r * 0.22;
+          const wp = inPlane(g.center, g.basis, wx, wy, 0);
+          const pr = project(wp, trig, cx, cy);
+          const br = b.r * depthScale(pr) * (0.9 + 0.12 * Math.sin(wob * 0.6));
+          ctx.globalAlpha = 0.05 * depthAlpha * (0.8 + 0.2 * Math.sin(wob));
+          ctx.drawImage(glowSprite(color), pr.x - br, pr.y - br, br * 2, br * 2);
+        }
+      }
+
+      const rr = g.r * g.scale * (g.dwarf ? 1.6 : 2.3);
+      ctx.globalAlpha = (g.dwarf ? 0.045 : 0.055) * depthAlpha;
+      ctx.drawImage(glowSprite(color), g.sx - rr, g.sy - rr, rr * 2, rr * 2);
+
+      const breathe = 1 + 0.07 * Math.sin(tSec * 0.7 + g.phase);
+      const coreR = Math.max(g.r * g.scale * 0.3, 8) * breathe;
+      ctx.globalAlpha = (g.dwarf ? 0.09 : 0.18) * depthAlpha * (0.88 + 0.12 * Math.sin(tSec * 0.9 + g.phase));
+      ctx.drawImage(glowSprite(color, theme.label), g.sx - coreR, g.sy - coreR, coreR * 2, coreR * 2);
+    }
+    ctx.globalCompositeOperation = "source-over";
+
+    // galaxy names — screen-px floors, outside the additive batch
+    for (const g of sorted) {
+      if (!inView(view, g.sx, g.sy)) continue;
+      const depthAlpha = depthFade(g.d) * fadeIn;
+      if (depthAlpha <= 0.05) continue;
+      const color = clusterColor(hues, g.key, sat, light);
+      ctx.globalAlpha = 0.7 * depthAlpha;
+      const fontPx = Math.max((g.dwarf ? 9.5 : 11) * g.scale, 10 / camera.scale);
+      ctx.font = `700 ${fontPx}px "Avenir Next", system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.lineWidth = 3 / camera.scale;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = theme.labelHalo;
+      const ly = g.sy - g.r * g.scale * 1.4 - 6 / camera.scale;
+      ctx.strokeText(g.key.toUpperCase(), g.sx, ly);
+      ctx.fillStyle = color;
+      ctx.fillText(g.key.toUpperCase(), g.sx, ly);
+      ctx.globalAlpha = 1;
+    }
+
+    // solar systems: culled orbit rings (17 pts) + pulsing sun glow sprites
+    ctx.strokeStyle = theme.bandBorder;
+    for (const s of [...universe.systems].sort((a, b) => b.d - a.d)) {
+      if (!s.sunWorld || !inView(view, s.sx, s.sy)) continue;
+      const depthAlpha = depthFade(s.d) * fadeIn;
+      if (depthAlpha <= 0.02) continue;
+      ctx.globalAlpha = 0.16 * depthAlpha;
+      ctx.lineWidth = 0.7 / camera.scale;
+      for (const orbitR of s.rings) {
+        ctx.beginPath();
+        for (let k = 0; k < 17; k++) {
+          const a = (k / 16) * Math.PI * 2;
+          const wp = inPlane(s.sunWorld, s.basis, Math.cos(a) * orbitR, Math.sin(a) * orbitR);
+          const pr = project(wp, trig, cx, cy);
+          if (k === 0) ctx.moveTo(pr.x, pr.y);
+          else ctx.lineTo(pr.x, pr.y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      const glowR = 13 * s.scale * (1 + 0.14 * Math.sin(tSec * 1.4 + s.pulse));
+      ctx.globalAlpha = 0.3 * depthAlpha * (0.85 + 0.15 * Math.sin(tSec * 1.1 + s.pulse));
+      ctx.globalCompositeOperation = theme.flowBlend;
+      ctx.drawImage(glowSprite(theme.label), s.sx - glowR, s.sy - glowR, glowR * 2, glowR * 2);
+      ctx.globalCompositeOperation = "source-over";
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const byDepth = (a, b) => (b.orbitDepth ?? 0) - (a.orbitDepth ?? 0);
+
+  // ── live supernovae ────────────────────────────────────────────────
+  const idHash = (str) => {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  };
+
+  function spawnBurst(entry) {
+    if (!universe) build();
+    if (bursts.has(entry.id)) return;
+    const h = idHash(entry.id);
+    const g = universe.galaxies.find((x) => x.key === entry.cluster);
+    const world = g
+      ? inPlane(
+          g.center,
+          g.basis,
+          (rnd(h, 173) - 0.5) * g.r * 1.3,
+          (rnd(h, 179) - 0.5) * g.r * 1.3,
+          (rnd(h, 181) - 0.5) * g.r * 0.3,
+        )
+      : { px: (rnd(h, 173) - 0.5) * R, py: (rnd(h, 179) - 0.5) * R * 0.5, pz: (rnd(h, 181) - 0.5) * R };
+    bursts.set(entry.id, { world, born: performance.now(), entry });
+  }
+
+  function focusBurst(id) {
+    const b = bursts.get(id);
+    if (!b) return;
+    const pr = project(b.world, trigNow(), innerWidth / 2, innerHeight / 2);
+    deps.getInteractions().flyTo(pr.x, pr.y, 2.2, 900);
+  }
+
+  /** Draw all live bursts at their 3D positions — far-side ones recede. */
+  function renderBursts(ctx, camera, theme, now) {
+    if (!universe) return;
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const trig = trigNow();
+    for (const [id, b] of bursts) {
+      const age = (now - b.born) / 1000;
+      if (age > BURST_LIFE) {
+        bursts.delete(id);
+        continue;
+      }
+      const pr = project(b.world, trig, cx, cy);
+      drawBurstAt(ctx, camera, theme, pr.x, pr.y, depthScale(pr), age, Math.max(depthFade(pr.d), 0.35));
+    }
+  }
+
+  const listBursts = () =>
+    [...bursts.entries()].map(([id, b]) => ({ id, born: b.born, cluster: b.entry.cluster }));
+
+  // ── lifecycle ──────────────────────────────────────────────────────
+  function enter() {
+    if (!universe) build();
+    enterAt = performance.now();
+    deps.renderer.setQuietEdges(true);
+    deps.renderer.setClusterLabelsVisible(false);
+    deps.renderer.setDrawOrder(byDepth);
+    deps.renderer.setDecor(decor);
+    deps.getInteractions().setDragDelegate((dx, dy, ev) => {
+      if (ev?.shiftKey) return false; // shift-drag = pan through space
+      yaw += dx * 0.005;
+      pitch = Math.min(Math.max(pitch + dy * 0.004, -PITCH_MAX), PITCH_MAX);
+    });
+    $("#orbit-hint").hidden = false;
+    // flight targets are computed for LANDING time (the 950 ms view flight),
+    // so planets land exactly where they will be — no angle snap
+    const targets = new Map();
+    apply(performance.now() / 1000 + 0.95, targets);
+    return targets;
+  }
+
+  function exit() {
+    deps.renderer.setQuietEdges(false);
+    deps.renderer.setClusterLabelsVisible(true);
+    deps.renderer.setDrawOrder(null);
+    deps.renderer.setDecor(null);
+    deps.getInteractions().setDragDelegate(null);
+    $("#orbit-hint").hidden = true;
+    for (const n of deps.sim.nodes) {
+      delete n.ringScale;
+      delete n.ringFade;
+      delete n.orbitDepth;
+    }
+  }
+
+  function tick(now) {
+    apply(now / 1000);
+  }
+
+  return { enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts };
+}

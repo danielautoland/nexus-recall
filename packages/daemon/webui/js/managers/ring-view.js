@@ -231,8 +231,36 @@ export function createRingView(deps) {
       drawSegmentSet(bandAnim.drill.segments, subAlpha);
     }
 
+    // ── meta band (#216): the framing layer — rules + skills — as its own
+    // outer ring around the content band. Drill layouts carry no metaBand,
+    // so it fades with the rest during the fan-out (no radius lerp needed).
+    const metaGeo = ring.metaBand ?? (bandAnim ? bandAnim.overview.metaBand : null);
+    const metaAlpha = bandAnim ? Math.max(0, 1 - f * 1.8) : ring.metaBand ? 1 : 0;
+    if (metaGeo && metaAlpha > 0.02) {
+      const mMid = (metaGeo.rInner + metaGeo.rOuter) / 2;
+      ctx.globalAlpha = metaAlpha;
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, mMid, 0, Math.PI * 2);
+      ctx.lineWidth = metaGeo.rOuter - metaGeo.rInner;
+      ctx.strokeStyle = theme.band;
+      ctx.stroke();
+      ctx.lineWidth = 1 / camera.scale;
+      ctx.strokeStyle = theme.bandBorder;
+      for (const r of [metaGeo.rInner, metaGeo.rOuter]) {
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      for (const seg of metaGeo.segments) {
+        const mid = (seg.a0 + seg.a1) / 2;
+        drawArcText(ctx, camera, seg.key.toUpperCase(), mMid, mid, (seg.a1 - seg.a0) * 0.92, clusterColor(hues, seg.key, sat, light), 11, metaAlpha);
+      }
+    }
+
     // ── unwritten orbit: kept clear of the band and its own nodes ──
     let maxOrbitR = bandRO;
+    if (metaGeo && metaAlpha > 0.02) maxOrbitR = Math.max(maxOrbitR, metaGeo.rOuter);
     const orbitsNow = f > 0.5 ? geoB.orbits : geoA.orbits;
     for (const o of orbitsNow) {
       const or = lerp(

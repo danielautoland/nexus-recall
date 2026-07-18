@@ -47,6 +47,24 @@ export async function postImportVault(dir, label) {
   return data;
 }
 
+export async function fetchAreas() {
+  const res = await fetch("/ui/areas");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `areas failed: ${res.status}`);
+  return data.areas ?? [];
+}
+
+export async function postArea(payload) {
+  const res = await fetch("/ui/areas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `area change failed: ${res.status}`);
+  return data.result;
+}
+
 export async function fetchOnboarding() {
   const res = await fetch("/ui/onboarding");
   if (!res.ok) throw new Error(`onboarding: ${res.status}`);
@@ -122,6 +140,33 @@ export function clusterHues(clusters) {
 export function clusterColor(hues, key, sat, light) {
   const h = hues.get(key) ?? 0;
   return `hsl(${h.toFixed(1)} ${sat} ${light})`;
+}
+
+/** Pre-rendered glow sprites (#216): per-frame createRadialGradient is a
+ *  classic canvas frame-killer (hundreds of allocations + rasterizations per
+ *  frame). Render each glow ONCE to a small offscreen canvas, keyed by its
+ *  colors, then drawImage it scaled — the standard sprite-cache pattern. */
+const glowSprites = new Map();
+export function glowSprite(color, core = null) {
+  const key = `${color}|${core ?? ""}`;
+  let spr = glowSprites.get(key);
+  if (!spr) {
+    spr = document.createElement("canvas");
+    spr.width = spr.height = 64;
+    const c = spr.getContext("2d");
+    const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+    if (core) {
+      g.addColorStop(0, core);
+      g.addColorStop(0.35, color);
+    } else {
+      g.addColorStop(0, color);
+    }
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g;
+    c.fillRect(0, 0, 64, 64);
+    glowSprites.set(key, spr);
+  }
+  return spr;
 }
 
 /** Node radius from degree — sqrt so hubs read big without dwarfing notes.
