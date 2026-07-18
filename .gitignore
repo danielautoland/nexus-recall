@@ -78,3 +78,7 @@ coverage/
 .cache/
 tmp/
 temp/
+
+# Claude Desktop Extension build artifacts
+packages/daemon/mcpb/build/
+packages/daemon/mcpb/*.mcpb

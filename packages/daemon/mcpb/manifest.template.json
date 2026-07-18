@@ -1,0 +1,56 @@
+{
+  "manifest_version": "0.3",
+  "name": "bastra-recall",
+  "display_name": "Bastra Recall",
+  "version": "__VERSION__",
+  "description": "Persistent local memory for Claude — recalls before acting, saves what matters.",
+  "long_description": "Bastra Recall gives Claude a durable, local-first memory: a folder of plain Markdown files (Obsidian-compatible) served by one local daemon that every AI tool on your machine shares. Claude recalls your preferences, lessons and project facts before acting, and saves durable rules, decisions and facts as they come up — nothing leaves your machine. This extension bundles the MCP forwarder; the shared daemon is started automatically on first use. Fresh vault? Claude offers a 5-minute onboarding interview, and `bastra import` brings memories over from ChatGPT, Claude or Gemini exports.",
+  "author": {
+    "name": "n0mad",
+    "url": "https://github.com/n0mad-ai"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/n0mad-ai/bastra-recall"
+  },
+  "homepage": "https://github.com/n0mad-ai/bastra-recall",
+  "documentation": "https://github.com/n0mad-ai/bastra-recall/wiki",
+  "support": "https://github.com/n0mad-ai/bastra-recall/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/node_modules/@bastra-recall/daemon/dist/mcp-forwarder.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/node_modules/@bastra-recall/daemon/dist/mcp-forwarder.js"],
+      "env": {
+        "BASTRA_VAULT_PATH": "${user_config.vault_path}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "recall", "description": "Search the memory vault — lessons, preferences, decisions, project facts" },
+    { "name": "load_memory", "description": "Load one memory's full content by id" },
+    { "name": "save_memory", "description": "Persist a durable fact, rule, lesson or decision" },
+    { "name": "find_document", "description": "Search stored documents (PDFs, contracts, scans with OCR)" },
+    { "name": "read_document", "description": "Load a document's extracted text by id" }
+  ],
+  "keywords": ["memory", "recall", "vault", "obsidian", "local-first", "knowledge"],
+  "license": "MIT",
+  "user_config": {
+    "vault_path": {
+      "type": "directory",
+      "title": "Vault folder",
+      "description": "Where your memories live — plain Markdown, Obsidian-compatible. Created on first save if it doesn't exist yet.",
+      "default": "${HOME}/BastraVault",
+      "required": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin"],
+    "runtimes": {
+      "node": ">=22.0.0"
+    }
+  }
+}

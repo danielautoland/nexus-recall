@@ -47,7 +47,9 @@
     "smoke:telemetry": "tsx scripts/telemetry-smoke.ts",
     "backfill:related": "tsx scripts/backfill-related.ts",
     "eval:robust": "tsx scripts/eval-stress.ts --slice all",
-    "test:update": "tsx --test scripts/update-check.test.ts"
+    "test:update": "tsx --test scripts/update-check.test.ts",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "build:mcpb:local": "node scripts/build-mcpb.mjs --local"
   },
   "dependencies": {
     "@bastra-recall/core": "0.8.1",
@@ -57,6 +59,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
     "@types/node": "^22.20.1",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"
