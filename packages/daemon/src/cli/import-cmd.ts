@@ -196,10 +196,12 @@ async function cmdImportVault(args: ParsedArgs): Promise<number> {
   const dir = args.positional[2];
   if (!dir) {
     process.stderr.write(
-      "usage: bastra import vault <dir> [label] [--dry-run]\n" +
+      "usage: bastra import vault <dir> [label] [--dry-run] [--exclude <dir>]…\n" +
         "  imports a folder of memory files (e.g. a Claude Code memory dir) into\n" +
         "  memories/imported/<label>/ — deterministic, no per-item review.\n" +
-        "  label   namespace for this batch (default: the folder's name)\n",
+        "  label      namespace for this batch (default: the folder's name)\n" +
+        "  --exclude  skip a directory name anywhere in the tree (repeatable);\n" +
+        "             dotdirs, _archive/ and archive/ are always skipped\n",
     );
     return 2;
   }
@@ -211,7 +213,7 @@ async function cmdImportVault(args: ParsedArgs): Promise<number> {
   const label = args.positional[3];
   let result;
   try {
-    result = await importVault(vault.path, dir, { label, dryRun: args.dryRun });
+    result = await importVault(vault.path, dir, { label, dryRun: args.dryRun, exclude: args.exclude });
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message}\n`);
     return 1;

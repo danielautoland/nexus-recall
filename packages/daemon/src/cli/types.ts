@@ -63,6 +63,9 @@ export interface ParsedArgs {
   // `install claude-desktop --extension`: hand the .mcpb Desktop Extension
   // to Claude Desktop instead of writing the config-file registration.
   extension: boolean;
+  // `import vault --exclude <dir>` (#220, repeatable): additional directory
+  // names to skip anywhere in the source tree.
+  exclude: string[];
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];

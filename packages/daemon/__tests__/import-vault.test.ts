@@ -273,3 +273,49 @@ test("marker: a successful import writes .bastra-imported into the set (skippabl
     await rm(vault, { recursive: true, force: true });
   }
 });
+
+test("#219 slug twins: link targets get the SAME slugify as minted ids (underscores → dashes)", async () => {
+  const src = await tmp("iv-slug-src-");
+  const vault = await tmp("iv-slug-vault-");
+  try {
+    await writeSrc(
+      src,
+      "feedback_gate_catalog.md",
+      "---\nname: Gate catalog\ndescription: Catalog of gates\ntype: feedback\n---\nGate body.",
+    );
+    await writeSrc(
+      src,
+      "linker.md",
+      "---\nname: Linker\ndescription: Links the catalog\ntype: reference\n---\nSee [[feedback_gate_catalog]] for details.",
+    );
+    const r = await importVault(vault, src, { label: "ccx" });
+    assert.equal(r.imported, 2);
+    assert.ok(r.ids.includes("ccx-feedback-gate-catalog"), "id minting slugifies underscores to dashes");
+    const { body } = await readMem(vault, r.folder, "ccx-linker");
+    assert.ok(
+      body.includes("[[ccx-feedback-gate-catalog]]"),
+      `link target must match the minted id, got: ${body}`,
+    );
+    assert.ok(!body.includes("feedback_gate_catalog]]"), "no underscored ghost twin left behind");
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("#220 archive skip: _archive/, archive/ and --exclude dirs never import", async () => {
+  const src = await tmp("iv-arch-src-");
+  const vault = await tmp("iv-arch-vault-");
+  try {
+    await writeSrc(src, "live.md", "---\nname: Live\ndescription: Live note\ntype: user\n---\nBody.");
+    await writeSrc(src, "_archive/old.md", "---\nname: Old\ndescription: Retired\ntype: user\n---\nBody.");
+    await writeSrc(src, "archive/older.md", "---\nname: Older\ndescription: Retired too\ntype: user\n---\nBody.");
+    await writeSrc(src, "Drafts/wip.md", "---\nname: WIP\ndescription: Draft\ntype: user\n---\nBody.");
+    const r = await importVault(vault, src, { label: "arch", exclude: ["drafts"] });
+    assert.equal(r.scanned, 1, "only the live note is scanned (case-insensitive exclude)");
+    assert.deepEqual(r.ids, ["arch-live"]);
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});

@@ -152,6 +152,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     ollama: null,
     origin: null,
     extension: false,
+    exclude: [],
     positional: [],
   };
 
@@ -168,6 +169,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--with-stop-hook") result.withStopHook = true; // kept for compat — now the default
     else if (a === "--no-stop-hook") result.withStopHook = false;
     else if (a === "--staged") result.staged = true;
+    else if (a === "--exclude") {
+      const v = argv[++i];
+      if (v) result.exclude.push(v);
+    } else if (a.startsWith("--exclude=")) {
+      const v = a.slice("--exclude=".length);
+      if (v) result.exclude.push(v);
+    }
     else if (a === "--extension") result.extension = true;
     else if (a === "--ollama") result.ollama = "auto";
     else if (a === "--no-ollama") result.ollama = "skip";

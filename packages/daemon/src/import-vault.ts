@@ -53,7 +53,16 @@ export interface ImportVaultOptions {
   overwrite?: boolean;
   /** Map + count without writing anything (default false). */
   dryRun?: boolean;
+  /** #220 (zzallirog): additional directory NAMES to skip anywhere in the
+   *  tree (case-insensitive). Dotdirs, node_modules and `_archive`/`archive`
+   *  are always skipped — retired notes must not compete with live ones for
+   *  node identity. */
+  exclude?: string[];
 }
+
+/** Always-skipped directory names (#220): archives hold retired copies of
+ *  live notes — importing them mints `-2`/`-3` collision twins. */
+const DEFAULT_EXCLUDED_DIRS = new Set(["_archive", "archive"]);
 
 export interface ImportVaultSkip {
   path: string;
@@ -115,12 +124,22 @@ function firstParagraph(body: string): string | null {
   return null;
 }
 
-/** Namespace every body `[[x]]` → `[[<label>-x]]` so intra-set links stay
- *  inside the imported set and can NEVER resolve onto a hand-authored memory
- *  with a bare-name id (the isolation guarantee). Links whose namespaced form
- *  exceeds the 80-char wikilink cap simply don't become edges — harmless. */
+/** Namespace every body `[[x]]` → `[[slugify(<label>-x)]]` so intra-set links
+ *  stay inside the imported set and can NEVER resolve onto a hand-authored
+ *  memory with a bare-name id (the isolation guarantee). #219 (zzallirog):
+ *  the SAME slugify as the id minting in `buildInput` — without it every
+ *  underscored note became its own ghost twin (`[[feedback_gate_catalog]]`
+ *  stayed underscored while the id got dashes; 326 of his 402 ghosts). Links
+ *  whose namespaced form exceeds the 80-char wikilink cap simply don't
+ *  become edges — harmless. */
 function namespaceWikilinks(body: string, label: string): string {
-  return body.replace(WIKILINK_RE, (_full, id: string) => `[[${label}-${id}]]`);
+  return body.replace(WIKILINK_RE, (full: string, id: string) => {
+    try {
+      return `[[${slugify(`${label}-${id}`)}]]`;
+    } catch {
+      return full; // unslugifiable target — leave untouched, never throw mid-body
+    }
+  });
 }
 
 /** gray-matter, but a throwing/unparseable YAML frontmatter (cyrillic
@@ -247,7 +266,7 @@ function mapFile(fileBase: string, raw: string, ctx: MapContext): MapResult {
 /** Recursively collect `*.md` files under `dir`, skipping dotdirs and
  *  node_modules (same policy as the vault loader) and the `MEMORY.md` pointer
  *  index (it's a table of contents, not a memory). Returns absolute paths. */
-async function listSourceMarkdown(dir: string): Promise<string[]> {
+async function listSourceMarkdown(dir: string, exclude: Set<string> = new Set()): Promise<string[]> {
   const out: string[] = [];
   async function walk(current: string): Promise<void> {
     let entries;
@@ -260,6 +279,8 @@ async function listSourceMarkdown(dir: string): Promise<string[]> {
       if (e.name === "node_modules" || (e.name.startsWith(".") && e.name.length > 1)) continue;
       const full = join(current, e.name);
       if (e.isDirectory()) {
+        const name = e.name.toLowerCase();
+        if (DEFAULT_EXCLUDED_DIRS.has(name) || exclude.has(name)) continue;
         await walk(full);
       } else if (e.isFile() && extname(e.name).toLowerCase() === ".md" && e.name.toLowerCase() !== "memory.md") {
         out.push(full);
@@ -312,7 +333,10 @@ export async function importVault(
   const dryRun = options.dryRun ?? false;
   const folder = `${IMPORT_ROOT}/${label}`;
 
-  const files = await listSourceMarkdown(sourceDir);
+  const files = await listSourceMarkdown(
+    sourceDir,
+    new Set((options.exclude ?? []).map((d) => d.trim().toLowerCase()).filter(Boolean)),
+  );
   const used = new Set<string>();
   const skipped: ImportVaultSkip[] = [];
   const ids: string[] = [];

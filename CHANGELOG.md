@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-07-18
+
+### Fixed
+- **`import vault` slug-twin ghosts** (#219, zzallirog field report): body
+  wikilink targets now go through the SAME slugify as the minted node ids —
+  `[[feedback_gate_catalog]]` resolves onto `<label>-feedback-gate-catalog`
+  instead of minting an underscored ghost twin. This one mismatch accounted
+  for 81% (326/402) of the reported ghost count. Acceptance is the reporter's
+  falsifiable prediction: re-importing the same vault should land the ghost
+  count in the 60–80 range with edges climbing.
+- **`import vault` walks archives** (#220): `_archive/` and `archive/`
+  directories (any depth, case-insensitive) are now skipped by default —
+  retired copies no longer mint `-2`/`-3` collision twins of live notes.
+  New repeatable `--exclude <dir>` flag for vault-specific layouts; dotdirs
+  and `node_modules` stay always-skipped.
+
 ## [0.8.3] — 2026-07-18
 
 ### Fixed
@@ -605,6 +621,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.4
 [0.8.3]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.3
 [0.8.2]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.2
 [0.8.1]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.1
