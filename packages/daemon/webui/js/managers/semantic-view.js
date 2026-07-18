@@ -14,11 +14,17 @@ import { fetchSemanticLayout, nodeRadius } from "../graph-data.js";
 
 const $ = (sel) => document.querySelector(sel);
 const GOLDEN = 2.399963; // radians — deterministic scatter for fallbacks
+const MODE_KEY = "bastra-vault-map-semantic-mode";
+const SPIN = 0.045; // rad/s auto-drift of the 3D cloud
+const PITCH = -0.32;
 
 export function createSemanticView(deps) {
   let layout = null; // server response, fetched once per session
-  let targets = null; // id → {x, y} world positions, relaxed
+  let targets = null; // id → {x, y} world positions, relaxed (2D mode)
+  let points3d = null; // id → {px, py, pz} world-scale meaning coordinates
   let semEdges = []; // unwritten connections with node refs
+  let mode = localStorage.getItem(MODE_KEY) === "3d" ? "3d" : "2d";
+  let active = false; // view currently entered (tick guard)
 
   /** World targets from the unit-square layout: scale to a box that grows
    *  with the vault, place vectorless notes/ghosts near their linked
@@ -69,6 +75,104 @@ export function createSemanticView(deps) {
     return placed;
   }
 
+  /** 3D meaning coordinates (zzallirog: "a wire between two things you've
+   *  already made") — the unit-cube layout scaled to the same world box the
+   *  2D mode uses; fallback nodes (ghosts, embedding gaps) sit on the z=0
+   *  plane at their relaxed 2D spot, so they stay near their neighbors. */
+  function computePoints3d() {
+    const side = Math.max(760, Math.sqrt(layout.positions.length) * 64);
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const byId = new Map(layout.positions.map((p) => [p.id, p]));
+    const pts = new Map();
+    for (const n of deps.sim.nodes) {
+      const p = byId.get(n.id);
+      if (p) {
+        pts.set(n.id, {
+          px: (p.x - 0.5) * side,
+          py: (p.y - 0.5) * side,
+          pz: (p.z - 0.5) * side,
+        });
+      } else {
+        const t = targets.get(n.id);
+        pts.set(n.id, { px: (t?.x ?? cx) - cx, py: (t?.y ?? cy) - cy, pz: 0 });
+      }
+    }
+    return pts;
+  }
+
+  /** Orbit-style perspective projection of the rotated meaning cloud. */
+  function projectAll(now, intoMap = null) {
+    const cx = innerWidth / 2;
+    const cy = innerHeight / 2;
+    const yaw = now / 1000 * SPIN;
+    const cosY = Math.cos(yaw);
+    const sinY = Math.sin(yaw);
+    const cosP = Math.cos(PITCH);
+    const sinP = Math.sin(PITCH);
+    const side = Math.max(760, Math.sqrt(layout.positions.length) * 64);
+    for (const n of deps.sim.nodes) {
+      const p = points3d.get(n.id);
+      if (!p) continue;
+      const x1 = p.px * cosY + p.pz * sinY;
+      const z1 = -p.px * sinY + p.pz * cosY;
+      const y2 = p.py * cosP - z1 * sinP;
+      const z2 = p.py * sinP + z1 * cosP;
+      const d = z2 / (side * 0.9);
+      const persp = 1 / (1 + Math.max(d, -1.2) * 0.42);
+      const x = cx + x1 * persp;
+      const y = cy + y2 * persp;
+      if (intoMap) {
+        intoMap.set(n.id, { x, y });
+        continue;
+      }
+      n.x = x;
+      n.y = y;
+      // depth cues via the shared hooks (orbit pattern): size, alpha, order
+      n.orbitDepth = d;
+      n.ringScale = Math.min(Math.max(persp, 0.55), 1.35);
+      n.ringFade = Math.min(Math.max(1 - (d + 1) * 0.35, 0.45), 1);
+    }
+  }
+
+  const byDepth = (a, b) => (b.orbitDepth ?? 0) - (a.orbitDepth ?? 0);
+
+  function clearDepthCues() {
+    deps.renderer.setDrawOrder(null);
+    for (const n of deps.sim.nodes) {
+      delete n.orbitDepth;
+      delete n.ringScale;
+      delete n.ringFade;
+    }
+  }
+
+  /** Per-frame drive in 3D mode — no-op in 2D or outside the view. */
+  function tick(now) {
+    if (!active || mode !== "3d") return;
+    projectAll(now);
+  }
+
+  /** Target positions for a mode switch — the caller animates the flight. */
+  function targetsForMode(m, now) {
+    if (m === "3d") {
+      const map = new Map();
+      projectAll(now, map);
+      return map;
+    }
+    return targets;
+  }
+
+  function setMode(m, now) {
+    mode = m === "3d" ? "3d" : "2d";
+    localStorage.setItem(MODE_KEY, mode);
+    if (!active) return;
+    if (mode === "3d") {
+      deps.renderer.setDrawOrder(byDepth);
+    } else {
+      clearDepthCues();
+    }
+  }
+
   /** Radius-aware separation on the target map — PCA packs the middle
    *  densely; a few push-apart passes make every node hittable. */
   function relax(placed) {
@@ -113,13 +217,18 @@ export function createSemanticView(deps) {
         .map((e) => ({ s: deps.sim.byId.get(e.source), t: deps.sim.byId.get(e.target), sim: e.sim }))
         .filter((e) => e.s && e.t);
     }
+    if (!points3d) points3d = computePoints3d();
+    active = true;
     deps.renderer.setSemanticEdges(semEdges);
     deps.renderer.setClusterLabelsVisible(false); // clusters interleave here
+    if (mode === "3d") deps.renderer.setDrawOrder(byDepth);
     $("#semantic-hint").hidden = false;
-    return targets;
+    return targetsForMode(mode, performance.now());
   }
 
   function exit() {
+    active = false;
+    clearDepthCues();
     deps.renderer.setSemanticEdges(null);
     deps.renderer.setClusterLabelsVisible(true);
     $("#semantic-hint").hidden = true;
@@ -128,6 +237,10 @@ export function createSemanticView(deps) {
   return {
     enter,
     exit,
+    tick,
+    setMode,
+    getMode: () => mode,
+    targetsForMode,
     /** unwritten connections (node refs) — [] until the view was entered */
     getEdges: () => semEdges,
   };

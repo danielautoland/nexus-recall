@@ -98,7 +98,7 @@ test("buildSemanticLayout: empty and single-vector vaults don't blow up", () => 
     new Map([["solo", vec([1, 0, 0, 0])]]),
   );
   assert.equal(one.count, 1);
-  assert.deepEqual(one.positions, [{ id: "solo", x: 0.5, y: 0.5 }]);
+  assert.deepEqual(one.positions, [{ id: "solo", x: 0.5, y: 0.5, z: 0.5 }]);
 });
 
 // ── HTTP endpoint ────────────────────────────────────────────────

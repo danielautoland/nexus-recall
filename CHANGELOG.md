@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-07-18
+
+### Fixed
+- **`import vault` self-ingest guard** (zzallirog field report): importing a
+  folder that overlaps the vault — the vault itself, a subfolder, or a parent
+  directory — now refuses with a clear message instead of writing a slugified
+  copy of the vault into itself. For users whose memory directory *is* the
+  vault this was the default first run; the daemon hid the echo (it scopes
+  cleanly), but every other tool on the shared folder saw a half-duplicate
+  corpus. Symlinks are resolved before the check.
+- Every successful folder import now writes a `.bastra-imported` marker into
+  `memories/imported/<label>/` (source, label, count, timestamp), so external
+  tools walking the shared folder — atlas viewers, indexers, grep — can
+  recognize and skip the machine-imported set.
+
+### Added
+- **Semantic view: depth mode** (zzallirog idea — "a wire between two things
+  you've already made"): the server-side PCA now ships the third principal
+  component as `z`, and the semantic view gets a flat/depth toggle in the
+  sidebar (the spot the structure switch occupies in other views). Depth mode
+  projects the meaning cloud through the Mindspace-style camera — slow drift,
+  perspective size and fade, depth-sorted occlusion; the flat 2D layout stays
+  byte-identical to before.
+
 ## [0.8.2] — 2026-07-18
 
 ### Added
@@ -581,6 +605,7 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.3]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.3
 [0.8.2]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.2
 [0.8.1]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.1
 [0.8.0]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.0

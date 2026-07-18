@@ -99,7 +99,9 @@ const VERSION_SOURCES = [
   { path: "packages/daemon/src/cli/helpers.ts", re: /(export const VERSION = ")[^"]+(")/ },
   { path: "packages/daemon/src/index.ts", re: /(const DAEMON_VERSION = ")[^"]+(")/ },
   { path: "packages/daemon/src/index.ts", re: /(\{ name: "bastra-recall", version: ")[^"]+(" \})/ },
-  { path: "packages/daemon/src/mcp-forwarder.ts", re: /(\{ name: "bastra-recall-mcp", version: ")[^"]+(" \})/ },
+  // multi-line-tolerant: seit dem Desktop-Extension-Handshake (#218) trägt
+  // das Server-Info-Objekt eine title:-Zeile zwischen name und version
+  { path: "packages/daemon/src/mcp-forwarder.ts", re: /(name: "bastra-recall-mcp",[\s\S]{0,120}?version: ")[^"]+(")/ },
 ];
 for (const { path: relPath, re } of VERSION_SOURCES) {
   const abs = resolve(repoRoot, relPath);

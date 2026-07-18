@@ -19,7 +19,7 @@
  * (b) ids can't collide with hand-authored memories, (c) the whole set is
  * delete-/re-importable atomically (one folder, one scope, one source tag).
  */
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -287,6 +287,26 @@ export async function importVault(
   if (!info || !info.isDirectory()) {
     throw new Error(`not a directory: ${sourceDir}`);
   }
+  // Self-Ingest-Guard (zzallirog field report, 2026-07-18): Quelle und Vault
+  // dürfen sich NICHT überlappen. `import vault <vault>` schrieb eine
+  // komplette slugifizierte Kopie des Vaults in den Vault selbst — der Daemon
+  // scoped sauber und versteckt es, aber jedes andere Tool auf dem geteilten
+  // Ordner (Atlas, Indexer, grep) sieht ein Halb-Echo-Korpus. Für Nutzer,
+  // deren Memory-Verzeichnis DER Vault ist, gilt: die Files sind bereits
+  // nativ indexiert — Import ist für FREMDE Ordner. realpath, damit Symlinks
+  // (~, Cloud-Mounts) die Prüfung nicht umgehen.
+  const srcReal = await realpath(sourceDir).catch(() => resolve(sourceDir));
+  const vaultReal = await realpath(vaultRoot).catch(() => resolve(vaultRoot));
+  const within = (child: string, parent: string): boolean =>
+    child === parent || child.startsWith(parent + sep);
+  if (within(srcReal, vaultReal) || within(vaultReal, srcReal)) {
+    throw new Error(
+      `import source (${srcReal}) overlaps the vault (${vaultReal}) — refusing to self-ingest. ` +
+        `The vault indexes its own files natively; importing it into itself would write a duplicate ` +
+        `slugified copy under ${IMPORT_ROOT}/. Point "import vault" at a folder OUTSIDE the vault ` +
+        `(or copy the notes out first).`,
+    );
+  }
   const label = slugify(options.label ?? (basename(sourceDir) || "import"));
   const overwrite = options.overwrite ?? true;
   const dryRun = options.dryRun ?? false;
@@ -324,6 +344,35 @@ export async function importVault(
       }
     }
     ids.push(mapped.input.id as string);
+  }
+
+  if (!dryRun && ids.length > 0) {
+    // Fix-Leiter Stufe 3 (zzallirog): ein Marker im Import-Subtree, damit
+    // FREMDE Tools auf dem geteilten Ordner (Atlas, Indexer, grep) das Set
+    // als maschinell erzeugte Kopie erkennen und überspringen können. Kein
+    // .md — der Vault-Loader ignoriert die Datei.
+    try {
+      const markerDir = join(vaultRoot, folder);
+      await mkdir(markerDir, { recursive: true });
+      await writeFile(
+        join(markerDir, ".bastra-imported"),
+        JSON.stringify(
+          {
+            tool: "bastra-recall import vault",
+            label,
+            source: srcReal,
+            imported: ids.length,
+            at: new Date().toISOString(),
+            note: "Machine-imported copy of an external folder — safe for external tools to skip.",
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+    } catch {
+      /* marker is best-effort — never fail an import over it */
+    }
   }
 
   return {

@@ -230,3 +230,46 @@ test("re-import is idempotent (stable id, overwrite in place)", async () => {
     await rm(vault, { recursive: true, force: true });
   }
 });
+
+test("self-ingest guard: source == vault, source inside vault, vault inside source all refuse", async () => {
+  const vault = await tmp("iv-guard-");
+  try {
+    await writeSrc(vault, "memories/note.md", "---\nname: N\ndescription: D\ntype: user\n---\nBody.");
+    // Quelle == Vault (der zzallirog-Fall: --vault ~/memory import vault ~/memory)
+    await assert.rejects(() => importVault(vault, vault), /overlaps the vault/);
+    // Quelle INNERHALB des Vaults
+    await assert.rejects(() => importVault(vault, join(vault, "memories")), /overlaps the vault/);
+    // Vault INNERHALB der Quelle (Import würde die eigene Ausgabe mit-ingesten)
+    const parent = await tmp("iv-guard-parent-");
+    const innerVault = join(parent, "vault");
+    await mkdir(innerVault, { recursive: true });
+    await assert.rejects(() => importVault(innerVault, parent), /overlaps the vault/);
+    await rm(parent, { recursive: true, force: true });
+  } finally {
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("marker: a successful import writes .bastra-imported into the set (skippable by external tools)", async () => {
+  const src = await tmp("iv-marker-src-");
+  const vault = await tmp("iv-marker-vault-");
+  try {
+    await writeSrc(src, "user_probe.md", "---\nname: Probe\ndescription: Marker probe\ntype: user\n---\nBody.");
+    const r = await importVault(vault, src, { label: "marked" });
+    assert.equal(r.imported, 1);
+    const marker = JSON.parse(await readFile(join(vault, r.folder, ".bastra-imported"), "utf8"));
+    assert.equal(marker.label, "marked");
+    assert.equal(marker.imported, 1);
+    assert.ok(typeof marker.source === "string" && marker.source.length > 0);
+
+    // dry-run schreibt keinen Marker
+    const dryVault = await tmp("iv-marker-dry-");
+    const d = await importVault(dryVault, src, { label: "marked", dryRun: true });
+    assert.equal(d.dryRun, true);
+    await assert.rejects(() => readFile(join(dryVault, d.folder, ".bastra-imported"), "utf8"));
+    await rm(dryVault, { recursive: true, force: true });
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});

@@ -246,6 +246,9 @@ async function main() {
     // ring computes its wheel over the right grouping
     if (structureMode !== VIEW_STRUCTURE[v]) applyStructure(VIEW_STRUCTURE[v]);
     $("#structure-label").hidden = $("#structure-switch").hidden = v === "semantic" || v === "orbit";
+    // semantic: an der Structure-Stelle sitzt stattdessen der 2D/3D-Umschalter
+    $("#semantic-mode-label").hidden = $("#semantic-mode-switch").hidden = v !== "semantic";
+    if (v === "semantic") renderSemanticModeSwitch();
     if (v === "ring") {
       to = ringView.enter(); // glides its own camera via flyToRing
     } else if (v === "clouds") {
@@ -773,6 +776,27 @@ async function main() {
       wasBusy = true;
     }
   }
+  // Semantic 2D/3D (zzallirog): dritter PCA-Kanal + vorhandene Kamera. Der
+  // Umschalter sitzt an der Structure-Stelle, die im Semantic-View frei ist.
+  function renderSemanticModeSwitch() {
+    const m = semanticView.getMode();
+    $("#semantic-mode-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.smode === m));
+  }
+  $("#semantic-mode-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-smode]");
+    if (!b || currentView !== "semantic" || viewTransition) return;
+    if (b.dataset.smode === semanticView.getMode()) return;
+    const from = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+    semanticView.setMode(b.dataset.smode);
+    renderSemanticModeSwitch();
+    // Flugziel = Projektion zum Landezeitpunkt, damit der 3D-Tick nahtlos übernimmt
+    const to = semanticView.targetsForMode(b.dataset.smode, performance.now() + 700);
+    interactions.flyToBounds([...to.values()], { padding: 90, maxScale: 1.6, ms: 700 });
+    viewTransition = { t0: performance.now(), ms: 700, from, to, noFit: true };
+  });
+
   $("#structure-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-structure]");
     if (b) setStructure(b.dataset.structure);
@@ -817,6 +841,7 @@ async function main() {
     ringView.tick(now);
     // orbit view: rotation + depth projection, paused during view flights
     if (!viewTransition && currentView === "orbit") orbitView.tick(now);
+    if (!viewTransition && currentView === "semantic") semanticView.tick(now);
     // clouds physics pauses while any fly/fan-out animation is running
     if (!viewTransition && !ringView.isAnimating() && currentView === "clouds") {
       const busy = sim.tick();
