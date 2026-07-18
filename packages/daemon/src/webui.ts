@@ -280,10 +280,12 @@ export async function handleUiAnnotate(
   const line = `- [ ] ${date} · ${kind} · [[${id}]]${note ? ` — ${note}` : ""}\n`;
   const file = join(vaultPath, CARE_FILE);
   try {
+    // "wx" creates the header only when the file does not exist yet —
+    // atomic, no stat-then-write race with a concurrent flag request.
     try {
-      await stat(file);
-    } catch {
-      await writeFile(file, CARE_HEADER, "utf8");
+      await writeFile(file, CARE_HEADER, { encoding: "utf8", flag: "wx" });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
     await appendFile(file, line, "utf8");
     sendJsonPlain(res, 200, { ok: true, entry: { done: false, date, kind, id, note } });

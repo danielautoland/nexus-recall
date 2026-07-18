@@ -10,7 +10,7 @@
  * Nothing is ever auto-saved: candidates wait in `import-review.md` until
  * the session distills them WITH the user.
  */
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   extractCandidates,
@@ -80,12 +80,19 @@ export async function cmdImport(args: ParsedArgs): Promise<number> {
     raw = await readStdin();
   } else {
     try {
-      const info = await stat(fileArg);
-      if (info.size > MAX_IMPORT_FILE_BYTES) {
-        process.stderr.write(`error: ${fileArg} is ${Math.round(info.size / 1024 / 1024)} MB — too large to parse safely (max 256 MB)\n`);
-        return 1;
+      // Size-check and read on the SAME handle — a stat-then-read on the
+      // path could be raced past the size cap via a file swap.
+      const fh = await open(fileArg, "r");
+      try {
+        const info = await fh.stat();
+        if (info.size > MAX_IMPORT_FILE_BYTES) {
+          process.stderr.write(`error: ${fileArg} is ${Math.round(info.size / 1024 / 1024)} MB — too large to parse safely (max 256 MB)\n`);
+          return 1;
+        }
+        raw = await fh.readFile({ encoding: "utf8" });
+      } finally {
+        await fh.close();
       }
-      raw = await readFile(fileArg, "utf8");
       fileName = basename(fileArg);
     } catch (err) {
       process.stderr.write(`error: cannot read ${fileArg}: ${(err as Error).message}\n`);

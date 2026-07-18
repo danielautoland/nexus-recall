@@ -7,7 +7,7 @@
  * registration (duplicate tools otherwise), and hand the bundle to the
  * Desktop app via `open` — the user confirms Install in Desktop's dialog.
  */
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir, platform } from "node:os";
@@ -67,8 +67,9 @@ async function download(url: string, dest: string): Promise<boolean> {
     if (!resp.ok) return false;
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.byteLength < MIN_MCPB_BYTES) return false;
-    await mkdir(dirname(dest), { recursive: true });
-    await writeFile(dest, buf);
+    // "wx": the destination lives in a fresh private mkdtemp dir, so it must
+    // not exist — refusing to follow a pre-planted file/symlink.
+    await writeFile(dest, buf, { flag: "wx" });
     return true;
   } catch {
     return false;
@@ -105,7 +106,9 @@ export async function cmdInstallExtension(args: ParsedArgs): Promise<number> {
   if (await fileExists(mcpbPath)) {
     process.stdout.write(`  · extension: using local build ${mcpbPath}\n`);
   } else {
-    mcpbPath = join(tmpdir(), `bastra-recall-${version}.mcpb`);
+    // Private per-run mkdtemp dir (0700) — a predictable path in the shared
+    // tmpdir could be pre-planted or swapped between write and `open`.
+    mcpbPath = join(await mkdtemp(join(tmpdir(), "bastra-mcpb-")), `bastra-recall-${version}.mcpb`);
     process.stdout.write(`  · extension: downloading v${version} from GitHub releases…\n`);
     let ok = await download(releaseDownloadUrl(version), mcpbPath);
     if (!ok) {
