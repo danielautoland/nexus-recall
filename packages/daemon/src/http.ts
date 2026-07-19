@@ -292,6 +292,12 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   const liveUpdates = createLiveUpdates(vault);
   // "read"-Notices (#216): jeder load_memory landet als Live-Ereignis in der Map
   telemetry.onMemoryLoaded = (id) => liveUpdates.notifyRead(id);
+  // "surfaced"-Notices (#221): recall/hook_recall lassen ihre Top-Treffer
+  // aufleuchten — nicht nur das seltene load_memory. Der REANNOUNCE-Cooldown
+  // in live-updates deckelt die Frequenz pro id.
+  telemetry.onRecalled = (ids) => {
+    for (const id of ids) liveUpdates.notifyRead(id);
+  };
 
   // env wins (ops override); else the token minted by `bastra token` in
   // cli-settings.json. Empty = no token issued → browser clients are rejected.

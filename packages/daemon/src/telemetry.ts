@@ -464,6 +464,11 @@ export class Telemetry {
    *  wird dort als "read"-Ereignis angezeigt. Best-effort, nie werfend. */
   onMemoryLoaded?: (id: string) => void;
 
+  /** Live-Notices "surfaced" (#221): Hook der Map für recall/hook_recall —
+   *  die Top-Treffer eines Recalls leuchten auf, nicht nur das seltene
+   *  load_memory. Best-effort, nie werfend. Der Aufrufer deckelt auf Top-N. */
+  onRecalled?: (ids: string[]) => void;
+
   recordLoadedMemory(payload: {
     memory_id: string;
     distinctive_tokens: string[];
@@ -571,6 +576,13 @@ export class Telemetry {
   }
 
   async logRecall(payload: Omit<RecallEvent, "kind" | "ts" | "session_id">): Promise<void> {
+    // "surfaced"-Notice VOR dem enabled-Gate — die Map-Notice ist ein UI-Signal,
+    // unabhängig von der Telemetrie-Persistenz (wie onMemoryLoaded). Top-3.
+    try {
+      this.onRecalled?.(payload.hits.slice(0, 3).map((h) => h.id));
+    } catch {
+      /* Notices dürfen einen Recall nie brechen */
+    }
     if (!this.enabled) return;
     await this.write({
       kind: "recall",
@@ -607,6 +619,13 @@ export class Telemetry {
   async logHookRecall(
     payload: Omit<HookRecallEvent, "kind" | "ts" | "session_id">,
   ): Promise<void> {
+    // "surfaced"-Notice VOR dem enabled-Gate — der Hook-Pfad ist der
+    // Löwenanteil des Traffics; die Map-Notice ist UI, nicht Persistenz. Top-3.
+    try {
+      this.onRecalled?.(payload.hits.slice(0, 3).map((h) => h.id));
+    } catch {
+      /* Notices dürfen einen Hook-Recall nie brechen */
+    }
     if (!this.enabled) return;
     await this.write({
       kind: "hook_recall",
