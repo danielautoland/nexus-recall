@@ -543,6 +543,87 @@ test("save_memory returns high save_quality for specific anchored triggers", asy
   }
 });
 
+// #231 (language-first recall): save_quality advises when recall_when reads as
+// English on a non-English vault — the hook generates English queries, so the
+// highest-weighted field can't match English-authored triggers there. Advisory
+// only, conservative (fires only on a confident "en" detection).
+test("save_quality (#231): recall_when language-mismatch advisory is conservative", async () => {
+  const { deps, close } = await makeDeps();
+  const hasLangHint = (r: Awaited<ReturnType<typeof saveMemoryHandler>>): boolean =>
+    r.save_quality.issues.some((i) => i.includes("reads as English"));
+  try {
+    // (a) primary=de + purely English recall_when → hint fires.
+    deps.primaryLanguage = "de";
+    const english = await saveMemoryHandler(deps, {
+      title: "checkout payment retry language case a",
+      type: "lesson",
+      summary: "Guard against duplicate charges when retrying a failed checkout payment webhook.",
+      body: "Retry the payment webhook idempotently.",
+      topic_path: ["checkout", "payments"],
+      tags: ["checkout-payments"],
+      scope: "lang-a",
+      recall_when: [
+        "about to refactor the checkout payment retry logic",
+        "debugging a failed payment webhook in the orders service",
+      ],
+    });
+    assert.ok(hasLangHint(english), "de primary + English recall_when should surface the language advisory");
+
+    // (b) primary=de + German recall_when with English tech anchors → NO hint.
+    deps.primaryLanguage = "de";
+    const german = await saveMemoryHandler(deps, {
+      title: "checkout payment retry language case b",
+      type: "lesson",
+      summary: "Doppelbuchungen vermeiden, wenn der fehlgeschlagene checkout payment webhook erneut läuft.",
+      body: "Den payment webhook idempotent wiederholen.",
+      topic_path: ["checkout", "payments"],
+      tags: ["checkout-payments-de"],
+      scope: "lang-b",
+      recall_when: [
+        "beim Refactoring der checkout payment retry Logik",
+        "wenn der payment webhook im orders service fehlschlägt",
+      ],
+    });
+    assert.ok(!hasLangHint(german), "German triggers with English anchors must NOT trip the advisory");
+
+    // (c) primary unset → check never fires, even on English recall_when.
+    deps.primaryLanguage = undefined;
+    const unset = await saveMemoryHandler(deps, {
+      title: "checkout payment retry language case c",
+      type: "lesson",
+      summary: "Guard against duplicate charges when retrying a failed checkout payment webhook.",
+      body: "Retry the payment webhook idempotently.",
+      topic_path: ["checkout", "payments"],
+      tags: ["checkout-payments-c"],
+      scope: "lang-c",
+      recall_when: [
+        "about to refactor the invoice reconciliation batch job",
+        "debugging a stuck settlement export in the billing service",
+      ],
+    });
+    assert.ok(!hasLangHint(unset), "unset primary language must never trip the advisory");
+
+    // (d) primary=en → English recall_when is expected, no hint.
+    deps.primaryLanguage = "en";
+    const enPrimary = await saveMemoryHandler(deps, {
+      title: "checkout payment retry language case d",
+      type: "lesson",
+      summary: "Guard against duplicate charges when retrying a failed checkout payment webhook.",
+      body: "Retry the payment webhook idempotently.",
+      topic_path: ["checkout", "payments"],
+      tags: ["checkout-payments-d"],
+      scope: "lang-d",
+      recall_when: [
+        "about to tune the search reranker cutoff for short queries",
+        "debugging a slow vector recall path in the daemon",
+      ],
+    });
+    assert.ok(!hasLangHint(enPrimary), "primary=en must never trip the advisory");
+  } finally {
+    await close();
+  }
+});
+
 test("verify-loop: rank factor follows evidence, records are counted, load_memory carries the verify hint", async () => {
   // Pure Evidenz→Ranking-Kurve: works hebt (gekappt), fails senkt, geclampt.
   assert.equal(commonsRankFactor(0, 0), 0.8);

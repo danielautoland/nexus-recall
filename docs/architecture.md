@@ -90,6 +90,11 @@ Embeddings are an optional, configurable second pass; BM25 keyword search is the
 
 When an `EmbeddingIndex` is attached, `recallHybrid(...)` combines BM25 and vector rankings with Reciprocal Rank Fusion. Vectors are stored as base64-encoded floats in `<vault>/.bastra/embeddings.json`.
 
+On the hybrid path the returned `score` is a **rank quantity, not a similarity** (#230). `fuseRRF` (`packages/core/src/embeddings.ts`) sums `1/(k + rank)` with `k = 60` across the two arms, and `recallHybrid` scales the result by ×5000 into a BM25-looking range. Every score therefore decomposes into a rank pair: rank 1 in both arms is the structural ceiling `2 × 5000/61 ≈ 163.934`, and rank 1 in a single arm (the arms fully disagree) is `5000/61 ≈ 81.967` — so a top hit can legitimately sit near 82. A top hit is high *by construction*: a list always has a first element even when the honest answer is "nothing here", so a nonsense query can still carry a 130+ score. Two consequences:
+
+- The documented `min_score` floor (default 30) can never fire on the hybrid path — a hit would need roughly rank 273 in **both** arms to fall below it. The floor is only meaningful in BM25-only mode (no embeddings), where the score is a genuine BM25 quantity.
+- `recall` returns a top-level `weak_result: true` when, on the hybrid path, no returned hit has a `recall_when` or title match — an explicit "nothing here" signal riding alongside the rank-1-of-nothing score. It is informational and filters nothing. With `verbosity: "full"` each hit also carries `rrf: { rank_bm25, rank_vector, raw }` so callers can see the rank pair the score is built from.
+
 ### Multi-Hop Recall
 
 If `expand_hops: 1` is passed, recall adds one-hop neighbors from `frontmatter.related_via`. Those neighbors are filtered with the same obsolete/scope/type/sensitivity rules and receive a reduced score.

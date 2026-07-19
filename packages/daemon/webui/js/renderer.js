@@ -429,6 +429,7 @@ export function createRenderer(canvas, sim, initialHues) {
     ctx.save();
     ctx.globalCompositeOperation = theme.flowBlend;
     ctx.lineWidth = 1.6 / camera.scale;
+    const WAVE_SPAN = 200; // period reference (~mid-length line); see phase below
     let k = 0;
     for (const e of semEdges ? [...sim.edges, ...semEdges] : sim.edges) {
       if (e.s.id !== pivotId && e.t.id !== pivotId) continue;
@@ -450,13 +451,16 @@ export function createRenderer(canvas, sim, initialHues) {
       // unhurried, and each strand at its own slightly different pace —
       // organic drift instead of a synchronized march
       const speed = 42 + ((k * 53) % 23);
-      // Phase über die GEWRAPPTE Weltstrecke, nicht `now/period`: period hängt
-      // an dist, und now * Δperiod/period² multipliziert jede minimale Node-
-      // Bewegung mit dem Session-Alter — die Welle wurde umso schneller, je
-      // länger die Map offen war (Zeitdilatations-Bug). Erst wrappen (Zähler
-      // bleibt < dist), dann normieren: konstante Weltgeschwindigkeit, egal
-      // wie alt `now` ist.
-      const phase = (((now * speed) / 1000) % dist) / dist;
+      // Zeitbasierte Phase mit EINHEITLICHER Periode auf allen Linien: die
+      // gewrappte Weltstrecke wird über die feste WAVE_SPAN normiert, NICHT über
+      // `dist` — sonst hängt die wahrgenommene Wellenfrequenz an der Linienlänge
+      // (kurze flackern schnell durch, lange kriechen). WAVE_SPAN ≈ mittellange
+      // Linie, damit sich das Tempo dort nicht ändert. Erst wrappen (Zähler
+      // bleibt < WAVE_SPAN), dann normieren: konstante Periode, kein
+      // Zeitdilatations-Bug (period hing sonst an dist, und now · Δperiod/period²
+      // skalierte jede minimale Node-Drift mit dem Session-Alter → Welle wurde
+      // umso schneller, je länger die Map offen war).
+      const phase = (((now * speed) / 1000) % WAVE_SPAN) / WAVE_SPAN;
       ctx.globalAlpha = 0.4 * ramp * fade;
       for (let p = 0; p < count; p++) {
         // peak sweeps -W → 1+W so the sheen slides off both ends (no popping)

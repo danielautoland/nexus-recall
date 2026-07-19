@@ -92,6 +92,19 @@ export interface CliSettings {
   // pro Prompt (default 2, clamp 1..5). Env gewinnt: BASTRA_REFLEX=off,
   // BASTRA_REFLEX_MAX_PER_TURN.
   reflex?: { enabled?: boolean; maxPerTurn?: number };
+  // Datei-Größen-Konvention (19.07.2026): guide = Richtwert in Zeilen für
+  // Quellcode-Dateien (Default 500), critical = harte Warnschwelle (Default
+  // 800). Gesetzt vom Onboarding-Interview (conventions_size) oder `bastra
+  // config set size.guide N`. Der PreToolUse-Hook (file-size-check) liest
+  // beide deterministisch; env gewinnt: BASTRA_SIZE_GUIDE/_CRITICAL.
+  size?: { guide?: number; critical?: number };
+  // User-Sprache (#231, Language-first recall): primary = 2-stelliger ISO-639-1-
+  // Code (lowercase, z.B. "de"). Beim Onboarding aus der identity-Antwort
+  // abgeleitet (persistLanguageSetting) oder via `bastra config set
+  // language.primary de` gesetzt. Der Session-Hook weist den Agenten an, Memories
+  // (Titel, Summary, recall_when) in dieser Sprache zu verfassen — nur echte
+  // englische Fachbegriffe (daemon, deploy, hook, …) bleiben als Anker.
+  language?: { primary?: string };
 }
 
 /**
@@ -117,6 +130,11 @@ export function isDocsMode(v: unknown): v is DocsMode {
 /** Doc language is a free short tag ("en", "de", "pt-br") — not an enum. */
 export function isDocsLanguage(v: unknown): v is string {
   return typeof v === "string" && /^[a-z]{2}(-[a-z]{2,4})?$/i.test(v.trim());
+}
+
+/** Primary authoring language: a 2-letter ISO-639-1 code (case-insensitive input). */
+export function isPrimaryLanguage(v: unknown): v is string {
+  return typeof v === "string" && /^[a-z]{2}$/.test(v.trim().toLowerCase());
 }
 
 export function isEmbeddingProviderName(v: unknown): v is EmbeddingProviderName {
@@ -271,6 +289,23 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
       );
     }
     if (reflex.enabled !== undefined || reflex.maxPerTurn !== undefined) settings.reflex = reflex;
+  }
+  const sizeData = (data as { size?: { guide?: unknown; critical?: unknown } }).size;
+  if (sizeData !== undefined) {
+    const size: { guide?: number; critical?: number } = {};
+    if (typeof sizeData.guide === "number" && Number.isFinite(sizeData.guide)) size.guide = sizeData.guide;
+    if (typeof sizeData.critical === "number" && Number.isFinite(sizeData.critical)) size.critical = sizeData.critical;
+    if (size.guide !== undefined || size.critical !== undefined) settings.size = size;
+  }
+  const langData = (data as { language?: { primary?: unknown } }).language;
+  if (langData !== undefined) {
+    const primary = typeof langData.primary === "string" ? langData.primary.trim().toLowerCase() : langData.primary;
+    if (isPrimaryLanguage(primary)) settings.language = { primary };
+    else if (langData.primary !== undefined) {
+      process.stderr.write(
+        `[bastra-recall] cli-settings.json: ignoring invalid language.primary ${JSON.stringify(langData.primary)}\n`,
+      );
+    }
   }
   return settings;
 }
@@ -520,9 +555,32 @@ export async function setDocsLanguage(language: string, path: string = settingsF
   await writeSettings({ ...current, docs: { ...current.docs, language: language.trim().toLowerCase() } }, path);
 }
 
+/** Datei-Größen-Richtwert (Zeilen) für Quellcode; undefined = Default 500. */
+export async function getSizeGuide(path?: string): Promise<number | undefined> {
+  const v = (await readSettings(path)).size?.guide;
+  return typeof v === "number" && Number.isFinite(v) && v >= 100 && v <= 5000 ? Math.round(v) : undefined;
+}
+
+export async function setSizeGuide(guide: number, path: string = settingsFilePath()): Promise<void> {
+  const n = Math.min(5000, Math.max(100, Math.round(guide)));
+  const current = await readSettings(path);
+  await writeSettings({ ...current, size: { ...current.size, guide: n } }, path);
+}
+
 export async function setApiToken(token: string, path: string = settingsFilePath()): Promise<void> {
   const current = await readSettings(path);
   await writeSettings({ ...current, api: { token } }, path);
+}
+
+/** The stored primary authoring language (2-letter ISO code), or undefined when unset. */
+export async function getPrimaryLanguage(path?: string): Promise<string | undefined> {
+  return (await readSettings(path)).language?.primary;
+}
+
+/** Persists the primary authoring language, normalized to a lowercase 2-letter code. */
+export async function setPrimaryLanguage(code: string, path: string = settingsFilePath()): Promise<void> {
+  const current = await readSettings(path);
+  await writeSettings({ ...current, language: { ...current.language, primary: code.trim().toLowerCase() } }, path);
 }
 
 /**

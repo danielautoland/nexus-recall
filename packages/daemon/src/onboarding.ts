@@ -18,7 +18,8 @@ import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { saveMemory, type SaveMemoryInput } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
-import { getUiEnabled } from "./settings.js";
+import { getUiEnabled, setSizeGuide, setPrimaryLanguage } from "./settings.js";
+import { detectLanguage } from "./learned-recall/language.js";
 
 export const ONBOARD_MARKER = ".onboarding-done";
 /** Below this vault size a vault counts as fresh (an interview writes ~8). */
@@ -76,6 +77,20 @@ export const QUESTIONS: OnboardingQuestion[] = [
     id: "workflow",
     ask: "How do you like to work — tests, commits, reviews, code style?",
     hint: "e.g. I commit myself · tests before merge · small PRs",
+    optional: true,
+    personas: ["developer"],
+  },
+  {
+    id: "conventions_size",
+    ask: "File-size guide — around how many lines should a source file stay, before a split gets proposed?",
+    hint: "e.g. 500 — a guide value, not a hard limit; the AI proposes splits instead of growing files silently",
+    optional: true,
+    personas: ["developer"],
+  },
+  {
+    id: "conventions_structure",
+    ask: "Folder conventions — which folder holds what in your projects?",
+    hint: "e.g. hooks/ for React hooks · api/ for routes · components/ · managers/ · utils/",
     optional: true,
     personas: ["developer"],
   },
@@ -179,6 +194,29 @@ const TEMPLATES: Record<string, Template> = {
     tags: ["profile", "onboarding", "workflow"],
     recall_when: ["before committing or opening a PR", "how does the user want tests and reviews handled", "what workflow does the user prefer"],
   },
+  conventions_size: {
+    id: "profile-file-size-guide",
+    title: "Profile: file-size guide for source files",
+    type: "user-preference",
+    tags: ["profile", "onboarding", "conventions"],
+    recall_when: [
+      "about to write or grow a source file — size guide",
+      "when to propose a module split line count",
+      "file size convention for this user",
+    ],
+    note: "The PreToolUse hook enforces this deterministically (file-size-check); the number also lives in cli-settings as size.guide.",
+  },
+  conventions_structure: {
+    id: "profile-folder-conventions",
+    title: "Profile: folder and module conventions",
+    type: "user-preference",
+    tags: ["profile", "onboarding", "conventions"],
+    recall_when: [
+      "creating a new file — which folder does it belong in",
+      "project folder structure convention",
+      "where do hooks api components utils live",
+    ],
+  },
   role: {
     id: "profile-company-and-role",
     title: "Profile: company and role",
@@ -278,6 +316,100 @@ export function buildOnboardingMemories(persona: Persona, answers: Record<string
   return out;
 }
 
+/**
+ * Konventions-Antworten in die cli-settings spiegeln, damit deterministische
+ * Checks sie nutzen: der Dateigrößen-Richtwert (conventions_size) speist den
+ * file-size-check im PreToolUse-Hook. Erste Zahl in der Antwort zählt
+ * (clamp 100..5000); keine Zahl → keine Änderung. Best-effort — ein
+ * Settings-Fehler bricht nie ein Onboarding ab.
+ */
+export async function persistConventionSettings(
+  answers: Record<string, string>,
+  settingsPath?: string,
+): Promise<void> {
+  const raw = (answers.conventions_size ?? "").trim();
+  if (!raw) return;
+  const m = /\d{2,5}/.exec(raw.replace(/[.,](?=\d{3}\b)/g, ""));
+  if (!m) return;
+  const n = Math.min(5000, Math.max(100, Number(m[0])));
+  try {
+    await setSizeGuide(n, settingsPath);
+  } catch {
+    /* settings write is best-effort */
+  }
+}
+
+/**
+ * Sprachnamen → ISO-639-1. Lateinische Namen (inkl. Eigen- und deutscher
+ * Bezeichnung) matchen an Unicode-Wortgrenzen, damit z.B. "german" nicht in
+ * einem größeren Token feuert; script-spezifische Namen (Kyrillisch/CJK/Hangul)
+ * matchen als bloßer Substring — sie tauchen nicht zufällig in anderem Text auf.
+ */
+const LANGUAGE_NAME_HINTS: ReadonlyArray<{ code: string; latin: string[]; script?: string[] }> = [
+  { code: "de", latin: ["deutsch", "german"] },
+  { code: "en", latin: ["englisch", "english"] },
+  { code: "ru", latin: ["russisch", "russian"], script: ["русский"] },
+  { code: "fr", latin: ["französisch", "franzoesisch", "french", "français", "francais"] },
+  { code: "es", latin: ["spanisch", "spanish", "español", "espanol"] },
+  { code: "it", latin: ["italienisch", "italian", "italiano"] },
+  { code: "pt", latin: ["portugiesisch", "portuguese", "português", "portugues"] },
+  { code: "pl", latin: ["polnisch", "polish", "polski"] },
+  { code: "nl", latin: ["niederländisch", "niederlaendisch", "dutch", "nederlands"] },
+  { code: "ja", latin: ["japanisch", "japanese"], script: ["日本語"] },
+  { code: "zh", latin: ["chinesisch", "chinese"], script: ["中文"] },
+  { code: "ko", latin: ["koreanisch", "korean"], script: ["한국어"] },
+];
+
+/** First explicitly named language in `text` → its ISO code (earliest mention wins), or null. */
+function explicitLanguage(text: string): string | null {
+  const hay = text.toLowerCase();
+  let bestCode: string | null = null;
+  let bestPos = Infinity;
+  for (const hint of LANGUAGE_NAME_HINTS) {
+    let pos = -1;
+    for (const name of hint.latin) {
+      const m = new RegExp(`(?<![\\p{L}])${name}(?![\\p{L}])`, "u").exec(hay);
+      if (m && (pos < 0 || m.index < pos)) pos = m.index;
+    }
+    for (const name of hint.script ?? []) {
+      const i = hay.indexOf(name.toLowerCase());
+      if (i >= 0 && (pos < 0 || i < pos)) pos = i;
+    }
+    if (pos >= 0 && pos < bestPos) {
+      bestPos = pos;
+      bestCode = hint.code;
+    }
+  }
+  return bestCode;
+}
+
+/**
+ * User-Sprache aus den Onboarding-Antworten in die cli-settings spiegeln (#231,
+ * Language-first recall): Der Session-Hook weist den Agenten dann an, Memories in
+ * dieser Sprache zu verfassen. Primär zählt eine explizit in der identity-Antwort
+ * genannte Sprache ("Deutsch, Du-Form" → de); fällt das aus, greift die
+ * heuristische Detection über den zusammengefügten Text ALLER Antworten (liefert
+ * nur de/en). Kein eindeutiges Signal → nichts schreiben. Best-effort — ein
+ * Settings-Fehler bricht nie ein Onboarding ab.
+ */
+export async function persistLanguageSetting(
+  answers: Record<string, string>,
+  settingsPath?: string,
+): Promise<void> {
+  const identity = (answers.identity ?? "").trim();
+  let code = identity ? explicitLanguage(identity) : null;
+  if (!code) {
+    const all = Object.values(answers).join(" \n ").trim();
+    if (all) code = detectLanguage(all).lang;
+  }
+  if (!code) return;
+  try {
+    await setPrimaryLanguage(code, settingsPath);
+  } catch {
+    /* settings write is best-effort */
+  }
+}
+
 export async function isOnboardingDone(vaultPath: string): Promise<boolean> {
   try {
     await readFile(join(vaultPath, ONBOARD_MARKER), "utf8");
@@ -371,6 +503,8 @@ export async function handleUiOnboarding(
   for (const m of memories) {
     await saveMemory(vaultPath, m);
   }
+  await persistConventionSettings(answers, settingsPath);
+  await persistLanguageSetting(answers, settingsPath);
   await markOnboardingDone(vaultPath, "map");
   sendJsonPlain(res, 200, { saved: memories.length, skipped: false });
 }

@@ -38,6 +38,7 @@
 .care-kinds .care-kind:hover { color: var(--accent); }
 .care-kinds .care-kind.active { background: var(--accent-soft); color: var(--accent); }
 .care-compose { display: flex; flex-direction: column; gap: 8px; }
+.care-compose[hidden] { display: none !important; } /* explicit display beats [hidden] otherwise */
 .care-note {
   width: 100%;
   resize: vertical;

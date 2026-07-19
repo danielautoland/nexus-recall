@@ -167,19 +167,37 @@ export function detectTopics(intent: ToolIntent): TopicResult {
 
   const topicList = [...topics];
   const fileLabel = filetype || (fp ? basename(fp) : "file");
-  const intentVerb = intent.tool_name === "Write" ? "writing" : "editing";
 
-  // Build a recall query. We bias toward action verbs (writing/editing) +
-  // filetype + the top topics. The vault's `recall_when` patterns tend to
-  // be phrased like "creating new input component" — so action verbs help.
+  // Build a recall query. Default (#231): LANGUAGE-NEUTRAL — the file identifier
+  // (extension or basename) plus the top topics, deduped, order stable. No
+  // English filler verbs/connectors: recall's lexical arm is half the RRF vote,
+  // and on a non-English vault template words ("editing", "involving") spend that
+  // vote on tokens the user's memories can't contain — pulling English docs up
+  // and starving non-English `recall_when`. The signal lives in the identifier +
+  // topics (extensions, path segments, symbols — language-neutral by
+  // construction), so dropping the filler loses nothing. We still never inject
+  // the full file_path: project/monorepo names are high-frequency tokens that
+  // drown out topic signal; path segments already feed `topics` above.
   //
-  // We deliberately do NOT inject the full file_path into the query: project
-  // / monorepo names (e.g. "bastra-recall") are very high-frequency tokens
-  // across project memorys and would drown out specific topic signal. Path
-  // segments still feed `topics` above, which is enough.
-  const head = `${intentVerb} ${fileLabel}`;
-  const tail = topicList.length ? ` involving ${topicList.slice(0, 6).join(", ")}` : "";
-  const query = head + tail;
+  // Kill switch: BASTRA_HOOK_QUERY=english restores the old action-verb template.
+  // Read per call so tests (and users) can flip it without a reload.
+  let query: string;
+  if ((process.env.BASTRA_HOOK_QUERY ?? "").toLowerCase() === "english") {
+    const intentVerb = intent.tool_name === "Write" ? "writing" : "editing";
+    const head = `${intentVerb} ${fileLabel}`;
+    const tail = topicList.length ? ` involving ${topicList.slice(0, 6).join(", ")}` : "";
+    query = head + tail;
+  } else {
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const term of [fileLabel, ...topicList.slice(0, 6)]) {
+      if (term && !seen.has(term)) {
+        seen.add(term);
+        terms.push(term);
+      }
+    }
+    query = terms.join(" ");
+  }
 
   return { query, topics: topicList, filetype };
 }

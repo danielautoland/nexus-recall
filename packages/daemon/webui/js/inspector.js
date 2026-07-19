@@ -83,7 +83,13 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
       return;
     }
     const submit = ev.target.closest("button.care-submit");
-    if (submit && current && careKind) {
+    if (submit && current) {
+      if (!careKind) {
+        // the compose box is hidden until a kind is picked (care.css [hidden]
+        // guard); if that guard is ever bypassed, don't swallow the note silently
+        submit.textContent = "pick a flag kind first";
+        return;
+      }
       const note = contentEl.querySelector(".care-note").value.trim();
       submit.disabled = true;
       submit.textContent = "flagging…";

@@ -27,7 +27,7 @@ import {
 test("questionsFor: persona steers the catalog, mixed gets one follow-up per persona", () => {
   assert.deepEqual(
     questionsFor("developer").map((q) => q.id),
-    ["identity", "rules", "stack", "projects", "workflow", "freeform"],
+    ["identity", "rules", "stack", "projects", "workflow", "conventions_size", "conventions_structure", "freeform"],
   );
   assert.deepEqual(
     questionsFor("mixed").map((q) => q.id),
@@ -163,5 +163,123 @@ test("POST /ui/onboarding skip: marker without any saved memory", async () => {
     await new Promise<void>((r) => server.close(() => r()));
     await rm(vaultDir, { recursive: true, force: true });
     await rm(settingsDir, { recursive: true, force: true });
+  }
+});
+
+test("persistConventionSettings: size answer lands in cli-settings, junk stays out", async () => {
+  const { persistConventionSettings } = await import("../src/onboarding.js");
+  const { getSizeGuide } = await import("../src/settings.js");
+  const dir = await mkdtemp(join(tmpdir(), "bastra-onboard-size-"));
+  const settingsPath = join(dir, "cli-settings.json");
+  try {
+    await persistConventionSettings({ conventions_size: "so um die 600 Zeilen" }, settingsPath);
+    assert.equal(await getSizeGuide(settingsPath), 600, "first number in the answer wins");
+
+    await persistConventionSettings({ conventions_size: "keine Ahnung" }, settingsPath);
+    assert.equal(await getSizeGuide(settingsPath), 600, "no number → previous value untouched");
+
+    await persistConventionSettings({}, settingsPath);
+    assert.equal(await getSizeGuide(settingsPath), 600, "no answer → untouched");
+
+    await persistConventionSettings({ conventions_size: "42" }, settingsPath);
+    assert.equal(await getSizeGuide(settingsPath), 100, "clamped to the 100..5000 range");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistLanguageSetting: explicit language in identity beats answer-text detection", async () => {
+  const { persistLanguageSetting } = await import("../src/onboarding.js");
+  const { getPrimaryLanguage } = await import("../src/settings.js");
+  const dir = await mkdtemp(join(tmpdir(), "bastra-onboard-lang-"));
+  const settingsPath = join(dir, "cli-settings.json");
+  try {
+    // identity names German; the rest of the body is English prose → explicit wins.
+    await persistLanguageSetting(
+      {
+        identity: "Daniel · Deutsch, Du-Form · terse",
+        stack: "I write TypeScript and Node with a lot of tests and small reviews",
+      },
+      settingsPath,
+    );
+    assert.equal(await getPrimaryLanguage(settingsPath), "de", "explicit 'Deutsch' beats the English body");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistLanguageSetting: explicit language names map to ISO codes (Latin + non-Latin)", async () => {
+  const { persistLanguageSetting } = await import("../src/onboarding.js");
+  const { getPrimaryLanguage } = await import("../src/settings.js");
+  const cases: Array<[string, string]> = [
+    ["Daniel · Deutsch, Du-Form", "de"],
+    ["Sam · English, terse and technical", "en"],
+    ["по-русски, кратко (русский)", "ru"],
+    ["en français, tutoiement", "fr"],
+    ["日本語で、簡潔に", "ja"],
+    ["中文，简洁", "zh"],
+  ];
+  for (const [identity, expected] of cases) {
+    const dir = await mkdtemp(join(tmpdir(), "bastra-lang-name-"));
+    const settingsPath = join(dir, "cli-settings.json");
+    try {
+      await persistLanguageSetting({ identity }, settingsPath);
+      assert.equal(await getPrimaryLanguage(settingsPath), expected, `identity=${JSON.stringify(identity)}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("persistLanguageSetting: falls back to detection over all answers when no name is given", async () => {
+  const { persistLanguageSetting } = await import("../src/onboarding.js");
+  const { getPrimaryLanguage } = await import("../src/settings.js");
+  const dir = await mkdtemp(join(tmpdir(), "bastra-onboard-lang-fb-"));
+  const settingsPath = join(dir, "cli-settings.json");
+  try {
+    // No language name anywhere; German function words carry the detection.
+    await persistLanguageSetting(
+      {
+        identity: "Sam, bitte kurz und technisch",
+        world: "Ich habe zwei Kinder und wohne in Berlin, das ist mir sehr wichtig",
+      },
+      settingsPath,
+    );
+    assert.equal(await getPrimaryLanguage(settingsPath), "de", "detected from German function words");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("persistLanguageSetting: no language signal leaves an existing value untouched", async () => {
+  const { persistLanguageSetting } = await import("../src/onboarding.js");
+  const { getPrimaryLanguage, setPrimaryLanguage } = await import("../src/settings.js");
+  const dir = await mkdtemp(join(tmpdir(), "bastra-onboard-lang-none-"));
+  const settingsPath = join(dir, "cli-settings.json");
+  try {
+    await setPrimaryLanguage("fr", settingsPath);
+    // Code-shaped answers, no language name, no function words → detector abstains.
+    await persistLanguageSetting(
+      { identity: "Sam", stack: "TypeScript Node Postgres Docker Kubernetes" },
+      settingsPath,
+    );
+    assert.equal(await getPrimaryLanguage(settingsPath), "fr", "no signal → previous value kept, never cleared");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("file-size-check reads the onboarded guide value from cli-settings", async () => {
+  const { thresholdsFor, readSizeSettings } = await import("../src/file-size-check.js");
+  const dir = await mkdtemp(join(tmpdir(), "bastra-size-settings-"));
+  const settingsPath = join(dir, "cli-settings.json");
+  try {
+    await writeFile(settingsPath, JSON.stringify({ size: { guide: 300 } }), "utf8");
+    const s = await readSizeSettings(settingsPath);
+    assert.deepEqual(thresholdsFor("/x/app.js", s), { guide: 300, critical: 800 });
+    assert.deepEqual(thresholdsFor("/x/a.test.ts", s), { guide: 700, critical: 1000 }, "tests keep the fixed convention");
+    assert.deepEqual(await readSizeSettings(join(dir, "missing.json")), {}, "missing file → empty, never throws");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

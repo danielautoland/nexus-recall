@@ -28,7 +28,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
-import { effectiveUpdateMode, getDocsLanguage, getDocsMode } from "./settings.js";
+import { effectiveUpdateMode, getDocsLanguage, getDocsMode, getPrimaryLanguage } from "./settings.js";
 import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
@@ -268,11 +268,16 @@ async function main(): Promise<void> {
         `anything: (1) what the memory will mainly hold — code & projects / company & decisions / ` +
         `personal life & knowledge / a mix; (2) how to address them — name, language, tone; ` +
         `(3) hard always/never rules; (4-6) persona follow-ups (developer: stack, active projects, ` +
-        `workflow · business: company & role, key people, what to prepare or watch · personal: ` +
+        `workflow, coding conventions — file-size guide value in lines + which folder holds what · ` +
+        `business: company & role, key people, what to prepare or watch · personal: ` +
         `day-to-day world, never-forget items, current goals · mixed: stack, role, world); ` +
         `(7) anything else, freeform. Save each answer immediately via save_memory — the user ` +
         `answered in person, so write_origin: "user-directed", concrete recall_when triggers ` +
-        `including an ask-trigger in the user's own words. When finished run \`bastra onboard done\`; ` +
+        `including an ask-trigger in the user's own words. If they name a file-size guide value, ` +
+        `ALSO run \`bastra config set size.guide <N>\` — the PreToolUse hook then enforces it ` +
+        `deterministically. If you can tell the user's primary language (from how they answer, or ` +
+        `an explicit "in <language>"), ALSO run \`bastra config set language.primary <code>\` ` +
+        `(2-letter ISO code) so future memories get authored in it. When finished run \`bastra onboard done\`; ` +
         `if the user declines run \`bastra onboard skip\` and never bring it up again. Also mention ` +
         `\`bastra import\` if they have memories in other AI tools.\n` +
         `</vault-onboarding>`;
@@ -357,7 +362,26 @@ async function main(): Promise<void> {
     }
   }
 
-  const extras = taxonomyBlock + careBlock + importBlock + onboardingBlock + updateBlock + pendingBlock + dokuBlock;
+  // Language-first recall (#231): if the user set a primary language at
+  // onboarding, memories must be AUTHORED in it, not the hook's English default.
+  // Local settings-read, no daemon roundtrip — same discipline as dokuBlock.
+  let languageBlock = "";
+  try {
+    const lang = await getPrimaryLanguage();
+    if (lang) {
+      languageBlock =
+        `\n<memory-language>\n` +
+        `The user's primary language is "${lang}". Author memories — titles, summaries and ` +
+        `recall_when triggers — in that language, keeping only genuinely-English technical terms ` +
+        `(daemon, deploy, hook, …) as anchors. This keeps recall's lexical arm matching the ` +
+        `user's own wording instead of an English template.\n` +
+        `</memory-language>`;
+    }
+  } catch {
+    // Language hint is best-effort — never block session start.
+  }
+
+  const extras = taxonomyBlock + languageBlock + careBlock + importBlock + onboardingBlock + updateBlock + pendingBlock + dokuBlock;
   // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
   // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
   const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";

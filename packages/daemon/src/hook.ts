@@ -152,6 +152,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 3b) Deterministischer Dateigrößen-Check (Daniel 19.07.2026): die
+  //     Größen-Konvention darf nicht am Memory-Abruf hängen — der Hook hält
+  //     dem Agenten die Zeilenzahl bei jedem Write/Edit hin. Lokal, kein
+  //     Daemon nötig; läuft deshalb VOR dem Recall-Call und wird in JEDEM
+  //     Emit-Pfad mitgesendet (auch bei no-hits/suppressed/daemon-down).
+  const { fileSizeNote } = await import("./file-size-check.js");
+  const sizeNote = await fileSizeNote(filePath).catch(() => null);
+
   // 4) Now (and only now) load the expensive core utils — see #28.
   const { detectTopics, detectProject, extractContentExcerpt } = await import(
     "@bastra-recall/core"
@@ -279,27 +287,42 @@ async function main(): Promise<void> {
   // tatsächlich injizierten Blocks — die Kostenseite der net-context-ROI.
   let hintTokensEst = 0;
   let hintedIds: string[] = [];
-  if (totalHints === 0) {
-    emitEmpty();
-  } else if (suppressed) {
-    // Suppressed emits {} exactly like the empty path; the would-be cost is
-    // logged as suppressed_tokens_est so net-context-ROI counts the savings.
-    emitEmpty();
-    const block = formatHintBlock(requiredHits, optionalHits, project);
-    suppressedTokensEst = Math.ceil(block.length / 4);
-    recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
-  } else {
-    const block = formatHintBlock(requiredHits, optionalHits, project);
-    hintTokensEst = Math.ceil(block.length / 4);
-    hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
+  const emitContext = (context: string): void => {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          additionalContext: block,
+          additionalContext: context,
         },
       }),
     );
+  };
+  if (totalHints === 0) {
+    // no recall hints — the deterministic size note still goes out
+    if (sizeNote) {
+      emitContext(sizeNote);
+      hintTokensEst = Math.ceil(sizeNote.length / 4);
+    } else {
+      emitEmpty();
+    }
+  } else if (suppressed) {
+    // Suppression is a recall-noise valve — the size note is deterministic
+    // convention enforcement and rides through it.
+    if (sizeNote) {
+      emitContext(sizeNote);
+      hintTokensEst = Math.ceil(sizeNote.length / 4);
+    } else {
+      emitEmpty();
+    }
+    const block = formatHintBlock(requiredHits, optionalHits, project);
+    suppressedTokensEst = Math.ceil(block.length / 4);
+    recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
+  } else {
+    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project);
+    const block = sizeNote ? `${sizeNote}\n${hintsBlock}` : hintsBlock;
+    hintTokensEst = Math.ceil(block.length / 4);
+    hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
+    emitContext(block);
     recordSourceEmit(sessionState, BACKOFF_SOURCE, hintedIds, backoffConsumed);
   }
 

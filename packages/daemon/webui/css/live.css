@@ -74,6 +74,11 @@ body.panel-open #live-cards { right: 284px; }
   letter-spacing: 0.14em;
   color: var(--accent);
 }
+.live-count {
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
 .live-age {
   margin-left: auto;
   font: 11px var(--font-mono);

@@ -43,9 +43,8 @@ export function createLiveUpdates(deps) {
   const historyList = $("#live-history-list");
   const historyCount = $("#live-history-count");
   let on = (localStorage.getItem(LIVE_KEY) ?? "on") === "on";
-  let since = Date.now(); // only events AFTER opening the map count
+  let sinceSeq = null; // last delivery seq we've seen; null → not yet baselined
   let pollTimer = 0;
-  let known = new Set(); // "id:at" already announced (at changes per push)
   const history = []; // session-scope, newest first
 
   function render() {
@@ -88,7 +87,7 @@ export function createLiveUpdates(deps) {
         label.textContent = meta.label;
         const title = document.createElement("span");
         title.className = "lh-title";
-        title.textContent = h.title;
+        title.textContent = h.count > 1 ? `${h.title} ×${h.count}` : h.title;
         title.title = h.title;
         const time = document.createElement("span");
         time.className = "lh-time";
@@ -132,7 +131,15 @@ export function createLiveUpdates(deps) {
       ev.stopPropagation();
       li.remove();
     });
-    head.append(star, label, age, close);
+    head.append(star, label);
+    if (entry.count > 1) {
+      // burst collapsed into one entry — show how many events it stands for
+      const count = document.createElement("span");
+      count.className = "live-count";
+      count.textContent = `×${entry.count}`;
+      head.append(count);
+    }
+    head.append(age, close);
     const title = document.createElement("div");
     title.className = "live-title";
     title.textContent = entry.title;
@@ -180,12 +187,14 @@ export function createLiveUpdates(deps) {
     el.classList.add("bump");
   }
 
-  function summaryCard(count) {
+  function summaryCard(count, older = false) {
     const li = document.createElement("div");
     li.className = "live-card";
     const title = document.createElement("div");
     title.className = "live-title";
-    title.textContent = `+${count} more live events`;
+    // `older`: entries the buffer dropped before we polled them (#234) —
+    // honestly counted, not silently lost; otherwise a same-poll overflow
+    title.textContent = older ? `+${count} older changes` : `+${count} more live events`;
     li.append(title);
     cardsEl.prepend(li);
     setTimeout(() => li.remove(), 20000);
@@ -225,12 +234,20 @@ export function createLiveUpdates(deps) {
   async function poll() {
     if (!on) return;
     try {
-      const res = await fetch(`/ui/updates?since=${since}`);
+      const res = await fetch(sinceSeq === null ? "/ui/updates" : `/ui/updates?since=${sinceSeq}`);
       if (!res.ok) return;
       const data = await res.json();
-      since = data.now ?? Date.now();
-      const fresh = (data.updates ?? []).filter((u) => !known.has(`${u.id}:${u.at}`));
-      fresh.forEach((u) => known.add(`${u.id}:${u.at}`));
+      if (sinceSeq === null) {
+        // baseline: adopt the high-water mark, don't replay what happened before
+        sinceSeq = data.seq ?? 0;
+        return;
+      }
+      // buffer overflowed past our cursor → be honest about the drop (#234)
+      if (typeof data.minSeq === "number" && data.minSeq > sinceSeq + 1) {
+        summaryCard(data.minSeq - sinceSeq - 1, true);
+      }
+      const fresh = data.updates ?? [];
+      sinceSeq = data.seq ?? sinceSeq; // server delivers each seq exactly once
       for (const u of fresh) {
         applyToSim(u);
         recordHistory(u);
@@ -253,7 +270,7 @@ export function createLiveUpdates(deps) {
   toggle.addEventListener("click", () => {
     on = !on;
     localStorage.setItem(LIVE_KEY, on ? "on" : "off");
-    if (on) since = Date.now(); // don't backfill what happened while off
+    if (on) sinceSeq = null; // rebaseline on next poll; don't backfill the off-time
     render();
     arm();
   });

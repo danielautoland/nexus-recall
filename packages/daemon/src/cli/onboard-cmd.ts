@@ -12,6 +12,8 @@ import {
   PERSONA_LABELS,
   questionsFor,
   buildOnboardingMemories,
+  persistConventionSettings,
+  persistLanguageSetting,
   markOnboardingDone,
   isOnboardingDone,
   type Persona,
@@ -75,6 +77,8 @@ export async function cmdOnboard(args: ParsedArgs): Promise<number> {
     for (const m of memories) {
       await saveMemory(vault.path, m);
     }
+    await persistConventionSettings(answers);
+    await persistLanguageSetting(answers);
     await markOnboardingDone(vault.path, "cli");
     process.stdout.write(
       `\n✓ ${memories.length} profile memories saved — your AI knows you from the next session on.\n` +

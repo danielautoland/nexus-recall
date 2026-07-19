@@ -92,6 +92,22 @@ it as intentionally disabled instead of broken.
 
 ## Per-hook behavior
 
+### `bastra-recall-hook` (#20 #28 #32)
+
+Fires on `PreToolUse` for `Write`/`Edit`/`MultiEdit`/`NotebookEdit`. It turns the
+pending mutation into topic tags (extension + path segments + content keywords)
+and a recall query.
+
+**Language-neutral query (#231).** The query is the file identifier (extension
+or basename) plus the deduped top topics — e.g. `tsx react component ui
+react-hook state` — with **no English filler** (no `writing`/`editing` verb, no
+`involving` connector). Rationale: recall's lexical arm is half the RRF vote;
+on a non-English vault an English template spends that vote on tokens the user's
+memories can't contain, pulling English documents up and starving non-English
+`recall_when`. Identifiers, path segments and extensions are language-neutral by
+construction, so the signal survives. Kill switch `BASTRA_HOOK_QUERY=english`
+restores the old action-verb template (`writing tsx involving react, …`).
+
 ### `bastra-recall-prompt-hook` (#33)
 
 Detects retrieval prompts via DE + EN regex (e.g. `^such|finde|wo (ist|sind)`
@@ -279,6 +295,7 @@ new MCP tool):
 | `BASTRA_HTTP_URL`             | _none_           | Full daemon base URL (overrides host+port)                    |
 | `BASTRA_HTTP_PORT`            | `6723`           | Daemon port on `127.0.0.1`                                    |
 | `BASTRA_HOOK_TIMEOUT_MS`      | `250` / `500` / `1000` | Wall-clock budget for the hook (incl. network round-trip) |
+| `BASTRA_HOOK_QUERY`           | `neutral`        | `english` restores the old action-verb recall query (#231)    |
 | `BASTRA_PROMPT_HOOK_MODE`     | `retrieval-only` | `retrieval-only` or `all` — only the prompt-hook reads this   |
 | `BASTRA_TELEMETRY`            | `on`             | `off` to disable JSONL telemetry writes                       |
 | `BASTRA_LOG_PATH`             | `~/.bastra/logs` | Telemetry log directory                                       |
@@ -287,7 +304,12 @@ new MCP tool):
 | `BASTRA_REFLEX`               | `on`             | `off` disables the reflex lane (#217)                         |
 | `BASTRA_REFLEX_MAX_PER_TURN`  | `2`              | Reflex injection budget per prompt (clamp 1–5)                |
 | `BASTRA_REFLEX_PROMOTION_MIN` | `3`              | Acted-on recalls (30d) before the curator proposes a reflex promotion |
+| `BASTRA_ADOPTION_PROMOTION_MIN` | `2`            | Acted-on recalls (30d) before the curator proposes adopting an intake memory (#217) |
 | `BASTRA_SALIENCE_RANK`        | `shadow`         | `off` \| `shadow` \| `live` — salience ranking multiplier (#217, lift-gated) |
 | `BASTRA_SALIENCE_RANK_CAP`    | `0.25`           | Max salience score boost (`1 + salience × cap`)               |
+| `BASTRA_SIZE_CHECK`           | `on`             | `off` disables the PreToolUse file-size check                 |
+| `BASTRA_SIZE_GUIDE`           | `500`            | Guide line count before the size hook nudges a split (also `bastra config set size.guide`) |
+| `BASTRA_SIZE_CRITICAL`        | `800`            | Critical line count for the size hook (also `size.critical`; test files use 700/1000) |
 
-All `BASTRA_*` vars accept a legacy `NEXUS_*` fallback for migration.
+All `BASTRA_*` vars accept a legacy `NEXUS_*` fallback for migration (except the
+size-hook and adoption knobs above, which read their env var directly).

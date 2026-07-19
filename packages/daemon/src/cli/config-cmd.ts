@@ -24,16 +24,21 @@ import {
   setDocsLanguage,
   getUiEnabled,
   setUiEnabled,
+  getSizeGuide,
+  setSizeGuide,
+  getPrimaryLanguage,
+  setPrimaryLanguage,
   isEmbeddingProviderName,
   isDocsMode,
   isDocsLanguage,
+  isPrimaryLanguage,
   settingsFilePath,
   type UpdateMode,
 } from "../settings.js";
 import type { ParsedArgs } from "./types.js";
 import { mapUrl } from "./map-cmd.js";
 
-const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language", "ui.enabled"] as const;
+const KNOWN_KEYS = ["update.mode", "embedding.provider", "ollama.autostart", "docs.mode", "docs.language", "ui.enabled", "size.guide", "language.primary"] as const;
 type KnownKey = (typeof KNOWN_KEYS)[number];
 
 function isKnownKey(k: string | null): k is KnownKey {
@@ -85,6 +90,18 @@ async function cmdConfigGet(key: KnownKey): Promise<number> {
     case "ui.enabled":
       process.stdout.write(`${await getUiEnabled()}\n`);
       return 0;
+    case "size.guide": {
+      const g = await getSizeGuide();
+      process.stdout.write(`${g ?? "(unset — default 500)"}\n`);
+      const env = process.env.BASTRA_SIZE_GUIDE;
+      if (env) process.stdout.write(`  note: BASTRA_SIZE_GUIDE=${env} (env) overrides this file at runtime\n`);
+      return 0;
+    }
+    case "language.primary": {
+      const l = await getPrimaryLanguage();
+      process.stdout.write(`${l ?? "(unset — memories authored in English by default)"}\n`);
+      return 0;
+    }
   }
 }
 
@@ -171,6 +188,31 @@ async function cmdConfigSet(key: KnownKey, value: string | null): Promise<number
       if (on) {
         process.stdout.write("  vault map: http://127.0.0.1:6723/ui (no daemon restart needed)\n");
       }
+      return 0;
+    }
+    case "size.guide": {
+      const n = value === null ? NaN : Number(value);
+      if (!Number.isFinite(n) || n < 100 || n > 5000) {
+        process.stderr.write("error: size.guide must be a line count between 100 and 5000 (default 500)\n");
+        return 2;
+      }
+      await setSizeGuide(n);
+      process.stdout.write(
+        `✓ size.guide = ${Math.round(n)}\n  stored in ${settingsFilePath()}\n` +
+          `  the PreToolUse hook now flags source files near/over this guide value (no restart needed).\n`,
+      );
+      return 0;
+    }
+    case "language.primary": {
+      if (!isPrimaryLanguage(value)) {
+        process.stderr.write("error: language.primary must be a 2-letter ISO code like 'de', 'en', 'ru'\n");
+        return 2;
+      }
+      await setPrimaryLanguage(value);
+      process.stdout.write(
+        `✓ language.primary = ${value.trim().toLowerCase()}\n  stored in ${settingsFilePath()}\n` +
+          `  new memories are now authored in this language (English tech terms kept as anchors, no restart needed).\n`,
+      );
       return 0;
     }
   }

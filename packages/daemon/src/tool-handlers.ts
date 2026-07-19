@@ -35,7 +35,7 @@ import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
-import { type SupportedLanguage } from "./learned-recall/language.js";
+import { detectLanguage, type SupportedLanguage } from "./learned-recall/language.js";
 
 export interface ToolDeps {
   vault: Vault;
@@ -60,6 +60,13 @@ export interface ToolDeps {
    *  is silently served BM25-only (no embed attempt). Recall telemetry flags
    *  those events as embedding_degraded. Absent = no breaker (embeddings off). */
   embeddingDegraded?: () => boolean;
+  /** #231 (language-first recall): the user's primary authoring language
+   *  (settings `language.primary`), resolved once at daemon startup like
+   *  `sharedRecallLang`. When set and ≠ "en", scoreSaveQuality advises when a
+   *  save's recall_when reads as English — author triggers in the user's
+   *  language, keep English tech terms as anchors. Absent = no language signal
+   *  (the check never fires). */
+  primaryLanguage?: string;
 }
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
@@ -125,6 +132,12 @@ export interface RecallResult {
   hits: unknown[];
   recall_id: string;
   latency_ms: number;
+  /** #230: Hybrid-only Ehrlichkeits-Signal. `true`, wenn KEIN zurückgegebener
+   *  Hit lexikalisch anknüpft (weder `matched_recall_when` noch ein Titel-Match).
+   *  Der Hybrid-Score ist eine Rang-Größe — ein Top-Hit trägt auch bei einer
+   *  Nonsens-Query einen hohen Score (rank-1-of-nothing). Reine Information,
+   *  filtert nichts. Fehlt (statt `false`), wenn nicht weak — hält lean schlank. */
+  weak_result?: boolean;
 }
 
 /**
@@ -208,6 +221,24 @@ export function toLeanHit(hit: RecallHit): Pick<RecallHit, "id" | "title" | "typ
   };
 }
 
+/** #230: Hat ein lexikalischer BM25-Treffer (`matched_terms`) im TITEL des Hits
+ *  gematcht? `matched_terms` sagt nur, DASS ein Query-Term irgendwo im Dokument
+ *  traf, nicht in welchem Feld — deshalb hier tolerant gegen den Titel-String
+ *  geprüft (exaktes Token oder Präfix in beide Richtungen, um Stemming
+ *  abzufangen). Tolerant by design: im Zweifel gilt der Hit als Titel-Match,
+ *  damit `weak_result` konservativ bleibt und nicht fälschlich feuert. */
+function hitTitleMatches(hit: RecallHit): boolean {
+  if (!hit.matched_terms || hit.matched_terms.length === 0) return false;
+  const titleTokens = hit.title
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+  return hit.matched_terms.some((term) => {
+    const t = term.toLowerCase();
+    return titleTokens.some((tok) => tok === t || tok.startsWith(t) || t.startsWith(tok));
+  });
+}
+
 export async function recallHandler(
   deps: ToolDeps,
   rawArgs: unknown,
@@ -269,6 +300,16 @@ export async function recallHandler(
   const hits = rawHits.filter((h) => h.score >= floor);
   const droppedBelowFloor = rawHits.length - hits.length;
 
+  // #230: No-answer-Signal. Der Hybrid-Score ist eine skalierte Rang-Summe —
+  // ein Top-Hit trägt auch bei einer Nonsens-Query einen hohen Score, weil eine
+  // Liste immer ein erstes Element hat. Konservativ: feuert nur, wenn der volle
+  // Hybrid-Pfad lief (beide Arme — nicht der Breaker-degradierte BM25-Fallback)
+  // UND KEIN zurückgegebener Hit lexikalisch anknüpft (weder recall_when- noch
+  // Titel-Match). Rein informativ, filtert nichts.
+  const hybridActive = deps.search.hasEmbeddings() && !embeddingDegraded;
+  const weakResult =
+    hybridActive && hits.length > 0 && !hits.some((h) => h.matched_recall_when === true || hitTitleMatches(h));
+
   // #217: would-be Salience-Reihenfolge (shadow-only, servierte Hits bleiben).
   const salienceShadow = computeSalienceShadow(
     hits,
@@ -307,6 +348,8 @@ export async function recallHandler(
     hits: full ? hits : hits.map(toLeanHit),
     recall_id: recallId,
     latency_ms: latencyMs,
+    // #230: nur setzen wenn true — Abwesenheit = nicht weak, hält lean schlank.
+    ...(weakResult ? { weak_result: true } : {}),
     ...(full ? { stages: collector.timings } : {}),
   };
 }
@@ -601,6 +644,24 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
     score -= 8;
   }
 
+  // #231 (language-first recall): the hook manufactures English queries on every
+  // box, so on a non-English vault the highest-weighted field (recall_when)
+  // structurally can't match English-authored triggers. If the user's primary
+  // language is set and non-English but the joined triggers read as English,
+  // nudge toward authoring in their language. Conservative by construction:
+  // detectLanguage only fires on a confident "en" (it abstains on short /
+  // code-shaped / ambiguous input and can only tell de/en apart, so e.g. a
+  // Russian primary with Russian triggers abstains and never trips this),
+  // advisory only — never a rejection. A false negative is cheaper here.
+  const primaryLang = deps.primaryLanguage;
+  if (primaryLang && primaryLang !== "en" && detectLanguage(input.recall_when.join(" ")).lang === "en") {
+    issues.push(`recall_when reads as English but your primary language is '${primaryLang}'`);
+    suggestions.push(
+      `author triggers in '${primaryLang}', keeping only genuine English tech terms (daemon, deploy, hook, …) as cross-lingual anchors`,
+    );
+    score -= 8;
+  }
+
   // #149: a complete hook/context block quoted in memory content is
   // conversation scaffolding, not memory — it re-enters the index via body
   // search and (title/summary) doc2query. Advisory only: save content is never
@@ -892,6 +953,11 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "- score < 30: usually noise; skip unless the summary is a " +
       "perfect topic match.\n" +
       "Never ignore a `lesson` hit with strong recall_when match.\n" +
+      "On the hybrid (BM25 + vector) path the score is a scaled rank sum, " +
+      "not a similarity — a top hit is high by construction. When the " +
+      "response carries top-level `weak_result: true`, no returned hit has " +
+      "a recall_when or title match: the high scores are likely " +
+      "rank-1-of-nothing, so prefer not to load them.\n" +
       "\n" +
       "recall returns lean CANDIDATES (no bodies). This is step 1 of a " +
       "two-step flow: call load_memory ONLY for the hits you actually " +
@@ -934,8 +1000,15 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
         min_score: {
           type: "number",
           description:
-            "Drop hits below this score (default 30 = the noise floor). " +
-            "Raise it to surface only high-confidence candidates.",
+            "Drop hits below this score (default 30). On the hybrid " +
+            "(BM25 + vector) path the score is a scaled reciprocal-rank " +
+            "sum, not a content similarity: the bands describe how much " +
+            "the two arms agree on rank (~164 = rank 1 in both arms, ~82 " +
+            "= rank 1 in one arm only), so a top hit is high by " +
+            "construction and the 30 floor practically only bites in " +
+            "BM25-only mode (no embeddings). Raise it to require stronger " +
+            "rank agreement; see the top-level `weak_result` flag for a " +
+            "no-match signal.",
         },
       },
       required: ["query"],
@@ -1035,6 +1108,11 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "  CONCRETE contexts/queries where future-you should be reminded. " +
       "  'about to write a Tailwind grid' beats 'CSS questions'. Without " +
       "  good recall_when, the memory is dead weight.\n" +
+      "- Language: author title, summary and recall_when in the user's " +
+      "  primary language (settings language.primary / the injected " +
+      "  <memory-language> block); keep only genuine English tech terms " +
+      "  (daemon, deploy, hook, …) as anchors — this mixed style carries " +
+      "  cross-lingually.\n" +
       "\n" +
       "TAXONOMY CONVENTIONS (self-learning vault structure):\n" +
       "- The vault can teach itself new categories. A convention is a " +

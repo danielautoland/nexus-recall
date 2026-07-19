@@ -6,6 +6,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-07-19
+
+### Added
+- **Intake adoption** (#217): imported memories start as lean "intake" nodes and
+  are *adopted* into the full memory format when Claude actually uses one —
+  adopt-on-touch (one per turn), adopt-merge when a duplicate check hits, or in
+  bulk on request. A new **`archive_memory`** MCP tool retires the original
+  (vault trash + forget) and stamps `superseded_by` on the archived copy, so the
+  adoption stays auditable from both sides. The curator proposes adoption
+  candidates for intake memories that keep earning recalls (≥ 2 acted-on recalls
+  in 30 days; `BASTRA_ADOPTION_PROMOTION_MIN`) through the pending-suggestions
+  relay — it never self-wires.
+- **Opt-in galactic mindspace**: the map's Mindspace can render your own
+  memories as a slowly rotating core with every area orbiting it. Two display
+  controls: **Distance** — `woven` (areas pull inward by how much they share
+  edges and usage heat with your memories) or `balanced` (spaced by size) — and
+  an **orbital drift** toggle. Off by default; the standard Mindspace view is
+  unchanged.
+- **Persona-aware onboarding**: the onboarding interview adapts to a chosen lens
+  — developer / business / personal / mixed. Developers get convention questions
+  (file-size guide value in lines, which folder holds what); the answers become
+  profile memories, and a named size guide is written straight to `size.guide`.
+  Runs across the vault map, `bastra onboard` and the session hook.
+- **Language-first recall** (#231): onboarding asks for your primary authoring
+  language — 12 explicitly named languages recognized, with a statistical
+  German/English detection fallback when none is named — and persists it as
+  `language.primary`. The session hook injects a `<memory-language>` guide so
+  memories get written in your language (genuine tech terms stay English), and
+  `save_memory` returns a quality advisory when an English `recall_when` is saved
+  on a non-English vault. The recall hook's query is now language-neutral (file
+  identifier + topics, no English filler verbs), so an English template no longer
+  spends recall's lexical vote on tokens a non-English vault can't contain — kill
+  switch `BASTRA_HOOK_QUERY=english` restores the old action-verb template.
+- **Score transparency** (#230): with `verbosity: "full"`, each recall hit now
+  carries the RRF rank pair its score is built from — `rrf: { rank_bm25,
+  rank_vector, raw }`. `recall` also returns a top-level `weak_result: true` when
+  no returned hit actually matched a `recall_when` or title on the hybrid path —
+  an explicit "nothing really matched here" signal that rides alongside the
+  structurally-high rank score and filters nothing.
+- **File-size guard hook**: a new `PreToolUse` check counts a code file's lines
+  before every Write/Edit and injects a compact `<file-size-check>` block as the
+  file nears the guide value — the size convention is enforced deterministically
+  instead of relying on the agent to remember it. Thresholds resolve
+  env > `bastra config set size.guide`/`size.critical` > built-in (500 guide /
+  800 critical; test files 700 / 1000). Kill switch `BASTRA_SIZE_CHECK=off`.
+
+### Fixed
+- **Ring view — PROJECTS stays instance-browsing**: the PROJECTS ring now always
+  shows one project at a time with the sidebar switcher, independent of the
+  project count, instead of flipping to fan-out mode once the cluster count
+  crossed the instance threshold under the user's feet.
+- **Import: cleaner graphs from real vaults** (zzallirog 0.8.4 verification
+  round): wikilinks written *inside* code spans no longer parse as edges (shared
+  `stripCodeSpans` helper) — no more phantom edges/ghosts from prose *about*
+  links; a file other notes link to is imported as a real hub, never skipped as a
+  nav file; and `MEMORY.md` indexes are harvested into sections + per-file
+  descriptions, tied together by a single navigation-hub node (a native
+  Claude-Code memory went from 52 disconnected islands to 53 nodes / 50 edges /
+  0 ghosts). The core graph's edge keys use unicode escapes instead of literal
+  NUL bytes, so the graph file is no longer binary to grep and other tools.
+- **Embedding backfill race** (#233): a save that lands in the drain end-window
+  (queue already empty) no longer strands its embedding — fast sequential saves
+  all get indexed.
+- **Care flags keep their notes** (#228): the note field stays hidden until a
+  flag kind is picked, and "Flag for session" no longer silently swallows a typed
+  note when clicked before a kind is chosen.
+- **Live updates are lossless** (#234): vault events are no longer dropped under
+  load; reading the same memory several times collapses into one history entry
+  with a ×N counter once the reads settle, and the panel polls by delivery
+  sequence so nothing between polls is missed.
+- **Mindspace flow sheen — steady tempo**: the sheen that glides along active
+  strands now animates at a constant tempo regardless of strand length (a fixed
+  wave period instead of per-line), and no longer speeds up the longer the map
+  has been open (the phase wraps travelled distance before normalizing, killing
+  the session-age time-dilation).
+- **Semantic depth view is navigable** (map): in depth mode, drag rotates and
+  shift-drag pans (the same orbit gesture as Mindspace), and the old auto-spin is
+  now an opt-in hint toggle, off by default. The flat/depth toggle no longer
+  leaks into views that don't have it.
+
 ## [0.8.4] — 2026-07-18
 
 ### Fixed

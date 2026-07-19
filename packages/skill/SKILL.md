@@ -29,7 +29,7 @@ Call `recall(query, k=5)` proactively in these moments:
 
 `recall` is **step 1 of two**: it returns lean candidates (`id, title, type, scope, summary, score`) — no bodies. Spend the `summary` + `score` to decide, then call `load_memory(id)` as **step 2 only for the candidates you actually need**. Loading every hit defeats the point and burns context. (Need the debug fields — `matched_terms`, `mode`, `hop`, `topic_path`, stage timings? Pass `verbosity: "full"`.)
 
-What to do with hits (interpret the score):
+What to do with hits (interpret the score — hybrid scores are rank-agreement magnitudes, not content similarity; a top-level `weak_result: true` in the response means nothing really matched):
 
 - **Score ≥ ~100 with `recall_when` or title match** → call `load_memory(id)` and apply the lesson **before** writing code or responding. Never ignore a `lesson` hit at this band.
 - **Score 30–100** → read the summary; load only if directly relevant.
@@ -94,6 +94,7 @@ Always `recall()` with the title/topic first — if a near-duplicate exists, upd
 - **Summary** — one sentence with the gist; aim ~250–300 chars, core in the first 160 (the lean-recall snippet). Hard cap 400 — auto-truncated if over, never rejected, so keep it short.
 - **Body** — lead with the rule/fact, then `**Why:**` (root cause / reason / incident) and `**How to apply:**` (when this kicks in). For lessons, capture the failure path **and** the fix.
 - **`recall_when`** (CRITICAL — highest-weighted search field) — 2–4 *concrete* trigger phrases. *"about to write a Tailwind grid"* beats *"CSS questions"*. Without good `recall_when`, the memory is dead weight.
+- **Language** — author `title`, `summary` and `recall_when` in the user's primary language (settings `language.primary`); keep only genuine English tech terms (daemon, deploy, hook) as anchors — the mixed style carries cross-lingually.
 - **`salience` / `emotion`** — only when a capture rule fires (frustration 0.8, hard-won fix 0.7, "merk dir das gut" 0.9); never invent them. `recall_mode: "reflex"` only after the user explicitly confirmed a promotion — never autonomously.
 
 ### After saving — ack format

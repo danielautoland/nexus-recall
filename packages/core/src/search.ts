@@ -26,6 +26,19 @@ export interface RecallHit {
    *  deklariert. Genutzt vom Hook-Scope-Filter (#148), um starke, absichtliche
    *  Cross-Scope-Hits durchzulassen ohne den tag/topic-Noise (#110) zu öffnen. */
   matched_recall_when?: boolean;
+  /** #230: RRF-Herkunft des Scores auf dem Hybrid-Pfad. Der `score` ist eine
+   *  skalierte Rang-Summe, keine Content-Similarity — dieses Feld macht
+   *  dekomponierbar, woraus die Zahl besteht. Nur auf dem Hybrid-Pfad gesetzt
+   *  (das reine BM25-`recall()` lässt es weg); im lean-Response nicht enthalten,
+   *  nur bei `verbosity: "full"`. */
+  rrf?: {
+    /** 1-basierter Rang im BM25-Arm, `null` wenn dieser Arm den Hit nicht führte. */
+    rank_bm25: number | null;
+    /** 1-basierter Rang im Vector-Arm, `null` wenn dieser Arm den Hit nicht führte. */
+    rank_vector: number | null;
+    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der ×5000-Skalierung, die `score` ergibt. */
+    raw: number;
+  };
 }
 
 /** Hat ein Query-Term auf dem hand-geschriebenen `recall_when_flat` gematcht?
@@ -356,11 +369,11 @@ export class SearchIndex {
     const bm25Lookup = new Map(bm25Top.map((r) => [r.id as string, r]));
     const vectorLookup = new Map(vectorTop.map((v) => [v.hit.id, v]));
 
-    const sorted = Array.from(fused.entries()).sort((a, b) => b[1] - a[1]);
+    const sorted = Array.from(fused.entries()).sort((a, b) => b[1].score - a[1].score);
     // Größerer Pool für Hop-Seeds (siehe recall()-Kommentar).
     const HOP_SEED_POOL = Math.max(k * 4, 20);
     const outFull: RecallHit[] = [];
-    for (const [id, fusedScore] of sorted) {
+    for (const [id, entry] of sorted) {
       if (outFull.length >= HOP_SEED_POOL) break;
       const bm = bm25Lookup.get(id);
       const v = vectorLookup.get(id);
@@ -377,13 +390,15 @@ export class SearchIndex {
         topic_path: fm.topic_path,
         // RRF-Score skaliert auf BM25-vergleichbare Range. Klassisch sind
         // BM25-Scores ~5–500, RRF ist 0.005–0.04 → *5000 mappt grob.
-        score: round(fusedScore * 5000),
+        score: round(entry.score * 5000),
         matched_terms: bm?.terms ?? [],
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.
         matched_recall_when: bm ? matchedRecallWhen(bm) : false,
         mode: inBoth ? "hybrid" : bm ? "bm25" : "vector",
         hop: "direct" as const,
+        // #230: Rang-Herkunft des skalierten Scores durchreichen (nur Hybrid).
+        rrf: { rank_bm25: entry.rank_bm25, rank_vector: entry.rank_vector, raw: entry.score },
       });
     }
     stage.end("rrf.fuse", tFuse, { fused_count: outFull.length });

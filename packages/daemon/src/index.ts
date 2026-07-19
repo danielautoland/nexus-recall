@@ -40,7 +40,7 @@ import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
 import { runCuratorPass } from "./curator-run.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, resolveGenerationModel } from "./settings.js";
+import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
@@ -87,7 +87,7 @@ import { spawnSync } from "node:child_process";
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
 const DOCUMENT_WRITE_ENABLED = envFirst("BASTRA_DOCUMENT_WRITE", "NEXUS_DOCUMENT_WRITE") === "1";
 
-const DAEMON_VERSION = "0.8.4";
+const DAEMON_VERSION = "0.8.5";
 const DEFAULT_HTTP_PORT = 6723;
 
 // ── CLI delegation guard ─────────────────────────────────────────────────────
@@ -359,6 +359,11 @@ async function main(): Promise<void> {
   // Shared dependency-bag — wird sowohl vom MCP-stdio-Handler als auch von den
   // HTTP-REST-Routes konsumiert. Damit teilen beide Pfade Tool-Logik und
   // Telemetry; kein Drift.
+  // #231 (language-first recall): the user's primary authoring language,
+  // resolved once here like sharedRecallLang above; scoreSaveQuality uses it for
+  // the save-time language-mismatch advisory. Absent = feature dormant.
+  const primaryLanguage = await getPrimaryLanguage();
+
   const toolDeps: ToolDeps = {
     vault,
     search,
@@ -368,6 +373,7 @@ async function main(): Promise<void> {
     commonsVerifications,
     learnedBridges,
     sharedRecallLang,
+    primaryLanguage,
     // #165: Recall-Telemetrie flaggt Events als embedding_degraded, wenn der
     // Breaker gerade offen ist (Vector-Leg geskippt, BM25-only serviert).
     embeddingDegraded: embeddingBreaker
@@ -411,7 +417,7 @@ async function main(): Promise<void> {
         });
 
   const server = new Server(
-    { name: "bastra-recall", version: "0.8.4" },
+    { name: "bastra-recall", version: "0.8.5" },
     { capabilities: { tools: {} } },
   );
 

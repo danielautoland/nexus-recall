@@ -126,3 +126,64 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
     else process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS = prevStall;
   }
 });
+
+// Gates its FIRST batch open so a second add can slip into the drain-end
+// window; every later batch resolves immediately.
+class DrainRaceProvider implements EmbeddingProvider {
+  readonly id = "mock-drain-race";
+  readonly dim = 4;
+  public calls: string[][] = [];
+  readonly firstInFlight: Promise<void>;
+  private signalFirst!: () => void;
+  private openGate!: () => void;
+  private readonly gate: Promise<void>;
+  constructor() {
+    this.firstInFlight = new Promise((r) => (this.signalFirst = r));
+    this.gate = new Promise((r) => (this.openGate = r));
+  }
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    this.calls.push(texts);
+    if (this.calls.length === 1) {
+      this.signalFirst(); // first batch is in flight → queue already drained
+      await this.gate; // hold it open until the test injects the second add
+    }
+    return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+  }
+  release(): void {
+    this.openGate();
+  }
+}
+
+test("flushQueue re-checks the queue after a drain-window race (#233)", async () => {
+  const { dir, vault } = await vaultWith(0);
+  const provider = new DrainRaceProvider();
+  const persistPath = path.join(dir, ".bastra", "embeddings.json");
+  const idx = new EmbeddingIndex(vault, provider, persistPath);
+  try {
+    await idx.start(); // empty vault → no backfill
+
+    // A: add → handle() enqueues + flushQueue(); the provider gates the first
+    // batch, so flushQueue parks at `await Promise.all` with the queue drained
+    // and `processing` still true.
+    await writeFile(path.join(dir, "a.md"), memoryMd("a"));
+    await vault.reindexFile(path.join(dir, "a.md"));
+    await provider.firstInFlight;
+
+    // B arrives INSIDE that window: pendingQueue={b}, but the guarded
+    // flushQueue() no-ops because processing is still true.
+    await writeFile(path.join(dir, "b.md"), memoryMd("b"));
+    await vault.reindexFile(path.join(dir, "b.md"));
+
+    // release A → the finally must re-trigger and drain B with NO further vault
+    // event. Before #233's fix, B stranded here until the next event.
+    provider.release();
+
+    const deadline = Date.now() + 2000;
+    while (idx.size() < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(idx.size(), 2, "B must embed via the self re-trigger, not strand until the next event");
+  } finally {
+    idx.stop();
+    while (idx.inFlightCount() > 0) await new Promise((r) => setTimeout(r, 10));
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});

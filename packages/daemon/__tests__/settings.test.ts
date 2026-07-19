@@ -31,6 +31,8 @@ import {
   getSharedRecallLanguage,
   setSharedRecallLanguage,
   clearSharedRecallLanguage,
+  getPrimaryLanguage,
+  setPrimaryLanguage,
 } from "../src/settings.js";
 
 async function withTempFile<T>(fn: (path: string) => Promise<T>): Promise<T> {
@@ -304,5 +306,27 @@ test("reflex (#217): valid block persists, invalid maxPerTurn dropped", async ()
 
     await writeFile(path, JSON.stringify({ update: { mode: "notify" } }), "utf8");
     assert.equal((await readSettings(path)).reflex, undefined, "absent block stays absent");
+  });
+});
+
+// ── #231: language.primary ───────────────────────────────────────────────────
+
+test("language.primary: set/get round-trips, normalized to lowercase, siblings preserved", async () => {
+  await withTempFile(async (path) => {
+    assert.equal(await getPrimaryLanguage(path), undefined, "unset by default");
+    await setUpdateMode("auto", path);
+    await setPrimaryLanguage("DE", path);
+    assert.equal(await getPrimaryLanguage(path), "de", "normalized to lowercase");
+    assert.equal((await readSettings(path)).update.mode, "auto", "language write must not clobber update.mode");
+  });
+});
+
+test("language.primary: invalid stored code is dropped on read, valid 2-letter survives", async () => {
+  await withTempFile(async (path) => {
+    await writeFile(path, JSON.stringify({ update: { mode: "notify" }, language: { primary: "english" } }), "utf8");
+    assert.equal(await getPrimaryLanguage(path), undefined, "non-2-letter code rejected by the sanitizer");
+    assert.equal((await readSettings(path)).update.mode, "notify", "sibling preserved");
+    await writeFile(path, JSON.stringify({ language: { primary: "DE" } }), "utf8");
+    assert.equal(await getPrimaryLanguage(path), "de", "valid 2-letter code survives, lowercased");
   });
 });

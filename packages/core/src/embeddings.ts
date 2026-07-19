@@ -565,6 +565,13 @@ export class EmbeddingIndex {
       await Promise.all(inFlightBatches);
     } finally {
       this.processing = false;
+      // #233: ein Add, das im Drain-Endfenster eintraf (Queue schon leer, aber
+      // `processing` noch true), verpuffte am Guard oben und strandete bis zum
+      // nächsten Vault-Event. Re-Check nach dem Reset — aber nur bei sauberem
+      // Drain: nach einem Provider-Fehler wandern die Batch-IDs zurück in die
+      // Queue (Retry), ein Re-Trigger würde sie sofort wieder scheitern lassen
+      // (Retry-Storm). Fehler-Retries bleiben an Vault-Events/Restart gekoppelt.
+      if (!aborted && this.pendingQueue.size > 0) void this.flushQueue();
     }
   }
 }
@@ -604,20 +611,48 @@ export function cosine(a: Float32Array, b: Float32Array): number {
 // ─── Hybrid Recall (BM25 + Vector via RRF) ───────────────────────
 
 /**
- * Reciprocal-Rank-Fusion fused Score aus BM25-Hits und Vector-Hits.
- * Konstante k=60 ist Branchen-Standard. Höherer RRF-Score = relevanter.
+ * Ein fusionierter Hit: der (unskalierte) RRF-Wert plus das Rang-Paar, aus
+ * dem er sich zusammensetzt. #230: der Score ist eine Rang-Größe, keine
+ * Content-Similarity — das Rang-Paar macht das für Caller sichtbar.
+ */
+export interface FusedEntry {
+  /** Summierter RRF-Wert (unskaliert): Σ 1/(k + rank) über beide Arme. */
+  score: number;
+  /** 1-basierter Rang im BM25-Arm, `null` wenn dieser Arm den Hit nicht führte. */
+  rank_bm25: number | null;
+  /** 1-basierter Rang im Vector-Arm, `null` wenn dieser Arm den Hit nicht führte. */
+  rank_vector: number | null;
+}
+
+/**
+ * Reciprocal-Rank-Fusion aus BM25-Hits und Vector-Hits. Konstante k=60 ist
+ * Branchen-Standard. Höherer RRF-Score = relevanter. Liefert pro Hit den
+ * RRF-Wert samt Rang-Paar (#230), damit der spätere skalierte Score
+ * dekomponierbar bleibt.
  */
 export function fuseRRF(
   bm25Ids: string[],
   vectorIds: string[],
   k: number = 60,
-): Map<string, number> {
-  const scores = new Map<string, number>();
+): Map<string, FusedEntry> {
+  const fused = new Map<string, FusedEntry>();
+  const ensure = (id: string): FusedEntry => {
+    let e = fused.get(id);
+    if (!e) {
+      e = { score: 0, rank_bm25: null, rank_vector: null };
+      fused.set(id, e);
+    }
+    return e;
+  };
   bm25Ids.forEach((id, idx) => {
-    scores.set(id, (scores.get(id) ?? 0) + 1 / (k + idx + 1));
+    const e = ensure(id);
+    e.score += 1 / (k + idx + 1);
+    e.rank_bm25 = idx + 1;
   });
   vectorIds.forEach((id, idx) => {
-    scores.set(id, (scores.get(id) ?? 0) + 1 / (k + idx + 1));
+    const e = ensure(id);
+    e.score += 1 / (k + idx + 1);
+    e.rank_vector = idx + 1;
   });
-  return scores;
+  return fused;
 }
