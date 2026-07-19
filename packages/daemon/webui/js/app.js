@@ -249,6 +249,8 @@ async function main() {
     // semantic: an der Structure-Stelle sitzt stattdessen der 2D/3D-Umschalter
     $("#semantic-mode-label").hidden = $("#semantic-mode-switch").hidden = v !== "semantic";
     if (v === "semantic") renderSemanticModeSwitch();
+    // orbit: universe/galactic-Umschalter + Galaxie-Optionen (Distance, Drift)
+    renderMindspaceControls(v);
     if (v === "ring") {
       to = ringView.enter(); // glides its own camera via flyToRing
     } else if (v === "clouds") {
@@ -803,6 +805,46 @@ async function main() {
   $("#structure-switch")
     .querySelectorAll("button")
     .forEach((b) => b.classList.toggle("active", b.dataset.structure === structureMode));
+
+  // ── Mindspace-Modus: universe (Default) / galactic — plus Galaxie-Optionen.
+  // Der galaktische Umbau (User-Wolke als schwarzes Loch im Zentrum) ist
+  // OPT-IN; Distance und Drift sind Anzeigeoptionen darunter.
+  function renderMindspaceControls(v = currentView) {
+    const inOrbit = v === "orbit";
+    $("#mindspace-mode-label").hidden = $("#mindspace-mode-switch").hidden = !inOrbit;
+    $("#mindspace-galaxy-opts").hidden = !inOrbit || orbitView.getMode() !== "galaxy";
+    $("#mindspace-mode-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.mmode === orbitView.getMode()));
+    $("#mindspace-distance-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.mdist === orbitView.getDistanceMode()));
+    $("#mindspace-drift-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.mdrift === (orbitView.getDrift() ? "on" : "off")));
+  }
+  $("#mindspace-mode-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-mmode]");
+    if (!b || currentView !== "orbit" || viewTransition) return;
+    if (b.dataset.mmode === orbitView.getMode()) return;
+    orbitView.setMode(b.dataset.mmode);
+    orbitView.relayout();
+    renderMindspaceControls();
+  });
+  $("#mindspace-distance-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-mdist]");
+    if (!b || currentView !== "orbit" || viewTransition) return;
+    if (b.dataset.mdist === orbitView.getDistanceMode()) return;
+    orbitView.setDistanceMode(b.dataset.mdist);
+    orbitView.relayout();
+    renderMindspaceControls();
+  });
+  $("#mindspace-drift-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-mdrift]");
+    if (!b) return;
+    orbitView.setDrift(b.dataset.mdrift === "on");
+    renderMindspaceControls();
+  });
 
   // ── minimap ────────────────────────────────────────────────────
   const minimap = createMinimap($("#minimap"), sim, renderer, colorOf, (x, y, s, ms) =>

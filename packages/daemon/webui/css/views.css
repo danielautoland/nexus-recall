@@ -136,7 +136,10 @@
 #structure-switch[hidden],
 #structure-label[hidden],
 #semantic-mode-switch[hidden],
-#semantic-mode-label[hidden] { display: none !important; }
+#semantic-mode-label[hidden],
+#mindspace-mode-switch[hidden],
+#mindspace-mode-label[hidden],
+#mindspace-galaxy-opts[hidden] { display: none !important; }
 
 /* ── view hints (ring, semantic, orbit) ────────────────────────── */
 #ring-hint,

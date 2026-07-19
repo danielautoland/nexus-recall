@@ -55,6 +55,23 @@ const rnd = (i, salt = 1) => {
   return x - Math.floor(x);
 };
 
+/** Disc radius from member count — shared by both placement modes. */
+const discRFor = (count) =>
+  count <= DWARF_MAX ? Math.max(30, Math.sqrt(count) * 18) : Math.max(60, Math.sqrt(count) * 30);
+
+// ── galactic mode (#217 follow-up): the user cloud as the rotating center ──
+// Opt-in layout: the current volume-spread universe stays the default; the
+// galactic system puts the user's own memories at the core (black hole +
+// accretion look) and ORBITS every other cloud around it. Distance can mean
+// something (woven: edge-share to the user + usage heat) or stay aesthetic
+// (balanced: by size). Intake clouds always ride the outermost ring — not yet
+// woven into the user's life, they visibly migrate inward through adoption.
+const MODE_KEY = "bastra-vault-map-mindspace-mode";
+const DIST_KEY = "bastra-vault-map-mindspace-distance";
+const DRIFT_KEY = "bastra-vault-map-mindspace-drift";
+const ORBIT_OMEGA = 0.014; // rad/s on the innermost cloud ring — calm drive
+const DRIFT_RESUME_MS = 2500; // drift pauses on interaction, resumes after
+
 /** Seconds a newborn-memory star stays highlighted (canvas + card agree). */
 export const BURST_LIFE = 120;
 
@@ -123,6 +140,21 @@ export function createOrbitView(deps) {
   let enterAt = 0; // decor fades in with the entry flight
   const bursts = new Map(); // id → {world, born, entry}
 
+  // galactic mode state — persisted; "universe" (heute) bleibt der Default
+  let mode = localStorage.getItem(MODE_KEY) === "galaxy" ? "galaxy" : "universe";
+  let distanceMode = localStorage.getItem(DIST_KEY) === "balanced" ? "balanced" : "woven";
+  let drift = localStorage.getItem(DRIFT_KEY) !== "off";
+  let hole = null; // { r } — the black-hole core visual, galaxy mode only
+  let orbitRings = []; // distinct ring radii for the faint orbit guides
+  let orbitT = 0; // drift clock: accumulates ONLY while drifting (no resume-jump)
+  let lastTick = 0;
+  let lastInteract = 0; // drift pauses while the user navigates
+  const markInteract = () => {
+    lastInteract = performance.now();
+  };
+  addEventListener("pointerdown", markInteract, true);
+  addEventListener("wheel", markInteract, { passive: true, capture: true });
+
   // ── linear algebra bits ────────────────────────────────────────────
   const add = (a, b) => ({ px: a.px + b.px, py: a.py + b.py, pz: a.pz + b.pz });
   const scale3 = (a, s) => ({ px: a.px * s, py: a.py * s, pz: a.pz * s });
@@ -146,6 +178,89 @@ export function createOrbitView(deps) {
     const u = norm(cross(ref, w));
     const v = cross(w, u);
     return { u, v, w };
+  }
+
+  /** Galactic placement: the user cloud sits at the origin, every other
+   *  cloud gets an orbit {r, phase, omega, y}. Ring packing is greedy by
+   *  circumference; ring order encodes the distance option — woven (edge
+   *  share to user memories + usage heat) or balanced (by size). Intake
+   *  clouds always take the outermost ring. Returns key → {center, orbit,
+   *  spinBoost} where center is the LIVE object tick() mutates for drift. */
+  function galaxyPlacement(entries) {
+    const placement = new Map();
+    const userEntry = entries.find(([key]) => key === "user");
+    const userDiscR = discRFor(userEntry ? userEntry[1].length : 0);
+    if (userEntry) {
+      placement.set("user", { center: { px: 0, py: 0, pz: 0 }, orbit: null, spinBoost: 2.4 });
+    }
+    hole = { r: Math.max(userDiscR * 0.5, 34) };
+
+    // weave: how much of a cloud's edge mass runs to the user's memories
+    const userIds = new Set((userEntry?.[1] ?? []).map((n) => n.id));
+    const clusterOfN = (n) => n.baseCluster ?? n.cluster;
+    const toUser = new Map();
+    for (const e of deps.sim.edges) {
+      const sUser = userIds.has(e.s.id);
+      const tUser = userIds.has(e.t.id);
+      if (sUser === tUser) continue; // both or neither — no user link
+      const other = sUser ? e.t : e.s;
+      const key = clusterOfN(other);
+      toUser.set(key, (toUser.get(key) ?? 0) + 1);
+    }
+
+    const isIntake = (key, members) => members[0]?.group === "intake" || / \(import\)$/.test(key);
+    const scored = entries
+      .filter(([key]) => key !== "user")
+      .map(([key, members], i) => {
+        const heatAvg = members.reduce((s, n) => s + (n.heat ?? 0), 0) / members.length;
+        const weave = (toUser.get(key) ?? 0) / members.length + heatAvg * 0.5;
+        return { key, members, i, weave, intake: isIntake(key, members), discR: discRFor(members.length) };
+      });
+    scored.sort((a, b) => {
+      if (a.intake !== b.intake) return a.intake ? 1 : -1; // intake last = outermost
+      return distanceMode === "woven" ? b.weave - a.weave : b.members.length - a.members.length;
+    });
+
+    // greedy ring packing: fill a ring while the arcs fit, then step outward
+    orbitRings = [];
+    let ringR = Math.max(userDiscR * 2.4, 150) + 130;
+    let ring = [];
+    let ringMax = 0;
+    const flush = () => {
+      if (!ring.length) return;
+      orbitRings.push(ringR);
+      const total = ring.reduce((s, c) => s + c.need, 0);
+      let angle = orbitRings.length * GOLDEN * 1.3; // stagger ring starts
+      const omega = ORBIT_OMEGA / Math.pow(ringR / (orbitRings[0] ?? ringR), 0.85);
+      for (const c of ring) {
+        const span = (c.need / total) * Math.PI * 2;
+        const phase = angle + span / 2;
+        const y = (rnd(c.i, 211) - 0.5) * ringR * 0.16; // slight plane wobble
+        const center = {
+          px: Math.cos(phase) * ringR,
+          py: y,
+          pz: Math.sin(phase) * ringR,
+        };
+        placement.set(c.key, {
+          center,
+          orbit: { r: ringR, phase, omega, y },
+          spinBoost: 1,
+        });
+        angle += span;
+      }
+      ringR += ringMax * 1.4 + 170;
+      ring = [];
+      ringMax = 0;
+    };
+    for (const c of scored) {
+      c.need = c.discR * 2.6 + 120;
+      const used = ring.reduce((s, x) => s + x.need, 0);
+      if (ring.length && used + c.need > Math.PI * 2 * ringR) flush();
+      ring.push(c);
+      ringMax = Math.max(ringMax, c.discR);
+    }
+    flush();
+    return placement;
   }
 
   // ── universe construction ──────────────────────────────────────────
@@ -177,6 +292,18 @@ export function createOrbitView(deps) {
     const entries = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
     R = Math.max(520, Math.cbrt(deps.sim.nodes.length) * 190);
 
+    // galactic mode: radial placement around the user core replaces the
+    // volume spread; everything downstream (discs, sub rings, systems,
+    // bursts) follows the SAME center objects, which tick() then orbits.
+    const galactic = mode === "galaxy" ? galaxyPlacement(entries) : null;
+    if (galactic) {
+      hole = hole ?? { r: 40 };
+      orbitRings.forEach((r) => (R = Math.max(R, r * 0.82)));
+    } else {
+      hole = null;
+      orbitRings = [];
+    }
+
     const VOL = { x: R * 1.6, y: R * 0.8, z: R * 1.4 };
     const sampleVolume = (seed) => {
       const u = rnd(seed, 61) * Math.PI * 2;
@@ -193,23 +320,32 @@ export function createOrbitView(deps) {
 
     entries.forEach(([key, members], ci) => {
       let center = null;
-      let bestScore = -1;
-      for (let k = 0; k < 24; k++) {
-        const cand = sampleVolume(ci * 131 + k);
-        const score = placedCenters.length
-          ? Math.min(...placedCenters.map((p) => dist3(p, cand)))
-          : dist3(cand, { px: 0, py: 0, pz: 0 }) + VOL.x;
-        if (score > bestScore) {
-          bestScore = score;
-          center = cand;
+      let orbit = null;
+      let spinBoost = 1;
+      if (galactic) {
+        const p = galactic.get(key);
+        center = p.center;
+        orbit = p.orbit;
+        spinBoost = p.spinBoost;
+      } else {
+        let bestScore = -1;
+        for (let k = 0; k < 24; k++) {
+          const cand = sampleVolume(ci * 131 + k);
+          const score = placedCenters.length
+            ? Math.min(...placedCenters.map((p) => dist3(p, cand)))
+            : dist3(cand, { px: 0, py: 0, pz: 0 }) + VOL.x;
+          if (score > bestScore) {
+            bestScore = score;
+            center = cand;
+          }
         }
+        placedCenters.push(center);
       }
-      placedCenters.push(center);
 
       const dwarf = members.length <= DWARF_MAX;
-      const discR = dwarf ? Math.max(30, Math.sqrt(members.length) * 18) : Math.max(60, Math.sqrt(members.length) * 30);
+      const discR = discRFor(members.length);
       const basis = discBasis(ci + 1);
-      const spin = DISC_SPIN * (0.4 + rnd(ci, 89) * 0.6) * (rnd(ci, 91) > 0.5 ? 1 : -1);
+      const spin = DISC_SPIN * (0.4 + rnd(ci, 89) * 0.6) * (rnd(ci, 91) > 0.5 ? 1 : -1) * spinBoost;
       const nebula = !dwarf && rnd(ci, 95) > 0.62
         ? Array.from({ length: 3 }, (_, bi) => ({
             ox: (rnd(ci * 7 + bi, 101) - 0.5) * discR * 1.6,
@@ -220,7 +356,7 @@ export function createOrbitView(deps) {
           }))
         : null;
       universe.galaxies.push({
-        key, center, basis, r: discR, count: members.length,
+        key, center, orbit, basis, r: discR, count: members.length,
         dwarf, nebula, spin, phase: rnd(ci, 151) * Math.PI * 2,
         sx: 0, sy: 0, d: 0, scale: 1,
       });
@@ -498,6 +634,54 @@ export function createOrbitView(deps) {
       }
     }
 
+    // galactic mode: faint orbit guides + the black hole core. The "hole"
+    // is punched with the label-halo ink (≈ background in both themes), the
+    // event horizon rings carry the accent — dark core, bright rim.
+    if (mode === "galaxy" && hole) {
+      const origin = { px: 0, py: 0, pz: 0 };
+      ctx.strokeStyle = theme.bandBorder;
+      ctx.globalAlpha = 0.09 * fadeIn;
+      ctx.lineWidth = 0.8 / camera.scale;
+      for (const orbitR of orbitRings) {
+        ctx.beginPath();
+        for (let k = 0; k < 33; k++) {
+          const a = (k / 32) * Math.PI * 2;
+          const pr = project({ px: Math.cos(a) * orbitR, py: 0, pz: Math.sin(a) * orbitR }, trig, cx, cy);
+          if (k === 0) ctx.moveTo(pr.x, pr.y);
+          else ctx.lineTo(pr.x, pr.y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      const pr = project(origin, trig, cx, cy);
+      const r0 = Math.max(hole.r * depthScale(pr), 24 / camera.scale);
+      const spinPulse = 1 + 0.05 * Math.sin(tSec * 1.7);
+      ctx.globalCompositeOperation = theme.flowBlend;
+      ctx.globalAlpha = 0.5 * fadeIn * depthFade(pr.d);
+      const gr = r0 * 2.4 * spinPulse;
+      ctx.drawImage(glowSprite(theme.accent, theme.label), pr.x - gr, pr.y - gr, gr * 2, gr * 2);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = Math.min(1, 0.94 * fadeIn);
+      ctx.fillStyle = theme.labelHalo;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, r0 * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.85 * fadeIn;
+      ctx.strokeStyle = theme.accent;
+      ctx.lineWidth = 1.6 / camera.scale;
+      ctx.beginPath();
+      ctx.arc(pr.x, pr.y, r0 * 0.6 * spinPulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 0.22 * fadeIn;
+      ctx.lineWidth = 0.8 / camera.scale;
+      for (const m of [0.95, 1.35]) {
+        ctx.beginPath();
+        ctx.arc(pr.x, pr.y, r0 * m, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
     // galaxies back-to-front, all glow via sprites in ONE additive batch
     // ("lighter" on dark theme sums overlapping light like real light;
     // the light theme's flowBlend stays source-over)
@@ -718,8 +902,58 @@ export function createOrbitView(deps) {
   }
 
   function tick(now) {
+    // galactic drift: MUTATE the shared center objects — discs, sub rings,
+    // systems and bursts all reference them, so the whole cloud rides along.
+    // The clock accumulates only while actually drifting (no resume jump),
+    // and pauses while the user navigates (the depth-view lesson: motion
+    // must never fight the mouse).
+    if (mode === "galaxy" && universe) {
+      const dt = lastTick > 0 ? Math.min((now - lastTick) / 1000, 0.1) : 0;
+      if (drift && now - lastInteract > DRIFT_RESUME_MS) orbitT += dt;
+      for (const g of universe.galaxies) {
+        if (!g.orbit) continue;
+        const a = g.orbit.phase + g.orbit.omega * orbitT;
+        g.center.px = Math.cos(a) * g.orbit.r;
+        g.center.pz = Math.sin(a) * g.orbit.r;
+        g.center.py = g.orbit.y;
+      }
+    }
+    lastTick = now;
     apply(now / 1000);
   }
 
-  return { enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts, pickBurst };
+  /** Rebuild the universe in place (mode/option change while the view is
+   *  open) — positions jump to the new layout under the decor fade-in. */
+  function relayout() {
+    universe = null;
+    build();
+    enterAt = performance.now();
+    apply(performance.now() / 1000);
+  }
+
+  function setMode(m) {
+    mode = m === "galaxy" ? "galaxy" : "universe";
+    localStorage.setItem(MODE_KEY, mode);
+    universe = null; // next enter/relayout builds the chosen layout
+  }
+  function setDistanceMode(m) {
+    distanceMode = m === "balanced" ? "balanced" : "woven";
+    localStorage.setItem(DIST_KEY, distanceMode);
+    universe = null;
+  }
+  function setDrift(on) {
+    drift = !!on;
+    localStorage.setItem(DRIFT_KEY, drift ? "on" : "off");
+  }
+
+  return {
+    enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts, pickBurst,
+    relayout,
+    setMode,
+    setDistanceMode,
+    setDrift,
+    getMode: () => mode,
+    getDistanceMode: () => distanceMode,
+    getDrift: () => drift,
+  };
 }

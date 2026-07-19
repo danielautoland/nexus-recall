@@ -124,6 +124,23 @@
           <button data-smode="2d">flat</button>
           <button data-smode="3d">depth</button>
         </div>
+        <div class="filter-label" id="mindspace-mode-label" hidden>Mindspace</div>
+        <div id="mindspace-mode-switch" class="seg" hidden>
+          <button data-mmode="universe">universe</button>
+          <button data-mmode="galaxy">galactic</button>
+        </div>
+        <div id="mindspace-galaxy-opts" hidden>
+          <div class="filter-label" style="margin-top: 10px;">Distance</div>
+          <div id="mindspace-distance-switch" class="seg">
+            <button data-mdist="woven">woven</button>
+            <button data-mdist="balanced">balanced</button>
+          </div>
+          <div class="filter-label" style="margin-top: 10px;">Orbital drift</div>
+          <div id="mindspace-drift-switch" class="seg">
+            <button data-mdrift="on">on</button>
+            <button data-mdrift="off">off</button>
+          </div>
+        </div>
         <div class="filter-label" style="margin-top: 10px;">Updated within</div>
         <div id="time-filter" class="seg">
           <button data-days="" class="active">all</button>
