@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   collectConsolidationCandidates,
   collectReflexCandidates,
+  collectAdoptionCandidates,
   runCuratorPass,
   sanitizeRunResultForHttp,
   type CuratorRunDeps,
@@ -279,6 +280,38 @@ test("reflex promotion (#217): repeated acted_on recalls become candidates, cool
 
   const matured = await collectReflexCandidates(
     vault, { stale: {}, reflex_suggested: { hot: iso(45) } }, NOW, events,
+  );
+  assert.equal(matured.length, 1, "nach Ablauf des Cooldowns wieder vorschlagbar");
+});
+
+test("intake adoption (#217): repeatedly used imported memories become candidates, natives and cooldown excluded", async () => {
+  const vault = fakeVault([
+    { id: "intake-hot", title: "Imported hot", created: iso(60), topic_path: ["imported", "carnexus"], related: [] },
+    { id: "native-hot", title: "Native hot", created: iso(60), topic_path: ["css"], related: [] },
+  ]);
+  const episode = (recallId: string, memoryId: string): TelemetryEvent[] => [
+    { kind: "hook_recall", recall_id: recallId, query: "workshop module fields" },
+    { kind: "recall_episode", recall_id: recallId, memory_id: memoryId, acted_on: true },
+  ];
+  const events: TelemetryEvent[] = [
+    ...episode("a1", "intake-hot"),
+    ...episode("a2", "intake-hot"),
+    ...episode("a3", "native-hot"),
+    ...episode("a4", "native-hot"),
+    ...episode("a5", "native-hot"),
+  ];
+
+  const cands = await collectAdoptionCandidates(vault, { stale: {} }, NOW, events);
+  assert.deepEqual(cands, [{ id: "intake-hot", title: "Imported hot", count: 2 }],
+    "2× acted_on Intake → Kandidat; natives Memory nie (das ist Reflex-Territorium)");
+
+  const cooled = await collectAdoptionCandidates(
+    vault, { stale: {}, adoption_suggested: { "intake-hot": iso(5) } }, NOW, events,
+  );
+  assert.equal(cooled.length, 0, "innerhalb 30d nicht erneut vorschlagen");
+
+  const matured = await collectAdoptionCandidates(
+    vault, { stale: {}, adoption_suggested: { "intake-hot": iso(45) } }, NOW, events,
   );
   assert.equal(matured.length, 1, "nach Ablauf des Cooldowns wieder vorschlagbar");
 });

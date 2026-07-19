@@ -10,6 +10,8 @@
  * Vault-Mutation — kein doppelter Code, kein Drift.
  */
 import { relative, dirname } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import matter from "gray-matter";
 import { z } from "zod";
 import {
   saveMemory,
@@ -800,6 +802,50 @@ async function saveMemoryInner(
   return { ...result, save_quality: saveQuality };
 }
 
+// ─── archive_memory (#217 Intake-Adoption) ──────────────────────
+
+export const ArchiveMemoryArgs = z.object({
+  id: z.string().min(1),
+  superseded_by: z.string().optional(),
+});
+
+/**
+ * Archiviert ein Memory in den Vault-Trash (recoverable, nie rm) — das
+ * Abschluss-Primitiv der Intake-Adoption: nachdem ein importiertes Memory
+ * ins Vollformat überführt wurde (neues Memory mit `source: migrated:…`),
+ * räumt archive_memory das Original aus dem lebenden Vault. Gleiche
+ * Trash-Mechanik wie das Re-Filing im Save-Pfad (moveToTrash + forgetFile).
+ * `superseded_by` wird best-effort in die Trash-Kopie gestempelt, damit der
+ * Trash-Ordner beim späteren Audit pro Datei zeigt, wohin adoptiert wurde.
+ */
+export async function archiveMemoryHandler(
+  deps: ToolDeps,
+  args: Record<string, unknown>,
+): Promise<{ id: string; archived_to: string; superseded_by: string | null }> {
+  const parsed = ArchiveMemoryArgs.safeParse(args);
+  if (!parsed.success) {
+    throw new Error(`invalid archive_memory args: ${parsed.error.issues.map((i) => i.message).join(", ")}`);
+  }
+  const { id, superseded_by } = parsed.data;
+  const mem = deps.vault.get(id);
+  if (!mem) {
+    throw new Error(`unknown memory: ${id} — archive_memory only archives memories that exist in the vault.`);
+  }
+  const archivedTo = await moveToTrash(deps.vaultPath, mem.filePath, id);
+  deps.vault.forgetFile(mem.filePath);
+  if (superseded_by) {
+    try {
+      const raw = await readFile(archivedTo, "utf8");
+      const { data, content } = matter(raw);
+      const fm = { ...(data as Record<string, unknown>), obsolete: true, superseded_by };
+      await writeFile(archivedTo, matter.stringify(content, fm), "utf8");
+    } catch {
+      /* Audit-Stempel ist best-effort — das Archiv selbst steht bereits. */
+    }
+  }
+  return { id, archived_to: archivedTo, superseded_by: superseded_by ?? null };
+}
+
 // ─── MCP Tool-Definitionen ───────────────────────────────────────
 // Single source of truth für die MCP-Tool-Liste (recall/load_memory/
 // save_memory). Sowohl der embedded MCP-Server in index.ts als auch
@@ -1200,6 +1246,37 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
         "scope",
         "recall_when",
       ],
+    },
+  },
+  {
+    name: "archive_memory",
+    annotations: { readOnlyHint: false, destructiveHint: true },
+    description:
+      "Move a memory into the vault trash (recoverable — never a hard " +
+      "delete). This is the closing step of INTAKE ADOPTION: after an " +
+      "imported intake memory has been converted into a full-format memory " +
+      "(save_memory with real type/scope/recall_when and source: " +
+      "\"migrated:<label>:<original-id>\"), archive the original so the " +
+      "intake area shrinks and the vault holds ONE canonical version. " +
+      "Pass superseded_by with the new memory's id — it is stamped into " +
+      "the archived copy so the adoption stays auditable from both sides. " +
+      "Do NOT use this as a general delete: only archive intake originals " +
+      "you just adopted, or a memory the user explicitly asked to retire.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Id of the memory to archive (the intake original).",
+        },
+        superseded_by: {
+          type: "string",
+          description:
+            "Id of the full-format memory that replaces it — stamped into " +
+            "the archived copy (obsolete: true, superseded_by) for audit.",
+        },
+      },
+      required: ["id"],
     },
   },
 ];

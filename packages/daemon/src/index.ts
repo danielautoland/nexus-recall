@@ -51,6 +51,7 @@ import {
   recallHandler,
   loadMemoryHandler,
   saveMemoryHandler,
+  archiveMemoryHandler,
   MEMORY_TOOL_DEFS,
   type ToolDeps,
 } from "./tool-handlers.js";
@@ -490,6 +491,17 @@ async function main(): Promise<void> {
     if (name === "save_memory") {
       try {
         const result = await saveMemoryHandler(toolDeps, args);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        return errorResult((err as Error).message);
+      }
+    }
+
+    if (name === "archive_memory") {
+      try {
+        const result = await archiveMemoryHandler(toolDeps, args ?? {});
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };

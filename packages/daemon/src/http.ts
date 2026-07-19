@@ -68,6 +68,7 @@ import {
   recallHandler,
   loadMemoryHandler,
   saveMemoryHandler,
+  archiveMemoryHandler,
   toLeanHit,
   type ToolDeps,
 } from "./tool-handlers.js";
@@ -695,9 +696,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
             const skills = await listSkills();
             const graph = buildGraph(vault, skills);
             const heat = computeHeat(await readUsage(toolDeps.vaultPath));
+            // heat IMMER stampfen (0 statt Key-weglassen). zzallirog
+            // (2026-07-18): `if (h) n.heat = h` machte kalten Node und Build-
+            // ohne-Heat byte-identisch — ein frisch importierter Vault las sich
+            // als „Feature fehlt". Eine API, die bei Null verstummt, lehrt
+            // Consumer den falschen Schluss. Jetzt trägt jeder Node `heat`.
             for (const n of graph.nodes) {
-              const h = heat[n.id];
-              if (h) n.heat = h;
+              n.heat = heat[n.id] ?? 0;
             }
             sendJson(res, 200, graph);
           })().catch((err: Error) => sendJson(res, 500, { error: err.message }));
@@ -1097,6 +1102,8 @@ async function dispatchApi(
       return await loadMemoryHandler(toolDeps, body, { sessionId: ctx.ccSessionId ?? null });
     case "save_memory":
       return await saveMemoryHandler(toolDeps, body);
+    case "archive_memory":
+      return await archiveMemoryHandler(toolDeps, body);
     case "save_product_doc":
       return await saveProductDocHandler(toolDeps, body);
 

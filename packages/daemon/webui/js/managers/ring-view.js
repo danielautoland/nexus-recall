@@ -25,8 +25,13 @@ const $ = (sel) => document.querySelector(sel);
 
 /** Areas with more distinct subcategories than this get the instance mode:
  *  the wheel shows ONE instance (e.g. one project), a sidebar switcher flips
- *  between them. Few subcategories fan out directly. */
+ *  between them. Few subcategories fan out directly. PROJECTS is exempt from
+ *  the count: its instances ARE projects, so it always browses one at a time
+ *  — otherwise the mode would flip under the user's feet when the number of
+ *  project clusters crosses the threshold. */
 const INSTANCE_THRESHOLD = 12;
+const instanceMode = (key, instanceCount) =>
+  instanceCount > INSTANCE_THRESHOLD || (key === "projects" && instanceCount > 1);
 
 export function createRingView(deps) {
   let ring = null; // current computeRingLayout result
@@ -416,7 +421,7 @@ export function createRingView(deps) {
   function canDrill(key) {
     const areaNodes = deps.sim.nodes.filter((n) => n.cluster === key);
     const instances = new Set(areaNodes.map((n) => n.baseCluster));
-    if (instances.size > INSTANCE_THRESHOLD) return true;
+    if (instanceMode(key, instances.size)) return true;
     const keyOf = drillKeyOf(areaNodes);
     return new Set(areaNodes.map(keyOf)).size > 1;
   }
@@ -430,7 +435,7 @@ export function createRingView(deps) {
     const instanceNames = [...new Set(areaNodes.map((n) => n.baseCluster))];
     let inside = areaNodes;
     let drill;
-    if (instanceNames.length > INSTANCE_THRESHOLD) {
+    if (instanceMode(key, instanceNames.length)) {
       // instance mode: the wheel shows ONE instance, segmented by sub-areas;
       // the sidebar switcher (rendered via onDrillChange) flips instances
       const counts = new Map();

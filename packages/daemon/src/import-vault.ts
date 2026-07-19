@@ -24,7 +24,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import matter from "gray-matter";
-import { saveMemory, slugify, type SaveMemoryInput } from "@bastra-recall/core";
+import { saveMemory, slugify, stripCodeSpans, extractWikilinks, type SaveMemoryInput } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 
@@ -79,6 +79,9 @@ export interface ImportVaultResult {
   byAdapter: { claudeCode: number; generic: number };
   skipped: ImportVaultSkip[];
   ids: string[];
+  /** #217: id of the synthetic curated-index node minted from the source
+   *  index (MEMORY.md / hubs), or null when the source carried no index. */
+  indexNode: string | null;
   dryRun: boolean;
 }
 
@@ -172,14 +175,79 @@ function looksLikeClaudeCode(data: Record<string, unknown>): boolean {
  * Only ever applied to frontmatter-less files — declared frontmatter wins.
  */
 function looksLikeIndexHub(body: string): boolean {
-  const mdLinks = body.match(/\[[^\]]*\]\([^)\s]+\.md\)/g)?.length ?? 0;
-  const wikiLinks = body.match(WIKILINK_RE)?.length ?? 0;
+  // Code-Spans blanken, bevor gezählt wird: ein Body, der ÜBER Link-Syntax
+  // redet (`[[x]]`/`[t](y.md)` im Code-Beispiel), ist kein Index (Parser-Noise
+  // wie bei extractWikilinks — zzallirog 2026-07-18).
+  const scanned = stripCodeSpans(body);
+  const mdLinks = scanned.match(/\[[^\]]*\]\([^)\s]+\.md\)/g)?.length ?? 0;
+  const wikiLinks = scanned.match(WIKILINK_RE)?.length ?? 0;
   const links = mdLinks + wikiLinks;
   if (links < 8) return false;
-  const contentLines = body
+  const contentLines = scanned
     .split("\n")
     .filter((l) => l.trim().length > 0 && !/^\s*#/.test(l) && !/^\s*---\s*$/.test(l));
   return contentLines.length > 0 && links >= contentLines.length * 0.6;
+}
+
+/**
+ * Harvest an index/hub file (MEMORY.md, or any file recognized as a link hub)
+ * into structure, instead of throwing it away (zzallirog 2026-07-18: native
+ * Claude-Code memory carries its ONLY connective tissue in MEMORY.md —
+ * `[title](file.md)` links grouped under `## Section` headings. Skip the file
+ * as a node, but keep the map it draws). Returns per linked file: the section
+ * it sits under and the one-line description trailing its link. First mention
+ * wins. Only `##`..`######` headings count as sections — a lone `#` title
+ * (e.g. "# Memory Index") is the document title, not a group.
+ */
+const INDEX_LINK_RE = /\[([^\]]*)\]\(([^)\s#]+)\.md(?:#[^)]*)?\)/;
+
+interface IndexEntry {
+  section: string | null;
+  description: string | null;
+}
+
+function harvestIndex(sources: string[]): Map<string, IndexEntry> {
+  const map = new Map<string, IndexEntry>();
+  for (const content of sources) {
+    let section: string | null = null;
+    for (const rawLine of stripCodeSpans(content).split("\n")) {
+      const line = rawLine.trim();
+      const h = /^#{2,6}\s+(.+?)\s*$/.exec(line);
+      if (h) {
+        // Strip links + markdown out of the section name (Finding #6): a
+        // `[[x]]` in a heading would otherwise ride verbatim into the synthetic
+        // index node's body as `## [[x]]` and become an UNVETTED related edge
+        // (a ghost), contradicting the "links point only at imported ids" rule.
+        section =
+          h[1]
+            .replace(/\[\[[^\]]*\]\]/g, "")
+            .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+            .replace(/[#*`_]/g, "")
+            .trim() || null;
+        continue;
+      }
+      const m = INDEX_LINK_RE.exec(line);
+      if (!m) continue;
+      const targetBase = m[2].split("/").pop();
+      if (!targetBase) continue;
+      const after = line.slice(m.index + m[0].length).replace(/^[\s—–\-:·]+/, "").trim();
+      if (!map.has(targetBase)) {
+        map.set(targetBase, { section, description: after.length > 0 ? after : null });
+      }
+    }
+  }
+  return map;
+}
+
+/** slugify that returns null instead of throwing/emptying — for optional
+ *  section folders and veto-id derivation. */
+function safeSlug(raw: string): string | null {
+  try {
+    const s = slugify(raw);
+    return s.length > 0 ? s : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Ensure a batch-unique id: on collision append -2, -3, … (deterministic). */
@@ -201,6 +269,11 @@ interface MapContext {
   relDir: string;
   overwrite: boolean;
   used: Set<string>;
+  /** Namespaced ids that SOME body links to — a file in this set is a real
+   *  target, never a throwaway index (nav-skip inbound-veto, Finding #2). */
+  referenced: Set<string>;
+  /** fileBase → its section + description, harvested from the index/hubs. */
+  harvest: Map<string, IndexEntry>;
 }
 
 function buildInput(
@@ -212,8 +285,17 @@ function buildInput(
   const { name, description, type, ccType, adapter } = fields;
   const id = uniqueId(slugify(`${ctx.label}-${fileBase}`), ctx.used);
   const relSegments = ctx.relDir ? ctx.relDir.split(sep).filter(Boolean).map((s) => s.trim()).filter(Boolean) : [];
-  const topic_path = ["imported", ctx.label, ...relSegments];
-  const tags = [...new Set(["imported", ctx.label, ccType].filter(Boolean))];
+  // Curated section from the index — carried in topic_path + tags, NOT in the
+  // physical folder (Finding #3): a section lives in the source index, which
+  // can change between re-imports; if it drove the file PATH, a re-import
+  // after a section move would orphan the old copy (saveMemory only checks the
+  // new folder-derived path), leaving two files with one id. Only a real
+  // SOURCE subfolder (relSegments) shapes the path — that's stable ground truth.
+  const rawSection = ctx.harvest.get(fileBase)?.section ?? null;
+  const section = relSegments.length === 0 && rawSection ? safeSlug(rawSection) : null;
+  const sectionSeg = section ? [section] : [];
+  const topic_path = ["imported", ctx.label, ...sectionSeg, ...relSegments];
+  const tags = [...new Set(["imported", ctx.label, ccType, ...sectionSeg].filter(Boolean))];
   const recall_when = [...new Set([description, deSlug(name), ccType].map((s) => s.trim()).filter(Boolean))];
   const safeBody = namespaceWikilinks(body.trim().length > 0 ? body : description || name, ctx.label);
   return {
@@ -235,6 +317,7 @@ function buildInput(
 
 function mapFile(fileBase: string, raw: string, ctx: MapContext): MapResult {
   const { data, content } = safeParse(raw);
+  const idxDesc = ctx.harvest.get(fileBase)?.description ?? null;
 
   if (looksLikeClaudeCode(data)) {
     const meta = (typeof data.metadata === "object" && data.metadata !== null
@@ -243,18 +326,24 @@ function mapFile(fileBase: string, raw: string, ctx: MapContext): MapResult {
     const ccType = str(data.type) ?? str(meta.type) ?? typeFromFilename(fileBase) ?? "reference";
     const type = CC_TYPE_MAP[ccType] ?? "reference";
     const name = str(data.name) ?? firstH1(content) ?? deSlug(fileBase);
-    const description = str(data.description) ?? firstParagraph(content) ?? name;
+    const description = str(data.description) ?? idxDesc ?? firstParagraph(content) ?? name;
     return { ok: true, input: buildInput({ name, description, type, ccType, adapter: "claude-code-memory" }, fileBase, content, ctx) };
   }
 
   // generic markdown — no recognizable memory frontmatter
   const name = firstH1(content) ?? deSlug(fileBase);
-  const description = firstParagraph(content) ?? name;
+  const description = idxDesc ?? firstParagraph(content) ?? name;
   if (content.trim().length === 0 && !str(data.name)) {
     return { ok: false, reason: "empty file" };
   }
+  // Index/hub veto (Finding #2, zzallirog): a file OTHERS link to is a real
+  // target, not a throwaway index — importing it is the only way its 18
+  // inbound links resolve instead of collapsing into one degree-18 ghost.
   if (looksLikeIndexHub(content)) {
-    return { ok: false, reason: "index/navigation file (link hub) — not a memory" };
+    const selfId = safeSlug(`${ctx.label}-${fileBase}`);
+    if (selfId === null || !ctx.referenced.has(selfId)) {
+      return { ok: false, reason: "index/navigation file (link hub) — not a memory" };
+    }
   }
   const ccType = typeFromFilename(fileBase) ?? "reference";
   const type = CC_TYPE_MAP[ccType] ?? "reference";
@@ -342,17 +431,53 @@ export async function importVault(
   const ids: string[] = [];
   const byAdapter = { claudeCode: 0, generic: 0 };
 
+  // Pass 0: read every file once — the inbound-veto and the index harvest both
+  // need a view of the WHOLE set before any single file is mapped.
+  const rawByFile = new Map<string, string>();
   for (const filePath of files) {
-    const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
-    const fileBase = basename(filePath, extname(filePath));
-    let raw: string;
     try {
-      raw = await readFile(filePath, "utf8");
+      rawByFile.set(filePath, await readFile(filePath, "utf8"));
     } catch (err) {
       skipped.push({ path: filePath, reason: `unreadable: ${(err as Error).message}` });
-      continue;
     }
-    const mapped = mapFile(fileBase, raw, { label, folder, relDir, overwrite, used });
+  }
+
+  // Pass A: every namespaced id that SOME body links to — the inbound-veto set
+  // (Finding #2). A hub OTHERS point at is a real target, not a throwaway index.
+  const referenced = new Set<string>();
+  for (const raw of rawByFile.values()) {
+    const { content } = safeParse(raw);
+    for (const x of extractWikilinks(content)) {
+      const id = safeSlug(`${label}-${x}`);
+      if (id) referenced.add(id);
+    }
+  }
+
+  // Pass B: harvest the index/hubs into section + description structure
+  // (Finding #5). The root MEMORY.md is read explicitly — the walker skips it —
+  // plus any file recognized as a link hub inside the set.
+  const indexSources: string[] = [];
+  for (const name of ["MEMORY.md", "memory.md", "Memory.md"]) {
+    try {
+      indexSources.push(await readFile(join(sourceDir, name), "utf8"));
+      break;
+    } catch {
+      /* no index by that name — try the next spelling */
+    }
+  }
+  for (const raw of rawByFile.values()) {
+    const { data, content } = safeParse(raw);
+    if (!looksLikeClaudeCode(data) && looksLikeIndexHub(content)) indexSources.push(content);
+  }
+  const harvest = harvestIndex(indexSources);
+
+  // Pass C: map + save.
+  for (const filePath of files) {
+    const raw = rawByFile.get(filePath);
+    if (raw === undefined) continue; // unreadable — already recorded in skipped
+    const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
+    const fileBase = basename(filePath, extname(filePath));
+    const mapped = mapFile(fileBase, raw, { label, folder, relDir, overwrite, used, referenced, harvest });
     if (!mapped.ok) {
       skipped.push({ path: filePath, reason: mapped.reason });
       continue;
@@ -368,6 +493,60 @@ export async function importVault(
       }
     }
     ids.push(mapped.input.id as string);
+  }
+
+  // Pass D: the curated index as ONE navigation node (Finding #5). Native CC
+  // memory keeps its only connective tissue in MEMORY.md; rather than discard
+  // it, mint a single reference memory whose body wikilinks EACH imported file,
+  // grouped by section. Links point only at ids that actually imported, so it
+  // adds edges (the star that ties the islands together), never ghosts.
+  let indexNode: string | null = null;
+  if (!dryRun && harvest.size > 0 && ids.length > 0) {
+    const importedIds = new Set(ids);
+    const bySection = new Map<string, string[]>(); // section → wikilink ids, in index order
+    for (const [fileBase, entry] of harvest) {
+      const linkId = safeSlug(`${label}-${fileBase}`);
+      if (!linkId || !importedIds.has(linkId)) continue;
+      const sec = entry.section ?? "";
+      const list = bySection.get(sec) ?? [];
+      list.push(linkId);
+      bySection.set(sec, list);
+    }
+    const lines: string[] = [];
+    let linkCount = 0;
+    for (const [sec, linkIds] of bySection) {
+      if (sec) lines.push(`## ${sec}`);
+      for (const linkId of linkIds) {
+        lines.push(`- [[${linkId}]]`);
+        linkCount++;
+      }
+      lines.push("");
+    }
+    if (linkCount > 0) {
+      const id = uniqueId(slugify(`${label}-index`), used);
+      const sectionCount = [...bySection.keys()].filter((s) => s.length > 0).length;
+      try {
+        await saveMemory(vaultRoot, {
+          id,
+          title: `${label} — Index`,
+          type: "reference",
+          summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
+          body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
+          topic_path: ["imported", label],
+          tags: [...new Set(["imported", label, "index"])],
+          scope: label,
+          recall_when: [`${label} index`, `${label} übersicht`],
+          folder,
+          write_origin: "user-directed",
+          overwrite,
+          source: `index:${label}`,
+        });
+        ids.push(id);
+        indexNode = id;
+      } catch {
+        /* index node is best-effort — never fail the import over it */
+      }
+    }
   }
 
   if (!dryRun && ids.length > 0) {
@@ -409,6 +588,7 @@ export async function importVault(
     byAdapter,
     skipped,
     ids,
+    indexNode,
     dryRun,
   };
 }

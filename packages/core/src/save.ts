@@ -172,16 +172,44 @@ export function stripAutoRelatedSection(body: string): string {
 }
 
 /**
+ * Blankt Code aus einem Markdown-Body: fenced Blöcke (``` / ~~~) und Inline-
+ * Code (`…`). Zeilen bleiben erhalten (durch Leerzeichen ersetzt), damit
+ * zeilenbasierte Heuristiken die Struktur nicht verlieren. Zweck: ein Body,
+ * der ÜBER Wikilink-Syntax redet (`[[x]]` im Code-Beispiel), darf keine
+ * Phantom-`related[]` erzeugen — genau zzallirogs Parser-Noise-Befund
+ * (2026-07-18): 7 seiner „Ghosts" waren `[[x]]`/`[[slug]]` aus Prosa über
+ * Links, nie echte Kanten.
+ */
+export function stripCodeSpans(body: string): string {
+  let fenceChar: string | null = null;
+  return body
+    .split("\n")
+    .map((line) => {
+      const fm = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (fenceChar !== null) {
+        if (fm && fm[1][0] === fenceChar) fenceChar = null; // schließender Zaun
+        return "";
+      }
+      if (fm) {
+        fenceChar = fm[1][0]; // öffnender Zaun
+        return "";
+      }
+      return line.replace(/`[^`]*`/g, " "); // Inline-Code
+    })
+    .join("\n");
+}
+
+/**
  * Extrahiert `[[memory-id]]`-Wikilinks aus einem Memory-Body. Slugs sind
  * `^[a-z0-9][a-z0-9_-]{0,79}$` (passt zur `slugify()`-Ausgabe). Ergebnis ist
  * dedupliziert, in der Reihenfolge des ersten Vorkommens.
  *
- * Die Auto-Related-Section wird übersprungen — sonst floaten Auto-Links in
- * `related[]` rein, und wir verlieren die Unterscheidung zu Hand-Links.
+ * Die Auto-Related-Section und Code-Spans werden übersprungen — sonst floaten
+ * Auto-Links bzw. Code-Beispiele in `related[]` rein.
  */
 const WIKILINK_RE = /\[\[([a-z0-9][a-z0-9_-]{0,79})\]\]/g;
 export function extractWikilinks(body: string): string[] {
-  const scanned = stripAutoRelatedSection(body);
+  const scanned = stripCodeSpans(stripAutoRelatedSection(body));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const match of scanned.matchAll(WIKILINK_RE)) {

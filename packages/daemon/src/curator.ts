@@ -37,6 +37,9 @@ export interface CuratorState {
   reflex_suggested?: Record<string, string>;
   /** #217 Phase 3: Cluster-Key → ISO des letzten Konsolidierungs-Vorschlags. */
   consolidation_suggested?: Record<string, string>;
+  /** #217 Intake-Adoption: memory id → ISO des letzten Adoption-Vorschlags —
+   *  Re-Nag-Schutz analog reflex_suggested (max. 1×/30d pro Intake-Memory). */
+  adoption_suggested?: Record<string, string>;
 }
 
 const CURATOR_DIR = join(".bastra", "curator");

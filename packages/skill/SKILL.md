@@ -108,6 +108,20 @@ Nothing more. The user can ignore, correct (*"nein, das war anders"* → update 
 
 ---
 
+## Intake adoption — imported memories earn their structure on use
+
+Foreign memories imported via `bastra import vault` land in an isolated intake area (`memories/imported/<label>/`, scope = the import label, tag `imported`, `topic_path` starting with `imported`). They are findable but carry only transcribed metadata — no real `recall_when`, no relations. The missing semantics get minted at the one moment they exist for free: **when the memory is actually used**.
+
+- **Adopt on touch:** when a recall hit from the intake area genuinely helps the current task, adopt it right then: `save_memory` a full-format version (real `type`, the scope it actually belongs to, `recall_when` built from the trigger that just fired, `[[links]]` to the memories it connects with, `source: "migrated:<original-id>"`), then `archive_memory({id: <original>, superseded_by: <new-id>})`. Max **one** adoption per turn — never interrupt the task for bulk work.
+- **Pre-save duplicate check:** if the near-duplicate that recall surfaces before a save is an intake memory, adopt-merge it instead of creating a parallel new memory next to an unadopted twin.
+- **Guided import (companion mode):** right after an import — or whenever the user wants to work through the intake — READ the actual bodies in tranches and adopt them together with the user. Never write adopted metadata for a body you did not read.
+- **Bulk on request:** only when the user explicitly asks, walk the whole intake queue in one sitting (same per-memory rules, user stays in the loop).
+- `<adoption-candidate>` blocks injected at session start are the curator flagging intake memories with repeated use — handle them with the same flow, with the user's ok.
+
+Originals go to the vault trash (recoverable, `superseded_by`-stamped) — every adoption stays auditable from both sides. `archive_memory` is NOT a general delete: only intake originals you just adopted, or a memory the user explicitly retires.
+
+---
+
 ## Project topology — feature state in memory
 
 Beyond lessons and decisions, the vault also serves as a **living map of what was built when, in which files, by which decisions**. Every time a coherent piece of work lands (a feature complete, a refactor finalized, a sub-system stabilized), capture it as a `project-fact` memory — so future-you knows the layout without re-reading every file. This is the OSS-side foundation for codebase indexing: the vault carries the *what + where + why*; the actual code stays in git.

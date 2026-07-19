@@ -31,6 +31,7 @@ export {
   SaveMemoryInput,
   extractWikilinks,
   stripAutoRelatedSection,
+  stripCodeSpans,
   AUTO_RELATED_START,
   AUTO_RELATED_END,
 } from "./save.js";

@@ -169,10 +169,11 @@ test("GET /api/v1/graph + /api/v1/graph/node over loopback", async () => {
     assert.ok(graph.nodes.some((n: { kind: string }) => n.kind === "ghost"));
 
     // Heat erreicht den genutzten Node (einziger Nutzer → normiert auf 1),
-    // ungenutzte Nodes bleiben ohne das Feld.
+    // ungenutzte Nodes tragen explizit 0 (#217: heat ist IMMER präsent, damit
+    // ein kalter Node nicht byte-identisch zu „Feature fehlt" aussieht).
     const nodes = graph.nodes as { id: string; heat?: number }[];
     assert.equal(nodes.find((n) => n.id === "a1")?.heat, 1);
-    assert.equal(nodes.find((n) => n.id === "a2")?.heat, undefined);
+    assert.equal(nodes.find((n) => n.id === "a2")?.heat, 0);
 
     const node = await httpGet(handle.port!, "/api/v1/graph/node?id=a1");
     assert.equal(node.status, 200);

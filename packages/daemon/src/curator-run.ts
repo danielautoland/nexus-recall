@@ -50,6 +50,7 @@ const FLOOR_REVIEW_WEEKS = 4;
 const SUGGEST_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 /** Max. Reflex-Vorschläge pro Pass — die nächste Session soll nicht fluten. */
 const REFLEX_MAX_PER_PASS = 2;
+const ADOPTION_MAX_PER_PASS = 2;
 /** Konsolidierung: Cluster-Mindestgröße + Mindestalter der Episoden. */
 const CONSOLIDATION_MIN_CLUSTER = 3;
 const CONSOLIDATION_MIN_AGE_DAYS = 30;
@@ -376,6 +377,57 @@ export function collectConsolidationCandidates(
   return out;
 }
 
+/**
+ * #217 Intake-Adoption: importierte Memories (topic_path[0]==="imported"),
+ * die im 30-Tage-Fenster wiederholt acted_on waren, aber nie ins Vollformat
+ * adoptiert wurden. Gleiche Telemetrie-Mechanik wie die Reflex-Promotion
+ * (readEventLog + reconstructReaches), eigener Cooldown-Topf. Der Vorschlag
+ * landet als <adoption-candidate> im Pending-Relay — adoptieren tut der
+ * Agent MIT dem User, nie der Daemon.
+ */
+export async function collectAdoptionCandidates(
+  vault: VaultLike,
+  state: CuratorState,
+  nowMs: number,
+  events?: TelemetryEvent[],
+): Promise<{ id: string; title: string; count: number }[]> {
+  const evts = events ?? (await readEventLog(logDirFor(), 30));
+  const counts = new Map<string, number>();
+  for (const r of reconstructReaches(evts)) {
+    counts.set(r.memoryId, (counts.get(r.memoryId) ?? 0) + 1);
+  }
+  const min = Math.max(1, envInt("BASTRA_ADOPTION_PROMOTION_MIN", 2));
+  const out: { id: string; title: string; count: number }[] = [];
+  for (const [id, count] of counts) {
+    if (count < min) continue;
+    const mem = vault.get(id);
+    if (!mem) continue;
+    const fm = mem.fm;
+    if (fm.obsolete === true) continue;
+    const tp = Array.isArray(fm.topic_path) ? fm.topic_path : [];
+    if (String(tp[0] ?? "") !== "imported") continue;
+    const suggestedAt = state.adoption_suggested?.[id];
+    if (suggestedAt && nowMs - Date.parse(suggestedAt) < SUGGEST_COOLDOWN_MS) continue;
+    out.push({ id, title: str(fm.title) ?? id, count });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out.slice(0, ADOPTION_MAX_PER_PASS);
+}
+
+export function formatAdoptionCandidateBlock(c: { id: string; title: string; count: number }): string {
+  return [
+    `<adoption-candidate memory-id="${c.id}" evidence="${c.count} acted-on recalls in 30d">`,
+    `The imported intake memory "${c.title}" keeps proving useful. With the ` +
+      `user's ok, adopt it into the real vault: load_memory("${c.id}") and READ ` +
+      `it, then save_memory a full-format version (real type, the scope it ` +
+      `actually belongs to, recall_when from the situations it fired in, ` +
+      `[[links]] to related memories, source: "migrated:${c.id}"), and finish ` +
+      `with archive_memory({id: "${c.id}", superseded_by: "<new-id>"}). ` +
+      `Skip silently if the user declines.`,
+    `</adoption-candidate>`,
+  ].join("\n");
+}
+
 export function formatConsolidationBlock(c: { label: string; scope: string; ids: string[] }): string {
   return [
     `<consolidation-candidate scope="${c.scope}" ids="${c.ids.join(",")}">`,
@@ -453,6 +505,10 @@ async function runCuratorPassInner(
       for (const c of await collectReflexCandidates(deps.vault, nextState, nowMs)) {
         blocks.push(formatReflexCandidateBlock(c));
         nextState.reflex_suggested = { ...(nextState.reflex_suggested ?? {}), [c.id]: nowIso };
+      }
+      for (const c of await collectAdoptionCandidates(deps.vault, nextState, nowMs)) {
+        blocks.push(formatAdoptionCandidateBlock(c));
+        nextState.adoption_suggested = { ...(nextState.adoption_suggested ?? {}), [c.id]: nowIso };
       }
       const cluster = collectConsolidationCandidates(deps.vault, nextState, nowMs)[0];
       if (cluster) {

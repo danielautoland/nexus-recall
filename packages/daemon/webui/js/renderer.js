@@ -163,7 +163,13 @@ export function createRenderer(canvas, sim, initialHues) {
       ctx.strokeStyle = isActive ? theme.edgeHi : theme.edge;
       if (!isActive && e.s.cluster !== e.t.cluster) ctx.globalAlpha = 0.3;
       if (isActive) ctx.lineWidth = 1.5 / camera.scale;
+      // guessed vs written (zzallirog): related_via strands are the model's
+      // guess, not a link the user wrote — dash them so the eye reads the
+      // solid (written) layer as the real structure.
+      const guessed = e.via === "related_via";
+      if (guessed) ctx.setLineDash([3 / camera.scale, 4 / camera.scale]);
       strokeEdge(e);
+      if (guessed) ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       if (isActive) ctx.lineWidth = 1 / camera.scale;
     }
@@ -444,11 +450,17 @@ export function createRenderer(canvas, sim, initialHues) {
       // unhurried, and each strand at its own slightly different pace —
       // organic drift instead of a synchronized march
       const speed = 42 + ((k * 53) % 23);
-      const period = (dist / speed) * 1000;
+      // Phase über die GEWRAPPTE Weltstrecke, nicht `now/period`: period hängt
+      // an dist, und now * Δperiod/period² multipliziert jede minimale Node-
+      // Bewegung mit dem Session-Alter — die Welle wurde umso schneller, je
+      // länger die Map offen war (Zeitdilatations-Bug). Erst wrappen (Zähler
+      // bleibt < dist), dann normieren: konstante Weltgeschwindigkeit, egal
+      // wie alt `now` ist.
+      const phase = (((now * speed) / 1000) % dist) / dist;
       ctx.globalAlpha = 0.4 * ramp * fade;
       for (let p = 0; p < count; p++) {
         // peak sweeps -W → 1+W so the sheen slides off both ends (no popping)
-        const t = ((now / period + k * 0.41 + p / count) % 1) * (1 + 2 * W) - W;
+        const t = ((phase + k * 0.41 + p / count) % 1) * (1 + 2 * W) - W;
         const g = ctx.createLinearGradient(from.x, from.y, to.x, to.y);
         g.addColorStop(clamp01(t - W), theme.flowTail);
         g.addColorStop(clamp01(t), theme.flow);

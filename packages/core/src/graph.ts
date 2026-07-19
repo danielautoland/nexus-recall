@@ -81,14 +81,28 @@ export interface VaultGraph {
   groups: GraphCluster[];
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** #217 (zzallirog 2026-07-18): `edges` mischt zwei Dinge unter EINEM Namen
+   *  — `related` (explizit geschriebene [[wikilinks]]) und `related_via`
+   *  (semantisch geraten, taucht auf sobald Embeddings laufen). Ein naives
+   *  `edges.length` springt beim Embedding-Toggle massiv, ohne dass ein Link
+   *  aufgelöst wurde. Getrennt gezählt, damit Consumer „geschrieben" nicht mit
+   *  „geraten" verwechseln. */
+  edge_counts: { related: number; related_via: number };
 }
 
 /**
  * Cluster key from the memory's location in the vault:
  *   memories/projects/<scope>/… → "<scope>"
+ *   memories/imported/<label>/… → "<label> (import)"
  *   memories/<top>/…            → "<top>"
  *   <top>/…                     → "<top>"   (e.g. dokumentationen)
  * Files outside the root (linked docs) fall back to the frontmatter scope.
+ *
+ * Import sets cluster PER LABEL (#217): several imports must not merge into
+ * one big "imported" blob — each imported project stays its own cloud with
+ * its own color, visually dissolving as adoption drains it. The " (import)"
+ * suffix keeps the key from ever colliding with a real project cluster of
+ * the same name.
  */
 export function clusterKeyFor(m: Memory, vaultRoot: string): string {
   const rel = relative(vaultRoot, m.filePath);
@@ -98,6 +112,9 @@ export function clusterKeyFor(m: Memory, vaultRoot: string): string {
   const top = parts[0] === "memories" && parts.length > 2 ? parts[1] : parts[0];
   if (top === "projects" && parts[0] === "memories" && parts.length > 3) {
     return parts[2];
+  }
+  if (top === "imported" && parts[0] === "memories" && parts.length > 3) {
+    return `${parts[2]} (import)`;
   }
   return top;
 }
@@ -136,6 +153,10 @@ export function groupKeyFor(m: Memory, vaultRoot: string): string {
     case "documents":
     case "bookmarks":
       return "artifacts";
+    case "imported":
+      // #217 intake area: foreign memories awaiting adoption — their own
+      // building block, not "other" noise.
+      return "intake";
     default:
       return "other";
   }
@@ -151,10 +172,11 @@ export function subKeyFor(m: Memory, vaultRoot: string): string {
   const rel = relative(vaultRoot, m.filePath);
   if (rel.startsWith("..")) return "general";
   const parts = rel.split(sep).filter(Boolean);
-  // index of the cluster folder inside the path
+  // index of the cluster folder inside the path — projects/<scope> and
+  // imported/<label> both put the cluster one level deeper
   let idx: number;
   if (parts[0] === "memories" && parts.length > 2) {
-    idx = parts[1] === "projects" && parts.length > 3 ? 2 : 1;
+    idx = (parts[1] === "projects" || parts[1] === "imported") && parts.length > 3 ? 2 : 1;
   } else {
     idx = 0;
   }
@@ -206,7 +228,7 @@ export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
         if (!linkers.includes(m.fm.id)) linkers.push(m.fm.id);
         ghostLinkers.set(target, linkers);
       }
-      const key = `${m.fm.id} ${target}`;
+      const key = `${m.fm.id}\u0000${target}`;
       const prev = edgeVia.get(key);
       if (prev === undefined || (prev === "related_via" && via === "related")) {
         edgeVia.set(key, via);
@@ -215,9 +237,11 @@ export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
   }
 
   const edges: GraphEdge[] = [];
+  const edge_counts = { related: 0, related_via: 0 };
   for (const [key, via] of edgeVia) {
-    const [source, target] = key.split(" ");
+    const [source, target] = key.split("\u0000");
     edges.push({ source, target, via });
+    edge_counts[via]++;
   }
 
   // ── degree + neighbor clusters (for size + bridge detection) ─────────────
@@ -355,5 +379,6 @@ export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
     groups,
     nodes,
     edges,
+    edge_counts,
   };
 }
