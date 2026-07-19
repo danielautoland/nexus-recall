@@ -90,10 +90,18 @@ export interface VaultGraph {
   edge_counts: { related: number; related_via: number };
 }
 
+/** Source hierarchy an import batch recorded in `topic_path`, past its own
+ *  ["imported", <label>] prefix. Empty for files that sat flat in the source. */
+function importedTopicSegments(m: Memory): string[] {
+  const tp = m.fm.topic_path ?? [];
+  return tp[0] === "imported" ? tp.slice(2) : [];
+}
+
 /**
  * Cluster key from the memory's location in the vault:
  *   memories/projects/<scope>/… → "<scope>"
- *   memories/imported/<label>/… → "<label> (import)"
+ *   memories/imported/<label>/… → "<source folder> (import)", else
+ *                                 "<label> (import)"
  *   memories/<top>/…            → "<top>"
  *   <top>/…                     → "<top>"   (e.g. dokumentationen)
  * Files outside the root (linked docs) fall back to the frontmatter scope.
@@ -103,6 +111,18 @@ export interface VaultGraph {
  * its own color, visually dissolving as adoption drains it. The " (import)"
  * suffix keeps the key from ever colliding with a real project cluster of
  * the same name.
+ *
+ * Per label is necessary but not sufficient: with a SINGLE batch there is
+ * nothing to keep apart, and the blob comes back whole. The importer writes
+ * every file flat into `memories/imported/<label>/`, so the folder axis is
+ * empty by construction — but the source hierarchy is not lost, only unread:
+ * it sits in `topic_path` as ["imported", <label>, …sourceSegments]. Read it,
+ * and keep the suffix, so the collision guard above still holds.
+ *
+ * This moves keys only: node, edge and ghost counts are identical either way.
+ * The fixture in graph-import-cluster.test.ts pins both halves — a nested
+ * source keeps its top folder as the cluster, a flat one falls back to the
+ * batch label, and non-imported clusters stay untouched.
  */
 export function clusterKeyFor(m: Memory, vaultRoot: string): string {
   const rel = relative(vaultRoot, m.filePath);
@@ -114,7 +134,7 @@ export function clusterKeyFor(m: Memory, vaultRoot: string): string {
     return parts[2];
   }
   if (top === "imported" && parts[0] === "memories" && parts.length > 3) {
-    return `${parts[2]} (import)`;
+    return `${importedTopicSegments(m)[0] ?? parts[2]} (import)`;
   }
   return top;
 }
@@ -179,6 +199,11 @@ export function subKeyFor(m: Memory, vaultRoot: string): string {
     idx = (parts[1] === "projects" || parts[1] === "imported") && parts.length > 3 ? 2 : 1;
   } else {
     idx = 0;
+  }
+  // Imported sets are flat on disk, so the folder axis can never answer this.
+  // The second source segment is the sub-area, same as a folder would be.
+  if (parts[0] === "memories" && parts[1] === "imported") {
+    return importedTopicSegments(m)[1] ?? "general";
   }
   // a sub-area exists when there is at least one more folder before the file
   return parts.length > idx + 2 ? parts[idx + 1] : "general";
