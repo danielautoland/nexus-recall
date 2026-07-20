@@ -282,3 +282,60 @@ test("live updates: buffer overflow surfaces a gap signal, never a silent drop",
     await h.cleanup();
   }
 });
+
+test("live updates: a recall notice carries its band and re-announces at most once per window", async () => {
+  // #221: recall is the loudest path in the system — the same memory is a top
+  // hit dozens of times per working session. Coalescing does not cover that
+  // (those events are minutes apart, not milliseconds), so the id-level
+  // re-announce window is what keeps the card from looping the same title.
+  const REANN = 500;
+  const QUIET = REANN + 120; // comfortably past one re-announce window
+  const h = await harness({ reannounceMs: REANN });
+  const { vault, memDir, live, call } = h;
+  const file = join(memDir, "hot-note.md");
+
+  try {
+    await h.enableUi();
+    await writeFile(file, memoryMarkdown("hot-note", "Hot note"));
+    await vault.reindexFile(file);
+    await delay(AFTER);
+    let r = await call(0);
+    assert.equal(r.json.updates.length, 1, "the memory is born");
+    let cursor = r.json.updates[0].seq;
+    await delay(QUIET); // let the birth's window expire
+
+    // a served hit announces itself, and says which band served it
+    live.notifyRead("hot-note", "required");
+    await delay(AFTER);
+    r = await call(cursor);
+    assert.equal(r.json.updates.length, 1);
+    assert.equal(r.json.updates[0].kind, "read");
+    assert.equal(r.json.updates[0].band, "required", "the band travels with the notice");
+    cursor = r.json.updates[0].seq;
+
+    // a recall storm inside the window adds nothing — this is the flood guard
+    live.notifyRead("hot-note", "optional");
+    live.notifyRead("hot-note", "required");
+    await delay(AFTER);
+    assert.equal((await call(cursor)).json.updates.length, 0, "re-surfaced inside the window stays quiet");
+
+    // what the user actually changes is never silenced by the read cooldown
+    await writeFile(file, memoryMarkdown("hot-note", "Hot note v2"));
+    await vault.reindexFile(file);
+    await delay(AFTER);
+    r = await call(cursor);
+    assert.equal(r.json.updates.length, 1);
+    assert.equal(r.json.updates[0].kind, "change", "vault events ignore the read cooldown");
+    cursor = r.json.updates[0].seq;
+
+    // past the window the same memory may speak again
+    await delay(QUIET);
+    live.notifyRead("hot-note", "optional");
+    await delay(AFTER);
+    r = await call(cursor);
+    assert.equal(r.json.updates.length, 1, "the window reopens");
+    assert.equal(r.json.updates[0].band, "optional");
+  } finally {
+    await h.cleanup();
+  }
+});

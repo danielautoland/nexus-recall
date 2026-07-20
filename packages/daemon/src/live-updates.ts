@@ -30,6 +30,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { clusterKeyFor, type Memory, type Vault } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
+import { envInt } from "./env.js";
+import type { RecallBand } from "./telemetry.js";
 
 export type LiveUpdateKind = "add" | "change" | "delete" | "read";
 
@@ -48,10 +50,30 @@ export interface LiveUpdate {
    *  adoptiert ihn als echten Node, ohne auf den Graph-Reload zu warten. */
   salience?: number;
   emotion?: string;
+  /** #221: bei einer recall-getriebenen "read"-Notice das Band, in dem der
+   *  Treffer serviert wurde (`required` | `optional`). Fehlt bei load_memory
+   *  und bei allen Vault-Ereignissen. */
+  band?: RecallBand;
 }
 
 const MAX_ENTRIES = 500; // ring buffer — lossless within realistic poll gaps
 const DEBOUNCE_MS = 2000; // quiet window per memory id before an entry finalizes
+/**
+ * #221: Wiederankündigungs-Sperre pro id. Recall ist der mit Abstand
+ * häufigste Pfad — dieselbe Memory taucht über eine Arbeitssitzung dutzendfach
+ * in den Top-Treffern auf. Die Debounce-Fenster fangen das NICHT: sie
+ * kollabieren nur Bursts innerhalb von Sekunden, während Recalls minutenlang
+ * auseinander liegen und so jedes Mal eine neue Karte erzeugen würden. Ein
+ * Vault-Ereignis (add/change/delete) ist davon nie betroffen — was der Nutzer
+ * tatsächlich ändert, wird immer angekündigt.
+ *
+ * 180s ist gesetzt, nicht gemessen — die ehrliche Zahl wäre der Median-Abstand
+ * zwischen zwei Surfacings derselben id, den die Telemetrie beantworten kann.
+ * Bis dahin env-tunbar wie die übrigen Fenster, damit die Vorgabe kein Dogma
+ * ist. Die Notices selbst sind bewusst DEFAULT AN: ein Feature, das man erst
+ * einschalten muss, wird nie eingeschaltet.
+ */
+const REANNOUNCE_MS = envInt("BASTRA_REANNOUNCE_MS", 180_000);
 
 // hotness rank for coalescing — a hotter kind seen in the window wins the entry
 const KIND_RANK: Record<LiveUpdateKind, number> = { read: 0, change: 1, add: 2, delete: 3 };
@@ -64,17 +86,20 @@ interface PendingEntry {
 
 export function createLiveUpdates(
   vault: Vault,
-  opts: { debounceMs?: number; maxEntries?: number } = {},
+  opts: { debounceMs?: number; maxEntries?: number; reannounceMs?: number } = {},
 ): {
   handleUiUpdates: (req: IncomingMessage, res: ServerResponse, settingsPath?: string) => Promise<void>;
-  notifyRead: (id: string) => void;
+  notifyRead: (id: string, band?: RecallBand) => void;
   stop: () => void;
 } {
   const debounceMs = opts.debounceMs ?? DEBOUNCE_MS;
   const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
+  const reannounceMs = opts.reannounceMs ?? REANNOUNCE_MS;
 
   const recent: LiveUpdate[] = []; // finalized entries, ascending seq
   const pending = new Map<string, PendingEntry>();
+  /** id → ms epoch der letzten finalisierten Notice (Sperre für "read"). */
+  const announcedAt = new Map<string, number>();
   let seq = 0;
 
   const baseFields = (m: Memory, kind: LiveUpdateKind): LiveUpdate => ({
@@ -98,6 +123,17 @@ export function createLiveUpdates(
     pending.delete(id);
     recent.push({ ...p.update, seq: ++seq, count: p.count });
     if (recent.length > maxEntries) recent.splice(0, recent.length - maxEntries);
+    // Sperrfenster startet erst beim Finalisieren — die Karte ist ab JETZT
+    // sichtbar, also läuft die Ruhe ab jetzt und nicht ab dem ersten Ereignis.
+    const now = Date.now();
+    announcedAt.set(id, now);
+    // Der Vault ist endlich, die Map also ohnehin klein; trotzdem nie
+    // unbegrenzt wachsen lassen (Importe legen tausende ids an).
+    if (announcedAt.size > maxEntries * 4) {
+      for (const [key, at] of announcedAt) {
+        if (now - at > reannounceMs) announcedAt.delete(key);
+      }
+    }
   };
 
   // Collapse an event into the pending entry for its id (or open one) and
@@ -147,11 +183,24 @@ export function createLiveUpdates(
     }
   });
 
-  /** "read"-Notice vom load_memory-Pfad (via Telemetry-Hook, best-effort). */
-  const notifyRead = (id: string): void => {
+  /**
+   * "read"-Notice vom load_memory-Pfad und — seit #221 — von jedem Recall,
+   * dessen Treffer über dem Floor serviert wurde (`band`).
+   *
+   * Recall-Notices sind pro id gesperrt (REANNOUNCE_MS): dieselbe Memory
+   * gehört über eine Sitzung hinweg immer wieder zu den Top-Treffern, und
+   * ohne Sperre wäre die Karte eine Endlosschleife derselben drei Titel.
+   * Läuft schon ein Fenster für die id, zählt das Ereignis dort als ×N mit —
+   * das ist Coalescing, keine neue Karte, und wird deshalb nie gesperrt.
+   */
+  const notifyRead = (id: string, band?: RecallBand): void => {
     try {
+      if (!pending.has(id)) {
+        const last = announcedAt.get(id);
+        if (last !== undefined && Date.now() - last < reannounceMs) return;
+      }
       const m = vault.get(id);
-      if (m) ingest(baseFields(m, "read"));
+      if (m) ingest({ ...baseFields(m, "read"), ...(band ? { band } : {}) });
     } catch {
       /* Notices sind Telemetrie-of-Telemetrie — nie einen Load brechen */
     }
