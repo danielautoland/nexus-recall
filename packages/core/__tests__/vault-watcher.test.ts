@@ -106,6 +106,47 @@ test("editing and deleting a watched file produces change and remove", async (t)
   assert.equal(vault.get("gamma"), undefined);
 });
 
+test("the cloud-mount polling path delivers events too", async (t) => {
+  // The usePolling branch exists because fsevents/kqueue do not fire for
+  // files written into a GoogleDrive/iCloud/Dropbox provider mount. It was
+  // configuring a watcher that never fired, so nothing exercised it —
+  // a vault path containing the marker selects that branch.
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-CloudStorage-watch-"));
+  const vault = new Vault(dir);
+  await vault.init();
+  const events: VaultEvent[] = [];
+  vault.on((e) => events.push(e));
+  vault.startWatching();
+  await new Promise((r) => setTimeout(r, 300));
+  t.after(async () => {
+    await vault.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  await writeFile(path.join(dir, "delta.md"), memoryMd("delta"), "utf8");
+
+  // Polling interval is 1.5 s on cloud mounts, so allow for it.
+  await waitFor(events, (e) => e.kind === "add" && e.memory?.fm.id === "delta", 12000);
+  assert.equal(vault.get("delta")?.fm.id, "delta");
+});
+
+test("a watcher error is survivable — it must not take the process down", async (t) => {
+  const { dir, vault, events } = await watchedVault(t);
+
+  // FSWatcher is an EventEmitter: an unhandled "error" event terminates the
+  // process, and there is no uncaughtException handler in core or daemon.
+  // EMFILE is reachable for a launchd-spawned daemon at the macOS default of
+  // 256 descriptors, so this has to degrade to the periodic reconcile.
+  const watcher = (vault as unknown as { watcher?: { emit: (ev: string, err: Error) => void } })
+    .watcher;
+  assert.ok(watcher, "startWatching must have created a watcher");
+  assert.doesNotThrow(() => watcher!.emit("error", new Error("EMFILE: simulated")));
+
+  // …and the vault keeps working afterwards.
+  await writeFile(path.join(dir, "epsilon.md"), memoryMd("epsilon"), "utf8");
+  await waitFor(events, (e) => e.kind === "add" && e.memory?.fm.id === "epsilon");
+});
+
 test("non-markdown files and dotfolders stay out of the vault", async (t) => {
   const { dir, vault, events } = await watchedVault(t);
 
