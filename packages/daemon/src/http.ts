@@ -1151,7 +1151,7 @@ async function dispatchApi(
     case "find_document": {
       const parsed = FindDocumentArgs.safeParse(body);
       if (!parsed.success) throw new Error(parsed.error.message);
-      return findDocument(search, parsed.data);
+      return findDocument(search, vault, parsed.data);
     }
     case "read_document": {
       const parsed = ReadDocumentArgs.safeParse(body);
