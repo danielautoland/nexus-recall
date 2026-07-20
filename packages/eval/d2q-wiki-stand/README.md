@@ -1,10 +1,18 @@
-# d2q-wiki-stand — doc2query bridge for a colloquial-RU/UA user over an EN corpus
+# d2q-wiki-stand — doc2query bridge for a colloquial-RU/UA user's EN target docs
 
 The class this stand exists for: a query like "сенсы мышки какой она была"
-against an English config note. Zero shared tokens with the corpus — dense
+against an English config note. Zero shared tokens with the target — dense
 misses deep, BM25 scores flat 0.00. No reranker fixes an empty pool, so the
 only lever that physically builds the bridge is writing the user's register
 *into* the document: doc2query with local models.
+
+Corpus honesty (measured, after the first version of this README oversold
+it as "an EN corpus"): only ~13% of the motivating corpus is clean EN — the
+majority already carries the owner's Cyrillic. The bridge is for the EN
+islands; sections already written in the owner's register are excluded by
+a guard (`D2Q_SKIP_CYR`, default 0.5 Cyrillic letter share) — expanding a
+doc that already speaks the user's language adds collision surface and
+nothing else.
 
 Numbers from the private run live in the #119 comment thread. This directory
 is the mechanism, runnable on any corpus with the same shape.

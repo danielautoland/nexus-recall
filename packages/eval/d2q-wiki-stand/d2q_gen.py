@@ -48,6 +48,17 @@ PROMPT = (
 # not having one.
 TEMPS = (0.7, 1.1)
 
+# Sections at or above this Cyrillic share are skipped: they already speak
+# the owner's register, the bridge is for the EN islands of a mixed corpus.
+CYR_SKIP = float(os.environ.get("D2Q_SKIP_CYR", "0.5"))
+
+
+def cyr_share(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum("Ѐ" <= c <= "ӿ" for c in letters) / len(letters)
+
 
 def gen(model: str, doc: str, temp: float, timeout=300):
     body = {
@@ -101,6 +112,16 @@ def main():
         pool = rows[::step][:pool_n]
     if limit:
         pool = pool[:limit]
+
+    # REGISTER GUARD: a section already written mostly in the owner's own
+    # language/register does not need a voice bridge — expanding it only adds
+    # collision surface. Measured on the motivating corpus: just 13% of
+    # sections were clean EN; the majority already carries Cyrillic.
+    skipped = [r for r in pool if cyr_share(r[5]) >= CYR_SKIP]
+    if skipped:
+        print(f"guard: skipped {len(skipped)} sections ≥{CYR_SKIP:.0%} Cyrillic "
+              f"(already in the owner's register; not a silent cap)", flush=True)
+    pool = [r for r in pool if cyr_share(r[5]) < CYR_SKIP]
 
     # WAL + busy wait: generator and filter may share this DB. Without it the
     # second writer dies with 'database is locked' (caught live).
