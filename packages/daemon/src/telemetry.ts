@@ -279,6 +279,34 @@ function bandForScore(score: number | null): RecallBand {
   return "below_floor";
 }
 
+/** Höchstens so viele Treffer eines Recalls bekommen eine Live-Notice. */
+const MAX_SURFACED_NOTICES = 3;
+
+/**
+ * Die Treffer eines Recalls, die eine Map-Notice bekommen (#221).
+ *
+ * Das Band BESCHRIFTET, es filtert NICHT. Was in `hits[]` steht, wurde dem
+ * Aufrufer bereits serviert — auf dem recall-Pfad hinter seinem eigenen
+ * `min_score` (`parsed.data.min_score ?? RECALL_FLOOR`), auf dem Hook-Pfad
+ * ungefiltert. Hier ein zweites Mal gegen den globalen Floor zu schneiden
+ * würde die Entscheidung des Aufrufers überstimmen und Notices für Treffer
+ * verschlucken, die der Turn tatsächlich gesehen hat: gemessen über zwei Tage
+ * lagen 198 von 24 525 recall-Treffern (0,8 %, min 0,39) und 109 von 2 434
+ * Hook-Treffern (4,5 %) unter 30 — alle serviert.
+ *
+ * Gegen Flut hilft nicht der Floor, sondern das Wiederankündigungs-Fenster in
+ * live-updates. Das Band reist trotzdem mit, damit die Karte `required` von
+ * `optional` unterscheiden kann, ohne selbst Schwellen zu kennen.
+ */
+function surfacedHits(
+  hits: { id: string; score: number }[],
+): { id: string; band: RecallBand }[] {
+  return hits.slice(0, MAX_SURFACED_NOTICES).map((h) => ({
+    id: h.id,
+    band: bandForScore(typeof h.score === "number" ? h.score : null),
+  }));
+}
+
 function tokenize(text: string): Set<string> {
   return new Set(text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? []);
 }
@@ -465,9 +493,10 @@ export class Telemetry {
   onMemoryLoaded?: (id: string) => void;
 
   /** Live-Notices "surfaced" (#221): Hook der Map für recall/hook_recall —
-   *  die Top-Treffer eines Recalls leuchten auf, nicht nur das seltene
-   *  load_memory. Best-effort, nie werfend. Der Aufrufer deckelt auf Top-N. */
-  onRecalled?: (ids: string[]) => void;
+   *  die servierten Treffer eines Recalls leuchten auf, nicht nur das seltene
+   *  load_memory. Best-effort, nie werfend. Gefiltert und gedeckelt von
+   *  `surfacedHits` — das Band entscheidet, nicht der Aufrufer. */
+  onRecalled?: (hits: { id: string; band: RecallBand }[]) => void;
 
   recordLoadedMemory(payload: {
     memory_id: string;
@@ -577,9 +606,9 @@ export class Telemetry {
 
   async logRecall(payload: Omit<RecallEvent, "kind" | "ts" | "session_id">): Promise<void> {
     // "surfaced"-Notice VOR dem enabled-Gate — die Map-Notice ist ein UI-Signal,
-    // unabhängig von der Telemetrie-Persistenz (wie onMemoryLoaded). Top-3.
+    // unabhängig von der Telemetrie-Persistenz (wie onMemoryLoaded). Das Band filtert.
     try {
-      this.onRecalled?.(payload.hits.slice(0, 3).map((h) => h.id));
+      this.onRecalled?.(surfacedHits(payload.hits));
     } catch {
       /* Notices dürfen einen Recall nie brechen */
     }
@@ -620,9 +649,9 @@ export class Telemetry {
     payload: Omit<HookRecallEvent, "kind" | "ts" | "session_id">,
   ): Promise<void> {
     // "surfaced"-Notice VOR dem enabled-Gate — der Hook-Pfad ist der
-    // Löwenanteil des Traffics; die Map-Notice ist UI, nicht Persistenz. Top-3.
+    // Löwenanteil des Traffics; die Map-Notice ist UI, nicht Persistenz. Das Band filtert.
     try {
-      this.onRecalled?.(payload.hits.slice(0, 3).map((h) => h.id));
+      this.onRecalled?.(surfacedHits(payload.hits));
     } catch {
       /* Notices dürfen einen Hook-Recall nie brechen */
     }
