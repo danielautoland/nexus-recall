@@ -95,6 +95,7 @@ npm run backfill:related   # populate related_via on legacy memories
 | `BASTRA_EMBEDDING_PROVIDER` | no | unset | `ollama` or `openai`; without it the daemon stays BM25-only |
 | `BASTRA_EMBEDDING_MODEL` | no | provider default | e.g. `embeddinggemma` (ollama) or `text-embedding-3-small` (openai) |
 | `BASTRA_OLLAMA_URL` | no | `http://localhost:11434` | ollama provider endpoint |
+| `BASTRA_ALLOW_REMOTE_OLLAMA` | no | unset | allow a non-loopback `BASTRA_OLLAMA_URL`; without it the daemon refuses a remote endpoint, so a mistyped URL never sends memory text off-box (guards both the embedding provider and the reranker) |
 | `BASTRA_OLLAMA_KEEP_ALIVE` | no | `10m` | per-request `keep_alive` window — how long Ollama keeps the embedding model in RAM after each embed |
 | `BASTRA_OLLAMA_IDLE_UNLOAD_MS` | no | `600000` (10 min) | unload the embedding model from Ollama RAM after this long without an embed (battery saver); `0` disables |
 | `OPENAI_API_KEY` | no | unset | required when `BASTRA_EMBEDDING_PROVIDER=openai` |

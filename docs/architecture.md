@@ -88,6 +88,8 @@ Embeddings are an optional, configurable second pass; BM25 keyword search is the
 
 `ollama` uses local Ollama `/v1/embeddings`; `openai` requires an API key. `bastra embeddings status` shows the effective provider and which source decided it.
 
+The Ollama endpoint (`BASTRA_OLLAMA_URL`, default `http://localhost:11434`) is egress-guarded: a non-loopback host is refused unless `BASTRA_ALLOW_REMOTE_OLLAMA=1` is set explicitly, so a mistyped or injected URL can never send memory text off-box. The guard (`assertLocalOrOptIn`, `packages/core/src/ollama-egress.ts`) covers **both** callers — the embedding provider (query + memory text) and the reranker (candidate text) — so the "no cloud, no egress, stays on the machine" property holds outbound as well as for the loopback-only inbound server.
+
 When an `EmbeddingIndex` is attached, `recallHybrid(...)` combines BM25 and vector rankings with Reciprocal Rank Fusion. Vectors are stored as base64-encoded floats in `<vault>/.bastra/embeddings.json`.
 
 On the hybrid path the returned `score` is a **rank quantity, not a similarity** (#230). `fuseRRF` (`packages/core/src/embeddings.ts`) sums `1/(k + rank)` with `k = 60` across the two arms, and `recallHybrid` scales the result by ×5000 into a BM25-looking range. Every score therefore decomposes into a rank pair: rank 1 in both arms is the structural ceiling `2 × 5000/61 ≈ 163.934`, and rank 1 in a single arm (the arms fully disagree) is `5000/61 ≈ 81.967` — so a top hit can legitimately sit near 82. A top hit is high *by construction*: a list always has a first element even when the honest answer is "nothing here", so a nonsense query can still carry a 130+ score. Two consequences:
