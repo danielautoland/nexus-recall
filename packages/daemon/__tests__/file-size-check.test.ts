@@ -53,6 +53,6 @@ test("fileSizeNote measures real files; new files and kill-switch stay silent", 
     process.env.BASTRA_SIZE_CHECK = "off";
     assert.equal(await fileSizeNote(big), null, "kill-switch silences the check");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

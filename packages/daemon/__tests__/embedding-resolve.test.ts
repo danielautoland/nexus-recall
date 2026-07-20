@@ -21,7 +21,7 @@ async function withTempFile<T>(fn: (path: string) => Promise<T>): Promise<T> {
   try {
     return await fn(join(dir, "cli-settings.json"));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 

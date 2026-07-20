@@ -89,9 +89,9 @@ test("recall: emits stages in expected order", async () => {
     assert.equal(done.meta?.hit_count, hits.length);
     assert.equal(done.meta?.vault_size, 2);
     assert.equal(typeof done.meta?.total_ms, "number");
-    idx.stop();
+    await idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -117,9 +117,9 @@ test("recall: hops.expand stage fires only when expand_hops=1", async () => {
     assert.ok(hopsStop, "expected hops.expand stop event");
     assert.equal(typeof hopsStop!.meta?.hop_count, "number");
 
-    idx.stop();
+    await idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -142,9 +142,9 @@ test("recall: backwards-compat — no onStage means no stage overhead and same h
     );
     assert.ok(withStages.length > 0, "onStage was actually called");
 
-    idx.stop();
+    await idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -162,8 +162,8 @@ test("recall: empty query short-circuits with done event only", async () => {
     assert.ok(names.includes("done"));
     assert.ok(!names.includes("bm25.search"), "no bm25.search on empty query");
 
-    idx.stop();
+    await idx.stop();
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

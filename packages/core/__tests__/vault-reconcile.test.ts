@@ -43,7 +43,7 @@ test("reconcile: picks up a file added externally (watcher missed)", async () =>
     assert.equal(vault.size(), 4);
     assert.ok(vault.get("d"), "newly added memory is now in the index");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -55,7 +55,7 @@ test("reconcile: drops an index entry whose file was deleted", async () => {
     assert.equal(await vault.reconcile(), 2);
     assert.equal(vault.get("b"), undefined);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -65,7 +65,7 @@ test("reconcile: ignores non-memory .md files", async () => {
     await writeFile(path.join(dir, "note.md"), "# Just an Obsidian note\n\nno frontmatter.\n", "utf8");
     assert.equal(await vault.reconcile(), 2, "plain note is not counted");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -79,7 +79,7 @@ test("reconcile: heals an in-place edit from an external process (#199)", async 
     assert.equal(vault.get("a")?.fm.title, "Retitled externally", "reconcile healed the drift");
     assert.equal(vault.get("b")?.fm.title, "Title b", "untouched file untouched");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -91,7 +91,7 @@ test("reconcile: in-place edit that changes the id remaps cleanly", async () => 
     assert.equal(vault.get("b"), undefined, "old id dropped");
     assert.equal(vault.get("b-renamed")?.fm.title, "Title b-renamed");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -101,6 +101,6 @@ test("reconcile: no changes → count stable", async () => {
     assert.equal(await vault.reconcile(), 3);
     assert.equal(await vault.reconcile(), 3, "idempotent");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

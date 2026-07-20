@@ -4,6 +4,22 @@ import chokidar, { type FSWatcher } from "chokidar";
 import matter from "gray-matter";
 import { type Memory, parseMemoryWith, NotAMemoryFile } from "./schema.js";
 
+/**
+ * A file could not be READ (ENOENT, EIO, EACCES, an unmaterialised cloud
+ * placeholder, a write in flight). Deliberately distinct from a content
+ * failure: an operational error must never evict the last-known-good node,
+ * a content failure must.
+ */
+export class VaultIOError extends Error {
+  constructor(
+    public readonly filePath: string,
+    public readonly cause: Error,
+  ) {
+    super(`could not read ${filePath}: ${cause.message}`);
+    this.name = "VaultIOError";
+  }
+}
+
 export type VaultEvent =
   | { kind: "add"; memory: Memory }
   | { kind: "change"; memory: Memory }
@@ -261,10 +277,17 @@ export class Vault {
   }
 
   private async read(filePath: string): Promise<Memory> {
-    const [raw, st] = await Promise.all([
-      readFile(filePath, "utf8"),
-      stat(filePath),
-    ]);
+    // The I/O sits in its own try so callers can tell "the file says it is no
+    // longer a memory" from "the file could not be read". Both used to arrive
+    // as one anonymous error, and treating them alike made a transient
+    // ENOENT/EIO evict a perfectly good memory from the index.
+    let raw: string;
+    let st: Awaited<ReturnType<typeof stat>>;
+    try {
+      [raw, st] = await Promise.all([readFile(filePath, "utf8"), stat(filePath)]);
+    } catch (err) {
+      throw new VaultIOError(filePath, err as Error);
+    }
     const m = parseMemoryWith(
       (input) => matter(input),
       raw,
@@ -297,11 +320,24 @@ export class Vault {
       this.filePathToId.set(filePath, m.fm.id);
       this.emit({ kind, memory: m });
     } catch (err) {
+      // An operational failure says nothing about the CONTENT — the file may
+      // be perfectly valid and merely unreadable right now (cloud placeholder
+      // not materialised, a write in flight, EACCES, EIO). Keep the
+      // last-known-good node and let the watcher or the periodic reconcile
+      // retry; a real deletion still arrives as `unlink` → handleRemove.
+      if (err instanceof VaultIOError) {
+        console.error(
+          `[vault] ${kind} could not read ${basename(filePath)} (${err.cause.message}) — ` +
+            `keeping the last indexed version, will retry`,
+        );
+        return;
+      }
       // #240/A2.2: A file that stopped being a memory — turned into a plain
       // note, or its YAML broke during an Obsidian edit — used to leave the
       // LAST VALID node in the index forever. Recall then served pre-edit
       // content as current. Drop the node and say so; the file stays on disk
-      // and is re-indexed as soon as it parses again.
+      // and is re-indexed as soon as it parses again. Reached only after a
+      // SUCCESSFUL read, so the content really is the problem.
       const staleId = this.filePathToId.get(filePath);
       if (staleId) {
         this.memorys.delete(staleId);

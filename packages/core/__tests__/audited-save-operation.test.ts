@@ -36,7 +36,7 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   const auditLog = new AuditLog(dir);
   t.after(async () => {
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   const save = async (input: SaveMemoryInput) => {
     const out = await auditedSave({

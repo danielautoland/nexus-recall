@@ -100,10 +100,14 @@ async function makeDeps(withEmbeddings: boolean): Promise<Harness> {
   return {
     deps,
     close: async () => {
-      embIdx?.stop(); // cancels the debounced persist writer before we rm the dir
+      // AWAIT the stop: since #240/B3 it drains the pending persist instead of
+      // discarding it, so the write finishes before we pull the directory out
+      // from under it. Unawaited, the rm raced the rename and failed the test
+      // in teardown while every assertion had passed.
+      await embIdx?.stop();
       search.stop();
       await vault.stop?.();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

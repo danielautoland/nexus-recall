@@ -117,7 +117,7 @@ async function makeDaemon(): Promise<{ port: number; close: () => Promise<void>;
       search.stop();
       await vault.stop?.();
       await handle.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
     dir,
   };

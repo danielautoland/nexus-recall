@@ -14,7 +14,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm, unlink } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, unlink, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { Vault } from "../src/vault.js";
@@ -50,7 +50,7 @@ async function indexed(t: { after: (fn: () => unknown) => void }, files: Record<
   t.after(async () => {
     search.stop();
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return { dir, vault, search, init };
 }
@@ -89,6 +89,34 @@ test("a file that stops parsing drops out of the index instead of going stale", 
     [],
     "pre-edit content must not be served as current",
   );
+});
+
+test("a transient read failure keeps the last-known-good node", async (t) => {
+  // The regression the A2.2 fix introduced: read() bundled I/O and parsing,
+  // so an ENOENT/EIO/EACCES — or an unmaterialised cloud placeholder, which
+  // is the everyday case on the GoogleDrive/iCloud mounts this repo targets —
+  // was treated as "no longer a memory" and evicted a perfectly good node.
+  const { dir, vault, search } = await indexed(t, {
+    "note.md": memoryMd("cloud-valid", "PLACEHOLDERWORD"),
+  });
+  const file = path.join(dir, "note.md");
+  const stashed = path.join(dir, "note.md.stashed");
+
+  await rename(file, stashed); // file momentarily unreadable at its path
+  await vault.reindexFile(file);
+
+  assert.equal(
+    vault.get("cloud-valid")?.fm.id,
+    "cloud-valid",
+    "an unreadable file must not evict the indexed version",
+  );
+  assert.equal(search.recall("PLACEHOLDERWORD", { k: 5 })[0]?.id, "cloud-valid");
+
+  // …and a real deletion still removes it, through the unlink path.
+  await rename(stashed, file);
+  await unlink(file);
+  await vault.reconcile();
+  assert.equal(vault.get("cloud-valid"), undefined, "a real delete still drops the node");
 });
 
 test("a file that becomes valid again is indexed again", async (t) => {

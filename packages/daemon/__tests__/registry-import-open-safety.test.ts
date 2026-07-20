@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault } from "@bastra-recall/core";
+import { existsSync } from "node:fs";
 import { addFloor, release, listFloors, MAX_FLOORS } from "../src/floors.js";
 import { openDocument } from "../src/documents-handler.js";
 
@@ -120,6 +121,98 @@ test("A10: same basename in different source folders keeps stable ids on reimpor
     titles.length,
     `no content may end up duplicated under two ids: ${JSON.stringify(titles)}`,
   );
+});
+
+test("A10: a wikilink between nested imported notes resolves to a real id", async (t) => {
+  // The A10 id change put the relative directory into the id, but every link
+  // resolver still recomputed `slugify(label + basename)` — so a nested note
+  // linking to a sibling produced a ghost on the very first import.
+  const { importVault } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-links-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(join(src, "a"), { recursive: true });
+  await mkdir(target, { recursive: true });
+
+  await writeFile(join(src, "a", "one.md"), "# One\n\nOne links to [[two]].\n", "utf8");
+  await writeFile(join(src, "a", "two.md"), "# Two\n\nSecond note.\n", "utf8");
+
+  const res = await importVault(target, src, { label: "demo" });
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+
+  const ids = new Set(vault.list().map((m) => m.fm.id));
+  const one = vault.list().find((m) => m.fm.title.includes("One"));
+  assert.ok(one, "the linking note must have imported");
+
+  const linked = [...(one.body.matchAll(/\[\[([^\]]+)\]\]/g))].map((m) => m[1]);
+  assert.ok(linked.length > 0, "the wikilink must survive the import");
+  for (const target of linked) {
+    assert.ok(
+      ids.has(target),
+      `[[${target}]] must point at an imported id, have ${JSON.stringify([...ids])}`,
+    );
+  }
+  assert.equal(res.skipped.length, 0);
+});
+
+test("A10: a pre-relDir node is retired instead of left as a duplicate", async (t) => {
+  const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-migrate-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(join(src, "a"), { recursive: true });
+  const importFolder = join(target, IMPORT_ROOT, "demo");
+  await mkdir(importFolder, { recursive: true });
+
+  await writeFile(join(src, "a", "note.md"), "# Note\n\nA nested note.\n", "utf8");
+
+  // Seed the identity a pre-#240 import would have written: no relDir.
+  await writeFile(
+    join(importFolder, "demo-note.md"),
+    `---
+id: demo-note
+title: Note
+type: reference
+summary: the old identity
+topic_path: [imported, demo]
+tags: [imported]
+scope: demo
+recall_when: ["note"]
+created: 2026-06-01
+updated: 2026-06-01
+---
+
+A nested note.
+`,
+    "utf8",
+  );
+
+  const res = await importVault(target, src, { label: "demo" });
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+
+  assert.deepEqual(
+    res.migrated,
+    [{ from: "demo-note", to: "demo-a-note" }],
+    "the reimport must report which identity it retired",
+  );
+  assert.ok(vault.get("demo-a-note"), "the new identity must exist");
+  assert.equal(vault.get("demo-note"), undefined, "the old node must not linger as a duplicate");
+  // Retired, not destroyed.
+  assert.ok(existsSync(join(target, ".bastra", "trash", "demo-note.md")));
 });
 
 // ─── B11: open_document tells the truth ─────────────────────────

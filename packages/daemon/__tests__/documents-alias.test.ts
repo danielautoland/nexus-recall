@@ -41,7 +41,7 @@ test("saveDocument schreibt aliases: [<doc-id>] ins Sidecar-Frontmatter", async 
     assert.equal(fm.id, result.id);
     assert.deepEqual(fm.aliases, [result.id]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

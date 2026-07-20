@@ -80,7 +80,7 @@ async function withVault(fn: (mkDeps: (extra?: Partial<ToolDeps>) => ToolDeps) =
     search.start();
     await fn((extra = {}) => ({ vault, search, telemetry: new Telemetry(), vaultPath: dir, ...extra }));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 

@@ -63,7 +63,7 @@ async function watchedVault(t: { after: (fn: () => unknown) => void }) {
   await new Promise((r) => setTimeout(r, 300));
   t.after(async () => {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return { dir, vault, events };
 }
@@ -120,7 +120,7 @@ test("the cloud-mount polling path delivers events too", async (t) => {
   await new Promise((r) => setTimeout(r, 300));
   t.after(async () => {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   await writeFile(path.join(dir, "delta.md"), memoryMd("delta"), "utf8");

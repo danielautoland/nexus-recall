@@ -259,6 +259,35 @@ export class SearchIndex {
       return true;
     });
 
+    const ranked = this.rankBm25(filtered, k, opts, stage);
+
+    this.storeQueryCache(cacheKey, ranked);
+
+    stage.emit("done", recallStart, {
+      hit_count: ranked.length,
+      vault_size: this.mini.documentCount,
+      total_ms: Date.now() - recallStart,
+    });
+    return ranked;
+  }
+
+  /**
+   * BM25 hit construction → candidate pool → damping/re-sort → top-k → hops.
+   *
+   * Factored out so `recallHybrid` can degrade to the BM25 result WITHOUT
+   * re-entering the public `recall()` (#240/B2 follow-up): that recursion
+   * opened a second StageEmitter on the same callback, so `bm25.search` was
+   * emitted twice, MCP progress jumped backwards from stage 4 to 1, telemetry
+   * buckets overwrote each other, and a warm inner cache reported the whole
+   * hybrid attempt as `cache.hit` while `onCandidatePool` fired zero times.
+   * The caller owns `query.parse`, `bm25.search`, `done` and the cache.
+   */
+  private rankBm25(
+    filtered: ReturnType<MiniSearch<IndexDoc>["search"]>,
+    k: number,
+    opts: RecallOptions,
+    stage: StageEmitter,
+  ): RecallHit[] {
     // Pool-Size für Hop-Seeds: max(k*4, 20). Multi-Hop soll Nachbarn auch
     // für Hits sehen, die knapp unter dem k-Cut liegen — sonst gehen die
     // related_via-Kanten der Positionen 6–20 verloren.
@@ -286,17 +315,23 @@ export class SearchIndex {
     // of the ranking function the code actually defines. Fires whenever two
     // candidates sit within the damping factor of each other (<5× expired,
     // <2× doc/curator), which is the normal case for near-duplicate notes.
+    // applyStaleness mutates scores in place, so the damping runs on a CLONE:
+    // `directFull` keeps its raw scores for the hop seeds below. Damping the
+    // seeds first compounded the multiplier — a neighbour behind an expired
+    // seed was multiplied twice (0.2 × 0.2), dropping a fresh neighbour to 4%
+    // of its raw score and below downstream floors.
     const tStale = stage.start("staleness.rank");
-    const rankedFull = this.applyStaleness(directFull, opts);
+    const rankedFull = this.applyStaleness(directFull.map((h) => ({ ...h })), opts);
     const direct = rankedFull.slice(0, k);
+    stage.end("staleness.rank", tStale, { reranked_count: direct.length });
 
     let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
       const tHops = stage.start("hops.expand");
-      // Neighbours are seeded from the re-ranked pool and damped themselves,
-      // so the hop group gets the same treatment before its own cut.
+      // Seeded from the RAW pool; each neighbour is damped exactly once, by
+      // its own multiplier.
       const neighbors = this.applyStaleness(
-        this.collectOneHopNeighbors(rankedFull, opts, new Set(direct.map((h) => h.id))),
+        this.collectOneHopNeighbors(directFull, opts, new Set(direct.map((h) => h.id))),
         opts,
       ).slice(0, k);
       stage.end("hops.expand", tHops, { hop_count: neighbors.length });
@@ -304,15 +339,6 @@ export class SearchIndex {
     } else {
       ranked = direct;
     }
-    stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
-
-    this.storeQueryCache(cacheKey, ranked);
-
-    stage.emit("done", recallStart, {
-      hit_count: ranked.length,
-      vault_size: this.mini.documentCount,
-      total_ms: Date.now() - recallStart,
-    });
     return ranked;
   }
 
@@ -410,10 +436,17 @@ export class SearchIndex {
     // structurally unreachable exactly when the provider is down. Fall back
     // to the real BM25 path so scores mean what the thresholds assume.
     if (vectorTop.length === 0) {
-      // recall() emits its own full stage sequence through the same opts,
-      // so the caller still sees a complete progress stream.
-      const bm25Only = this.recall(query, opts);
+      // Reuse the BM25 results this call already computed — no recursion into
+      // the public pipeline, so the stage sequence stays monotonic and emits
+      // exactly one `done` and one candidate-pool callback.
+      const bm25Only = this.rankBm25(bm25, k, opts, stage);
       this.storeQueryCache(cacheKey, bm25Only);
+      stage.emit("done", recallStart, {
+        hit_count: bm25Only.length,
+        vault_size: this.mini.documentCount,
+        total_ms: Date.now() - recallStart,
+        degraded: "vector-arm-empty",
+      });
       return bm25Only;
     }
 
@@ -464,16 +497,18 @@ export class SearchIndex {
     opts.onCandidatePool?.(outFull);
 
     // #240/A7: same ordering fix as the BM25 path — multipliers and re-sort
-    // over the full pool, THEN cut to k.
+    // over the full pool, THEN cut to k. Damping runs on a clone so `outFull`
+    // keeps raw scores for the hop seeds (see the BM25 path for why).
     const tStale = stage.start("staleness.rank");
-    const rankedFull = this.applyStaleness(outFull, opts);
+    const rankedFull = this.applyStaleness(outFull.map((h) => ({ ...h })), opts);
     const out = rankedFull.slice(0, k);
+    stage.end("staleness.rank", tStale, { reranked_count: out.length });
 
     let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
       const tHops = stage.start("hops.expand");
       const neighbors = this.applyStaleness(
-        this.collectOneHopNeighbors(rankedFull, opts, new Set(out.map((h) => h.id))),
+        this.collectOneHopNeighbors(outFull, opts, new Set(out.map((h) => h.id))),
         opts,
       ).slice(0, k);
       stage.end("hops.expand", tHops, { hop_count: neighbors.length });
@@ -481,7 +516,6 @@ export class SearchIndex {
     } else {
       ranked = out;
     }
-    stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
 
     this.storeQueryCache(cacheKey, ranked);
 

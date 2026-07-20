@@ -25,7 +25,7 @@ async function withVault<T>(fn: (dir: string, vault: Vault) => Promise<T>): Prom
     return await fn(dir, vault);
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 

@@ -55,6 +55,6 @@ test("write_origin: default agent-session, explicit user-directed, overwrite pre
     );
     assert.equal((await fmOf(reclassified.file_path)).write_origin, "user-directed");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

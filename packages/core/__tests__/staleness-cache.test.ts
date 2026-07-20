@@ -99,10 +99,10 @@ test("staleness-cache: zweiter Recall verwendet Cache (kein Re-Compute)", async 
       );
     }
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -136,10 +136,10 @@ test("staleness-cache: Vault-Change invalidiert den Eintrag", async () => {
 
     assert.equal(cache.has("change-test"), false, "Cache-Eintrag wurde invalidiert");
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -177,9 +177,9 @@ test("staleness-cache: 12h TTL rechnet alten Eintrag neu", async () => {
       `computedAt wurde aktualisiert (was ${stampedAt}, now ${e1!.computedAt})`,
     );
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

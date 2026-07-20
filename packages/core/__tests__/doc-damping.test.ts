@@ -52,7 +52,7 @@ async function makeIndex(): Promise<{ search: SearchIndex; close: () => Promise<
     search,
     close: async () => {
       search.stop();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

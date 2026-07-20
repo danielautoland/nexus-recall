@@ -92,7 +92,7 @@ test("stageImport: creates the review file, dedupes against ticked AND open entr
     assert.equal(entries.filter((e) => e.done).length, 1);
     assert.ok(entries.every((e) => e.source === "chatgpt" && /\d{4}-\d{2}-\d{2}/.test(e.date)));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -101,7 +101,7 @@ test("countOpenImports: missing file → 0", async () => {
   try {
     assert.equal(await countOpenImports(dir), 0);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

@@ -271,7 +271,7 @@ test("retrieval: joined identifier query ranks the exact memory above the split-
       `joined identifier is a matched term (got: ${hits[0].matched_terms.join(", ")})`,
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -285,7 +285,7 @@ test("retrieval: split-parts recall is not reduced (decoy still findable)", asyn
     assert.ok(ids.includes("cfg"), "identifier memory matches on its parts");
     assert.ok(ids.includes("decoy"), "parts-only memory still matches");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -296,7 +296,7 @@ test("retrieval: hyphenated identifier in recall_when triggers deliberate match"
     assert.equal(hits[0]?.id, "send");
     assert.equal(hits[0]?.matched_recall_when, true, "recall_when field fired");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -306,7 +306,7 @@ test("retrieval: versioned identifier P2.2 is retrievable", async () => {
     const hits = idx.recall("P2.2", { k: 5 });
     assert.equal(hits[0]?.id, "phase");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -321,6 +321,6 @@ test("retrieval: normalization applies at the recall entry (dangling operator, h
     // 50k-char hostile query is capped and must not throw.
     assert.doesNotThrow(() => idx.recall("z".repeat(50_000), { k: 5 }));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

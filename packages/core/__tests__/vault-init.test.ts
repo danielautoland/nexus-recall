@@ -48,7 +48,7 @@ test("vault.init loads 100 memories in parallel", async () => {
     // Smoke-bound: parallel-load von 100 trivialen MDs sollte < 1s sein.
     assert.ok(dt < 5000, `init took ${dt.toFixed(0)}ms (expected < 5000)`);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -67,7 +67,7 @@ test("vault.init order is deterministic (sorted by path)", async () => {
     assert.deepEqual(ids1, ids2, "iteration order must be stable across init()");
     assert.equal(ids1.length, 50);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -95,6 +95,6 @@ no title, no summary, no topic_path → schema-fail.
     assert.equal(r.skipped.length, 1);
     assert.match(r.skipped[0].path, /broken\.md$/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

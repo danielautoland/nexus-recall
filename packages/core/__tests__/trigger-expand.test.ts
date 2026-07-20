@@ -183,7 +183,7 @@ test("expand writes recall_when_expanded + _src to frontmatter, atomically", asy
     const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
     assert.deepEqual(leftovers, [], "no tmp leftovers");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -200,7 +200,7 @@ test("selfTest filters out paraphrases that don't retrieve their own memory", as
     const raw = await readFile(path.join(dir, "a.md"), "utf8");
     assert.doesNotMatch(raw, /drop me/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -217,7 +217,7 @@ test("expand is a no-op on the second pass — source unchanged breaks the loop"
     assert.equal(second, null);
     assert.equal(chatCalls, 1, "model not called again when source is unchanged");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -234,7 +234,7 @@ test("writeGate=false suppresses the write (single-writer)", async () => {
     assert.equal(result, null);
     assert.equal(await readFile(path.join(dir, "a.md"), "utf8"), before);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -255,7 +255,7 @@ test("start: a rejecting expand via onEmbed is swallowed (crash guard, fix A)", 
     fire!("a"); // triggers expand → chat throws → must be swallowed, not unhandled
     await new Promise((r) => setTimeout(r, 20)); // let the rejection settle
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -271,7 +271,7 @@ test("backfill expands every un-expanded memory, then is idempotent", async () =
     const second = await expander.backfill();
     assert.equal(second, 0, "nothing left to expand (src hashes match)");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

@@ -69,7 +69,7 @@ test("buildSessionContext: assembles pinned + hints + conventions + open workflo
     assert.match(context, /Vault care: 1 open flag/);
     assert.match(context, /Import review: 1 open candidate/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -83,7 +83,7 @@ test("buildSessionContext: everything empty → empty string (no block spam)", a
     });
     assert.equal(context, "");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

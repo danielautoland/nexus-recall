@@ -36,7 +36,7 @@ async function makeDeps(): Promise<{ deps: ToolDeps; close: () => Promise<void> 
     close: async () => {
       search.stop();
       await vault.stop?.();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

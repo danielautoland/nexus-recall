@@ -38,7 +38,7 @@ test("pending-suggestions (#48): write → consume-once round-trip, stale entrie
   } finally {
     if (prev === undefined) delete process.env.BASTRA_PENDING_SUGGESTIONS_PATH;
     else process.env.BASTRA_PENDING_SUGGESTIONS_PATH = prev;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

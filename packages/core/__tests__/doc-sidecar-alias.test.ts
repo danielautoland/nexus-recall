@@ -104,7 +104,7 @@ test("Enricher ergänzt die eigene id als Alias auf einem Doc-Sidecar ohne alias
     assert.ok(indexed);
     assert.deepEqual(indexed.fm.aliases, [DOC_ID]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -129,7 +129,7 @@ test("Alias-only Write: Links unverändert, aber Alias fehlt → Enricher schrei
     const after = matter(await readFile(sidecar, "utf8")).data as { aliases?: string[] };
     assert.deepEqual(after.aliases, [DOC_ID]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -145,7 +145,7 @@ test("Alias vorhanden + Links unverändert → no-op (kein Write-Loop)", async (
     assert.equal(result, null);
     assert.equal(await readFile(sidecar, "utf8"), before);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -159,7 +159,7 @@ test("bestehende User-Aliases überleben, die id wird nur angehängt", async () 
     const fm = matter(await readFile(sidecar, "utf8")).data as { aliases?: string[] };
     assert.deepEqual(fm.aliases, ["Foto Mai", DOC_ID]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -177,7 +177,7 @@ test("Nicht-Doc-Memories bekommen keinen Alias (Filename == id, Obsidian löst d
     const raw = await readFile(path.join(dir, "a.md"), "utf8");
     assert.doesNotMatch(raw, /aliases:/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -256,7 +256,7 @@ test("saveMemory schreibt aliases und Overwrite ohne aliases erhält sie", async
     const fm3 = matter(await readFile(first.file_path, "utf8")).data as { aliases?: string[] };
     assert.deepEqual(fm3.aliases, ["Neu"]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -267,6 +267,6 @@ test("saveMemory ohne aliases auf neuem File schreibt kein aliases-Feld", async 
     const raw = await readFile(result.file_path, "utf8");
     assert.doesNotMatch(raw, /aliases:/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

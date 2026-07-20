@@ -61,6 +61,6 @@ test("resolveGenerationModel: env > cli-settings > default", async () => {
     else process.env.BASTRA_EXPAND_MODEL = savedExpand;
     if (savedRerank === undefined) delete process.env.BASTRA_RERANK_MODEL;
     else process.env.BASTRA_RERANK_MODEL = savedRerank;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

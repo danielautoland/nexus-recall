@@ -76,7 +76,7 @@ test("runtimeHealth (#92): ok after success, degraded after provider failure, re
     assert.equal(h.ok, true, "health must recover on the next successful call");
     assert.equal(h.lastError, null);
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }

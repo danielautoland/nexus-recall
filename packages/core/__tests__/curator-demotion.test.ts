@@ -77,6 +77,6 @@ test("survival-by-id: curator demotion is score-only and fully reversible", asyn
     assert.equal(after.find((h) => h.id === "demoted")!.score, beforeDemoted!.score, "reversible");
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

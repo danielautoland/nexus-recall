@@ -67,12 +67,23 @@ async function vaultWith(
   await vault.init();
   const search = new SearchIndex(vault);
   search.start();
+  // Every EmbeddingIndex a test creates must be drained BEFORE the temp dir
+  // goes away — it runs an async backfill and a debounced cache/vector
+  // persist, and removing the directory underneath it made the suite fail in
+  // teardown with ENOTEMPTY while the assertions themselves passed.
+  const indexes: EmbeddingIndex[] = [];
   t.after(async () => {
+    for (const idx of indexes) await idx.stop();
     search.stop();
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    // retry: a persist issued just before stop() may still be renaming.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  return { dir, vault, search };
+  const track = <T extends EmbeddingIndex>(idx: T): T => {
+    indexes.push(idx);
+    return idx;
+  };
+  return { dir, vault, search, track };
 }
 
 test("A7: k=1 returns the true top-1 after lifecycle damping, not before", async (t) => {
@@ -107,14 +118,68 @@ test("A7: doc damping is applied before the cut too", async (t) => {
   assert.equal(search.recall("ANCHORWORD", { k: 1 })[0].id, trueTop);
 });
 
+test("A7: damping is applied once per endpoint, not compounded through a hop", async (t) => {
+  // The A7 fix damped the seeds before collectOneHopNeighbors, which computes
+  // `seed.score * 0.5 * link.score` — so an expired seed multiplied its
+  // neighbours a second time (0.2 × 0.2 = 0.04) and a FRESH neighbour behind
+  // an expired seed fell to 4% of its raw score.
+  const relatedVia = (id: string) =>
+    `related_via:\n  - id: ${id}\n    reason: cosine 1.000\n    score: 1`;
+
+  const seed = (id: string, updated: string) => `---
+id: ${id}
+title: ${id} SEEDWORD
+type: lesson
+summary: SEEDWORD summary
+topic_path: [t]
+tags: [t]
+scope: t
+recall_when: ["SEEDWORD"]
+${relatedVia(`${id}-neigh`)}
+created: 2020-01-01
+updated: ${updated}
+---
+
+Body SEEDWORD ${id}.
+`;
+  const neighbour = (id: string) => memoryMd(id, { updated: "2026-07-01", marker: "NEIGHWORD" });
+
+  const fresh = await vaultWith(t, {
+    "seed.md": seed("s-fresh", "2026-07-01"),
+    "neigh.md": neighbour("s-fresh-neigh"),
+  });
+  const expired = await vaultWith(t, {
+    "seed.md": seed("s-expired", "2020-01-01"),
+    "neigh.md": neighbour("s-expired-neigh"),
+  });
+
+  const hopScore = (s: SearchIndex, id: string): number => {
+    const hits = s.recall("SEEDWORD", { k: 5, expand_hops: 1 });
+    const hop = hits.find((h) => h.id === id);
+    assert.ok(hop, `expected the 1-hop neighbour ${id}, got ${JSON.stringify(hits.map((h) => h.id))}`);
+    return hop.score;
+  };
+
+  const viaFresh = hopScore(fresh.search, "s-fresh-neigh");
+  const viaExpired = hopScore(expired.search, "s-expired-neigh");
+
+  // Both neighbours are equally fresh, so their own multiplier is 1.0 in both
+  // runs. The seed's lifecycle must not leak into the neighbour's score.
+  assert.equal(
+    viaExpired,
+    viaFresh,
+    `a fresh neighbour must score the same regardless of the seed's age (fresh ${viaFresh}, via expired ${viaExpired})`,
+  );
+});
+
 test("B1: an empty vector arm returns real BM25 scores, not one-armed RRF", async (t) => {
-  const { dir, vault, search } = await vaultWith(t, {
+  const { dir, vault, search, track } = await vaultWith(t, {
     "a.md": memoryMd("note-a", { marker: "ANCHORWORD" }),
     "b.md": memoryMd("note-b", { marker: "ANCHORWORD" }),
   });
 
   const provider = new StubProvider();
-  const emb = new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "embeddings.json"));
+  const emb = track(new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "embeddings.json")));
   await emb.start();
   search.useEmbeddings(emb);
 
@@ -134,11 +199,62 @@ test("B1: an empty vector arm returns real BM25 scores, not one-armed RRF", asyn
   assert.notEqual(Math.round(degraded[0].score * 1000), Math.round(81.967 * 1000));
 });
 
-test("B2: a hybrid cache hit still emits stages and the candidate pool", async (t) => {
-  const { dir, vault, search } = await vaultWith(t, {
+test("B1: the degraded fallback emits one monotonic stage sequence", async (t) => {
+  // The first B1 fix re-entered the public recall(), which opened a second
+  // StageEmitter on the same callback: bm25.search fired twice, progress
+  // jumped backwards, and a warm inner cache reported the whole hybrid
+  // attempt as a cache hit with zero candidate-pool callbacks.
+  const { dir, vault, search, track } = await vaultWith(t, {
     "a.md": memoryMd("note-a", { marker: "ANCHORWORD" }),
   });
-  const emb = new EmbeddingIndex(vault, new StubProvider(), path.join(dir, ".bastra", "e.json"));
+  const provider = new StubProvider();
+  const emb = track(new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "e.json")));
+  await emb.start();
+  search.useEmbeddings(emb);
+  provider.failing = true;
+
+  const run = async () => {
+    // start events carry no durationMs; end/one-shot events do. Counting
+    // starts gives executions, counting all gives one-shots like `done`.
+    const starts: string[] = [];
+    const all: string[] = [];
+    let pool = 0;
+    await search.recallHybrid("ANCHORWORD", {
+      k: 5,
+      onStage: (s) => {
+        all.push(s.name);
+        if (s.durationMs === undefined) starts.push(s.name);
+      },
+      onCandidatePool: () => {
+        pool++;
+      },
+    });
+    return { starts, all, pool };
+  };
+
+  const cold = await run();
+  assert.equal(
+    cold.starts.filter((s) => s === "bm25.search").length,
+    1,
+    `bm25.search must run once, saw ${JSON.stringify(cold.all)}`,
+  );
+  assert.equal(cold.all.filter((s) => s === "done").length, 1, "exactly one done");
+  assert.equal(cold.pool, 1, "exactly one candidate-pool callback");
+  assert.ok(!cold.all.includes("cache.hit"), "a live degraded run is not a cache hit");
+
+  // Warm the pure-BM25 cache, then degrade again — the old code reported the
+  // whole attempt as a cache hit and skipped the candidate pool entirely.
+  search.recall("ANCHORWORD", { k: 5 });
+  const warm = await run();
+  assert.equal(warm.pool, 1, "the candidate pool must still fire with a warm inner cache");
+  assert.equal(warm.all.filter((s) => s === "done").length, 1);
+});
+
+test("B2: a hybrid cache hit still emits stages and the candidate pool", async (t) => {
+  const { dir, vault, search, track } = await vaultWith(t, {
+    "a.md": memoryMd("note-a", { marker: "ANCHORWORD" }),
+  });
+  const emb = track(new EmbeddingIndex(vault, new StubProvider(), path.join(dir, ".bastra", "e.json")));
   await emb.start();
   search.useEmbeddings(emb);
 
@@ -160,12 +276,12 @@ test("B2: a hybrid cache hit still emits stages and the candidate pool", async (
 });
 
 test("B2: a result cached while the vector arm was empty does not survive recovery", async (t) => {
-  const { dir, vault, search } = await vaultWith(t, {
+  const { dir, vault, search, track } = await vaultWith(t, {
     "a.md": memoryMd("note-a", { marker: "ANCHORWORD" }),
   });
   const provider = new StubProvider();
   provider.failing = true;
-  const emb = new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "e.json"));
+  const emb = track(new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "e.json")));
   await emb.start();
   search.useEmbeddings(emb);
 
@@ -214,13 +330,12 @@ test("A8: a scoped query is not truncated by the global vector cut", async (t) =
   for (let i = 0; i < 5; i++) {
     files[`small-${i}.md`] = memoryMd(`small-${i}`, { scope: "small" });
   }
-  const { dir, vault, search } = await vaultWith(t, files);
+  const { dir, vault, search, track } = await vaultWith(t, files);
 
-  const emb = new EmbeddingIndex(vault, new StubProvider(), path.join(dir, ".bastra", "e.json"));
+  const emb = track(new EmbeddingIndex(vault, new StubProvider(), path.join(dir, ".bastra", "e.json")));
   await emb.start();
   await emb.flushQueue?.();
   search.useEmbeddings(emb);
-  t.after(() => emb.stop());
 
   const hits = await search.recallHybrid("ANCHORWORD", { k: 5, scope: "small" });
   assert.equal(hits.length, 5, `expected all 5 in-scope memories, got ${hits.length}`);

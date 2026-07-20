@@ -65,7 +65,7 @@ test("matched_recall_when: true when the query hits the hand-written recall_when
     assert.ok(hit, "the memory matches on its recall_when trigger");
     assert.equal(hit!.matched_recall_when, true, "a recall_when-field match sets the flag");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -81,6 +81,6 @@ test("matched_recall_when: false when the query hits only title/body (not recall
       "a title/body-only match must NOT set the recall_when flag (this is the #110 noise case)",
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

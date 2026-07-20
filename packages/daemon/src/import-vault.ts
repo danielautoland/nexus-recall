@@ -24,7 +24,8 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import matter from "gray-matter";
-import { saveMemory, slugify, stripCodeSpans, extractWikilinks, type SaveMemoryInput } from "@bastra-recall/core";
+import { saveMemory, slugify, stripCodeSpans, extractWikilinks, moveToTrash, type SaveMemoryInput } from "@bastra-recall/core";
+import { existsSync } from "node:fs";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 
@@ -82,6 +83,9 @@ export interface ImportVaultResult {
   /** #217: id of the synthetic curated-index node minted from the source
    *  index (MEMORY.md / hubs), or null when the source carried no index. */
   indexNode: string | null;
+  /** #240/A10: nodes retired because the id scheme gained the relative source
+   *  directory. Old file went to the vault trash, recoverable. */
+  migrated: Array<{ from: string; to: string }>;
   dryRun: boolean;
 }
 
@@ -135,10 +139,12 @@ function firstParagraph(body: string): string | null {
  *  stayed underscored while the id got dashes; 326 of his 402 ghosts). Links
  *  whose namespaced form exceeds the 80-char wikilink cap simply don't
  *  become edges — harmless. */
-function namespaceWikilinks(body: string, label: string): string {
+function namespaceWikilinks(body: string, label: string, idByBase: Map<string, string>): string {
   return body.replace(WIKILINK_RE, (full: string, id: string) => {
     try {
-      return `[[${slugify(`${label}-${id}`)}]]`;
+      // #240/A10: prefer the minted id for this basename; fall back to the
+      // legacy scheme only for targets outside the imported set.
+      return `[[${idByBase.get(id) ?? slugify(`${label}-${id}`)}]]`;
     } catch {
       return full; // unslugifiable target — leave untouched, never throw mid-body
     }
@@ -274,6 +280,14 @@ interface MapContext {
   referenced: Set<string>;
   /** fileBase → its section + description, harvested from the index/hubs. */
   harvest: Map<string, IndexEntry>;
+  /** #240/A10: basename → final id, for resolving LINKS only. Source
+   *  wikilinks reference a bare basename (`[[same]]`), which is inherently
+   *  ambiguous when the basename repeats — first sorted path wins. */
+  idByBase: Map<string, string>;
+  /** This file's own final id, minted from its full source path in Pass 0.
+   *  Must NOT come from idByBase: two files sharing a basename would collapse
+   *  onto one id and the second would overwrite the first. */
+  selfId: string;
 }
 
 function buildInput(
@@ -294,8 +308,9 @@ function buildInput(
   // stable ground truth (it already shapes the physical path below), so it
   // belongs in the id. `uniqueId` stays as the last-resort tiebreaker for a
   // genuine collision within one run.
-  const idBase = slugify([ctx.label, ...relSegments, fileBase].join("-"));
-  const id = uniqueId(idBase, ctx.used);
+  // #240/A10: minted in Pass 0 from the full source path — keeps minting and
+  // link resolution in lockstep without collapsing duplicate basenames.
+  const id = ctx.selfId;
   // Curated section from the index — carried in topic_path + tags, NOT in the
   // physical folder (Finding #3): a section lives in the source index, which
   // can change between re-imports; if it drove the file PATH, a re-import
@@ -308,7 +323,7 @@ function buildInput(
   const topic_path = ["imported", ctx.label, ...sectionSeg, ...relSegments];
   const tags = [...new Set(["imported", ctx.label, ccType, ...sectionSeg].filter(Boolean))];
   const recall_when = [...new Set([description, deSlug(name), ccType].map((s) => s.trim()).filter(Boolean))];
-  const safeBody = namespaceWikilinks(body.trim().length > 0 ? body : description || name, ctx.label);
+  const safeBody = namespaceWikilinks(body.trim().length > 0 ? body : description || name, ctx.label, ctx.idByBase);
   return {
     id,
     title: name,
@@ -351,7 +366,7 @@ function mapFile(fileBase: string, raw: string, ctx: MapContext): MapResult {
   // target, not a throwaway index — importing it is the only way its 18
   // inbound links resolve instead of collapsing into one degree-18 ghost.
   if (looksLikeIndexHub(content)) {
-    const selfId = safeSlug(`${ctx.label}-${fileBase}`);
+    const selfId = ctx.selfId;
     if (selfId === null || !ctx.referenced.has(selfId)) {
       return { ok: false, reason: "index/navigation file (link hub) — not a memory" };
     }
@@ -453,13 +468,36 @@ export async function importVault(
     }
   }
 
+  // #240/A10 Pass 0: mint every final id from the SOURCE PATHS first, before
+  // a single body is mapped. The ids carry the relative directory now, so
+  // each resolver below has to look the target up here instead of
+  // recomputing `slugify(label + basename)` — that recomputation resolved
+  // nested files to ids that were never minted and turned every intra-set
+  // link into a ghost. Deterministic: `files` is sorted, so a genuine
+  // basename collision resolves to the same winner on every run.
+  const idByBase = new Map<string, string>();
+  const idByPath = new Map<string, string>();
+  const idsUsed = new Set<string>();
+  for (const filePath of files) {
+    const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
+    const fileBase = basename(filePath, extname(filePath));
+    const relSegments = relDir ? relDir.split(sep).filter(Boolean) : [];
+    const id = uniqueId(slugify([label, ...relSegments, fileBase].join("-")), idsUsed);
+    idByPath.set(filePath, id);
+    // First writer wins: a wikilink by bare basename is ambiguous when the
+    // basename repeats, and sorted order makes the pick reproducible.
+    if (!idByBase.has(fileBase)) idByBase.set(fileBase, id);
+  }
+
   // Pass A: every namespaced id that SOME body links to — the inbound-veto set
   // (Finding #2). A hub OTHERS point at is a real target, not a throwaway index.
+  /** #240/A10: pre-relDir nodes retired during this run (old id → new id). */
+  const migrated: Array<{ from: string; to: string }> = [];
   const referenced = new Set<string>();
   for (const raw of rawByFile.values()) {
     const { content } = safeParse(raw);
     for (const x of extractWikilinks(content)) {
-      const id = safeSlug(`${label}-${x}`);
+      const id = idByBase.get(x) ?? safeSlug(`${label}-${x}`);
       if (id) referenced.add(id);
     }
   }
@@ -488,7 +526,9 @@ export async function importVault(
     if (raw === undefined) continue; // unreadable — already recorded in skipped
     const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
     const fileBase = basename(filePath, extname(filePath));
-    const mapped = mapFile(fileBase, raw, { label, folder, relDir, overwrite, used, referenced, harvest });
+    const selfId = idByPath.get(filePath);
+    if (selfId === undefined) continue; // not part of the minted set
+    const mapped = mapFile(fileBase, raw, { label, folder, relDir, overwrite, used, referenced, harvest, idByBase, selfId });
     if (!mapped.ok) {
       skipped.push({ path: filePath, reason: mapped.reason });
       continue;
@@ -501,6 +541,26 @@ export async function importVault(
       } catch (err) {
         skipped.push({ path: filePath, reason: `save failed: ${(err as Error).message}` });
         continue;
+      }
+      // #240/A10: retire the node this file carried under the PRE-relDir id
+      // scheme. Without this a reimport of an older import leaves the old
+      // node behind as a duplicate under a now-orphaned identity, and the
+      // import stops being idempotent. Only a file inside THIS label's import
+      // folder is touched, and it goes to the trash, never a hard delete.
+      const legacyId = safeSlug(`${label}-${fileBase}`);
+      if (legacyId && legacyId !== selfId) {
+        const legacyPath = join(vaultRoot, folder, `${legacyId}.md`);
+        if (existsSync(legacyPath)) {
+          try {
+            await moveToTrash(vaultRoot, legacyPath, legacyId);
+            migrated.push({ from: legacyId, to: selfId });
+          } catch (err) {
+            skipped.push({
+              path: legacyPath,
+              reason: `could not retire the pre-#240 node '${legacyId}': ${(err as Error).message}`,
+            });
+          }
+        }
       }
     }
     ids.push(mapped.input.id as string);
@@ -516,7 +576,7 @@ export async function importVault(
     const importedIds = new Set(ids);
     const bySection = new Map<string, string[]>(); // section → wikilink ids, in index order
     for (const [fileBase, entry] of harvest) {
-      const linkId = safeSlug(`${label}-${fileBase}`);
+      const linkId = idByBase.get(fileBase) ?? safeSlug(`${label}-${fileBase}`);
       if (!linkId || !importedIds.has(linkId)) continue;
       const sec = entry.section ?? "";
       const list = bySection.get(sec) ?? [];
@@ -600,6 +660,7 @@ export async function importVault(
     skipped,
     ids,
     indexNode,
+    migrated,
     dryRun,
   };
 }

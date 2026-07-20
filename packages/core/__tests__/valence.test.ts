@@ -50,7 +50,7 @@ test("valence: absent by default, explicit values persist", async () => {
     assert.equal(chargedFm.emotion, "frustration");
     assert.equal(chargedFm.recall_mode, "reflex");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -80,7 +80,7 @@ test("valence: overwrite without fields preserves existing values", async () => 
     assert.equal(fm2.emotion, "neutral");
     assert.equal(fm2.recall_mode, "reflex");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -96,7 +96,7 @@ test("valence: salience 0 is written and survives overwrite (no truthy swallow)"
     );
     assert.equal((await fmOf(refreshed.file_path)).salience, 0);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -137,7 +137,7 @@ async function makeIndex(): Promise<{ search: SearchIndex; close: () => Promise<
     search,
     close: async () => {
       search.stop();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

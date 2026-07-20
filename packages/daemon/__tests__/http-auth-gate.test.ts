@@ -184,7 +184,7 @@ test("addCorsOrigin → getCorsOrigins: normalizes, dedupes, drops invalid", asy
     assert.ok(warned >= 2, "both invalid origins should warn");
   } finally {
     process.stderr.write = origErr;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

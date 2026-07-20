@@ -11,10 +11,10 @@ import { EmbeddingIndex, type EmbeddingProvider } from "../src/embeddings.js";
  *  (macOS-Race, flakte ~1/5 Läufe). Ein kurzer Settle + Retry genügt. */
 async function rmSettled(dir: string): Promise<void> {
   try {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   } catch {
     await new Promise((r) => setTimeout(r, 150));
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }
 
@@ -87,7 +87,7 @@ test("embed-cache: identical content re-save does NOT trigger provider call", as
       baselineCalls,
       "no additional embed calls on identical content",
     );
-    idx.stop();
+    await idx.stop();
   } finally {
     await rmSettled(dir);
   }
@@ -117,7 +117,7 @@ test("embed-cache: title change invalidates cache and triggers re-embed", async 
 
     await waitFor(() => provider.totalTexts >= 2, 3000);
     assert.equal(provider.totalTexts, 2, "title change must trigger re-embed");
-    idx.stop();
+    await idx.stop();
   } finally {
     await rmSettled(dir);
   }
@@ -143,7 +143,7 @@ test("embed-cache: cache persists across EmbeddingIndex instances", async () => 
       assert.equal(provider.totalTexts, 1);
       // schedulePersist hat ~1s debounce — wir warten kurz drauf
       await new Promise((r) => setTimeout(r, 1300));
-      idx.stop();
+      await idx.stop();
     }
 
     // Second run: gleicher vault, frischer Index, soll cache + vectors finden

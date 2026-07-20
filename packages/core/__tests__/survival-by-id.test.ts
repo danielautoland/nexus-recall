@@ -112,7 +112,7 @@ test("survival-by-id: demote (staleness) degrades score only — id resolves, fi
     assert.equal(after, before, "demote changed score only — the file is byte-identical");
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -172,7 +172,7 @@ test("survival-by-id: soft-delete trashes append-only — id leaves the active i
     );
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

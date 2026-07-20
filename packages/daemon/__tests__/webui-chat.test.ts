@@ -99,6 +99,6 @@ test("runSearchCopilot: fans out queries, grounds the answer, honors the model's
   } finally {
     search.stop();
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

@@ -75,7 +75,7 @@ test("flushQueue respects MAX_CONCURRENT_BATCHES (default 2)", async () => {
       provider.peakInFlight <= 2,
       `peakInFlight = ${provider.peakInFlight}, must be <= 2`,
     );
-    idx.stop();
+    await idx.stop();
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
@@ -114,7 +114,7 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
     // mit limit=20 und stall=30ms sollten wir mehrfach gestallt haben → > 30ms
     assert.ok(dt > 30, `enqueue burst dt=${dt.toFixed(0)}ms must include stall`);
 
-    idx.stop();
+    await idx.stop();
     // Drain in-flight provider calls before rm(), else a late embed-write
     // into .bastra races the cleanup (ENOTEMPTY on the dir).
     while (idx.inFlightCount() > 0) await new Promise((r) => setTimeout(r, 10));
@@ -182,7 +182,7 @@ test("flushQueue re-checks the queue after a drain-window race (#233)", async ()
     while (idx.size() < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
     assert.equal(idx.size(), 2, "B must embed via the self re-trigger, not strand until the next event");
   } finally {
-    idx.stop();
+    await idx.stop();
     while (idx.inFlightCount() > 0) await new Promise((r) => setTimeout(r, 10));
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }

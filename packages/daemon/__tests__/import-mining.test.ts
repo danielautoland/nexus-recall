@@ -136,7 +136,7 @@ test("queue roundtrip: build → status → one chunk drains it → files cleane
     assert.equal(await readNextChunk(dir), null);
     assert.deepEqual(await queueStatus(dir), { total: 0, remaining: 0 });
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -163,7 +163,7 @@ test("chunk budget: a big conversation gets its own chunk, cursor advances acros
     assert.equal(third.remaining, 0);
     assert.equal(await readNextChunk(dir), null);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -181,6 +181,6 @@ test("buildQueue appends to an existing queue without resetting the cursor; clea
     await clearQueue(dir);
     assert.deepEqual(await queueStatus(dir), { total: 0, remaining: 0 });
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

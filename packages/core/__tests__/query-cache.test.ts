@@ -76,10 +76,10 @@ test("query-cache: zweiter Recall mit identischem Query hit Cache", async () => 
       "gleiche IDs aus dem Cache",
     );
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -101,10 +101,10 @@ test("query-cache: andere opts → Cache-Miss (separater Key)", async () => {
     idx.recall("alpha", { k: 5, scope: "other-scope" });
     assert.equal(cache.size, 3);
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -129,10 +129,10 @@ test("query-cache: Vault-Change leert den Cache komplett", async () => {
 
     assert.equal(cache.size, 0, "Cache wurde geleert");
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -159,10 +159,10 @@ test("query-cache: LRU-Eviction bei > 100 Keys", async () => {
     assert.equal(cache.has(firstKey), false, "älteste Query wurde gedroppt");
     assert.ok(cache.has(`recall|query-100|${JSON.stringify({ k: 5 })}`));
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -187,9 +187,9 @@ test("query-cache: LRU-Bump bei Hit verhindert Eviction der gebumpten Query", as
     assert.equal(cache.has(`recall|q-0|${JSON.stringify({ k: 5 })}`), true, "gebumpte Query bleibt");
     assert.equal(cache.has(`recall|q-1|${JSON.stringify({ k: 5 })}`), false, "vorher zweitälteste fliegt raus");
 
-    idx.stop();
+    await idx.stop();
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

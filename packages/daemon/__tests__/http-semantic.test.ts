@@ -212,6 +212,6 @@ test("GET /api/v1/graph/semantic: layout with vectors, 503 without, private excl
     search.stop();
     await vault.stop?.();
     await handle2.close();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

@@ -160,7 +160,7 @@ test("collectReflexHits: subset filter, hard match, budget with salience orderin
     assert.equal(collectReflexHits(vault, "völlig anderes thema", 2).matched.length, 0);
   } finally {
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -231,6 +231,6 @@ test("POST /hook/reflex serves budgeted hits and honors the kill switch", async 
     search.stop();
     await vault.stop?.();
     await handle.close();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

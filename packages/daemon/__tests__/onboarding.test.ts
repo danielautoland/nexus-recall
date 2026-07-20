@@ -68,7 +68,7 @@ test("marker: fresh vault needs onboarding, done or big vault does not", async (
     assert.equal(await isOnboardingNeeded(dir, 3), false);
     assert.match(await readFile(join(dir, ONBOARD_MARKER), "utf8"), /via cli/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -184,7 +184,7 @@ test("persistConventionSettings: size answer lands in cli-settings, junk stays o
     await persistConventionSettings({ conventions_size: "42" }, settingsPath);
     assert.equal(await getSizeGuide(settingsPath), 100, "clamped to the 100..5000 range");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -204,7 +204,7 @@ test("persistLanguageSetting: explicit language in identity beats answer-text de
     );
     assert.equal(await getPrimaryLanguage(settingsPath), "de", "explicit 'Deutsch' beats the English body");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -226,7 +226,7 @@ test("persistLanguageSetting: explicit language names map to ISO codes (Latin + 
       await persistLanguageSetting({ identity }, settingsPath);
       assert.equal(await getPrimaryLanguage(settingsPath), expected, `identity=${JSON.stringify(identity)}`);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   }
 });
@@ -247,7 +247,7 @@ test("persistLanguageSetting: falls back to detection over all answers when no n
     );
     assert.equal(await getPrimaryLanguage(settingsPath), "de", "detected from German function words");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -265,7 +265,7 @@ test("persistLanguageSetting: no language signal leaves an existing value untouc
     );
     assert.equal(await getPrimaryLanguage(settingsPath), "fr", "no signal → previous value kept, never cleared");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -280,6 +280,6 @@ test("file-size-check reads the onboarded guide value from cli-settings", async 
     assert.deepEqual(thresholdsFor("/x/a.test.ts", s), { guide: 700, critical: 1000 }, "tests keep the fixed convention");
     assert.deepEqual(await readSizeSettings(join(dir, "missing.json")), {}, "missing file → empty, never throws");
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

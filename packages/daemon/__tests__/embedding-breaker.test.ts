@@ -366,10 +366,10 @@ test("hybrid recall serves BM25-only while open, probe re-enables the vector leg
     assert.equal(inner.calls, callsBefore + 4, "probe reached the provider");
     assert.equal(breaker.state(now), "closed");
   } finally {
-    embIdx?.stop();
+    await embIdx?.stop();
     search.stop();
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -421,6 +421,6 @@ test("recall telemetry: embedding_degraded describes the served recall, not the 
   } finally {
     search.stop();
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

@@ -60,7 +60,7 @@ test("recall exposes a deeper candidate pool than the returned top-k", async () 
     // The returned hits are the head of the pool (same ids, same order).
     assert.deepEqual(hits.map((h) => h.id), pool.slice(0, 2).map((h) => h.id));
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -70,6 +70,6 @@ test("onCandidatePool is null-overhead when unset (recall still works)", async (
     const hits = idx.recall("alpha", { k: 2 });
     assert.equal(hits.length, 2);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

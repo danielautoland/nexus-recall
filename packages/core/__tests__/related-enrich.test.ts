@@ -66,7 +66,7 @@ test("enrich schreibt Section + frontmatter, atomar ohne tmp-Leiche", async () =
     const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
     assert.deepEqual(leftovers, []);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -86,7 +86,7 @@ test("Cosine-Drift ≤ ε ist no-op — kein Write-Ping-Pong zwischen Prozessen"
     assert.equal(result, null);
     assert.equal(await readFile(path.join(dir, "a.md"), "utf8"), before);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -103,7 +103,7 @@ test("Cosine-Drift > ε schreibt neu (echte Score-Änderung)", async () => {
     const raw = await readFile(path.join(dir, "a.md"), "utf8");
     assert.match(raw, /\(cosine 0\.90\)/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -120,7 +120,7 @@ test("writeGate=false unterdrückt den Write (Single-Writer)", async () => {
     assert.equal(result, null);
     assert.equal(await readFile(path.join(dir, "a.md"), "utf8"), before);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -143,6 +143,6 @@ test("Hysterese: bestehender Link überlebt bis threshold−ε, neuer braucht th
     assert.match(raw, /\[\[b\]\]/);
     assert.doesNotMatch(raw, /\[\[c\]\]/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

@@ -290,7 +290,7 @@ async function makeServer(): Promise<{ port: number; floorsPath: string; close: 
       search.stop();
       await vault.stop?.();
       await handle.close();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }
@@ -410,6 +410,6 @@ test("survival-by-id: retire/unpin drops to ranked without delete — file and r
     assert.deepEqual(await listFloors(undefined, floorsPath), [], "only the guarantee is gone, not the memory");
   } finally {
     await vault.stop();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

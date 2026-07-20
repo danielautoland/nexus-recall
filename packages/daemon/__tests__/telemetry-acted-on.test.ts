@@ -59,7 +59,7 @@ test("recall_episode closes a loaded memory with acted_on=true without logging r
     else process.env.BASTRA_LOG_PATH = prevPath;
     if (prevTelemetry === undefined) delete process.env.BASTRA_TELEMETRY;
     else process.env.BASTRA_TELEMETRY = prevTelemetry;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -199,7 +199,7 @@ test("join-state persists across a daemon boot (Audit 26.6.)", async () => {
     else process.env.BASTRA_LOG_PATH = prevPath;
     if (prevTelemetry === undefined) delete process.env.BASTRA_TELEMETRY;
     else process.env.BASTRA_TELEMETRY = prevTelemetry;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
@@ -234,7 +234,7 @@ test("join-state restore drops entries past their follow-up window", async () =>
     else process.env.BASTRA_LOG_PATH = prevPath;
     if (prevTelemetry === undefined) delete process.env.BASTRA_TELEMETRY;
     else process.env.BASTRA_TELEMETRY = prevTelemetry;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

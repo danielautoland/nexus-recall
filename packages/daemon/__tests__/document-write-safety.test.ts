@@ -27,7 +27,7 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   await vault.init();
   t.after(async () => {
     await vault.stop?.();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return { dir, vault };
 }
