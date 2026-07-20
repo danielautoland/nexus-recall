@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   saveMemory,
+  slugify,
   type SaveMemoryInput,
   type SaveMemoryResult,
 } from "./save.js";
@@ -52,9 +53,14 @@ export async function auditedSave(args: {
   }
 
   // Bestehenden Zustand erfassen (vor dem Schreiben), damit diff_before
-  // korrekt ist. Wenn input.id gesetzt ist, lookup der existing Memory.
-  const candidateID = input.id;
-  const existing = candidateID ? vault.get(candidateID) : undefined;
+  // korrekt ist. Die id muss dabei genauso abgeleitet werden wie in
+  // saveMemory selbst (#240/C6, gleiche Wurzel wie #239): auf dem Normalpfad
+  // schickt der Caller nur den Titel, `input.id` ist undefined. Vorher wurde
+  // deshalb JEDER slug-inferred Overwrite als `create` mit `diff_before: null`
+  // auditiert — das Vorbild eines destruktiven Overwrites war damit weg und
+  // die Mutation aus dem Trail nicht rekonstruierbar.
+  const candidateID = input.id ?? slugify(input.title);
+  const existing = vault.get(candidateID);
   const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
 
   const result = await saveMemory(vaultRoot, input);
@@ -67,7 +73,9 @@ export async function auditedSave(args: {
     memory_id: result.id,
     actor: context.actor,
     actor_detail: context.actor_detail,
-    operation: existing ? "update" : "create",
+    // Ground truth statt Vorab-Lookup: saveMemory prüft die Existenz am
+    // tatsächlichen Zielpfad und meldet sie in `created` zurück.
+    operation: result.created ? "create" : "update",
     diff_before: diffBefore,
     diff_after: diffAfter,
     file_path: result.file_path,

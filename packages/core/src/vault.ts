@@ -84,7 +84,12 @@ export class Vault {
     // fsevents/kqueue do not fire reliably for files written *into* a
     // GoogleDrive/iCloud/Dropbox provider mount. Force polling on those.
     const isCloudMount = /(CloudStorage|Dropbox|iCloud)/i.test(this.root);
-    this.watcher = chokidar.watch(`${this.root}/**/*.md`, {
+    // #242: watch the DIRECTORY, never a glob. chokidar removed glob support
+    // in v4 — `${root}/**/*.md` is taken as a literal path, so the watcher
+    // silently watches nothing and emits no events and no error. The .md
+    // filter moved into the handlers on purpose: `ignored` also sees
+    // directories, and filtering those by extension would stop the traversal.
+    this.watcher = chokidar.watch(this.root, {
       ignoreInitial: true,
       awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
       usePolling: isCloudMount,
@@ -97,9 +102,26 @@ export class Vault {
         );
       },
     });
-    this.watcher.on("add", (p) => void this.handleAddOrChange(p, "add"));
-    this.watcher.on("change", (p) => void this.handleAddOrChange(p, "change"));
-    this.watcher.on("unlink", (p) => this.handleRemove(p));
+    const isMarkdown = (p: string): boolean => p.toLowerCase().endsWith(".md");
+    this.watcher.on("add", (p) => {
+      if (isMarkdown(p)) void this.handleAddOrChange(p, "add");
+    });
+    this.watcher.on("change", (p) => {
+      if (isMarkdown(p)) void this.handleAddOrChange(p, "change");
+    });
+    this.watcher.on("unlink", (p) => {
+      if (isMarkdown(p)) this.handleRemove(p);
+    });
+    // #242: FSWatcher is an EventEmitter — an unhandled "error" event kills
+    // the process (no uncaughtException handler anywhere in core/daemon).
+    // A watcher failure must degrade to the periodic reconcile, not take the
+    // daemon down: EMFILE is reachable for a launchd-spawned daemon at the
+    // macOS default of 256 descriptors.
+    this.watcher.on("error", (err) => {
+      console.error(
+        `[vault] watcher error — falling back to periodic reconcile: ${(err as Error).message}`,
+      );
+    });
   }
 
   /**

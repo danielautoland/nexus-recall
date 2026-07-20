@@ -11,6 +11,7 @@
  */
 import { relative, dirname } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import matter from "gray-matter";
 import { z } from "zod";
 import {
@@ -496,6 +497,8 @@ export interface SaveMemoryResult {
   save_quality: SaveQualityResult;
   /** Present only when saveMemory auto-truncated an over-long summary. */
   summary_note?: string;
+  /** Present only when a re-file left the old file behind under the same id. */
+  warning?: string;
   /** #150: terminal success marker — tells the model not to re-issue the save. */
   note?: string;
 }
@@ -599,7 +602,18 @@ const FIX_MARKER_RE =
 const IMPERATIVE_LEAD_RE =
   /^(always|never|don'?t|do not|avoid|remember to|ensure|immer|nie(mals)?|benutze|verwende|vermeide|nutze|stelle sicher)\b/i;
 
-function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityResult {
+/**
+ * @param excludeId Die EFFEKTIVE id des Saves (`input.id ?? slugify(title)`).
+ *   Muss vom Caller berechnet werden: `input.id` ist auf dem dokumentierten
+ *   Normalpfad `undefined` (der Agent schickt nur den Titel), und ein Filter
+ *   gegen `undefined` schließt nichts aus — das Memory fand beim Overwrite
+ *   sich selbst als Top-Duplikat und kollidierte mit den eigenen Triggern.
+ */
+function scoreSaveQuality(
+  deps: ToolDeps,
+  input: SaveMemoryInput,
+  excludeId: string,
+): SaveQualityResult {
   const issues: string[] = [];
   const suggestions: string[] = [];
   let score = 100;
@@ -701,7 +715,7 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
   const duplicateQuery = [input.title, ...input.tags, ...input.recall_when, input.summary].join(" ");
   const duplicateCandidates = deps.search
     .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: false })
-    .filter((hit) => hit.id !== input.id)
+    .filter((hit) => hit.id !== excludeId)
     .filter((hit) => hit.score >= 20)
     .slice(0, 3)
     .map((hit) => ({ id: hit.id, score: hit.score, title: hit.title }));
@@ -719,7 +733,7 @@ function scoreSaveQuality(deps: ToolDeps, input: SaveMemoryInput): SaveQualityRe
       // hochspülen würde, exakt wie recall() selbst filtert.
       const hits = deps.search
         .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: false })
-        .filter((hit) => hit.id !== input.id)
+        .filter((hit) => hit.id !== excludeId)
         .filter((hit) => hit.score >= RECALL_FLOOR);
       return { trigger, count: hits.length, examples: hits.slice(0, 3).map((h) => h.id) };
     })
@@ -798,14 +812,17 @@ async function saveMemoryInner(
   const parsed = SaveMemoryInput.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
 
-  const saveQuality = scoreSaveQuality(deps, parsed.data);
+  // Die effektive id muss VOR dem Quality-Scoring feststehen — sonst schließt
+  // scoreSaveQuality das Memory nicht von seinen eigenen Duplikat- und
+  // Kollisions-Checks aus (#239).
+  const finalId = parsed.data.id ?? slugify(parsed.data.title);
+  const saveQuality = scoreSaveQuality(deps, parsed.data, finalId);
 
   // Re-Filing (#64): Wenn die id schon indexiert ist, aber der neue Save sie
   // woanders ablegt (geänderte folder/scope-Konvention), würde saveMemory nur
   // den NEUEN Pfad auf Kollision prüfen — die alte Datei bliebe als Duplikat
   // mit derselben id liegen. Deshalb: ohne overwrite ablehnen, mit overwrite
   // die alte Datei in den Trash verschieben (recoverbar, kein Hard-Delete).
-  const finalId = parsed.data.id ?? slugify(parsed.data.title);
   const previous = deps.vault.get(finalId);
   if (previous && !parsed.data.overwrite) {
     throw new Error(
@@ -833,6 +850,7 @@ async function saveMemoryInner(
       : base;
 
   const result = await saveMemory(deps.vaultPath, input);
+  let refileWarning: string | undefined;
   if (previous && previous.filePath !== result.file_path) {
     try {
       await moveToTrash(deps.vaultPath, previous.filePath, finalId);
@@ -840,6 +858,16 @@ async function saveMemoryInner(
     } catch (err) {
       // Alte Datei schon weg (extern gelöscht/verschoben) → nichts aufzuräumen.
       console.error(`[bastra-recall] re-file: could not trash old path: ${(err as Error).message}`);
+      // …aber wenn sie NOCH da ist, tragen jetzt zwei Dateien dieselbe id.
+      // Der Vault nimmt beim Init still eine davon, und das Aufräumen der
+      // anderen reißt die Memory mit aus dem Index (#240/A2.3). Das darf der
+      // Caller nicht nur im Daemon-Log finden.
+      if (existsSync(previous.filePath)) {
+        refileWarning =
+          `re-file incomplete: the old file at ${previous.filePath} could not be trashed and now shares ` +
+          `id '${finalId}' with ${result.file_path}. Remove or fix one of them — two files with the same ` +
+          `id make the memory disappear from the index on the next reconcile.`;
+      }
     }
   }
   // Don't trust the watcher on cloud-storage mounts — force-index now
@@ -860,7 +888,7 @@ async function saveMemoryInner(
     }),
   );
 
-  return { ...result, save_quality: saveQuality };
+  return { ...result, save_quality: saveQuality, ...(refileWarning ? { warning: refileWarning } : {}) };
 }
 
 // ─── archive_memory (#217 Intake-Adoption) ──────────────────────

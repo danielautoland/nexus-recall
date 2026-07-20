@@ -1,4 +1,4 @@
-import { writeFile, readFile, access, mkdir, unlink } from "node:fs/promises";
+import { writeFile, readFile, access, mkdir, unlink, rename } from "node:fs/promises";
 import { join, dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
@@ -328,57 +328,61 @@ export async function saveMemory(
     );
   }
 
-  // #188: Ein Overwrite ohne explizite aliases darf die bestehenden
-  // Obsidian-Aliases des Files nicht verlieren — Doc-Sidecars tragen ihre
-  // doc-id als Alias, damit [[<doc-id>]]-Links in Obsidian auflösen.
-  // #158: gleiche Regel für write_origin — ein Refresh ohne explizite Angabe
-  // darf ein user-directed Memory nicht zum Curation-Kandidaten degradieren.
+  // #240/A6: Overwrite ist ein PATCH, kein Replace. Ein Save schickt nur die
+  // Felder, die er ändern will — alles andere muss den Refresh überleben.
+  // Vorher wurde das Frontmatter aus dem Input neu gebaut, sodass jedes
+  // Agent-Overwrite `created`, `sensitivity`, `confidence`, `source`,
+  // `valid_until`, `affects_files`, … still auf Defaults zurücksetzte. Das
+  // ist der häufigste Schreibvorgang überhaupt (der Skill schreibt Updates
+  // per overwrite=true vor), und die Verluste sind teils nicht regenerierbar.
+  //
+  // Löschen bleibt ausdrückbar: `?? ` greift nur bei *fehlendem* Feld, ein
+  // explizit übergebenes `[]` / null-Wert schlägt weiterhin durch.
+  //
+  // Historie der Einzelfall-Pflaster, die das hier ersetzt: #188 aliases,
+  // #158 write_origin, #217 salience/emotion/recall_mode.
   // Best-effort: ein unlesbares File blockt den Save nicht.
-  let aliases = input.aliases;
-  let existingOrigin: string | undefined;
-  // #217: Valenz/Reflex überleben einen Refresh ohne explizite Angabe —
-  // sonst wipet jedes Agent-Overwrite die vom User bestätigte Achse.
-  let salience: number | undefined = input.salience;
-  let emotion: string | undefined = input.emotion;
-  let recallMode: string | undefined = input.recall_mode;
-  if (
-    exists &&
-    (aliases === undefined ||
-      input.write_origin === undefined ||
-      salience === undefined ||
-      emotion === undefined ||
-      recallMode === undefined)
-  ) {
+  let prev: Record<string, unknown> = {};
+  if (exists) {
     try {
       const existingRaw = await readFile(filePath, "utf8");
-      const data = matter(existingRaw).data as Record<string, unknown> | undefined;
-      if (aliases === undefined) aliases = coerceAliases(data?.aliases);
-      if (typeof data?.write_origin === "string") existingOrigin = data.write_origin;
-      if (
-        salience === undefined &&
-        typeof data?.salience === "number" &&
-        data.salience >= 0 &&
-        data.salience <= 1
-      ) {
-        salience = data.salience;
-      }
-      if (
-        emotion === undefined &&
-        typeof data?.emotion === "string" &&
-        ["frustration", "success", "risk", "neutral"].includes(data.emotion)
-      ) {
-        emotion = data.emotion;
-      }
-      if (
-        recallMode === undefined &&
-        (data?.recall_mode === "reflex" || data?.recall_mode === "deliberate")
-      ) {
-        recallMode = data.recall_mode;
-      }
+      prev = (matter(existingRaw).data as Record<string, unknown> | undefined) ?? {};
     } catch {
       // korrupt/parallel gelöscht → nichts zu erhalten
     }
   }
+  /** Übernimmt den Bestandswert nur, wenn er den erwarteten Typ hat. */
+  const kept = <T>(value: unknown, ok: (v: unknown) => boolean): T | undefined =>
+    ok(value) ? (value as T) : undefined;
+  const isStr = (v: unknown): boolean => typeof v === "string" && v.length > 0;
+  const isNum = (v: unknown): boolean => typeof v === "number" && Number.isFinite(v);
+  const isArr = (v: unknown): boolean => Array.isArray(v);
+  /**
+   * Optionales Frontmatter-Feld: Input gewinnt, sonst der Bestandswert,
+   * sonst bleibt das Feld ganz weg (kein `field: undefined` im YAML).
+   */
+  const optional = (
+    key: string,
+    value: unknown,
+    ok: (v: unknown) => boolean,
+  ): Record<string, unknown> => {
+    const next = value ?? kept(prev[key], ok);
+    return next == null ? {} : { [key]: next };
+  };
+
+  const aliases = input.aliases ?? coerceAliases(prev.aliases);
+  const existingOrigin = kept<string>(prev.write_origin, isStr);
+  const salience =
+    input.salience ??
+    kept<number>(prev.salience, (v) => isNum(v) && (v as number) >= 0 && (v as number) <= 1);
+  const emotion =
+    input.emotion ??
+    kept<string>(prev.emotion, (v) =>
+      ["frustration", "success", "risk", "neutral"].includes(v as string),
+    );
+  const recallMode =
+    input.recall_mode ??
+    kept<string>(prev.recall_mode, (v) => v === "reflex" || v === "deliberate");
 
   const today = todayISO();
   // Wikilinks aus dem Body in `related[]` spiegeln. Im OSS-Stack existiert
@@ -386,7 +390,10 @@ export async function saveMemory(
   // — Multi-Hop-Recall sähe sie nie. Reihenfolge: vom Caller mitgegebene
   // related zuerst, dann neue aus dem Body, dedupliziert.
   const bodyLinks = extractWikilinks(input.body);
-  const mergedRelated = dedupe([...(input.related ?? []), ...bodyLinks]).filter(
+  const mergedRelated = dedupe([
+    ...(input.related ?? kept<string[]>(prev.related, isArr) ?? []),
+    ...bodyLinks,
+  ]).filter(
     (rel) => rel !== id, // self-link macht keinen Sinn
   );
 
@@ -405,27 +412,39 @@ export async function saveMemory(
     recall_when: input.recall_when,
     related: mergedRelated,
     ...(aliases && aliases.length > 0 ? { aliases } : {}),
-    related_via: input.related_via ?? [],
-    sensitivity: input.sensitivity ?? "team",
+    related_via: input.related_via ?? kept(prev.related_via, isArr) ?? [],
+    // sensitivity trägt das allow_private-Gate: ein stiller private→team-
+    // Downgrade beim Text-Refresh würde das Memory für externe Caller öffnen.
+    sensitivity: input.sensitivity ?? kept(prev.sensitivity, isStr) ?? "team",
     // #158: Provenance-Stempel — Bestands-Memories ohne Feld gelten als
     // agent-session (Backfill per Default-Semantik, kein Massen-Rewrite)
     write_origin: input.write_origin ?? existingOrigin ?? "agent-session",
-    ...(input.valid_until ? { valid_until: input.valid_until } : {}),
-    ...(input.expires_after_days ? { expires_after_days: input.expires_after_days } : {}),
-    ...(input.last_reviewed_at ? { last_reviewed_at: input.last_reviewed_at } : {}),
-    ...(input.stale_status ? { stale_status: input.stale_status } : {}),
-    ...(input.content_hash ? { content_hash: input.content_hash } : {}),
-    ...(input.content_size != null ? { content_size: input.content_size } : {}),
-    ...(input.source ? { source: input.source } : {}),
-    confidence: input.confidence ?? 1,
+    // Maschinell erzeugte Trigger-Expansion (#117): der Save baut das
+    // Frontmatter neu, also fielen doc2query-Trigger bei jedem Overwrite raus
+    // und mussten vom Background-Pass neu berechnet werden.
+    // Nur aus dem Bestand: SaveMemoryInput kennt diese Felder nicht, sie
+    // entstehen ausschließlich im Background-Pass (trigger-expand.ts).
+    ...optional("recall_when_expanded", undefined, isArr),
+    ...optional("recall_when_expanded_src", undefined, isStr),
+    ...optional("valid_until", input.valid_until, isStr),
+    ...optional("expires_after_days", input.expires_after_days, isNum),
+    ...optional("last_reviewed_at", input.last_reviewed_at, isStr),
+    ...optional("stale_status", input.stale_status, isStr),
+    ...optional("content_hash", input.content_hash, isStr),
+    ...optional("content_size", input.content_size, isNum),
+    ...optional("source", input.source, isStr),
+    confidence: input.confidence ?? kept(prev.confidence, isNum) ?? 1,
     // #217: `!= null` statt truthy — salience 0 ist ein gültiger Wert.
     ...(salience != null ? { salience } : {}),
     ...(emotion != null ? { emotion } : {}),
     ...(recallMode != null ? { recall_mode: recallMode } : {}),
-    created: today,
+    // `created` ist die Entstehungszeit, nicht die letzte Schreibzeit — und
+    // über SaveMemoryInput gar nicht setzbar. Vorher stand hier unbedingt
+    // `today`, wodurch jedes Overwrite die Historie des Memorys löschte.
+    created: kept<string>(prev.created, isStr) ?? today,
     updated: today,
-    affects_files: input.affects_files ?? [],
-    issues: input.issues ?? [],
+    affects_files: input.affects_files ?? kept(prev.affects_files, isArr) ?? [],
+    issues: input.issues ?? kept(prev.issues, isArr) ?? [],
   };
 
   // Bookmark-specific fields, only set when type === "bookmark" so memory
@@ -443,7 +462,21 @@ export async function saveMemory(
   const content = matter.stringify(body, fm);
 
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, "utf8");
+  // Atomar via temp+rename — dieselbe Begründung wie in related-enrich.ts:241
+  // ("ein direkter writeFile lässt das File kurzzeitig leer, live beobachtet").
+  // Der Fix war dort gegen ein beobachtetes Datenverlust-Fenster eingebaut,
+  // aber nie auf den häufigsten Writer zurückportiert. Der Temp-Name trägt
+  // zusätzlich einen Zufallsanteil: ein fixer `.tmp-<pid>` kollidiert bei
+  // überlappenden Schreibern desselben Prozesses (#240/B3) und veröffentlicht
+  // per rename das Mischprodukt.
+  const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  await writeFile(tmp, content, "utf8");
+  try {
+    await rename(tmp, filePath);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
   return {
     id,
     file_path: filePath,
