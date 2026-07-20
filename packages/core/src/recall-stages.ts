@@ -60,8 +60,12 @@ export const RECALL_STAGE_ORDER: RecallStage["name"][] = [
   "bm25.search",
   "vector.search",
   "rrf.fuse",
-  "hops.expand",
+  // #240/A7 moved the damping ahead of the cut, so `staleness.rank` now runs
+  // BEFORE `hops.expand` (hops are seeded from the re-ranked direct pool).
+  // The canonical order has to follow the real one, or progressIndexFor()
+  // reports a bar that jumps backwards mid-recall.
   "staleness.rank",
+  "hops.expand",
   "done",
 ];
 

@@ -25,7 +25,6 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import matter from "gray-matter";
 import { saveMemory, slugify, stripCodeSpans, extractWikilinks, moveToTrash, type SaveMemoryInput } from "@bastra-recall/core";
-import { existsSync } from "node:fs";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 
@@ -144,7 +143,7 @@ function namespaceWikilinks(body: string, label: string, idByBase: Map<string, s
     try {
       // #240/A10: prefer the minted id for this basename; fall back to the
       // legacy scheme only for targets outside the imported set.
-      return `[[${idByBase.get(id) ?? slugify(`${label}-${id}`)}]]`;
+      return `[[${idByBase.get(linkKey(id) ?? id) ?? slugify(`${label}-${id}`)}]]`;
     } catch {
       return full; // unslugifiable target — leave untouched, never throw mid-body
     }
@@ -247,6 +246,22 @@ function harvestIndex(sources: string[]): Map<string, IndexEntry> {
 
 /** slugify that returns null instead of throwing/emptying — for optional
  *  section folders and veto-id derivation. */
+/**
+ * Normalization for the basename ↔ wikilink map (#240/A10 follow-up). Source
+ * bodies write `[[two]]` while the file on disk is `Two.md`, and the pre-A10
+ * ghost wave (#219) was the same class of mismatch with underscores. Both
+ * sides of the map MUST pass through this, or the lookup misses and the
+ * legacy fallback mints a target that was never created.
+ */
+/** Escape a label for use inside a RegExp — labels are user-supplied. */
+function escapeRe(raw: string): string {
+  return raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function linkKey(raw: string): string | null {
+  return safeSlug(raw);
+}
+
 function safeSlug(raw: string): string | null {
   try {
     const s = slugify(raw);
@@ -475,18 +490,65 @@ export async function importVault(
   // nested files to ids that were never minted and turned every intra-set
   // link into a ghost. Deterministic: `files` is sorted, so a genuine
   // basename collision resolves to the same winner on every run.
+  // ONE allocator for the whole batch (`used`): Pass 0 and the synthetic index
+  // in Pass D must draw from the same set. A separate Pass-0 set left `used`
+  // empty, so a source file literally named `index.md` minted `<label>-index`
+  // here and the synthetic index picked the same id and overwrote it — the
+  // source note's content was gone.
   const idByBase = new Map<string, string>();
   const idByPath = new Map<string, string>();
-  const idsUsed = new Set<string>();
   for (const filePath of files) {
     const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
     const fileBase = basename(filePath, extname(filePath));
     const relSegments = relDir ? relDir.split(sep).filter(Boolean) : [];
-    const id = uniqueId(slugify([label, ...relSegments, fileBase].join("-")), idsUsed);
+    const id = uniqueId(slugify([label, ...relSegments, fileBase].join("-")), used);
     idByPath.set(filePath, id);
-    // First writer wins: a wikilink by bare basename is ambiguous when the
-    // basename repeats, and sorted order makes the pick reproducible.
-    if (!idByBase.has(fileBase)) idByBase.set(fileBase, id);
+    // Keyed by the LINK form, not the raw basename: a body writes `[[two]]`
+    // while the file is `Two.md`, so both sides have to pass through the same
+    // normalization or the lookup misses and mints a ghost.
+    const key = linkKey(fileBase);
+    if (key && !idByBase.has(key)) idByBase.set(key, id);
+  }
+
+  // #240/A10 migration snapshot — taken BEFORE any write in this run.
+  //
+  // The first attempt derived one legacy candidate per file as
+  // `slugify(label + basename)` and retired it if the file merely existed.
+  // Two ways that destroyed live content:
+  //   - on a FIRST import of `same.md` + `z/same.md`, the root file legitimately
+  //     mints `<label>-same`; processing the nested file then computed the same
+  //     legacy candidate, found the file the current run had just written, and
+  //     trashed it. Reported two imports, left one.
+  //   - the pre-A10 importer disambiguated collisions with `uniqueId`, so a
+  //     legacy set could be `<label>-same` AND `<label>-same-2`. Only the
+  //     unsuffixed one was ever retired; the suffixed twin stayed as an orphan
+  //     — exactly the case A10 set out to fix.
+  //
+  // So: snapshot what is on disk first, and retire only ids that (a) exist in
+  // this label's import folder, (b) are NOT minted by the current run, and
+  // (c) belong to a basename this run actually imports. Everything else is
+  // left alone — a node whose source file disappeared is not this pass's
+  // business.
+  const currentIds = new Set(idByPath.values());
+  const currentBases = new Set(
+    [...idByPath.keys()].map((p) => linkKey(basename(p, extname(p)))).filter((b): b is string => b !== null),
+  );
+  const legacyCandidates: Array<{ id: string; path: string; to: string }> = [];
+  try {
+    for (const entry of await readdir(join(vaultRoot, folder))) {
+      if (!entry.endsWith(".md")) continue;
+      const id = entry.slice(0, -3);
+      if (currentIds.has(id)) continue;
+      // `<label>-<base>` or `<label>-<base>-<n>` for a basename we are importing
+      const m = new RegExp(`^${escapeRe(label)}-(.+?)(?:-\\d+)?$`).exec(id);
+      const base = m ? linkKey(m[1]) : null;
+      const to = base ? idByBase.get(base) : undefined;
+      if (base && currentBases.has(base) && to) {
+        legacyCandidates.push({ id, path: join(vaultRoot, folder, entry), to });
+      }
+    }
+  } catch {
+    /* no import folder yet — nothing to migrate */
   }
 
   // Pass A: every namespaced id that SOME body links to — the inbound-veto set
@@ -497,7 +559,7 @@ export async function importVault(
   for (const raw of rawByFile.values()) {
     const { content } = safeParse(raw);
     for (const x of extractWikilinks(content)) {
-      const id = idByBase.get(x) ?? safeSlug(`${label}-${x}`);
+      const id = idByBase.get(linkKey(x) ?? x) ?? safeSlug(`${label}-${x}`);
       if (id) referenced.add(id);
     }
   }
@@ -542,28 +604,24 @@ export async function importVault(
         skipped.push({ path: filePath, reason: `save failed: ${(err as Error).message}` });
         continue;
       }
-      // #240/A10: retire the node this file carried under the PRE-relDir id
-      // scheme. Without this a reimport of an older import leaves the old
-      // node behind as a duplicate under a now-orphaned identity, and the
-      // import stops being idempotent. Only a file inside THIS label's import
-      // folder is touched, and it goes to the trash, never a hard delete.
-      const legacyId = safeSlug(`${label}-${fileBase}`);
-      if (legacyId && legacyId !== selfId) {
-        const legacyPath = join(vaultRoot, folder, `${legacyId}.md`);
-        if (existsSync(legacyPath)) {
-          try {
-            await moveToTrash(vaultRoot, legacyPath, legacyId);
-            migrated.push({ from: legacyId, to: selfId });
-          } catch (err) {
-            skipped.push({
-              path: legacyPath,
-              reason: `could not retire the pre-#240 node '${legacyId}': ${(err as Error).message}`,
-            });
-          }
-        }
-      }
     }
     ids.push(mapped.input.id as string);
+  }
+
+  // Retire the snapshotted legacy nodes now that every current id is written.
+  // Trash, never a hard delete — recoverable if a match was wrong.
+  if (!dryRun) {
+    for (const cand of legacyCandidates) {
+      try {
+        await moveToTrash(vaultRoot, cand.path, cand.id);
+        migrated.push({ from: cand.id, to: cand.to });
+      } catch (err) {
+        skipped.push({
+          path: cand.path,
+          reason: `could not retire the pre-#240 node '${cand.id}': ${(err as Error).message}`,
+        });
+      }
+    }
   }
 
   // Pass D: the curated index as ONE navigation node (Finding #5). Native CC
@@ -576,7 +634,7 @@ export async function importVault(
     const importedIds = new Set(ids);
     const bySection = new Map<string, string[]>(); // section → wikilink ids, in index order
     for (const [fileBase, entry] of harvest) {
-      const linkId = idByBase.get(fileBase) ?? safeSlug(`${label}-${fileBase}`);
+      const linkId = idByBase.get(linkKey(fileBase) ?? fileBase) ?? safeSlug(`${label}-${fileBase}`);
       if (!linkId || !importedIds.has(linkId)) continue;
       const sec = entry.section ?? "";
       const list = bySection.get(sec) ?? [];

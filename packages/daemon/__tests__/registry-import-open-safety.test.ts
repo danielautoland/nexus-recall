@@ -215,6 +215,132 @@ A nested note.
   assert.ok(existsSync(join(target, ".bastra", "trash", "demo-note.md")));
 });
 
+
+test("A10: a fresh import with root+nested same basename keeps BOTH", async (t) => {
+  // The migration used to derive one legacy candidate per file and retire it
+  // on mere existence. On a FIRST import `same.md` legitimately mints
+  // `demo-same`; processing `z/same.md` computed the same legacy candidate,
+  // found the file this very run had just written, and trashed it.
+  for (const [first, second] of [["same.md", "z/same.md"], ["z/same.md", "same.md"]]) {
+    const { importVault } = await import("../src/import-vault.js");
+    const root = await mkdtemp(join(tmpdir(), "bastra-import-rootnested-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const src = join(root, "src");
+    const target = join(root, "vault");
+    await mkdir(join(src, "z"), { recursive: true });
+    await mkdir(target, { recursive: true });
+    // written in both orders so the result cannot depend on directory order
+    await writeFile(join(src, first), `# ${first}\n\nBody ${first}.\n`, "utf8");
+    await writeFile(join(src, second), `# ${second}\n\nBody ${second}.\n`, "utf8");
+
+    const res = await importVault(target, src, { label: "demo" });
+    const vault = new Vault(target);
+    await vault.init();
+    const active = vault.list().map((m) => m.fm.id).sort();
+    await vault.stop?.();
+
+    assert.deepEqual(active, ["demo-same", "demo-z-same"], `order ${first} first`);
+    assert.deepEqual(res.migrated, [], "a first import has nothing to migrate");
+    assert.deepEqual(res.ids.slice().sort(), active, "reported ids must match what is active");
+  }
+});
+
+test("A10: a declared index.md is not overwritten by the synthetic index", async (t) => {
+  const { importVault } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-index-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(src, { recursive: true });
+  await mkdir(target, { recursive: true });
+
+  await writeFile(
+    join(src, "index.md"),
+    "---\ntype: reference\nname: Source Index Note\n---\n\nIrreplaceable source content.\n",
+    "utf8",
+  );
+  await writeFile(join(src, "other.md"), "# Other\n\nOther body.\n", "utf8");
+  await writeFile(
+    join(src, "MEMORY.md"),
+    "# Memory\n\n## Section A\n\n- [Index](index.md) the index note\n- [Other](other.md) another\n",
+    "utf8",
+  );
+
+  const res = await importVault(target, src, { label: "demo" });
+  assert.equal(new Set(res.ids).size, res.ids.length, `result.ids must not repeat: ${JSON.stringify(res.ids)}`);
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+  const real = vault.get("demo-index");
+  assert.ok(real, "the source note keeps its id");
+  assert.equal(real.fm.title, "Source Index Note");
+  assert.ok(real.body.includes("Irreplaceable"), "source content must survive");
+  assert.notEqual(res.indexNode, "demo-index", "the synthetic index needs its own id");
+});
+
+test("A10: legacy collision suffixes are migrated too", async (t) => {
+  const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-suffix-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  for (const d of ["a", "b", "c"]) await mkdir(join(src, d), { recursive: true });
+  const folder = join(target, IMPORT_ROOT, "demo");
+  await mkdir(folder, { recursive: true });
+  for (const d of ["a", "b", "c"]) {
+    await writeFile(join(src, d, "same.md"), `# Same ${d}\n\nBody ${d}.\n`, "utf8");
+  }
+  // What the pre-A10 uniqueId() sequence produced for three colliding names.
+  const legacy = (id: string) =>
+    `---\nid: ${id}\ntitle: ${id}\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nlegacy\n`;
+  for (const id of ["demo-same", "demo-same-2", "demo-same-3"]) {
+    await writeFile(join(folder, `${id}.md`), legacy(id), "utf8");
+  }
+
+  const res = await importVault(target, src, { label: "demo" });
+  const vault = new Vault(target);
+  await vault.init();
+  const active = vault.list().map((m) => m.fm.id).sort();
+  await vault.stop?.();
+
+  assert.deepEqual(
+    active,
+    ["demo-a-same", "demo-b-same", "demo-c-same"],
+    "every legacy identity must be retired, none may linger as an orphan",
+  );
+  assert.equal(res.migrated.length, 3, `expected three retirements, got ${JSON.stringify(res.migrated)}`);
+});
+
+test("A10: link lookup is slug-equivalent to id minting", async (t) => {
+  const { importVault } = await import("../src/import-vault.js");
+  for (const [file, link] of [["Two.md", "two"], ["gate_catalog.md", "gate_catalog"]]) {
+    const root = await mkdtemp(join(tmpdir(), "bastra-import-slugkey-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const src = join(root, "src");
+    const target = join(root, "vault");
+    await mkdir(join(src, "a"), { recursive: true });
+    await mkdir(target, { recursive: true });
+    await writeFile(join(src, "a", file), `# Target\n\nTarget body.\n`, "utf8");
+    await writeFile(join(src, "a", "one.md"), `# One\n\nLinks to [[${link}]].\n`, "utf8");
+
+    await importVault(target, src, { label: "demo" });
+    const vault = new Vault(target);
+    await vault.init();
+    const ids = new Set(vault.list().map((m) => m.fm.id));
+    const one = vault.list().find((m) => m.fm.title.includes("One"));
+    const links = [...(one?.body ?? "").matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]);
+    await vault.stop?.();
+
+    assert.ok(links.length > 0, `${file}: the link must survive`);
+    for (const target2 of links) {
+      assert.ok(ids.has(target2), `${file}: [[${target2}]] must exist, have ${JSON.stringify([...ids])}`);
+    }
+  }
+});
+
 // ─── B11: open_document tells the truth ─────────────────────────
 
 test("B11: opening a document whose file is gone reports failure", async (t) => {

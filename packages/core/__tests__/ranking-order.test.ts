@@ -22,6 +22,7 @@ import * as path from "node:path";
 import { Vault } from "../src/vault.js";
 import { SearchIndex } from "../src/search.js";
 import { EmbeddingIndex, type EmbeddingProvider } from "../src/embeddings.js";
+import { progressIndexFor } from "../src/recall-stages.js";
 
 function memoryMd(
   id: string,
@@ -340,4 +341,54 @@ test("A8: a scoped query is not truncated by the global vector cut", async (t) =
   const hits = await search.recallHybrid("ANCHORWORD", { k: 5, scope: "small" });
   assert.equal(hits.length, 5, `expected all 5 in-scope memories, got ${hits.length}`);
   assert.ok(hits.every((h) => h.id.startsWith("small-")));
+});
+
+test("B1/A7: MCP progress never moves backwards, on any path", async (t) => {
+  // The A7 reorder put staleness.rank ahead of hops.expand, but
+  // RECALL_STAGE_ORDER still listed hops.expand first — so progressIndexFor()
+  // reported 7 and then 6 and the progress bar jumped back. The earlier test
+  // counted stages but never asserted their order.
+  const relatedVia = `related_via:\n  - id: note-b\n    reason: cosine 1.000\n    score: 1`;
+  const seeded = `---\nid: note-a\ntitle: note-a ANCHORWORD\ntype: lesson\nsummary: ANCHORWORD summary\ntopic_path: [t]\ntags: [t]\nscope: t\nrecall_when: ["ANCHORWORD"]\n${relatedVia}\ncreated: 2020-01-01\nupdated: 2026-07-01\n---\n\nBody ANCHORWORD note-a.\n`;
+
+  const { dir, vault, search, track } = await vaultWith(t, {
+    "a.md": seeded,
+    "b.md": memoryMd("note-b", { marker: "ANCHORWORD" }),
+  });
+
+  const monotonic = (label: string, names: string[]) => {
+    const idx = names.map(progressIndexFor);
+    for (let i = 1; i < idx.length; i++) {
+      assert.ok(
+        idx[i] >= idx[i - 1],
+        `${label}: progress went backwards — ${names.join(" → ")} = ${idx.join(" → ")}`,
+      );
+    }
+  };
+
+  const collect = (): { names: string[]; onStage: (s: { name: string; durationMs?: number }) => void } => {
+    const names: string[] = [];
+    return { names, onStage: (s) => { if (s.durationMs !== undefined) names.push(s.name); } };
+  };
+
+  // BM25, with hops
+  const bm = collect();
+  search.recall("ANCHORWORD", { k: 5, expand_hops: 1, onStage: bm.onStage });
+  monotonic("bm25+hops", bm.names);
+
+  const provider = new StubProvider();
+  const emb = track(new EmbeddingIndex(vault, provider, path.join(dir, ".bastra", "e.json")));
+  await emb.start();
+  search.useEmbeddings(emb);
+
+  // Hybrid, with hops
+  const hy = collect();
+  await search.recallHybrid("ANCHORWORD", { k: 5, expand_hops: 1, onStage: hy.onStage });
+  monotonic("hybrid+hops", hy.names);
+
+  // Degraded fallback, with hops
+  provider.failing = true;
+  const dg = collect();
+  await search.recallHybrid("ANCHORWORD ANCHORWORD", { k: 5, expand_hops: 1, onStage: dg.onStage });
+  monotonic("degraded+hops", dg.names);
 });
