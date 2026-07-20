@@ -530,22 +530,45 @@ export async function importVault(
   // left alone — a node whose source file disappeared is not this pass's
   // business.
   const currentIds = new Set(idByPath.values());
-  const currentBases = new Set(
-    [...idByPath.keys()].map((p) => linkKey(basename(p, extname(p)))).filter((b): b is string => b !== null),
-  );
+  // For each current basename, the id the PRE-A10 importer would have minted
+  // for it unsuffixed — `safeSlug(label + basename)`, the exact old
+  // expression. First-sorted path wins an ambiguous basename, matching the
+  // link map. `to` is that basename's current successor id.
+  const expectedByBase = new Map<string, { legacy: string; to: string }>();
+  for (const p of idByPath.keys()) {
+    const key = linkKey(basename(p, extname(p)));
+    const legacy = safeSlug(`${label}-${basename(p, extname(p))}`);
+    if (key && legacy && !expectedByBase.has(key)) {
+      const to = idByBase.get(key);
+      if (to) expectedByBase.set(key, { legacy, to });
+    }
+  }
   const legacyCandidates: Array<{ id: string; path: string; to: string }> = [];
   try {
     for (const entry of await readdir(join(vaultRoot, folder))) {
       if (!entry.endsWith(".md")) continue;
       const id = entry.slice(0, -3);
       if (currentIds.has(id)) continue;
-      // `<label>-<base>` or `<label>-<base>-<n>` for a basename we are importing
-      const m = new RegExp(`^${escapeRe(label)}-(.+?)(?:-\\d+)?$`).exec(id);
-      const base = m ? linkKey(m[1]) : null;
-      const to = base ? idByBase.get(base) : undefined;
-      if (base && currentBases.has(base) && to) {
-        legacyCandidates.push({ id, path: join(vaultRoot, folder, entry), to });
+      // A legacy node maps to a current basename either EXACTLY (its
+      // unsuffixed legacy id) or as a pre-A10 collision SUFFIX (`…-<n>`).
+      // #240 re-audit: exact must win, and `chapter-2.md` must not be read as
+      // the `-2` suffix of a `chapter` that is not even in this run. When both
+      // an exact and a suffix origin exist among current basenames the mapping
+      // is genuinely ambiguous (no provenance survives in a pre-A10 node), so
+      // leave it — a visible duplicate beats trashing the wrong node.
+      const exact: string[] = [];
+      const suffix: string[] = [];
+      for (const [, { legacy }] of expectedByBase) {
+        if (id === legacy) exact.push(legacy);
+        else if (new RegExp(`^${escapeRe(legacy)}-\\d+$`).test(id)) suffix.push(legacy);
       }
+      let legacyMatch: string | undefined;
+      if (exact.length === 1 && suffix.length === 0) legacyMatch = exact[0];
+      else if (exact.length === 0 && suffix.length === 1) legacyMatch = suffix[0];
+      // anything else (0 origins → not ours; >1 or exact+suffix → ambiguous)
+      if (!legacyMatch) continue;
+      const to = [...expectedByBase.values()].find((e) => e.legacy === legacyMatch)?.to;
+      if (to) legacyCandidates.push({ id, path: join(vaultRoot, folder, entry), to });
     }
   } catch {
     /* no import folder yet — nothing to migrate */
@@ -609,9 +632,16 @@ export async function importVault(
   }
 
   // Retire the snapshotted legacy nodes now that every current id is written.
-  // Trash, never a hard delete — recoverable if a match was wrong.
+  // #240 re-audit: retire ONLY when the successor was actually written this
+  // run. `ids` holds every successful save (an empty/unreadable source, a
+  // mapping miss or a failed saveMemory all `continue` before the push), so a
+  // successor missing from it means the replacement never landed — trashing
+  // the legacy node then would leave no active node at all. Trash, never a
+  // hard delete — recoverable if a match was wrong.
+  const writtenIds = new Set(ids);
   if (!dryRun) {
     for (const cand of legacyCandidates) {
+      if (!writtenIds.has(cand.to)) continue; // successor was skipped/failed — keep the legacy node
       try {
         await moveToTrash(vaultRoot, cand.path, cand.id);
         migrated.push({ from: cand.id, to: cand.to });
