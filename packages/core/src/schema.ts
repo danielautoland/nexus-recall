@@ -125,7 +125,13 @@ export const FrontmatterSchema = z.object({
    * - `valid_until`: explizites Ablaufdatum (überschreibt expires_after_days)
    * - `expires_after_days`: User-Override über die Type-Defaults
    * - `last_reviewed_at`: letzter „noch aktuell"-Klick (resetet die Staleness)
-   * - `stale_status`: persistiert oder lazy computed; UI rendert Pill darauf
+   * - `stale_status`: REINE PROJEKTION für die UI-Pill, kein Ranking-Input
+   *   (#240/B9). `computeStaleness()` liest ausschließlich `updated`,
+   *   `last_reviewed_at`, `valid_until`, `expires_after_days` und `type` —
+   *   das persistierte Feld wird beim Ranking NIE gelesen. Ein von Hand auf
+   *   „expired" gesetzter Wert ändert also nichts am Score. Absichtlich so:
+   *   ein handgesetzter Wert würde die Live-Datumsrechnung dauerhaft
+   *   überstimmen. Wer ein Memory herabstufen will, setzt `valid_until`.
    */
   valid_until: dateString.optional(),
   expires_after_days: z.number().int().positive().optional(),

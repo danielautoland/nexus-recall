@@ -283,8 +283,19 @@ function buildInput(
   ctx: MapContext,
 ): SaveMemoryInput {
   const { name, description, type, ccType, adapter } = fields;
-  const id = uniqueId(slugify(`${ctx.label}-${fileBase}`), ctx.used);
   const relSegments = ctx.relDir ? ctx.relDir.split(sep).filter(Boolean).map((s) => s.trim()).filter(Boolean) : [];
+  // #240/A10: the id must come from the SOURCE IDENTITY, not from the file's
+  // position in the current batch. `uniqueId(label-fileBase)` only
+  // disambiguated within one sorted run, so two `same.md` in different source
+  // folders became `demo-same` / `demo-same-2` — and once the first source
+  // file was deleted, the re-import gave `demo-same` to the OTHER file. Every
+  // reference to that id then pointed at different content, and the stale
+  // `demo-same-2` stayed behind as a duplicate. The relative directory is
+  // stable ground truth (it already shapes the physical path below), so it
+  // belongs in the id. `uniqueId` stays as the last-resort tiebreaker for a
+  // genuine collision within one run.
+  const idBase = slugify([ctx.label, ...relSegments, fileBase].join("-"));
+  const id = uniqueId(idBase, ctx.used);
   // Curated section from the index — carried in topic_path + tags, NOT in the
   // physical folder (Finding #3): a section lives in the source index, which
   // can change between re-imports; if it drove the file PATH, a re-import

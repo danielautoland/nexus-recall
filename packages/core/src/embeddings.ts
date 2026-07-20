@@ -246,6 +246,20 @@ export class EmbeddingIndex {
   async start(): Promise<void> {
     await this.load();
     await this.cache.load();
+    // #240/A8: prune vectors whose memory no longer exists. Only the LIVE
+    // remove-event drops a vector, so everything deleted while the daemon was
+    // down stayed in the index forever. Orphans are ranked before the
+    // vault filter runs, so they push eligible memories out of the vector
+    // top-k, and findSimilarById hands them to the related-enricher as
+    // neighbours — which is how dangling related_via edges get written.
+    const orphans = [...this.vectors.keys()].filter((id) => !this.vault.get(id));
+    for (const id of orphans) this.vectors.delete(id);
+    if (orphans.length > 0) {
+      console.error(
+        `[bastra.embeddings] pruned ${orphans.length} orphan vector(s) with no memory in the vault`,
+      );
+      this.schedulePersist();
+    }
     this.detach = this.vault.on((e) => this.handle(e));
     for (const m of this.vault.list()) {
       if (!this.vectors.has(m.fm.id)) this.pendingQueue.add(m.fm.id);
@@ -258,12 +272,28 @@ export class EmbeddingIndex {
     }
   }
 
-  stop(): void {
+  /**
+   * #240/B3: stop DRAINS the pending persist instead of discarding it.
+   * `schedulePersist()` resets a 1 s timer on every embed event, so under a
+   * continuous backfill the write is starved indefinitely — a SIGTERM in that
+   * window used to throw away the vectors of the entire backfill, not just
+   * the last second. Awaiting is optional for callers that only want the
+   * listener detached.
+   */
+  async stop(): Promise<void> {
     this.detach?.();
     this.detach = undefined;
+    const hadPending = this.persistTimer !== null;
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
+    }
+    if (hadPending) {
+      try {
+        await this.persist();
+      } catch (err) {
+        console.error(`[bastra.embeddings] final persist failed: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -385,7 +415,8 @@ export class EmbeddingIndex {
       await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
       // tmp + rename: ein Kill mitten im Write darf keine angerissene (aber
       // JSON-valide) Datei hinterlassen, die beim Load Vectors verliert.
-      const tmp = `${this.persistPath}.tmp-${process.pid}`;
+      // #240/B3: unique per write — see embed-cache.ts. Same defect here.
+      const tmp = `${this.persistPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
       await fs.writeFile(tmp, JSON.stringify(data));
       await fs.rename(tmp, this.persistPath);
     } catch (err) {

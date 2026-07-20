@@ -129,6 +129,32 @@ test("a move that collides on the sidecar does not half-apply", async (t) => {
   assert.equal(await readFile(join(from, "Akte.pdf"), "utf8"), "AKTE");
 });
 
+test("a moved document survives the next reconcile (#240/A3)", async (t) => {
+  const { dir, vault } = await harness(t);
+
+  const src = join(dir, "Police.pdf");
+  await writeFile(src, "POLICE", "utf8");
+  const doc = await saveDocument(vault, {
+    ...BASE,
+    title: "Police",
+    category: "alt",
+    original_path: src,
+    folder_path: "alt",
+  } as Parameters<typeof saveDocument>[1]);
+  assert.equal(vault.size(), 1);
+
+  await moveDocument(vault, { id: doc.id, folder_path: "neu" });
+
+  // The old sidecar path used to stay registered under the same id, so the
+  // periodic reconcile (60 s, or any /vault/count) removed the moved
+  // document from the index while its file sat at the new location.
+  await vault.reconcile();
+
+  assert.equal(vault.size(), 1, "the document must survive reconcile");
+  assert.ok(vault.get(doc.id), "and still be resolvable by id");
+  assert.match(vault.get(doc.id)!.filePath, /documents\/neu\//);
+});
+
 test("a clean move still moves both files", async (t) => {
   const { dir, vault } = await harness(t);
 

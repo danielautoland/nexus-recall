@@ -7,6 +7,7 @@
  * bastra-pro hinter Lizenz-Gate.
  */
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { z } from "zod";
 import type { Vault, SearchIndex } from "@bastra-recall/core";
 
@@ -168,13 +169,14 @@ export function readDocument(
  * Öffnet das Originalfile im System-Default-Handler. macOS-only — auf
  * anderen Plattformen liefern wir den Pfad zurück, ohne ihn zu starten.
  */
-export function openDocument(
+export async function openDocument(
   vault: Vault,
   args: { id: string },
   opts: { allowPrivate?: boolean } = {},
-):
+): Promise<
   | { ok: true; path: string }
-  | { ok: false; path?: string; message: string } {
+  | { ok: false; path?: string; message: string }
+> {
   const m = vault.get(args.id);
   if (!m || m.fm.type !== "doc") {
     return { ok: false, message: `document not found: ${args.id}` };
@@ -194,15 +196,25 @@ export function openDocument(
       message: "open_document is only supported on macOS — returning path.",
     };
   }
-  try {
-    const child = spawn("open", [path], { detached: true, stdio: "ignore" });
-    child.unref();
-    return { ok: true, path };
-  } catch (err) {
-    return {
-      ok: false,
-      path,
-      message: `failed to open: ${(err as Error).message}`,
-    };
+  // #240/B11: the try/catch was dead code for the real failure mode — spawn
+  // reports ENOENT ASYNCHRONOUSLY via an "error" event, so nothing was caught
+  // and, with no listener, the event would take the process down. The call
+  // also returned ok:true before `open` could possibly have succeeded, so a
+  // missing file reported success. Await the outcome instead.
+  if (!existsSync(path)) {
+    return { ok: false, path, message: `file no longer exists at ${path}` };
   }
+  return await new Promise((resolve) => {
+    const child = spawn("open", [path], { stdio: "ignore" });
+    child.on("error", (err) => {
+      resolve({ ok: false, path, message: `failed to open: ${err.message}` });
+    });
+    child.on("exit", (code) => {
+      resolve(
+        code === 0
+          ? { ok: true, path }
+          : { ok: false, path, message: `open exited with code ${code}` },
+      );
+    });
+  });
 }

@@ -72,6 +72,23 @@ export class Vault {
         if (r && r.kind === "fail") skipped.push({ path: r.file, err: r.err });
         continue;
       }
+      // #240/A2.3: two files carrying the same id must never both point at
+      // one map entry. Cloud-sync conflict copies ("Alpha (1).md") are the
+      // common source. Before, init silently kept whichever file sorted last
+      // and reported `loaded: 1`; cleaning up the copy then took the winner
+      // with it. First path wins deterministically, the rest are quarantined
+      // out of the index and reported.
+      const claimed = this.memorys.get(r.memory.fm.id);
+      if (claimed) {
+        skipped.push({
+          path: r.file,
+          err:
+            `duplicate id '${r.memory.fm.id}' — already claimed by ${claimed.filePath}. ` +
+            `Not indexed. Give one of the two files a different id (a cloud-sync ` +
+            `conflict copy is the usual cause).`,
+        });
+        continue;
+      }
       this.memorys.set(r.memory.fm.id, r.memory);
       this.filePathToId.set(r.file, r.memory.fm.id);
     }
@@ -266,15 +283,38 @@ export class Vault {
   ): Promise<void> {
     try {
       const m = await this.read(filePath);
-      // If id changed (rare), drop the old mapping
+      // #240/A2.1: If the id changed, the vault dropped the old mapping but
+      // emitted only `change(new)` — so SearchIndex and EmbeddingIndex never
+      // learned the old id must go. The stale entry outlived reconcile() and
+      // recall kept returning an id that load_memory could no longer resolve.
+      // Emit the removal first so every downstream index sees both halves.
       const oldId = this.filePathToId.get(filePath);
       if (oldId && oldId !== m.fm.id) {
         this.memorys.delete(oldId);
+        this.emit({ kind: "remove", id: oldId, filePath });
       }
       this.memorys.set(m.fm.id, m);
       this.filePathToId.set(filePath, m.fm.id);
       this.emit({ kind, memory: m });
     } catch (err) {
+      // #240/A2.2: A file that stopped being a memory — turned into a plain
+      // note, or its YAML broke during an Obsidian edit — used to leave the
+      // LAST VALID node in the index forever. Recall then served pre-edit
+      // content as current. Drop the node and say so; the file stays on disk
+      // and is re-indexed as soon as it parses again.
+      const staleId = this.filePathToId.get(filePath);
+      if (staleId) {
+        this.memorys.delete(staleId);
+        this.filePathToId.delete(filePath);
+        this.fileStats.delete(filePath);
+        this.emit({ kind: "remove", id: staleId, filePath });
+        console.error(
+          `[vault] ${basename(filePath)} no longer parses as a memory — ` +
+            `dropped '${staleId}' from the index until it is valid again` +
+            (err instanceof NotAMemoryFile ? "" : `: ${(err as Error).message}`),
+        );
+        return;
+      }
       // Silent on plain notes; loud only on actual schema breakage.
       if (err instanceof NotAMemoryFile) return;
       console.error(
@@ -287,8 +327,15 @@ export class Vault {
     this.fileStats.delete(filePath);
     const id = this.filePathToId.get(filePath);
     if (!id) return;
-    this.memorys.delete(id);
     this.filePathToId.delete(filePath);
+    // #240/A2.3: only drop the memory if THIS path still owns the id. Two
+    // files can carry the same id (cloud-sync conflict copies, a re-file
+    // whose trash step failed). Removing the shadowed one used to delete the
+    // winner from the index while its file sat untouched on disk — the
+    // memory vanished from recall and only a daemon restart brought it back.
+    const owner = this.memorys.get(id);
+    if (owner && owner.filePath !== filePath) return;
+    this.memorys.delete(id);
     this.emit({ kind: "remove", id, filePath });
   }
 

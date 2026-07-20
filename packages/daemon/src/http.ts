@@ -1157,7 +1157,7 @@ async function dispatchApi(
     case "open_document": {
       const parsed = OpenDocumentArgs.safeParse(body);
       if (!parsed.success) throw new Error(parsed.error.message);
-      const result = openDocument(vault, parsed.data);
+      const result = await openDocument(vault, parsed.data);
       if ("ok" in result && !result.ok) {
         throw new Error(result.message);
       }

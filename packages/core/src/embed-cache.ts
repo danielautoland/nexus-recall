@@ -102,7 +102,14 @@ export class EmbedCache {
     try {
       await fs.mkdir(path.dirname(this.cachePath), { recursive: true });
       // tmp + rename — kein Torn-Write bei Prozess-Kill mitten im Save.
-      const tmp = `${this.cachePath}.tmp-${process.pid}`;
+      // #240/B3: unique per WRITE, not per process. A fixed `.tmp-<pid>` name
+      // means two overlapping saves from the same instance interleave their
+      // writeFile into one temp file and rename the mixture into place —
+      // measured: 13 of 60 rounds published unparsable JSON, and the loser of
+      // the rename race logs ENOENT. Both real call sites (delete+save on
+      // remove, set+save after a batch) are fire-and-forget, so overlap is
+      // the normal case, not an edge case.
+      const tmp = `${this.cachePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
       await fs.writeFile(tmp, JSON.stringify(data));
       await fs.rename(tmp, this.cachePath);
     } catch (err) {

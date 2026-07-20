@@ -489,6 +489,12 @@ export async function recategorizeDocument(
       newFolderPath: args.folder_path,
       linkedFile: fm.linked_file ?? false,
     });
+    // #240/A3: the OLD sidecar path must leave the index before the new one
+    // enters it. Without this both paths point at the same id; the next
+    // reconcile (60 s, or any /vault/count) removes the old path and takes
+    // the current memory with it — the document went silently unfindable
+    // until a daemon restart. Same fix pattern as tool-handlers.ts:839.
+    if (moved.newSidecarPath !== sidecarPath) vault.forgetFile(sidecarPath);
     sidecarPath = moved.newSidecarPath;
     originalPath = moved.newOriginalPath;
     folderPath = args.folder_path;
@@ -543,6 +549,10 @@ export async function moveDocument(
     newFolderPath: args.folder_path,
     linkedFile: fm.linked_file ?? false,
   });
+  // #240/A3: drop the old path from the index before the new one is read —
+  // otherwise both paths carry the same id and the next reconcile deletes
+  // the moved document.
+  if (moved.newSidecarPath !== m.filePath) vault.forgetFile(m.filePath);
 
   // Frontmatter im neuen Sidecar aktualisieren.
   const updated: DocumentFrontmatter = buildFrontmatter({

@@ -553,7 +553,7 @@ async function main(): Promise<void> {
     if (name === "open_document") {
       const parsed = OpenDocumentArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
-      const result = openDocument(vault, parsed.data);
+      const result = await openDocument(vault, parsed.data);
       if ("ok" in result && !result.ok) {
         return errorResult(result.message);
       }
@@ -611,6 +611,12 @@ async function main(): Promise<void> {
     console.error("[bastra-recall] shutting down");
     search.stop();
     await vault.stop();
+    // #240/B3: drain the background writers before exiting. The embedding
+    // index holds a debounced persist that a plain exit discarded — under a
+    // running backfill that is the whole batch, not just the last second —
+    // and the telemetry join-store buffers events the same way.
+    await embIdxForHealth?.stop().catch(() => {});
+    await telemetry.flushNow().catch(() => {});
     await httpHandle.close();
     await server.close();
     process.exit(0);

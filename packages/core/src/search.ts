@@ -278,20 +278,32 @@ export class SearchIndex {
     }));
     // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
     opts.onCandidatePool?.(directFull);
-    const direct = directFull.slice(0, k);
 
-    let withHops: RecallHit[];
+    // #240/A7: apply the lifecycle/curator/doc/salience multipliers to the
+    // FULL candidate pool and re-sort BEFORE cutting to k. Cutting first meant
+    // a fresh hit at position k+1 could never displace an expired, demoted or
+    // doc-damped hit inside the top-k — so the served top-k was not the top-k
+    // of the ranking function the code actually defines. Fires whenever two
+    // candidates sit within the damping factor of each other (<5× expired,
+    // <2× doc/curator), which is the normal case for near-duplicate notes.
+    const tStale = stage.start("staleness.rank");
+    const rankedFull = this.applyStaleness(directFull, opts);
+    const direct = rankedFull.slice(0, k);
+
+    let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
       const tHops = stage.start("hops.expand");
-      const neighbors = this.collectOneHopNeighbors(directFull, opts, new Set(direct.map((h) => h.id))).slice(0, k);
+      // Neighbours are seeded from the re-ranked pool and damped themselves,
+      // so the hop group gets the same treatment before its own cut.
+      const neighbors = this.applyStaleness(
+        this.collectOneHopNeighbors(rankedFull, opts, new Set(direct.map((h) => h.id))),
+        opts,
+      ).slice(0, k);
       stage.end("hops.expand", tHops, { hop_count: neighbors.length });
-      withHops = [...direct, ...neighbors];
+      ranked = [...direct, ...neighbors];
     } else {
-      withHops = direct;
+      ranked = direct;
     }
-
-    const tStale = stage.start("staleness.rank");
-    const ranked = this.applyStaleness(withHops, opts);
     stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
 
     this.storeQueryCache(cacheKey, ranked);
@@ -305,9 +317,14 @@ export class SearchIndex {
   }
 
   /** Hybrid-Recall: BM25 + Vector via Reciprocal-Rank-Fusion. Wenn kein
-   *  EmbeddingIndex registriert ist, fällt auf reines BM25 (sync) zurück.
-   *  Der finale Score ist auf 0–1000 skaliert (RRF * 1000) damit das
-   *  Hook-Score-Threshold (≥100 = REQUIRED) sinnvoll greift. */
+   *  EmbeddingIndex registriert ist — oder der Vektor-Arm nichts liefert
+   *  (#240/B1) — fällt auf reines BM25 (sync) zurück.
+   *
+   *  Der finale Score ist `RRF * 5000` (siehe :39 und die Skalierung unten),
+   *  NICHT die hier früher behaupteten `* 1000`. Wichtig für jeden, der
+   *  Schwellen darauf setzt: der Wert ist eine skalierte Rang-Summe, keine
+   *  Ähnlichkeit — Rang 1 in beiden Armen ergibt die Obergrenze 163.934
+   *  (#230). */
   async recallHybrid(query: string, opts: RecallOptions = {}): Promise<RecallHit[]> {
     if (!this.embeddings) return this.recall(query, opts);
     // #162: gleiche Query-Hygiene wie in recall() — auch der Vector-Arm
@@ -329,9 +346,28 @@ export class SearchIndex {
     // Query-Cache (#30) — eigener Key-Prefix damit BM25-only und Hybrid
     // sich nicht gegenseitig überschreiben (gleicher Query-String,
     // anderes Ranking-Ergebnis).
-    const cacheKey = `hybrid|${query}|${JSON.stringify(opts)}`;
+    // #240/B2: the cache key must carry the vector generation. Otherwise a
+    // result computed while the vector arm was unavailable (provider down, or
+    // simply the boot-window backfill still running) survives recovery for
+    // the full TTL — and the boot window is exactly when session-start hooks
+    // inject. Callbacks vanish from JSON.stringify, so they never varied the
+    // key; the generation does.
+    const cacheKey = `hybrid|${this.embeddings.size()}|${query}|${JSON.stringify(opts)}`;
     const cached = this.lookupQueryCache(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      // #240/B2: the sync path emits cache.hit + done on a hit; this one
+      // returned before any emission, so SSE progress and the candidate-pool
+      // harvest silently saw nothing.
+      stage.emit("cache.hit", recallStart, { cache: "query", hit_count: cached.length });
+      opts.onCandidatePool?.(cached);
+      stage.emit("done", recallStart, {
+        hit_count: cached.length,
+        vault_size: this.mini.documentCount,
+        total_ms: Date.now() - recallStart,
+        cached: true,
+      });
+      return cached;
+    }
 
     // BM25 — top 50 für RRF-Pool.
     const tBm = stage.start("bm25.search");
@@ -341,7 +377,13 @@ export class SearchIndex {
 
     // Vector — top 50 für RRF-Pool, plus type/scope/sensitivity-Filter über vault.
     const tVec = stage.start("vector.search");
-    const vec = await this.embeddings.search(query, 100);
+    // #240/A8: ask for a deeper pool when a filter is active. The vault/scope/
+    // type/private filter below runs AFTER the provider's global top-k, so a
+    // fixed 100 silently truncated eligible candidates for every scoped query
+    // — measured on a real 514-memory vault: 95.3% of scoped queries lost
+    // in-scope candidates, and the smallest scopes lost a third of theirs.
+    const filtered = opts.scope != null || opts.type != null || !opts.allow_private;
+    const vec = await this.embeddings.search(query, filtered ? 1000 : 100);
     const vectorTop = vec
       .map((h) => ({ hit: h, mem: this.vault.get(h.id) }))
       .filter(({ mem }) => {
@@ -359,6 +401,21 @@ export class SearchIndex {
       })
       .slice(0, 50);
     stage.end("vector.search", tVec, { vector_hit_count: vectorTop.length });
+
+    // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF
+    // on one arm produced a different score space, not the BM25 one. A
+    // one-armed rank-1 hit scores 5000/61 = 81.967 and rank 20 scores 62.5,
+    // so every hit collapses into the 62–82 band: the floor stops
+    // discriminating and the documented MUST_LOAD band (100) becomes
+    // structurally unreachable exactly when the provider is down. Fall back
+    // to the real BM25 path so scores mean what the thresholds assume.
+    if (vectorTop.length === 0) {
+      // recall() emits its own full stage sequence through the same opts,
+      // so the caller still sees a complete progress stream.
+      const bm25Only = this.recall(query, opts);
+      this.storeQueryCache(cacheKey, bm25Only);
+      return bm25Only;
+    }
 
     const tFuse = stage.start("rrf.fuse");
     const bm25Ids = bm25Top.map((r) => r.id as string);
@@ -406,19 +463,24 @@ export class SearchIndex {
     // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
     opts.onCandidatePool?.(outFull);
 
-    const out = outFull.slice(0, k);
-    let withHops: RecallHit[];
+    // #240/A7: same ordering fix as the BM25 path — multipliers and re-sort
+    // over the full pool, THEN cut to k.
+    const tStale = stage.start("staleness.rank");
+    const rankedFull = this.applyStaleness(outFull, opts);
+    const out = rankedFull.slice(0, k);
+
+    let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
       const tHops = stage.start("hops.expand");
-      const neighbors = this.collectOneHopNeighbors(outFull, opts, new Set(out.map((h) => h.id))).slice(0, k);
+      const neighbors = this.applyStaleness(
+        this.collectOneHopNeighbors(rankedFull, opts, new Set(out.map((h) => h.id))),
+        opts,
+      ).slice(0, k);
       stage.end("hops.expand", tHops, { hop_count: neighbors.length });
-      withHops = [...out, ...neighbors];
+      ranked = [...out, ...neighbors];
     } else {
-      withHops = out;
+      ranked = out;
     }
-
-    const tStale = stage.start("staleness.rank");
-    const ranked = this.applyStaleness(withHops, opts);
     stage.end("staleness.rank", tStale, { reranked_count: ranked.length });
 
     this.storeQueryCache(cacheKey, ranked);
