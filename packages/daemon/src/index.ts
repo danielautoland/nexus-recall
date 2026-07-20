@@ -530,7 +530,7 @@ async function main(): Promise<void> {
     if (name === "find_document") {
       const parsed = FindDocumentArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
-      const result = findDocument(search, parsed.data);
+      const result = findDocument(search, vault, parsed.data);
       return {
         content: [
           { type: "text", text: JSON.stringify(result, null, 2) },

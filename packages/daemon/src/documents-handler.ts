@@ -37,7 +37,13 @@ export const documentTools = [
     description:
       "Search the user's document vault (PDFs, notes, contracts, code) " +
       "and return top-3 hits with id, title, summary and score. " +
-      "Pair with read_document to load full content.",
+      "Pair with read_document to load full content. " +
+      "The response carries `docs_indexed`: how many documents this caller " +
+      "can see at all. When it is 0 the vault holds no documents yet — an " +
+      "empty `hits` array then says nothing about whether the user has the " +
+      "thing you are looking for, so do NOT report it as absent; fall back " +
+      "to other lookups (recall, the filesystem) and say which surface you " +
+      "actually searched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -93,23 +99,53 @@ export const documentTools = [
 // ─── Handler implementations ─────────────────────────────────────
 
 /**
+ * Zählt die Documents, die DIESER Caller sehen darf. Spiegelt den
+ * Sensitivity-Filter aus `findDocument`/`readDocument`, damit die Zahl nie
+ * die Existenz privater Docs an externe MCP-Caller verrät.
+ */
+function visibleDocCount(vault: Vault, allowPrivate: boolean): number {
+  let n = 0;
+  for (const m of vault.list()) {
+    if (m.fm.type !== "doc") continue;
+    if (!allowPrivate && (m.fm as { sensitivity?: string }).sensitivity === "private") {
+      continue;
+    }
+    n++;
+  }
+  return n;
+}
+
+/**
  * Filtert Recall-Hits auf type=doc und liefert die Top-k. SearchIndex
  * versteht den `type`-Filter bereits — wir delegieren komplett dahin.
  * Sensitivity (#58) wird über `allowPrivate` propagiert: externe MCP-Caller
  * sehen nur `team`+`public` Documents, die Mac-App ruft mit `true`.
+ *
+ * `docs_indexed` ist das Gegenstück zu `vault_size` bei `recall`: ohne die
+ * Zahl ist `hits: []` auf einem NIE befüllten Doc-Vault nicht von „gesucht
+ * und nichts gefunden" zu unterscheiden — der Caller liest die leere Liste
+ * als Antwort über die Welt statt als Zustand des Index. Da die Tool-
+ * Beschreibung Agents anweist, `find_document` VOR anderen Lookups zu
+ * fragen, ist dieser stille Nullfall besonders teuer.
  */
 export function findDocument(
   search: SearchIndex,
+  vault: Vault,
   args: { query: string; k?: number },
   opts: { allowPrivate?: boolean } = {},
-): { query: string; hits: Array<unknown> } {
+): { query: string; docs_indexed: number; hits: Array<unknown> } {
   const k = args.k ?? 3;
+  const allowPrivate = opts.allowPrivate ?? false;
   const hits = search.recall(args.query, {
     k,
     type: "doc",
-    allow_private: opts.allowPrivate ?? false,
+    allow_private: allowPrivate,
   });
-  return { query: args.query, hits };
+  return {
+    query: args.query,
+    docs_indexed: visibleDocCount(vault, allowPrivate),
+    hits,
+  };
 }
 
 /**
