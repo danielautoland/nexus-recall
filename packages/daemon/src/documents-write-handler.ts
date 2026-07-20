@@ -358,21 +358,32 @@ export async function saveDocument(
   const filename = basename(args.original_path);
   const docID = makeDocId(args.folder_path ?? "", filename);
 
-  let originalDest = args.original_path;
-  if (!args.linked_file) {
-    originalDest = join(folder, filename);
-    if (await pathExists(originalDest)) {
-      if (!args.overwrite) {
-        throw new Error(`destination already exists: ${originalDest}`);
-      }
-      await unlink(originalDest);
-    }
-    await copyFile(args.original_path, originalDest);
-  }
-
   const sidecarPath = join(folder, `${filename}.md`);
+  const originalDest = args.linked_file ? args.original_path : join(folder, filename);
+  // #240/A5: PREFLIGHT — jede Kollision prüfen, BEVOR irgendetwas mutiert
+  // wird. Vorher lief erst der Copy und danach der Sidecar-Check: ein
+  // Sidecar-Konflikt meldete einen Fehler und ließ die Kopie trotzdem im
+  // Vault zurück (halb ausgeführte Operation).
+  if (!args.linked_file && (await pathExists(originalDest)) && !args.overwrite) {
+    throw new Error(`destination already exists: ${originalDest}`);
+  }
   if ((await pathExists(sidecarPath)) && !args.overwrite) {
     throw new Error(`sidecar already exists: ${sidecarPath}`);
+  }
+
+  if (!args.linked_file) {
+    // #240/A5.1: Same-File-Erkennung. Liegt die Quelle bereits exakt am Ziel
+    // (der Normalfall bei einem Metadaten-Refresh — buildFrontmatter schreibt
+    // bei linked_file=false den IN-VAULT-Pfad als original_path zurück, und
+    // der kommt beim nächsten Aufruf als original_path wieder rein), dann
+    // löschte `unlink(originalDest)` die QUELLE und das folgende
+    // copyFile(src, src) schlug mit ENOENT fehl. Die Datei war weg.
+    if (resolve(args.original_path) === resolve(originalDest)) {
+      // Nichts zu kopieren — die Datei ist schon da, wo sie hingehört.
+    } else {
+      if (await pathExists(originalDest)) await unlink(originalDest);
+      await copyFile(args.original_path, originalDest);
+    }
   }
 
   const summary = args.summary ?? `${args.category}: ${args.title}`;
@@ -585,17 +596,33 @@ async function moveDocumentFiles(
     ? args.originalPath
     : join(targetFolder, originalFilename);
 
-  if (!args.linkedFile && newOriginalPath !== args.originalPath) {
-    if (await pathExists(newOriginalPath)) {
-      throw new Error(`target original already exists: ${newOriginalPath}`);
-    }
-    await rename(args.originalPath, newOriginalPath);
+  // #240/A5.3: BEIDE Ziele prüfen, bevor das erste umbenannt wird. Vorher
+  // wanderte das Original erfolgreich ans Ziel und erst danach kollidierte
+  // der Sidecar — Ergebnis war ein gemeldeter Fehler bei halb ausgeführtem
+  // Move: Original im Zielordner, Sidecar in der Quelle, Frontmatter und
+  // Platte widersprachen sich.
+  const movesOriginal = !args.linkedFile && newOriginalPath !== args.originalPath;
+  const movesSidecar = newSidecarPath !== args.sidecarPath;
+  if (movesOriginal && (await pathExists(newOriginalPath))) {
+    throw new Error(`target original already exists: ${newOriginalPath}`);
   }
-  if (newSidecarPath !== args.sidecarPath) {
-    if (await pathExists(newSidecarPath)) {
-      throw new Error(`target sidecar already exists: ${newSidecarPath}`);
+  if (movesSidecar && (await pathExists(newSidecarPath))) {
+    throw new Error(`target sidecar already exists: ${newSidecarPath}`);
+  }
+
+  if (movesOriginal) await rename(args.originalPath, newOriginalPath);
+  if (movesSidecar) {
+    try {
+      await rename(args.sidecarPath, newSidecarPath);
+    } catch (err) {
+      // Der Sidecar-Move ist der zweite Schritt: schlägt er fehl (ENOSPC,
+      // EACCES, Cloud-Mount-Stall), das Original zurückrollen, damit kein
+      // Split-State zurückbleibt.
+      if (movesOriginal) {
+        await rename(newOriginalPath, args.originalPath).catch(() => {});
+      }
+      throw err;
     }
-    await rename(args.sidecarPath, newSidecarPath);
   }
 
   return { newSidecarPath, newOriginalPath };

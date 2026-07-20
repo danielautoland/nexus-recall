@@ -1,4 +1,5 @@
-import { mkdir, readFile, appendFile, rename, access } from "node:fs/promises";
+import { mkdir, readFile, appendFile, rename, access, readdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 
 /**
@@ -175,12 +176,73 @@ export function trashPathFor(vaultRoot: string, id: string): string {
   return dest;
 }
 
+/**
+ * #240/A4: Trash-Ziele sind versioniert. `trashPathFor()` liefert immer
+ * denselben Pfad, ein zweites Löschen derselben id überschrieb also die
+ * ältere Trash-Version per rename — still und unwiederbringlich. Das
+ * widerspricht der Zusage "recoverable — never a hard delete".
+ *
+ * Der Basis-Pfad `<id>.md` bleibt der erste Wurf (damit bestehende Trash-
+ * Dateien und `lastDeleteFor()`-Lookups weiter funktionieren); jede weitere
+ * Version bekommt einen Zeitstempel-Suffix.
+ */
+async function uniqueTrashPath(vaultRoot: string, id: string): Promise<string> {
+  const base = trashPathFor(vaultRoot, id);
+  if (!existsSync(base)) return base;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const versioned = base.replace(/\.md$/, `.${stamp}.md`);
+  if (!existsSync(versioned)) return versioned;
+  // Zwei Löschungen derselben id in derselben Millisekunde — Zähler dran.
+  for (let n = 2; n < 1000; n++) {
+    const candidate = base.replace(/\.md$/, `.${stamp}-${n}.md`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  throw new Error(`could not find a free trash path for id: ${id}`);
+}
+
+/**
+ * Neueste Trash-Fassung einer id. Nötig, seit `moveToTrash` versioniert:
+ * der Basis-Pfad `<id>.md` ist dann die ÄLTESTE Fassung, und ein Restore,
+ * der stur `trashPathFor()` nimmt, holte die falsche zurück.
+ */
+export async function latestTrashPathFor(
+  vaultRoot: string,
+  id: string,
+): Promise<string | undefined> {
+  const base = trashPathFor(vaultRoot, id);
+  const trashRoot = dirname(base);
+  let entries: string[];
+  try {
+    entries = await readdir(trashRoot);
+  } catch {
+    return undefined;
+  }
+  const baseName = `${id}.md`;
+  const versionPrefix = `${id}.`;
+  const candidates = entries.filter(
+    (e) => e === baseName || (e.startsWith(versionPrefix) && e.endsWith(".md")),
+  );
+  if (candidates.length === 0) return undefined;
+  const withTime = await Promise.all(
+    candidates.map(async (name) => {
+      const full = join(trashRoot, name);
+      try {
+        return { full, mtime: (await stat(full)).mtimeMs };
+      } catch {
+        return { full, mtime: -1 };
+      }
+    }),
+  );
+  withTime.sort((a, b) => b.mtime - a.mtime);
+  return withTime[0].full;
+}
+
 export async function moveToTrash(
   vaultRoot: string,
   filePath: string,
   id: string,
 ): Promise<string> {
-  const dest = trashPathFor(vaultRoot, id);
+  const dest = await uniqueTrashPath(vaultRoot, id);
   await mkdir(dirname(dest), { recursive: true });
   await rename(filePath, dest);
   return dest;
@@ -191,6 +253,16 @@ export async function restoreFromTrash(
   trashFile: string,
   destFile: string,
 ): Promise<void> {
+  // #240/A4: ein blankes rename() überschrieb eine bereits wieder aktive
+  // Datei am Zielpfad — beobachtet: eine laufende Bearbeitung wurde still
+  // durch den Trash-Stand ersetzt. Restore darf niemals Daten vernichten;
+  // der Konflikt gehört dem Caller gemeldet, nicht weggeschrieben.
+  if (existsSync(destFile)) {
+    throw new Error(
+      `refusing to restore over an existing file: ${destFile}. ` +
+        `Move or delete it first — restoring would overwrite the active version.`,
+    );
+  }
   await mkdir(dirname(destFile), { recursive: true });
   await rename(trashFile, destFile);
 }

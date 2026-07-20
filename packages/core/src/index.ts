@@ -64,6 +64,7 @@ export type { ToolIntent, TopicResult } from "./topics.js";
 export {
   AuditLog,
   trashPathFor,
+  latestTrashPathFor,
   moveToTrash,
   restoreFromTrash,
 } from "./audit-log.js";

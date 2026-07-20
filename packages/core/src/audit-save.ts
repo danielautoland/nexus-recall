@@ -10,7 +10,7 @@ import {
   type AuditEntry,
   moveToTrash,
   restoreFromTrash,
-  trashPathFor,
+  latestTrashPathFor,
 } from "./audit-log.js";
 import type { Vault } from "./vault.js";
 import { access, readFile } from "node:fs/promises";
@@ -158,8 +158,11 @@ export async function auditedRestore(args: {
     throw new Error(`no delete audit-entry found for memory: ${memoryID}`);
   }
 
-  const trashFile = trashPathFor(vaultRoot, memoryID);
-  if (!(await fileExists(trashFile))) {
+  // Neueste Fassung, nicht den Basis-Pfad: seit #240/A4 versioniert
+  // moveToTrash, damit ein zweites Löschen die erste Trash-Version nicht
+  // still überschreibt — `<id>.md` ist dann die älteste, nicht die jüngste.
+  const trashFile = await latestTrashPathFor(vaultRoot, memoryID);
+  if (!trashFile || !(await fileExists(trashFile))) {
     throw new Error(`trashed file missing for memory: ${memoryID}`);
   }
 
