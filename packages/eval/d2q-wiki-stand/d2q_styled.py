@@ -44,6 +44,17 @@ DST = Path(os.environ.get("D2Q_DB", Path(__file__).parent / "d2q.db"))
 TEMPS = (0.7, 1.1)
 ARM = "styled"
 
+# Same register guard as d2q_gen.py: a doc already in the owner's register
+# gets no voice expansion — it would only add collision surface.
+CYR_SKIP = float(os.environ.get("D2Q_SKIP_CYR", "0.5"))
+
+
+def cyr_share(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum("Ѐ" <= c <= "ӿ" for c in letters) / len(letters)
+
 
 def load_voices():
     """Owner replies as voice samples. acted_on only — selected by effect."""
@@ -131,6 +142,12 @@ def main():
         pool = rows[::step][:pool_n]
     if limit:
         pool = pool[:limit]
+
+    skipped = [r for r in pool if cyr_share(r[5]) >= CYR_SKIP]
+    if skipped:
+        print(f"guard: skipped {len(skipped)} sections ≥{CYR_SKIP:.0%} Cyrillic "
+              f"(already in the owner's register; not a silent cap)", flush=True)
+    pool = [r for r in pool if cyr_share(r[5]) < CYR_SKIP]
 
     dst = sqlite3.connect(DST, timeout=120)
     dst.execute("PRAGMA journal_mode=WAL")
