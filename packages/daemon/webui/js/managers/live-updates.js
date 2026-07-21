@@ -20,6 +20,8 @@
  *  @param {(u: object) => void} deps.adoptNode   add the newborn as a real sim node */
 
 import { drawBurstAt, BURST_LIFE } from "./orbit-view.js";
+import { createLiveDeck } from "./live-deck.js";
+import { KIND_META } from "./live-kinds.js";
 
 const $ = (sel) => document.querySelector(sel);
 const LIVE_KEY = "bastra-vault-map-live";
@@ -34,13 +36,6 @@ const MAX_CARDS_PER_POLL = 4;
 const HISTORY_MAX = 300;
 const REPLAY_LIFE_MS = 3000; // history click: a short re-flare, not a new event
 
-const KIND_META = {
-  add: { label: "new memory", icon: "✦" },
-  change: { label: "updated", icon: "✎", flash: "hsl(40 65% 55%)" },
-  delete: { label: "deleted", icon: "✕", flash: "hsl(8 65% 58%)" },
-  read: { label: "read", icon: "◉", flash: "hsl(210 35% 68%)" },
-};
-
 export function createLiveUpdates(deps) {
   const toggle = $("#live-toggle");
   const cardsEl = $("#live-cards");
@@ -52,6 +47,10 @@ export function createLiveUpdates(deps) {
   let sinceSeq = null; // last delivery seq we've seen; null → not yet baselined
   let pollTimer = 0;
   const history = []; // session-scope, newest first
+  let cardDepth = 0; // rising z-index so the newest card tops the deck
+  // deck presentation (overlap limit, "+N", the left tick rail) lives apart —
+  // this manager decides WHAT is announced, live-deck.js how the pile looks
+  const deck = createLiveDeck({ cardsEl });
 
   function render() {
     toggle.classList.toggle("on", on);
@@ -202,10 +201,18 @@ export function createLiveUpdates(deps) {
         }
       });
     }
+    // The deck stacks newest-on-top (live.css). Cards are PREPENDED, so paint
+    // order alone would put the oldest in front — a rising counter puts the
+    // newest arrival above everything already on the pile.
+    li.style.zIndex = String(++cardDepth);
     cardsEl.prepend(li);
+    deck.sync();
     setTimeout(() => {
       li.classList.add("fade");
-      setTimeout(() => li.remove(), 900);
+      setTimeout(() => {
+        li.remove();
+        deck.sync();
+      }, 900);
     }, CARD_LIFE_MS);
   }
 
@@ -230,8 +237,13 @@ export function createLiveUpdates(deps) {
     // honestly counted, not silently lost; otherwise a same-poll overflow
     title.textContent = older ? `+${count} older changes` : `+${count} more live events`;
     li.append(title);
+    li.style.zIndex = String(++cardDepth);
     cardsEl.prepend(li);
-    setTimeout(() => li.remove(), 20000);
+    deck.sync();
+    setTimeout(() => {
+      li.remove();
+      deck.sync();
+    }, 20000);
   }
 
   // ── live sync into the running map ─────────────────────────────────

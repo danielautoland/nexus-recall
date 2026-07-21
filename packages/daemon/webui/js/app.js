@@ -21,6 +21,7 @@ import { createLiveUpdates } from "./managers/live-updates.js";
 import { createSidebarPanels } from "./managers/sidebar-panels.js";
 import { createViewControls } from "./managers/view-controls.js";
 import { createWeather } from "./managers/weather.js";
+import { createWeatherChip } from "./managers/weather-chip.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -156,11 +157,11 @@ async function main() {
   const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
 
   const semanticView = createSemanticView({ sim, renderer, getInteractions: () => interactions });
-  // Weather layer (#217): opt-in, off by default. The manager asks for the
-  // location only when it is switched on — until then nothing happens here.
-  // The callback goes through a variable because viewControls is created
-  // further down; touching that `const` from up here would be a TDZ error,
-  // which optional chaining does NOT catch.
+  // Weather layer (#217): opt-in, off by default. Nothing is requested until
+  // the user picks a place in the topbar chip. The callback goes through a
+  // variable because the chip manager is created after the views it feeds;
+  // touching a `const` from up here would be a TDZ error, which optional
+  // chaining does NOT catch.
   let onWeatherChange = () => {};
   const weather = createWeather(() => onWeatherChange());
 
@@ -625,8 +626,8 @@ async function main() {
     isBusy: () => Boolean(viewTransition),
     setTransition: (t) => (viewTransition = t),
   });
-  onWeatherChange = () => viewControls.renderWeatherSwitch();
-  viewControls.renderWeatherSwitch();
+  const weatherChip = createWeatherChip({ weather });
+  onWeatherChange = () => weatherChip.render();
 
   $("#structure-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-structure]");

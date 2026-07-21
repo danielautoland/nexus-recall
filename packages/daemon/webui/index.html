@@ -47,6 +47,36 @@
 
     <div class="topbar-right">
       <span id="stat-count" class="stat" title="memories in the vault">—</span>
+      <!-- weather-slot anchors the picker under its own button -->
+      <div id="weather-slot">
+      <button id="weather-chip" aria-label="Local weather" aria-expanded="false">
+        <span id="weather-readout" hidden></span>
+        <svg id="weather-icon" viewBox="0 0 24 24" aria-hidden="true"></svg>
+      </button>
+      <div id="weather-picker" hidden>
+        <div class="wp-head">local weather</div>
+        <div id="wp-current" hidden>
+          <span id="wp-current-name"></span>
+          <button id="wp-clear" type="button">turn off</button>
+        </div>
+        <button id="wp-gps" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+            <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/>
+              <line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/>
+            </g>
+          </svg>
+          use my location
+        </button>
+        <div class="wp-or">or search — also when the fix is wrong</div>
+        <input id="wp-search" type="text" autocomplete="off" spellcheck="false"
+               placeholder="city or region…" aria-label="Search for a place" />
+        <ul id="wp-results"></ul>
+        <div id="wp-note"></div>
+      </div>
+      </div>
       <button id="import-open" aria-label="Import memories from other AI tools" title="Import memories — seed the vault from ChatGPT, Claude, Gemini…">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 3v10m0 0l-4-4m4 4l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -140,11 +170,6 @@
             <button data-mdrift="on">on</button>
             <button data-mdrift="off">off</button>
           </div>
-        </div>
-        <div class="filter-label" id="mindspace-weather-label" style="margin-top: 10px;" hidden>Local weather</div>
-        <div id="mindspace-weather-switch" class="seg" hidden>
-          <button data-mweather="off">off</button>
-          <button data-mweather="on">on</button>
         </div>
         <div class="filter-label" style="margin-top: 10px;">Updated within</div>
         <div id="time-filter" class="seg">
@@ -293,7 +318,16 @@
   <div id="semantic-hint" hidden>arranged by meaning · dashed strands are connections you never wrote<span id="semantic-depth-controls" hidden> · drag to rotate · shift-drag to pan · <button id="semantic-spin" title="Toggle auto-rotation">↻ spin: off</button></span></div>
   <div id="orbit-hint" hidden>drag to rotate · shift-drag to pan · scroll to fly in/out · <button id="orbit-recenter" title="Fit the whole universe back into view (C)">⌖ recenter · C</button></div>
 
-  <div id="live-cards"></div>
+  <div id="live-lane">
+    <div id="live-stack">
+      <!-- the rail lives INSIDE the stack and is positioned off its left edge:
+           as a flex sibling it drove the lane's height and floated above the
+           deck as soon as it was the taller of the two -->
+      <div id="live-ticks" aria-hidden="true"></div>
+      <div id="live-cards"></div>
+      <div id="live-more" hidden></div>
+    </div>
+  </div>
   <div id="live-history" hidden>
     <div class="lh-head">live history <span class="lh-session">this session</span></div>
     <div id="live-history-list"></div>

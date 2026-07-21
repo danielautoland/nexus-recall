@@ -28,22 +28,165 @@
   50% { transform: scale(1.35); opacity: 0.7; }
 }
 
-#live-cards {
+/* Notices arrive as a DECK, not a column: a busy minute used to push a wall of
+   cards up the whole right edge and cover the map it is reporting on. The
+   newest covers at most two others, everything beyond that is counted rather
+   than drawn, and the left rail marks position instead of a scrollbar.
+   Hovering anywhere in the lane fans the deck out. See managers/live-deck.js.
+
+   `pointer-events: none` on the lane stays — the gaps must not swallow clicks
+   meant for the map. It does NOT break the hover: :hover still applies to the
+   ancestors of a hovered card, whose own pointer-events are auto. */
+#live-lane {
   position: fixed;
-  right: 24px;
+  /* flush with the topbar's icon row: #topbar carries padding 0 20px, so the
+     theme toggle's right edge sits at 20px — the deck lines up under it */
+  right: 20px;
   bottom: 18px;
   z-index: 40;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 280px;
+  align-items: flex-end;
   pointer-events: none;
-  transition: right 0.28s ease;
+  /* `bottom` animates because the deck DRIFTS DOWN before it opens (see the
+     fan-out below) — the drop is the first beat of the gesture, not a layout
+     tweak. */
+  transition: right 0.28s ease, bottom 0.22s var(--ease-fly);
 }
-/* angedockte Sidebar (sichtbar/gepinnt): Cards rücken an ihre linke Kante */
-body.panel-open #live-cards { right: 284px; }
+#live-lane:hover { bottom: 10px; }
+/* Docked sidebar — two states, and they need different offsets because the
+   topbar only shrinks in ONE of them (sidebar.css: body.panel-pinned #topbar
+   { right: 250px }).
+     · visible, not pinned — the sidebar floats at right:16 over 250px, so it
+       occupies 16–266. The toggle still sits at 20px, where the sidebar now
+       is, so lining up with it is impossible; clear the panel by the same
+       20px rhythm instead.
+     · pinned — the topbar shrinks, putting the toggle's right edge at
+       250+20 = 270. That single value both lines up with the toggle AND
+       leaves 20px to the flush-mounted panel. */
+body.panel-open #live-lane { right: 286px; }
+body.panel-pinned #live-lane { right: 270px; }
+/* `relative` because the tick rail is anchored to THIS box (see below) */
+#live-stack { position: relative; display: flex; flex-direction: column; width: 280px; }
+
+#live-cards {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+  overflow: hidden;
+  /* The native bar is suppressed rather than styled: a styled
+     ::-webkit-scrollbar reserves a gutter and shrinks the content, and the
+     left rail already carries the position. */
+  scrollbar-width: none;
+}
+#live-cards::-webkit-scrollbar { width: 0; height: 0; }
+/* Expanded, the deck must scroll — with many notices it would otherwise grow
+   past the viewport and hide its own oldest entries. Scrolling needs the
+   container to take the pointer, so that happens only while hovered. */
+#live-lane:hover #live-cards {
+  overflow-y: auto;
+  pointer-events: auto;
+}
+
+/* ── left rail: one tick per notice, the current one marked ──────── */
+#live-ticks[hidden] { display: none; }
+/* Anchored to the STACK, not laid out beside it. As a flex sibling the rail
+   set the lane's height whenever it was the taller of the two, which pushed
+   the deck to the bottom and left the marks floating above it. Absolute
+   against #live-stack inverts that: the deck owns the height, the rail hangs
+   off its left edge, its bottom edge is the deck's bottom edge by
+   construction, and it can never feed back into layout. */
+#live-ticks {
+  position: absolute;
+  right: calc(100% + 12px);
+  bottom: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 7px;
+  width: 44px;
+  overflow: hidden; /* backstop — fitTicks() shrinks the spacing first */
+}
+.lt-tick {
+  /* never let the column squash the marks to nothing under max-height */
+  flex: none;
+  height: 2px;
+  width: 14px;
+  background: var(--text-dim);
+  opacity: 0.35;
+  border-radius: 1px;
+  transition: width 0.22s var(--ease-fly), opacity 0.22s ease, background 0.22s ease;
+}
+.lt-tick.near { width: 20px; opacity: 0.55; }
+.lt-tick.active {
+  width: 34px;
+  height: 2.5px;
+  opacity: 1;
+  background: var(--text);
+}
+/* the rail wakes up with the deck — every tick stretches, so the hover reads
+   as "this is a control", not just as a highlight moving */
+#live-lane:hover .lt-tick { width: 22px; opacity: 0.6; }
+#live-lane:hover .lt-tick.near { width: 30px; opacity: 0.75; }
+#live-lane:hover .lt-tick.active { width: 44px; opacity: 1; }
+
+/* ── "+N still below", broken down by kind ───────────────────────── */
+#live-more[hidden] { display: none; }
+#live-more {
+  /* full width of the notes it belongs to — it is the foot of the deck, not a
+     badge floating beside it */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* explicit height so it can COLLAPSE on hover instead of merely fading:
+     a transparent bar still occupies its row, which left a gap under the
+     deck and broke the flush bottom edge against the tick rail */
+  height: 22px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  overflow: hidden;
+  pointer-events: auto;
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  /* same duration/easing as the cards' fan-out, so the deck settles down as
+     one movement rather than two */
+  transition:
+    opacity 0.18s ease,
+    height 0.26s var(--ease-fly),
+    margin-top 0.26s var(--ease-fly),
+    padding 0.26s var(--ease-fly),
+    border-width 0.26s var(--ease-fly);
+}
+.lm-total { color: var(--text); }
+/* the breakdown is pushed to the right edge, so the "+N" stays the anchor the
+   eye lands on */
+.lm-kind:first-of-type { margin-left: auto; }
+.lm-kind.kind-change { color: #d9a441; }
+.lm-kind.kind-delete { color: #d96459; }
+.lm-kind.kind-add { color: var(--accent); }
+/* Expanded, the count is redundant — the cards themselves are all there. The
+   bar collapses to nothing so the deck drops back down flush with the rail. */
+#live-lane:hover #live-more {
+  opacity: 0;
+  height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+}
 .live-card {
   pointer-events: auto;
+  /* z-index (set per card in live-updates.js) needs a positioned box. Cards
+     are PREPENDED, so paint order would otherwise put the oldest on top of
+     the newest — backwards for a deck. */
+  position: relative;
+  flex: none; /* a deck must not squash its cards to fit the max-height */
   padding: 10px 12px;
   background: var(--panel);
   border: 1px solid var(--accent-soft);
@@ -53,8 +196,27 @@ body.panel-open #live-cards { right: 284px; }
   box-shadow: var(--shadow);
   cursor: pointer;
   animation: live-in 0.45s var(--ease-fly);
-  transition: opacity 0.9s ease, border-color 0.15s ease;
+  transition: opacity 0.9s ease, border-color 0.15s ease, margin-top 0.26s var(--ease-fly);
 }
+/* The deck itself: the newest card covers at most TWO others, each leaving a
+   readable strip. Cards past the third are not drawn at all — #live-more
+   counts them instead. Everything appears on hover.
+
+   The opening is choreographed in two beats: the lane first drifts DOWN
+   (#live-lane:hover above), then the cards fan out from the BOTTOM card
+   upwards. The per-card --fan-delay is set in live-deck.js, counted from the
+   end of the list — the pile settles, then unfolds, rather than doing both at
+   once. Closing has no delay: a collapse that staggers feels sluggish. */
+.live-card + .live-card { margin-top: -62px; }
+.live-card:nth-child(n + 4) { display: none; }
+#live-lane:hover .live-card + .live-card {
+  margin-top: 10px;
+  /* one delay per property, in the order of the shorthand above
+     (opacity · border-color · margin-top) — a bare transition-delay would
+     also postpone the card's own hover border, which then feels broken */
+  transition-delay: 0s, 0s, var(--fan-delay, 0s);
+}
+#live-lane:hover .live-card:nth-child(n + 4) { display: block; }
 .live-card:hover { border-color: var(--accent); }
 .live-card.fade { opacity: 0; }
 @keyframes live-in {
@@ -170,7 +332,7 @@ body.panel-open #live-cards { right: 284px; }
 #live-history {
   position: fixed;
   top: 62px;
-  right: 24px;
+  right: 20px; /* same right edge as the deck and the topbar's icon row */
   z-index: 45;
   width: 320px;
   max-height: 62vh;
@@ -183,7 +345,9 @@ body.panel-open #live-cards { right: 284px; }
   box-shadow: var(--shadow);
   transition: right 0.28s ease;
 }
-body.panel-open #live-history { right: 284px; }
+/* same two docked states as #live-lane above */
+body.panel-open #live-history { right: 286px; }
+body.panel-pinned #live-history { right: 270px; }
 #live-history .lh-head {
   padding: 9px 12px;
   font: 10px var(--font-mono);
