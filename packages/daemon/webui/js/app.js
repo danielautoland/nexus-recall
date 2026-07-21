@@ -347,9 +347,20 @@ async function main() {
 
   /** Live-Lane (#216/#217): Memory öffnen, auch wenn es erst NACH dem
    *  Seiten-Load geboren wurde — dann existiert noch kein Sim-Node und der
-   *  Inspector bekommt den frisch gefetchten Node direkt. */
-  async function openMemoryById(id) {
-    const n = sim.byId.get(id);
+   *  Inspector bekommt den frisch gefetchten Node direkt.
+   *
+   *  `hint` ist der Live-Update-Eintrag, der den Klick ausgelöst hat. Er trägt
+   *  das `cluster`-Feld, das der Node-Endpoint NICHT liefert und das
+   *  adoptLiveNode für den Galaxie-Anker braucht — ohne ihn landete der Knoten
+   *  mittig statt in seiner Galaxie. Mit ihm wird ein noch nicht im Graph
+   *  vorhandenes Memory erst adoptiert und dann normal angeflogen; vorher
+   *  öffnete in diesem Zweig nur der Inspector und die Kamera blieb stehen. */
+  async function openMemoryById(id, hint) {
+    let n = sim.byId.get(id);
+    if (!n && hint?.cluster) {
+      adoptLiveNode({ ...hint, id });
+      n = sim.byId.get(id);
+    }
     if (n) {
       select(n);
       return;

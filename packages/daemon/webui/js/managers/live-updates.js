@@ -122,7 +122,7 @@ export function createLiveUpdates(deps) {
         if (h.kind !== "delete") {
           row.addEventListener("click", () => {
             replayFlash(h);
-            deps.openMemory?.(h.id);
+            deps.openMemory?.(h.id, h);
           });
         }
         return row;
@@ -193,11 +193,14 @@ export function createLiveUpdates(deps) {
           setTimeout(() => {
             deps.orbitView.focusBurst(entry.id);
             replayFlash(entry);
-            deps.openMemory?.(entry.id);
+            deps.openMemory?.(entry.id, entry);
           }, wasOrbit ? 0 : 1100);
         } else {
+          // der Eintrag trägt `cluster` — openMemory adoptiert damit ein
+          // Memory, das erst nach dem Seiten-Load entstanden ist, und fliegt
+          // es an, statt nur den Inspector zu öffnen
           replayFlash(entry);
-          deps.openMemory?.(entry.id);
+          deps.openMemory?.(entry.id, entry);
         }
       });
     }
@@ -228,14 +231,15 @@ export function createLiveUpdates(deps) {
     el.classList.add("bump");
   }
 
-  function summaryCard(count, older = false) {
+  function summaryCard(count, older = false, text) {
     const li = document.createElement("div");
     li.className = "live-card";
     const title = document.createElement("div");
     title.className = "live-title";
     // `older`: entries the buffer dropped before we polled them (#234) —
-    // honestly counted, not silently lost; otherwise a same-poll overflow
-    title.textContent = older ? `+${count} older changes` : `+${count} more live events`;
+    // honestly counted, not silently lost; otherwise a same-poll overflow.
+    // `text` overrides both for losses that have no meaningful count.
+    title.textContent = text ?? (older ? `+${count} older changes` : `+${count} more live events`);
     li.append(title);
     li.style.zIndex = String(++cardDepth);
     cardsEl.prepend(li);
@@ -290,6 +294,18 @@ export function createLiveUpdates(deps) {
       if (sinceSeq === null) {
         // baseline: adopt the high-water mark, don't replay what happened before
         sinceSeq = data.seq ?? 0;
+        return;
+      }
+      // The seq counter lives in the daemon's memory, so a daemon restart puts
+      // it back to 0 while our cursor sits far ahead. Every entry then looks
+      // older than what we've "already seen": the poll comes back empty and the
+      // next one silently adopts the server's low seq — the events in between
+      // are gone. That loses the `add` of a newborn while its later `change`
+      // notices still arrive, and those point at a node the map never adopted.
+      // Treat the jump backwards for what it is: a new server, so rebaseline.
+      if (typeof data.seq === "number" && data.seq < sinceSeq) {
+        sinceSeq = data.seq;
+        summaryCard(0, true, "daemon restarted — live feed resynced");
         return;
       }
       // buffer overflowed past our cursor → be honest about the drop (#234)
