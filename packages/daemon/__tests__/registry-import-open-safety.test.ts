@@ -175,7 +175,11 @@ test("A10: a pre-relDir node is retired instead of left as a duplicate", async (
 
   await writeFile(join(src, "a", "note.md"), "# Note\n\nA nested note.\n", "utf8");
 
-  // Seed the identity a pre-#240 import would have written: no relDir.
+  // Seed the identity a pre-#240 import would have written: no relDir, and —
+  // crucially — the SAME body the adapter produces for this source, because a
+  // real pre-A10 import ran the same adapter. Migration now trashes a legacy
+  // node only when its content is proven present in the successor, so the body
+  // here must match the successor's (`# Note\n\nA nested note.`).
   await writeFile(
     join(importFolder, "demo-note.md"),
     `---
@@ -190,6 +194,8 @@ recall_when: ["note"]
 created: 2026-06-01
 updated: 2026-06-01
 ---
+
+# Note
 
 A nested note.
 `,
@@ -281,7 +287,14 @@ test("A10: a declared index.md is not overwritten by the synthetic index", async
   assert.notEqual(res.indexNode, "demo-index", "the synthetic index needs its own id");
 });
 
-test("A10: legacy collision suffixes are migrated too", async (t) => {
+test("A10: a legacy collision family is left as a visible duplicate, not auto-migrated", async (t) => {
+  // Weg A (conservative): a pre-A10 collision family — `demo-same`,
+  // `demo-same-2`, `demo-same-3` for three colliding `same.md` — carries no
+  // provenance saying which legacy id belonged to which source path. Mapping
+  // them back is a guess, and a wrong guess trashes live content, so the
+  // family is NOT auto-migrated. The legacy nodes remain as visible,
+  // recoverable duplicates; the ambiguous cleanup belongs to a manifest-backed
+  // `bastra migrate`, not to an automatic pass that must never lose data.
   const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
   const root = await mkdtemp(join(tmpdir(), "bastra-import-suffix-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -293,7 +306,6 @@ test("A10: legacy collision suffixes are migrated too", async (t) => {
   for (const d of ["a", "b", "c"]) {
     await writeFile(join(src, d, "same.md"), `# Same ${d}\n\nBody ${d}.\n`, "utf8");
   }
-  // What the pre-A10 uniqueId() sequence produced for three colliding names.
   const legacy = (id: string) =>
     `---\nid: ${id}\ntitle: ${id}\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nlegacy\n`;
   for (const id of ["demo-same", "demo-same-2", "demo-same-3"]) {
@@ -306,12 +318,16 @@ test("A10: legacy collision suffixes are migrated too", async (t) => {
   const active = vault.list().map((m) => m.fm.id).sort();
   await vault.stop?.();
 
-  assert.deepEqual(
-    active,
-    ["demo-a-same", "demo-b-same", "demo-c-same"],
-    "every legacy identity must be retired, none may linger as an orphan",
-  );
-  assert.equal(res.migrated.length, 3, `expected three retirements, got ${JSON.stringify(res.migrated)}`);
+  assert.deepEqual(res.migrated, [], "a collision family must not be auto-migrated");
+  // The three new nodes plus the three untouched legacy nodes — nothing lost.
+  assert.deepEqual(active, [
+    "demo-a-same",
+    "demo-b-same",
+    "demo-c-same",
+    "demo-same",
+    "demo-same-2",
+    "demo-same-3",
+  ]);
 });
 
 test("A10: link lookup is slug-equivalent to id minting", async (t) => {
@@ -382,9 +398,11 @@ test("A10: a numeric basename ending is not read as a collision suffix", async (
   const folder = join(target, IMPORT_ROOT, "demo");
   await mkdir(folder, { recursive: true });
   await writeFile(join(src, "a", "chapter-2.md"), "# Chapter 2\n\nreal body.\n", "utf8");
+  // Legacy body = the adapter's output for this source (a real pre-A10 import
+  // ran the same adapter), so the content-equality gate lets it migrate.
   await writeFile(
     join(folder, "demo-chapter-2.md"),
-    `---\nid: demo-chapter-2\ntitle: Chapter 2\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nlegacy\n`,
+    `---\nid: demo-chapter-2\ntitle: Chapter 2\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\n# Chapter 2\n\nreal body.\n`,
     "utf8",
   );
 
@@ -396,6 +414,39 @@ test("A10: a numeric basename ending is not read as a collision suffix", async (
 
   assert.deepEqual(active, ["demo-a-chapter-2"], "chapter-2.md migrates cleanly, no duplicate left behind");
   assert.deepEqual(res.migrated, [{ from: "demo-chapter-2", to: "demo-a-chapter-2" }]);
+});
+
+test("A10: an orphaned node with different content is not trashed (F1)", async (t) => {
+  // Adversary finding F1: import `notes.md` (ALPHA) + `sub/notes.md` (BETA),
+  // then remove `notes.md` and reimport. `demo-notes` now holds the removed
+  // file's ALPHA content, but its basename-twin successor `demo-sub-notes`
+  // holds BETA. The id looks like the pre-A10 form of `sub/notes.md`, so the
+  // old code trashed ALPHA into oblivion. The content-equality gate must keep
+  // it: what gets trashed has to be proven present in the successor.
+  const { importVault } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-orphan-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(join(src, "sub"), { recursive: true });
+
+  await writeFile(join(src, "notes.md"), "# Notes\n\nALPHA unique content.\n", "utf8");
+  await writeFile(join(src, "sub", "notes.md"), "# Notes\n\nBETA unique content.\n", "utf8");
+  await importVault(target, src, { label: "demo" });
+
+  // Remove the root file; reimport with only the nested one.
+  await rm(join(src, "notes.md"));
+  const res = await importVault(target, src, { label: "demo" });
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+  assert.deepEqual(res.migrated, [], "an orphan with different content must not be migrated");
+  const orphan = vault.get("demo-notes");
+  assert.ok(orphan, "the orphaned node must survive");
+  assert.ok(orphan.body.includes("ALPHA"), "its unique content must still be active, not only in trash");
 });
 
 test("A10: an ambiguous legacy origin is left alone, not mis-migrated", async (t) => {
@@ -430,12 +481,13 @@ test("A10: an ambiguous legacy origin is left alone, not mis-migrated", async (t
   assert.ok(vault.get("demo-chapter-2"), "the ambiguous legacy node stays put (recoverable, not trashed)");
 });
 
-test("A10: a failed save does not trash the legacy node", async (t) => {
-  // The successor write fails; the legacy node must survive. Forced by a
-  // colliding sidecar-free path is hard to arrange, so drive the failure
-  // through a duplicate id the save layer rejects: two sources mapping to the
-  // same successor cannot both write, and the legacy node keyed on that
-  // successor must not be retired if the successor was never written.
+test("A10: a genuinely failed save keeps the legacy node", async (t) => {
+  // Re-audit test-quality note: the previous version used a whitespace body
+  // (skipped at mapping, not a save failure) and guarded its assertions with
+  // `if (res.imported === 0)`, so it could pass without asserting. This forces
+  // a REAL saveMemory failure — a non-empty directory sits where the
+  // successor's file must be written, so temp+rename cannot land — and asserts
+  // unconditionally that the legacy node survives.
   const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
   const root = await mkdtemp(join(tmpdir(), "bastra-import-savefail-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -444,8 +496,10 @@ test("A10: a failed save does not trash the legacy node", async (t) => {
   await mkdir(join(src, "a"), { recursive: true });
   const folder = join(target, IMPORT_ROOT, "demo");
   await mkdir(folder, { recursive: true });
-  // A source whose body is only whitespace after stripping — skipped, imported: 0.
-  await writeFile(join(src, "a", "note.md"), "   \n\n   \n", "utf8");
+  await writeFile(join(src, "a", "note.md"), "# Note\n\nreal content.\n", "utf8");
+  // Block the successor's write target with a non-empty directory.
+  await mkdir(join(folder, "demo-a-note.md"), { recursive: true });
+  await writeFile(join(folder, "demo-a-note.md", "blocker"), "x", "utf8");
   await writeFile(
     join(folder, "demo-note.md"),
     `---\nid: demo-note\ntitle: Note\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nlegacy body\n`,
@@ -453,15 +507,20 @@ test("A10: a failed save does not trash the legacy node", async (t) => {
   );
 
   const res = await importVault(target, src, { label: "demo" });
+
+  assert.equal(res.imported, 0, "the successor save must fail");
+  assert.ok(
+    res.skipped.some((s) => /save failed/.test(s.reason)),
+    `expected a save failure, got ${JSON.stringify(res.skipped)}`,
+  );
+  assert.deepEqual(res.migrated, [], "no successor written → nothing migrated");
+
   const vault = new Vault(target);
   await vault.init();
   t.after(async () => {
     await vault.stop?.();
   });
-  if (res.imported === 0) {
-    assert.deepEqual(res.migrated, []);
-    assert.ok(vault.get("demo-note"), "no successor written → legacy node kept");
-  }
+  assert.ok(vault.get("demo-note"), "the legacy node must survive a failed successor save");
 });
 
 // ─── B11: open_document tells the truth ─────────────────────────

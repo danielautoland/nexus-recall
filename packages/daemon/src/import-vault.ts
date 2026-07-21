@@ -23,26 +23,17 @@ import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/pro
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import matter from "gray-matter";
-import { saveMemory, slugify, stripCodeSpans, extractWikilinks, moveToTrash, type SaveMemoryInput } from "@bastra-recall/core";
+import { saveMemory, slugify, extractWikilinks, moveToTrash } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
-
-/** Claude Code memory `type` → recall memory type. Closed 4-value source enum
- *  (user|feedback|project|reference); unknown values fall back to reference. */
-const CC_TYPE_MAP: Record<string, SaveMemoryInput["type"]> = {
-  user: "user-preference",
-  feedback: "meta-working",
-  project: "project-fact",
-  reference: "reference",
-};
+import { escapeRe, linkKey, safeSlug, uniqueId } from "./import/identity.js";
+import { harvestIndex, looksLikeIndexHub } from "./import/index-harvest.js";
+import { looksLikeClaudeCode, mapFile, safeParse } from "./import/adapters.js";
 
 /** Reserved subtree for all folder imports — its own graph cluster, and the
  *  atomic unit for delete/re-import. Never a target of the normal scope/type
  *  routing, so it can't overlap a hand-authored memory's path. */
 export const IMPORT_ROOT = "memories/imported";
-
-const WIKILINK_RE = /\[\[([a-z0-9][a-z0-9_-]{0,79})\]\]/g;
 
 export interface ImportVaultOptions {
   /** Namespace label for this batch; defaults to the source dir's basename.
@@ -86,309 +77,6 @@ export interface ImportVaultResult {
    *  directory. Old file went to the vault trash, recoverable. */
   migrated: Array<{ from: string; to: string }>;
   dryRun: boolean;
-}
-
-// ── small pure helpers ───────────────────────────────────────────────────────
-
-function str(v: unknown): string | null {
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
-}
-
-/** `feedback_no_double_borders.md` → "feedback"; only the four CC prefixes. */
-function typeFromFilename(fileBase: string): string | null {
-  const m = /^(user|feedback|project|reference)[_-]/.exec(fileBase);
-  return m ? m[1] : null;
-}
-
-/** filename/slug → a readable title ("no_double_borders" → "No double borders"). */
-function deSlug(fileBase: string): string {
-  const words = fileBase.replace(/[-_]+/g, " ").trim();
-  if (!words) return fileBase;
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** First `# H1` heading text, if the note leads with one. */
-function firstH1(body: string): string | null {
-  for (const line of body.split("\n")) {
-    const m = /^#\s+(.+?)\s*$/.exec(line);
-    if (m) return m[1];
-    if (line.trim().length > 0 && !line.startsWith("#")) break;
-  }
-  return null;
-}
-
-/** First non-heading, non-empty paragraph, clamped — a stand-in summary when
- *  the source carries no description field. */
-function firstParagraph(body: string): string | null {
-  const blocks = body.split(/\n\s*\n/);
-  for (const block of blocks) {
-    const text = block.trim();
-    if (!text || text.startsWith("#") || text.startsWith("---")) continue;
-    const oneLine = text.replace(/\s+/g, " ");
-    return oneLine.length > 300 ? oneLine.slice(0, 297) + "…" : oneLine;
-  }
-  return null;
-}
-
-/** Namespace every body `[[x]]` → `[[slugify(<label>-x)]]` so intra-set links
- *  stay inside the imported set and can NEVER resolve onto a hand-authored
- *  memory with a bare-name id (the isolation guarantee). #219 (zzallirog):
- *  the SAME slugify as the id minting in `buildInput` — without it every
- *  underscored note became its own ghost twin (`[[feedback_gate_catalog]]`
- *  stayed underscored while the id got dashes; 326 of his 402 ghosts). Links
- *  whose namespaced form exceeds the 80-char wikilink cap simply don't
- *  become edges — harmless. */
-function namespaceWikilinks(body: string, label: string, idByBase: Map<string, string>): string {
-  return body.replace(WIKILINK_RE, (full: string, id: string) => {
-    try {
-      // #240/A10: prefer the minted id for this basename; fall back to the
-      // legacy scheme only for targets outside the imported set.
-      return `[[${idByBase.get(linkKey(id) ?? id) ?? slugify(`${label}-${id}`)}]]`;
-    } catch {
-      return full; // unslugifiable target — leave untouched, never throw mid-body
-    }
-  });
-}
-
-/** gray-matter, but a throwing/unparseable YAML frontmatter (cyrillic
- *  guillemets, backslash escapes, …) degrades to "no frontmatter" instead of
- *  dropping the file — YAML-leniency lives in the importer, not the loader. */
-function safeParse(raw: string): { data: Record<string, unknown>; content: string } {
-  try {
-    const { data, content } = matter(raw);
-    return { data: (data ?? {}) as Record<string, unknown>, content };
-  } catch {
-    return { data: {}, content: raw };
-  }
-}
-
-/** A CC memory file if it carries any of the format's marker fields — flat
- *  `type:`, nested `metadata.type:`, or a `name:`. Everything else is generic. */
-function looksLikeClaudeCode(data: Record<string, unknown>): boolean {
-  if (str(data.name) || str(data.type)) return true;
-  const meta = data.metadata;
-  return typeof meta === "object" && meta !== null && str((meta as Record<string, unknown>).type) !== null;
-}
-
-/**
- * Index-hub detection for frontmatter-less files (zzallirog field report,
- * 2026-07-17): hand-maintained index files (sectioned link lists pointing at
- * every note) must NOT become memory nodes — their stray inline wikilinks
- * inflate the ghost count while their real navigational payload (markdown
- * `[t](x.md)` links) isn't a semantic edge either way. Recognize, don't
- * parse: a file whose non-heading lines are mostly links is navigation.
- * Only ever applied to frontmatter-less files — declared frontmatter wins.
- */
-function looksLikeIndexHub(body: string): boolean {
-  // Code-Spans blanken, bevor gezählt wird: ein Body, der ÜBER Link-Syntax
-  // redet (`[[x]]`/`[t](y.md)` im Code-Beispiel), ist kein Index (Parser-Noise
-  // wie bei extractWikilinks — zzallirog 2026-07-18).
-  const scanned = stripCodeSpans(body);
-  const mdLinks = scanned.match(/\[[^\]]*\]\([^)\s]+\.md\)/g)?.length ?? 0;
-  const wikiLinks = scanned.match(WIKILINK_RE)?.length ?? 0;
-  const links = mdLinks + wikiLinks;
-  if (links < 8) return false;
-  const contentLines = scanned
-    .split("\n")
-    .filter((l) => l.trim().length > 0 && !/^\s*#/.test(l) && !/^\s*---\s*$/.test(l));
-  return contentLines.length > 0 && links >= contentLines.length * 0.6;
-}
-
-/**
- * Harvest an index/hub file (MEMORY.md, or any file recognized as a link hub)
- * into structure, instead of throwing it away (zzallirog 2026-07-18: native
- * Claude-Code memory carries its ONLY connective tissue in MEMORY.md —
- * `[title](file.md)` links grouped under `## Section` headings. Skip the file
- * as a node, but keep the map it draws). Returns per linked file: the section
- * it sits under and the one-line description trailing its link. First mention
- * wins. Only `##`..`######` headings count as sections — a lone `#` title
- * (e.g. "# Memory Index") is the document title, not a group.
- */
-const INDEX_LINK_RE = /\[([^\]]*)\]\(([^)\s#]+)\.md(?:#[^)]*)?\)/;
-
-interface IndexEntry {
-  section: string | null;
-  description: string | null;
-}
-
-function harvestIndex(sources: string[]): Map<string, IndexEntry> {
-  const map = new Map<string, IndexEntry>();
-  for (const content of sources) {
-    let section: string | null = null;
-    for (const rawLine of stripCodeSpans(content).split("\n")) {
-      const line = rawLine.trim();
-      const h = /^#{2,6}\s+(.+?)\s*$/.exec(line);
-      if (h) {
-        // Strip links + markdown out of the section name (Finding #6): a
-        // `[[x]]` in a heading would otherwise ride verbatim into the synthetic
-        // index node's body as `## [[x]]` and become an UNVETTED related edge
-        // (a ghost), contradicting the "links point only at imported ids" rule.
-        section =
-          h[1]
-            .replace(/\[\[[^\]]*\]\]/g, "")
-            .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-            .replace(/[#*`_]/g, "")
-            .trim() || null;
-        continue;
-      }
-      const m = INDEX_LINK_RE.exec(line);
-      if (!m) continue;
-      const targetBase = m[2].split("/").pop();
-      if (!targetBase) continue;
-      const after = line.slice(m.index + m[0].length).replace(/^[\s—–\-:·]+/, "").trim();
-      if (!map.has(targetBase)) {
-        map.set(targetBase, { section, description: after.length > 0 ? after : null });
-      }
-    }
-  }
-  return map;
-}
-
-/** slugify that returns null instead of throwing/emptying — for optional
- *  section folders and veto-id derivation. */
-/**
- * Normalization for the basename ↔ wikilink map (#240/A10 follow-up). Source
- * bodies write `[[two]]` while the file on disk is `Two.md`, and the pre-A10
- * ghost wave (#219) was the same class of mismatch with underscores. Both
- * sides of the map MUST pass through this, or the lookup misses and the
- * legacy fallback mints a target that was never created.
- */
-/** Escape a label for use inside a RegExp — labels are user-supplied. */
-function escapeRe(raw: string): string {
-  return raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function linkKey(raw: string): string | null {
-  return safeSlug(raw);
-}
-
-function safeSlug(raw: string): string | null {
-  try {
-    const s = slugify(raw);
-    return s.length > 0 ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Ensure a batch-unique id: on collision append -2, -3, … (deterministic). */
-function uniqueId(base: string, used: Set<string>): string {
-  let id = base;
-  let n = 2;
-  while (used.has(id)) id = `${base}-${n++}`;
-  used.add(id);
-  return id;
-}
-
-// ── per-file mapping ─────────────────────────────────────────────────────────
-
-type MapResult = { ok: true; input: SaveMemoryInput } | { ok: false; reason: string };
-
-interface MapContext {
-  label: string;
-  folder: string;
-  relDir: string;
-  overwrite: boolean;
-  used: Set<string>;
-  /** Namespaced ids that SOME body links to — a file in this set is a real
-   *  target, never a throwaway index (nav-skip inbound-veto, Finding #2). */
-  referenced: Set<string>;
-  /** fileBase → its section + description, harvested from the index/hubs. */
-  harvest: Map<string, IndexEntry>;
-  /** #240/A10: basename → final id, for resolving LINKS only. Source
-   *  wikilinks reference a bare basename (`[[same]]`), which is inherently
-   *  ambiguous when the basename repeats — first sorted path wins. */
-  idByBase: Map<string, string>;
-  /** This file's own final id, minted from its full source path in Pass 0.
-   *  Must NOT come from idByBase: two files sharing a basename would collapse
-   *  onto one id and the second would overwrite the first. */
-  selfId: string;
-}
-
-function buildInput(
-  fields: { name: string; description: string; type: SaveMemoryInput["type"]; ccType: string; adapter: string },
-  fileBase: string,
-  body: string,
-  ctx: MapContext,
-): SaveMemoryInput {
-  const { name, description, type, ccType, adapter } = fields;
-  const relSegments = ctx.relDir ? ctx.relDir.split(sep).filter(Boolean).map((s) => s.trim()).filter(Boolean) : [];
-  // #240/A10: the id must come from the SOURCE IDENTITY, not from the file's
-  // position in the current batch. `uniqueId(label-fileBase)` only
-  // disambiguated within one sorted run, so two `same.md` in different source
-  // folders became `demo-same` / `demo-same-2` — and once the first source
-  // file was deleted, the re-import gave `demo-same` to the OTHER file. Every
-  // reference to that id then pointed at different content, and the stale
-  // `demo-same-2` stayed behind as a duplicate. The relative directory is
-  // stable ground truth (it already shapes the physical path below), so it
-  // belongs in the id. `uniqueId` stays as the last-resort tiebreaker for a
-  // genuine collision within one run.
-  // #240/A10: minted in Pass 0 from the full source path — keeps minting and
-  // link resolution in lockstep without collapsing duplicate basenames.
-  const id = ctx.selfId;
-  // Curated section from the index — carried in topic_path + tags, NOT in the
-  // physical folder (Finding #3): a section lives in the source index, which
-  // can change between re-imports; if it drove the file PATH, a re-import
-  // after a section move would orphan the old copy (saveMemory only checks the
-  // new folder-derived path), leaving two files with one id. Only a real
-  // SOURCE subfolder (relSegments) shapes the path — that's stable ground truth.
-  const rawSection = ctx.harvest.get(fileBase)?.section ?? null;
-  const section = relSegments.length === 0 && rawSection ? safeSlug(rawSection) : null;
-  const sectionSeg = section ? [section] : [];
-  const topic_path = ["imported", ctx.label, ...sectionSeg, ...relSegments];
-  const tags = [...new Set(["imported", ctx.label, ccType, ...sectionSeg].filter(Boolean))];
-  const recall_when = [...new Set([description, deSlug(name), ccType].map((s) => s.trim()).filter(Boolean))];
-  const safeBody = namespaceWikilinks(body.trim().length > 0 ? body : description || name, ctx.label, ctx.idByBase);
-  return {
-    id,
-    title: name,
-    type,
-    summary: description,
-    body: safeBody,
-    topic_path,
-    tags,
-    scope: ctx.label,
-    recall_when,
-    folder: ctx.folder,
-    write_origin: "user-directed",
-    overwrite: ctx.overwrite,
-    source: `${adapter}:${ctx.label}`,
-  };
-}
-
-function mapFile(fileBase: string, raw: string, ctx: MapContext): MapResult {
-  const { data, content } = safeParse(raw);
-  const idxDesc = ctx.harvest.get(fileBase)?.description ?? null;
-
-  if (looksLikeClaudeCode(data)) {
-    const meta = (typeof data.metadata === "object" && data.metadata !== null
-      ? (data.metadata as Record<string, unknown>)
-      : {});
-    const ccType = str(data.type) ?? str(meta.type) ?? typeFromFilename(fileBase) ?? "reference";
-    const type = CC_TYPE_MAP[ccType] ?? "reference";
-    const name = str(data.name) ?? firstH1(content) ?? deSlug(fileBase);
-    const description = str(data.description) ?? idxDesc ?? firstParagraph(content) ?? name;
-    return { ok: true, input: buildInput({ name, description, type, ccType, adapter: "claude-code-memory" }, fileBase, content, ctx) };
-  }
-
-  // generic markdown — no recognizable memory frontmatter
-  const name = firstH1(content) ?? deSlug(fileBase);
-  const description = idxDesc ?? firstParagraph(content) ?? name;
-  if (content.trim().length === 0 && !str(data.name)) {
-    return { ok: false, reason: "empty file" };
-  }
-  // Index/hub veto (Finding #2, zzallirog): a file OTHERS link to is a real
-  // target, not a throwaway index — importing it is the only way its 18
-  // inbound links resolve instead of collapsing into one degree-18 ghost.
-  if (looksLikeIndexHub(content)) {
-    const selfId = ctx.selfId;
-    if (selfId === null || !ctx.referenced.has(selfId)) {
-      return { ok: false, reason: "index/navigation file (link hub) — not a memory" };
-    }
-  }
-  const ccType = typeFromFilename(fileBase) ?? "reference";
-  const type = CC_TYPE_MAP[ccType] ?? "reference";
-  return { ok: true, input: buildInput({ name, description, type, ccType, adapter: "markdown" }, fileBase, content, ctx) };
 }
 
 // ── directory walk ───────────────────────────────────────────────────────────
@@ -510,65 +198,70 @@ export async function importVault(
     if (key && !idByBase.has(key)) idByBase.set(key, id);
   }
 
-  // #240/A10 migration snapshot — taken BEFORE any write in this run.
+  // #240/A10 legacy migration — CONSERVATIVE (Weg A). Snapshot taken BEFORE
+  // any write this run.
   //
-  // The first attempt derived one legacy candidate per file as
-  // `slugify(label + basename)` and retired it if the file merely existed.
-  // Two ways that destroyed live content:
-  //   - on a FIRST import of `same.md` + `z/same.md`, the root file legitimately
-  //     mints `<label>-same`; processing the nested file then computed the same
-  //     legacy candidate, found the file the current run had just written, and
-  //     trashed it. Reported two imports, left one.
-  //   - the pre-A10 importer disambiguated collisions with `uniqueId`, so a
-  //     legacy set could be `<label>-same` AND `<label>-same-2`. Only the
-  //     unsuffixed one was ever retired; the suffixed twin stayed as an orphan
-  //     — exactly the case A10 set out to fix.
-  //
-  // So: snapshot what is on disk first, and retire only ids that (a) exist in
-  // this label's import folder, (b) are NOT minted by the current run, and
-  // (c) belong to a basename this run actually imports. Everything else is
-  // left alone — a node whose source file disappeared is not this pass's
-  // business.
+  // A pre-A10 node carries no record of WHICH source path produced it — that
+  // information never existed, which is the whole reason A10 was needed. Every
+  // heuristic to map it back (suffix parsing, collision families) therefore
+  // has a data-loss path; three re-audit rounds each found the next one. So a
+  // legacy node is retired ONLY when the mapping is provably unambiguous:
+  //   (1) its id EXACTLY equals the unsuffixed legacy id of a current basename,
+  //   (2) that basename is a SINGLETON (no collision family this run),
+  //   (3) no OTHER singleton basename could also explain the id as a `-<n>`
+  //       collision suffix (that would be genuine ambiguity), and
+  //   (4) — checked after the writes — its successor was actually written.
+  // Everything else — collision families, ambiguous numeric endings, vanished
+  // sources, skipped/failed imports — is left as a VISIBLE DUPLICATE. A
+  // duplicate is recoverable; trashing the wrong node is not. The ambiguous
+  // cases belong to a separate, manifest-backed `bastra migrate`, not to an
+  // automatic pass that must never lose data.
   const currentIds = new Set(idByPath.values());
-  // For each current basename, the id the PRE-A10 importer would have minted
-  // for it unsuffixed — `safeSlug(label + basename)`, the exact old
-  // expression. First-sorted path wins an ambiguous basename, matching the
-  // link map. `to` is that basename's current successor id.
-  const expectedByBase = new Map<string, { legacy: string; to: string }>();
+  // Collision families (count > 1) are never auto-migrated.
+  const baseCount = new Map<string, number>();
   for (const p of idByPath.keys()) {
     const key = linkKey(basename(p, extname(p)));
-    const legacy = safeSlug(`${label}-${basename(p, extname(p))}`);
-    if (key && legacy && !expectedByBase.has(key)) {
-      const to = idByBase.get(key);
-      if (to) expectedByBase.set(key, { legacy, to });
+    if (key) baseCount.set(key, (baseCount.get(key) ?? 0) + 1);
+  }
+  // Singleton basenames only: the exact unsuffixed legacy id the pre-A10
+  // importer would have minted, and this run's successor for it.
+  const exactLegacy = new Map<string, { to: string }>();
+  const singletonLegacyIds: string[] = [];
+  for (const p of idByPath.keys()) {
+    const fileBase = basename(p, extname(p));
+    const key = linkKey(fileBase);
+    const legacy = safeSlug(`${label}-${fileBase}`);
+    if (!key || !legacy || (baseCount.get(key) ?? 0) > 1) continue;
+    const to = idByBase.get(key);
+    if (to && !exactLegacy.has(legacy)) {
+      exactLegacy.set(legacy, { to });
+      singletonLegacyIds.push(legacy);
     }
   }
-  const legacyCandidates: Array<{ id: string; path: string; to: string }> = [];
+  const legacyCandidates: Array<{ id: string; path: string; to: string; body: string }> = [];
   try {
     for (const entry of await readdir(join(vaultRoot, folder))) {
       if (!entry.endsWith(".md")) continue;
       const id = entry.slice(0, -3);
       if (currentIds.has(id)) continue;
-      // A legacy node maps to a current basename either EXACTLY (its
-      // unsuffixed legacy id) or as a pre-A10 collision SUFFIX (`…-<n>`).
-      // #240 re-audit: exact must win, and `chapter-2.md` must not be read as
-      // the `-2` suffix of a `chapter` that is not even in this run. When both
-      // an exact and a suffix origin exist among current basenames the mapping
-      // is genuinely ambiguous (no provenance survives in a pre-A10 node), so
-      // leave it — a visible duplicate beats trashing the wrong node.
-      const exact: string[] = [];
-      const suffix: string[] = [];
-      for (const [, { legacy }] of expectedByBase) {
-        if (id === legacy) exact.push(legacy);
-        else if (new RegExp(`^${escapeRe(legacy)}-\\d+$`).test(id)) suffix.push(legacy);
-      }
-      let legacyMatch: string | undefined;
-      if (exact.length === 1 && suffix.length === 0) legacyMatch = exact[0];
-      else if (exact.length === 0 && suffix.length === 1) legacyMatch = suffix[0];
-      // anything else (0 origins → not ours; >1 or exact+suffix → ambiguous)
-      if (!legacyMatch) continue;
-      const to = [...expectedByBase.values()].find((e) => e.legacy === legacyMatch)?.to;
-      if (to) legacyCandidates.push({ id, path: join(vaultRoot, folder, entry), to });
+      const exact = exactLegacy.get(id);
+      if (!exact) continue; // no exact singleton match → not ours / vanished / family
+      // Reject when another singleton could read this id as its `-<n>` suffix:
+      // `demo-chapter-2` with both `chapter.md` and `chapter-2.md` present has
+      // no provenance to break the tie, so leave it.
+      const suffixRival = singletonLegacyIds.some(
+        (l) => l !== id && new RegExp(`^${escapeRe(l)}-\\d+$`).test(id),
+      );
+      if (suffixRival) continue;
+      // Capture the legacy body for the content-equality gate below.
+      const raw = await readFile(join(vaultRoot, folder, entry), "utf8").catch(() => null);
+      if (raw === null) continue;
+      legacyCandidates.push({
+        id,
+        path: join(vaultRoot, folder, entry),
+        to: exact.to,
+        body: safeParse(raw).content.trim(),
+      });
     }
   } catch {
     /* no import folder yet — nothing to migrate */
@@ -605,7 +298,9 @@ export async function importVault(
   }
   const harvest = harvestIndex(indexSources);
 
-  // Pass C: map + save.
+  // Pass C: map + save. Remember each written successor's body so migration
+  // can prove the legacy node's content survives before trashing it.
+  const writtenBodyById = new Map<string, string>();
   for (const filePath of files) {
     const raw = rawByFile.get(filePath);
     if (raw === undefined) continue; // unreadable — already recorded in skipped
@@ -629,19 +324,31 @@ export async function importVault(
       }
     }
     ids.push(mapped.input.id as string);
+    writtenBodyById.set(mapped.input.id as string, mapped.input.body.trim());
   }
 
   // Retire the snapshotted legacy nodes now that every current id is written.
-  // #240 re-audit: retire ONLY when the successor was actually written this
-  // run. `ids` holds every successful save (an empty/unreadable source, a
-  // mapping miss or a failed saveMemory all `continue` before the push), so a
-  // successor missing from it means the replacement never landed — trashing
-  // the legacy node then would leave no active node at all. Trash, never a
-  // hard delete — recoverable if a match was wrong.
+  // Two gates, both required, both direct expressions of "never lose data":
+  //   (a) the successor was actually written this run — `ids` holds every
+  //       successful save (empty/unreadable source, mapping miss and failed
+  //       saveMemory all `continue` before the push), so a missing successor
+  //       means the replacement never landed.
+  //   (b) the successor carries the SAME body as the legacy node. Without this,
+  //       a legacy id that merely LOOKS like a current basename's pre-A10 form
+  //       gets trashed even when it is really an orphaned A10 node of a removed
+  //       source (adversary finding F1: `notes.md`+`sub/notes.md` imported,
+  //       then `notes.md` removed → `demo-notes` holds the removed file's
+  //       content, its "successor" `demo-sub-notes` holds different content).
+  //       Trashing only on an exact content match makes retirement provably
+  //       loss-free: what we trash is guaranteed active elsewhere. Bodies that
+  //       differ only by later enrichment (auto-related section, re-namespaced
+  //       links) simply do not match → left as a visible duplicate, which is
+  //       the accepted conservative outcome. Trash, never a hard delete.
   const writtenIds = new Set(ids);
   if (!dryRun) {
     for (const cand of legacyCandidates) {
-      if (!writtenIds.has(cand.to)) continue; // successor was skipped/failed — keep the legacy node
+      if (!writtenIds.has(cand.to)) continue; // successor skipped/failed → keep
+      if (writtenBodyById.get(cand.to) !== cand.body) continue; // content differs → keep
       try {
         await moveToTrash(vaultRoot, cand.path, cand.id);
         migrated.push({ from: cand.id, to: cand.to });
