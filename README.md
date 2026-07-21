@@ -42,6 +42,12 @@ A persistent memory layer that:
 - **Works across surfaces** — one local daemon serves all your AI tools at once: Claude Code (via MCP), Claude Desktop (via MCP), ChatGPT (via Custom GPT Actions over HTTP), Cursor, and anything else that speaks MCP or HTTP.
 - **Plain markdown, Obsidian-compatible** — the vault is a folder of `.md` files with YAML frontmatter. Edit in Obsidian, in the AI, or by hand. Vaults on Google Drive / iCloud / Dropbox mounts are supported via automatic polling-mode in the file watcher.
 
+<p align="center">
+  <img src="./assets/memory-save-ack.png" alt="An autonomous save confirmation in the terminal: → saved: … (salience 0.85)" width="100%" />
+  <br/>
+  <sub><em>An autonomous save: the AI spots a recurring pattern (here the third occurrence), records the lesson itself and weights it by salience — you just see the one-line confirmation, no prompting needed.</em></sub>
+</p>
+
 ### The single success metric
 
 > **The user doesn't have to think for the AI anymore.**
@@ -371,6 +377,12 @@ Eine persistente Gedächtnis-Schicht, die:
 - **Vor dem Handeln erinnert** — nicht erst auf User-Anfrage. Die AI wird angewiesen, den Vault vor dem Code-Schreiben, vor Plänen und beim Sitzungsstart abzufragen. Das höchstgewichtete Suchfeld ist `recall_when`, das beim Speichern deklariert wird.
 - **Über alle Oberflächen hinweg funktioniert** — ein lokaler Daemon bedient alle deine AI-Tools gleichzeitig: Claude Code (via MCP), Claude Desktop (via MCP), ChatGPT (via Custom GPT Actions über HTTP), Cursor und alles weitere, was MCP oder HTTP spricht.
 - **Reines Markdown, Obsidian-kompatibel** — der Vault ist ein Ordner mit `.md`-Dateien und YAML-Frontmatter. Bearbeitbar in Obsidian, durch die AI oder per Hand. Vaults auf Google Drive / iCloud / Dropbox werden über den automatischen Polling-Modus des File-Watchers unterstützt.
+
+<p align="center">
+  <img src="./assets/memory-save-ack.png" alt="Autonome Save-Bestätigung im Terminal: → saved: … (salience 0.85)" width="100%" />
+  <br/>
+  <sub><em>Ein autonomer Save: die AI erkennt ein wiederkehrendes Muster (hier der dritte Vorfall), hält die Lesson selbst fest und gewichtet sie per Salience — du siehst nur die einzeilige Bestätigung, ganz ohne Nachfragen.</em></sub>
+</p>
 
 ### Der einzige Erfolgs-Maßstab
 
