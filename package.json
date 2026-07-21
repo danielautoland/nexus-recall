@@ -17,7 +17,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "check:types": "npm run check:types --workspaces --if-present",
-    "test": "node --import tsx --test packages/core/__tests__/*.test.ts packages/daemon/__tests__/*.test.ts packages/eval/__tests__/*.test.ts",
+    "test": "node --import tsx --test packages/core/__tests__/*.test.ts packages/daemon/__tests__/*.test.ts packages/eval/__tests__/*.test.ts tools/__tests__/*.test.mjs",
     "eval:lift": "npm run lift --workspace=@bastra-recall/eval",
     "test:update": "npm run test:update --workspace=@bastra-recall/daemon",
     "smoke": "npm run smoke --workspace=@bastra-recall/daemon",
