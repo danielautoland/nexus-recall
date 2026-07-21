@@ -15,12 +15,15 @@ const SHOOTING_EVERY = 24000;
 // value here is deliberately small — the brief was "really, really subtle". It
 // should register that something changed without the viewer being able to name
 // what. Whoever looks at this map is working; they are not watching.
-const RAIN_STREAKS_MAX = 6; // concurrent rain streaks in steady rain
-const RAIN_ALPHA = 0.13; // a fraction of the real shooting star (0.5)
-const THUNDER_EVERY = 11000; // base interval between two sheet-lightning flashes
-const THUNDER_ALPHA = 0.05; // full-screen lift — at the threshold of perception
-const HAZE_BANDS = 8; // cloud/fog banks drifting through the volume
-const HAZE_ALPHA = 0.035;
+// First pass sat so far under the threshold that the layer was not readable at
+// all — "subtle" had turned into "invisible". These values are the second pass:
+// still ambient, but you can now tell rain from clear without being told.
+const RAIN_STREAKS_MAX = 11; // concurrent rain streaks in steady rain
+const RAIN_ALPHA = 0.26; // still half the real shooting star (0.5)
+const THUNDER_EVERY = 8000; // base interval between two sheet-lightning flashes
+const THUNDER_ALPHA = 0.1; // full-screen lift — visible, not blinding
+const HAZE_BANDS = 13; // cloud/fog banks drifting through the volume
+const HAZE_ALPHA = 0.085; // the dial that carries most of the "weathery" feel
 
 /** @param {object} env  getters + geometry helpers from createOrbitView */
 export function createOrbitDecor(env) {

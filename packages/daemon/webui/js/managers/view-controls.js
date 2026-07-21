@@ -10,7 +10,6 @@ export function createViewControls(deps) {
     sim,
     semanticView,
     orbitView,
-    weather,
     getInteractions,
     getCurrentView,
     isBusy,
@@ -45,8 +44,6 @@ export function createViewControls(deps) {
     const inOrbit = v === "orbit";
     $("#mindspace-mode-label").hidden = $("#mindspace-mode-switch").hidden = !inOrbit;
     $("#mindspace-galaxy-opts").hidden = !inOrbit || orbitView.getMode() !== "galaxy";
-    // weather applies to BOTH mindspace modes — hence outside the galaxy opts
-    $("#mindspace-weather-label").hidden = $("#mindspace-weather-switch").hidden = !inOrbit;
     $("#mindspace-mode-switch")
       .querySelectorAll("button")
       .forEach((b) => b.classList.toggle("active", b.dataset.mmode === orbitView.getMode()));
@@ -82,27 +79,5 @@ export function createViewControls(deps) {
 
 
 
-  // ── Weather layer: OPT-IN, off by default. Switching it on makes the BROWSER
-  // ask for the location; if the user declines there, the switch falls back to
-  // "off" and the reason shows in the tooltip. The rendered state always comes
-  // from the manager, never from the clicked button — otherwise the UI would
-  // read "on" while permission was in fact refused.
-  function renderWeatherSwitch() {
-    const on = weather.isOn();
-    const status = weather.status();
-    $("#mindspace-weather-switch")
-      .querySelectorAll("button")
-      .forEach((b) => b.classList.toggle("active", b.dataset.mweather === (on ? "on" : "off")));
-    $("#mindspace-weather-switch").title = on
-      ? `Local weather tints the mindspace${status ? ` — ${status}` : ""}. Your position is rounded to ~11 km and only sent to the weather service.`
-      : "Off — no location is requested. Turn on to let your local weather tint the mindspace.";
-  }
-  $("#mindspace-weather-switch").addEventListener("click", (ev) => {
-    const b = ev.target.closest("button[data-mweather]");
-    if (!b) return;
-    weather.setOn(b.dataset.mweather === "on");
-    renderWeatherSwitch();
-  });
-
-  return { renderSemanticModeSwitch, renderMindspaceControls, renderWeatherSwitch };
+  return { renderSemanticModeSwitch, renderMindspaceControls };
 }
