@@ -16,6 +16,51 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SearchIndex } from "@bastra-recall/core";
 import { getUiEnabled } from "./settings.js";
 
+/**
+ * Content-Security-Policy for the map (#217).
+ *
+ * The map is a local-first tool whose whole promise is that the vault never
+ * leaves the machine. Until the weather layer it made no outbound request at
+ * all; now it talks to three hosts. Without a policy that is a promise with
+ * nothing enforcing it — a compromised dependency, or one wrong line of mine,
+ * could send anywhere and nobody would notice. With one, the BROWSER refuses,
+ * loudly, and the guarantee becomes checkable instead of merely stated.
+ *
+ * Derived from what the page actually uses, verified against the sources:
+ *   default-src 'self'  — everything not named below stays same-origin
+ *   connect-src         — the daemon + exactly the three weather services
+ *                         (managers/weather.js: forecast · geocode · reverse)
+ *   img-src data:       — the inline SVG favicon in index.html
+ *           blob:       — components/image-cropper.js previews a picked file
+ *   style-src 'unsafe-inline' — three style="" attributes in index.html. Only
+ *                         attributes and <style> blocks need this; the .style
+ *                         assignments across the managers are CSSOM writes and
+ *                         are not governed by CSP at all.
+ *   object-src 'none' · frame-ancestors 'none' · base-uri 'self' — the page
+ *                         embeds no plugins, must not be framed, and must not
+ *                         let an injected <base> retarget its relative URLs.
+ *
+ * Deliberately absent: 'unsafe-eval' and inline script. The viewer has no
+ * eval, no new Function, no inline <script> — keep it that way; anything that
+ * needs them is the wrong shape for this page.
+ *
+ * When a new outbound host appears, add it HERE and nowhere else. A forgotten
+ * entry fails visibly in the browser console, which is the intended behaviour:
+ * silence would mean the policy was doing nothing.
+ */
+const CSP = [
+  "default-src 'self'",
+  "connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com https://api.bigdatacloud.net",
+  "img-src 'self' data: blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self'",
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -348,6 +393,10 @@ export async function handleWebUi(
       "Content-Length": st.size,
       // Short-lived cache: assets change with daemon updates, not per request.
       "Cache-Control": "max-age=60",
+      // CSP governs a DOCUMENT, so it rides on the html only — on a stylesheet
+      // or a script response the browser ignores it, and shipping it there
+      // would just suggest a protection that isn't happening.
+      ...(type.startsWith("text/html") ? { "Content-Security-Policy": CSP } : {}),
     });
     createReadStream(target)
       .on("error", () => res.destroy())
