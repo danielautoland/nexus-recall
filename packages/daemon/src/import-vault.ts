@@ -23,10 +23,10 @@ import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/pro
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { saveMemory, slugify, extractWikilinks, moveToTrash } from "@bastra-recall/core";
+import { saveMemory, slugify, extractWikilinks } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
-import { escapeRe, linkKey, safeSlug, uniqueId } from "./import/identity.js";
+import { linkKey, safeSlug, uniqueId } from "./import/identity.js";
 import { harvestIndex, looksLikeIndexHub } from "./import/index-harvest.js";
 import { looksLikeClaudeCode, mapFile, safeParse } from "./import/adapters.js";
 
@@ -73,8 +73,11 @@ export interface ImportVaultResult {
   /** #217: id of the synthetic curated-index node minted from the source
    *  index (MEMORY.md / hubs), or null when the source carried no index. */
   indexNode: string | null;
-  /** #240/A10: nodes retired because the id scheme gained the relative source
-   *  directory. Old file went to the vault trash, recoverable. */
+  /** #240/A10: kept for shape compatibility, ALWAYS []. Weg C: the import
+   *  never trashes a pre-A10 twin — automatic retirement could not be made
+   *  loss-free (see the orchestrator). A pre-A10 duplicate stays active until
+   *  the user, or a future opt-in `bastra migrate`, removes it with a
+   *  confirmed delete. */
   migrated: Array<{ from: string; to: string }>;
   dryRun: boolean;
 }
@@ -198,78 +201,26 @@ export async function importVault(
     if (key && !idByBase.has(key)) idByBase.set(key, id);
   }
 
-  // #240/A10 legacy migration — CONSERVATIVE (Weg A). Snapshot taken BEFORE
-  // any write this run.
+  // #240/A10 legacy migration — REMOVED (Weg C). The import NEVER trashes an
+  // existing node.
   //
-  // A pre-A10 node carries no record of WHICH source path produced it — that
-  // information never existed, which is the whole reason A10 was needed. Every
-  // heuristic to map it back (suffix parsing, collision families) therefore
-  // has a data-loss path; three re-audit rounds each found the next one. So a
-  // legacy node is retired ONLY when the mapping is provably unambiguous:
-  //   (1) its id EXACTLY equals the unsuffixed legacy id of a current basename,
-  //   (2) that basename is a SINGLETON (no collision family this run),
-  //   (3) no OTHER singleton basename could also explain the id as a `-<n>`
-  //       collision suffix (that would be genuine ambiguity), and
-  //   (4) — checked after the writes — its successor was actually written.
-  // Everything else — collision families, ambiguous numeric endings, vanished
-  // sources, skipped/failed imports — is left as a VISIBLE DUPLICATE. A
-  // duplicate is recoverable; trashing the wrong node is not. The ambiguous
-  // cases belong to a separate, manifest-backed `bastra migrate`, not to an
-  // automatic pass that must never lose data.
-  const currentIds = new Set(idByPath.values());
-  // Collision families (count > 1) are never auto-migrated.
-  const baseCount = new Map<string, number>();
-  for (const p of idByPath.keys()) {
-    const key = linkKey(basename(p, extname(p)));
-    if (key) baseCount.set(key, (baseCount.get(key) ?? 0) + 1);
-  }
-  // Singleton basenames only: the exact unsuffixed legacy id the pre-A10
-  // importer would have minted, and this run's successor for it.
-  const exactLegacy = new Map<string, { to: string }>();
-  const singletonLegacyIds: string[] = [];
-  for (const p of idByPath.keys()) {
-    const fileBase = basename(p, extname(p));
-    const key = linkKey(fileBase);
-    const legacy = safeSlug(`${label}-${fileBase}`);
-    if (!key || !legacy || (baseCount.get(key) ?? 0) > 1) continue;
-    const to = idByBase.get(key);
-    if (to && !exactLegacy.has(legacy)) {
-      exactLegacy.set(legacy, { to });
-      singletonLegacyIds.push(legacy);
-    }
-  }
-  const legacyCandidates: Array<{ id: string; path: string; to: string; body: string }> = [];
-  try {
-    for (const entry of await readdir(join(vaultRoot, folder))) {
-      if (!entry.endsWith(".md")) continue;
-      const id = entry.slice(0, -3);
-      if (currentIds.has(id)) continue;
-      const exact = exactLegacy.get(id);
-      if (!exact) continue; // no exact singleton match → not ours / vanished / family
-      // Reject when another singleton could read this id as its `-<n>` suffix:
-      // `demo-chapter-2` with both `chapter.md` and `chapter-2.md` present has
-      // no provenance to break the tie, so leave it.
-      const suffixRival = singletonLegacyIds.some(
-        (l) => l !== id && new RegExp(`^${escapeRe(l)}-\\d+$`).test(id),
-      );
-      if (suffixRival) continue;
-      // Capture the legacy body for the content-equality gate below.
-      const raw = await readFile(join(vaultRoot, folder, entry), "utf8").catch(() => null);
-      if (raw === null) continue;
-      legacyCandidates.push({
-        id,
-        path: join(vaultRoot, folder, entry),
-        to: exact.to,
-        body: safeParse(raw).content.trim(),
-      });
-    }
-  } catch {
-    /* no import folder yet — nothing to migrate */
-  }
+  // Four re-audit rounds proved that automatically retiring a pre-A10 node
+  // cannot be made loss-free: the node carries no record of which source path
+  // produced it (that is the whole reason A10 exists), so any automatic rule —
+  // id-shape, collision-suffix, or body-equality — has a case where it trashes
+  // content that is not reproduced elsewhere (an orphaned node of a removed
+  // source, an enriched frontmatter/body, a mid-run edit). Since the only
+  // failure mode of the automatic pass is SILENT, IRREVERSIBLE loss, and the
+  // only thing it buys is not leaving a duplicate behind after the rare
+  // reimport-across-the-A10-change, the trade is wrong. So: import writes the
+  // new ids and leaves any pre-A10 twin as a VISIBLE, ACTIVE duplicate. The
+  // user (or a future opt-in `bastra migrate` that SHOWS each pair and asks)
+  // cleans up — a confirmed delete can never lose data the way an automatic
+  // one can. `migrated` stays in the result shape for compatibility, always [].
 
   // Pass A: every namespaced id that SOME body links to — the inbound-veto set
   // (Finding #2). A hub OTHERS point at is a real target, not a throwaway index.
-  /** #240/A10: pre-relDir nodes retired during this run (old id → new id). */
+  /** #240/A10: retired legacy nodes. Weg C: always empty (see above). */
   const migrated: Array<{ from: string; to: string }> = [];
   const referenced = new Set<string>();
   for (const raw of rawByFile.values()) {
@@ -298,9 +249,8 @@ export async function importVault(
   }
   const harvest = harvestIndex(indexSources);
 
-  // Pass C: map + save. Remember each written successor's body so migration
-  // can prove the legacy node's content survives before trashing it.
-  const writtenBodyById = new Map<string, string>();
+  // Pass C: map + save. Weg C — imports write ids and never trash anything, so
+  // a pre-A10 twin simply stays active alongside the new node (see above).
   for (const filePath of files) {
     const raw = rawByFile.get(filePath);
     if (raw === undefined) continue; // unreadable — already recorded in skipped
@@ -324,41 +274,6 @@ export async function importVault(
       }
     }
     ids.push(mapped.input.id as string);
-    writtenBodyById.set(mapped.input.id as string, mapped.input.body.trim());
-  }
-
-  // Retire the snapshotted legacy nodes now that every current id is written.
-  // Two gates, both required, both direct expressions of "never lose data":
-  //   (a) the successor was actually written this run — `ids` holds every
-  //       successful save (empty/unreadable source, mapping miss and failed
-  //       saveMemory all `continue` before the push), so a missing successor
-  //       means the replacement never landed.
-  //   (b) the successor carries the SAME body as the legacy node. Without this,
-  //       a legacy id that merely LOOKS like a current basename's pre-A10 form
-  //       gets trashed even when it is really an orphaned A10 node of a removed
-  //       source (adversary finding F1: `notes.md`+`sub/notes.md` imported,
-  //       then `notes.md` removed → `demo-notes` holds the removed file's
-  //       content, its "successor" `demo-sub-notes` holds different content).
-  //       Trashing only on an exact content match makes retirement provably
-  //       loss-free: what we trash is guaranteed active elsewhere. Bodies that
-  //       differ only by later enrichment (auto-related section, re-namespaced
-  //       links) simply do not match → left as a visible duplicate, which is
-  //       the accepted conservative outcome. Trash, never a hard delete.
-  const writtenIds = new Set(ids);
-  if (!dryRun) {
-    for (const cand of legacyCandidates) {
-      if (!writtenIds.has(cand.to)) continue; // successor skipped/failed → keep
-      if (writtenBodyById.get(cand.to) !== cand.body) continue; // content differs → keep
-      try {
-        await moveToTrash(vaultRoot, cand.path, cand.id);
-        migrated.push({ from: cand.id, to: cand.to });
-      } catch (err) {
-        skipped.push({
-          path: cand.path,
-          reason: `could not retire the pre-#240 node '${cand.id}': ${(err as Error).message}`,
-        });
-      }
-    }
   }
 
   // Pass D: the curated index as ONE navigation node (Finding #5). Native CC

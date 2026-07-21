@@ -162,9 +162,15 @@ test("A10: a wikilink between nested imported notes resolves to a real id", asyn
   assert.equal(res.skipped.length, 0);
 });
 
-test("A10: a pre-relDir node is retired instead of left as a duplicate", async (t) => {
+test("A10 (Weg C): a pre-A10 twin stays as a visible active duplicate — never trashed", async (t) => {
+  // Weg C: the import NEVER trashes an existing node. Automatic retirement of
+  // a pre-A10 twin could not be made loss-free across four re-audit rounds
+  // (orphaned sources, enriched frontmatter, TOCTOU), and its only failure
+  // mode was silent, irreversible loss. So a pre-A10 node simply stays active
+  // next to the new one; the user (or a future opt-in `bastra migrate`)
+  // removes it with a confirmed delete.
   const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
-  const root = await mkdtemp(join(tmpdir(), "bastra-import-migrate-"));
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-wegc-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const src = join(root, "src");
@@ -174,31 +180,10 @@ test("A10: a pre-relDir node is retired instead of left as a duplicate", async (
   await mkdir(importFolder, { recursive: true });
 
   await writeFile(join(src, "a", "note.md"), "# Note\n\nA nested note.\n", "utf8");
-
-  // Seed the identity a pre-#240 import would have written: no relDir, and —
-  // crucially — the SAME body the adapter produces for this source, because a
-  // real pre-A10 import ran the same adapter. Migration now trashes a legacy
-  // node only when its content is proven present in the successor, so the body
-  // here must match the successor's (`# Note\n\nA nested note.`).
+  // A pre-A10 twin — even with an identical body, it is left alone.
   await writeFile(
     join(importFolder, "demo-note.md"),
-    `---
-id: demo-note
-title: Note
-type: reference
-summary: the old identity
-topic_path: [imported, demo]
-tags: [imported]
-scope: demo
-recall_when: ["note"]
-created: 2026-06-01
-updated: 2026-06-01
----
-
-# Note
-
-A nested note.
-`,
+    `---\nid: demo-note\ntitle: Note\ntype: reference\nsummary: the old identity\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["note"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\n# Note\n\nA nested note.\n`,
     "utf8",
   );
 
@@ -210,15 +195,14 @@ A nested note.
     await vault.stop?.();
   });
 
-  assert.deepEqual(
-    res.migrated,
-    [{ from: "demo-note", to: "demo-a-note" }],
-    "the reimport must report which identity it retired",
+  assert.deepEqual(res.migrated, [], "Weg C never migrates");
+  assert.ok(vault.get("demo-a-note"), "the new identity is written");
+  assert.ok(vault.get("demo-note"), "the pre-A10 twin stays active — not trashed");
+  assert.equal(
+    existsSync(join(target, ".bastra", "trash", "demo-note.md")),
+    false,
+    "nothing is moved to trash",
   );
-  assert.ok(vault.get("demo-a-note"), "the new identity must exist");
-  assert.equal(vault.get("demo-note"), undefined, "the old node must not linger as a duplicate");
-  // Retired, not destroyed.
-  assert.ok(existsSync(join(target, ".bastra", "trash", "demo-note.md")));
 });
 
 
@@ -388,41 +372,12 @@ test("A10: an empty/skipped source does NOT trash its legacy node", async (t) =>
   assert.ok(vault.get("demo-empty"), "the valid legacy node must survive an import that produced no successor");
 });
 
-test("A10: a numeric basename ending is not read as a collision suffix", async (t) => {
-  const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
-  const root = await mkdtemp(join(tmpdir(), "bastra-import-numsuffix-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const src = join(root, "src");
-  const target = join(root, "vault");
-  await mkdir(join(src, "a"), { recursive: true });
-  const folder = join(target, IMPORT_ROOT, "demo");
-  await mkdir(folder, { recursive: true });
-  await writeFile(join(src, "a", "chapter-2.md"), "# Chapter 2\n\nreal body.\n", "utf8");
-  // Legacy body = the adapter's output for this source (a real pre-A10 import
-  // ran the same adapter), so the content-equality gate lets it migrate.
-  await writeFile(
-    join(folder, "demo-chapter-2.md"),
-    `---\nid: demo-chapter-2\ntitle: Chapter 2\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\n# Chapter 2\n\nreal body.\n`,
-    "utf8",
-  );
-
-  const res = await importVault(target, src, { label: "demo" });
-  const vault = new Vault(target);
-  await vault.init();
-  const active = vault.list().map((m) => m.fm.id).sort();
-  await vault.stop?.();
-
-  assert.deepEqual(active, ["demo-a-chapter-2"], "chapter-2.md migrates cleanly, no duplicate left behind");
-  assert.deepEqual(res.migrated, [{ from: "demo-chapter-2", to: "demo-a-chapter-2" }]);
-});
-
-test("A10: an orphaned node with different content is not trashed (F1)", async (t) => {
+test("A10 (Weg C): an orphaned node of a removed source stays active (F1 regression)", async (t) => {
   // Adversary finding F1: import `notes.md` (ALPHA) + `sub/notes.md` (BETA),
-  // then remove `notes.md` and reimport. `demo-notes` now holds the removed
-  // file's ALPHA content, but its basename-twin successor `demo-sub-notes`
-  // holds BETA. The id looks like the pre-A10 form of `sub/notes.md`, so the
-  // old code trashed ALPHA into oblivion. The content-equality gate must keep
-  // it: what gets trashed has to be proven present in the successor.
+  // then remove `notes.md` and reimport. `demo-notes` holds the removed file's
+  // ALPHA content; its basename-twin `demo-sub-notes` holds BETA. Every
+  // automatic rule that trashed `demo-notes` here lost ALPHA. Weg C trashes
+  // nothing, so the orphan simply stays active — kept as a regression anchor.
   const { importVault } = await import("../src/import-vault.js");
   const root = await mkdtemp(join(tmpdir(), "bastra-import-orphan-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -449,45 +404,11 @@ test("A10: an orphaned node with different content is not trashed (F1)", async (
   assert.ok(orphan.body.includes("ALPHA"), "its unique content must still be active, not only in trash");
 });
 
-test("A10: an ambiguous legacy origin is left alone, not mis-migrated", async (t) => {
-  // `chapter.md` and `chapter-2.md` both present: `demo-chapter-2` could be
-  // the unsuffixed node of chapter-2 OR the -2 collision suffix of chapter.
-  // A pre-A10 node carries no provenance, so retire nothing — a visible
-  // duplicate beats trashing the wrong node.
-  const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
-  const root = await mkdtemp(join(tmpdir(), "bastra-import-ambig-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const src = join(root, "src");
-  const target = join(root, "vault");
-  await mkdir(join(src, "a"), { recursive: true });
-  const folder = join(target, IMPORT_ROOT, "demo");
-  await mkdir(folder, { recursive: true });
-  await writeFile(join(src, "a", "chapter.md"), "# Chapter\n\nbody.\n", "utf8");
-  await writeFile(join(src, "a", "chapter-2.md"), "# Chapter 2\n\nbody.\n", "utf8");
-  await writeFile(
-    join(folder, "demo-chapter-2.md"),
-    `---\nid: demo-chapter-2\ntitle: legacy\ntype: reference\nsummary: legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nlegacy\n`,
-    "utf8",
-  );
-
-  const res = await importVault(target, src, { label: "demo" });
-  assert.deepEqual(res.migrated, [], "an ambiguous legacy origin must not be auto-migrated");
-
-  const vault = new Vault(target);
-  await vault.init();
-  t.after(async () => {
-    await vault.stop?.();
-  });
-  assert.ok(vault.get("demo-chapter-2"), "the ambiguous legacy node stays put (recoverable, not trashed)");
-});
-
-test("A10: a genuinely failed save keeps the legacy node", async (t) => {
-  // Re-audit test-quality note: the previous version used a whitespace body
-  // (skipped at mapping, not a save failure) and guarded its assertions with
-  // `if (res.imported === 0)`, so it could pass without asserting. This forces
-  // a REAL saveMemory failure — a non-empty directory sits where the
-  // successor's file must be written, so temp+rename cannot land — and asserts
-  // unconditionally that the legacy node survives.
+test("A10 (Weg C): a genuinely failed save leaves everything untouched", async (t) => {
+  // A real saveMemory failure — a non-empty directory occupies the successor's
+  // write target so temp+rename cannot land. Weg C trashes nothing regardless,
+  // so the pre-A10 twin is trivially safe; the test also asserts the import
+  // reports the save failure rather than swallowing it.
   const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
   const root = await mkdtemp(join(tmpdir(), "bastra-import-savefail-"));
   t.after(() => rm(root, { recursive: true, force: true }));
