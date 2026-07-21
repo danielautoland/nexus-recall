@@ -130,6 +130,27 @@ test("the cloud-mount polling path delivers events too", async (t) => {
   assert.equal(vault.get("delta")?.fm.id, "delta");
 });
 
+test("a file the save path already indexed must not arrive as a second add", async (t) => {
+  // The save path writes the file and indexes it itself (reindexFile), because
+  // the watcher is unreliable on cloud mounts. The watcher then reports the
+  // very same file as a fresh "add" — and the vault used to pass that kind
+  // through unchanged, so one new memory produced TWO add events. The map's
+  // topbar counter follows those (+1 per add), so every save counted double
+  // and only a reload put the number straight.
+  const { dir, vault, events } = await watchedVault(t);
+  const file = path.join(dir, "zeta.md");
+
+  await writeFile(file, memoryMd("zeta"), "utf8");
+  await vault.reindexFile(file);
+  const addsOf = (): VaultEvent[] =>
+    events.filter((e) => e.kind === "add" && e.memory?.fm.id === "zeta");
+  assert.equal(addsOf().length, 1, "the save path itself announces the newborn once");
+
+  // the watcher's own report for the same file must land as a change
+  await waitFor(events, (e) => e.kind === "change" && e.memory?.fm.id === "zeta");
+  assert.equal(addsOf().length, 1, "a second add would count the memory twice");
+});
+
 test("a watcher error is survivable — it must not take the process down", async (t) => {
   const { dir, vault, events } = await watchedVault(t);
 

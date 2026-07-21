@@ -318,7 +318,14 @@ export class Vault {
       }
       this.memorys.set(m.fm.id, m);
       this.filePathToId.set(filePath, m.fm.id);
-      this.emit({ kind, memory: m });
+      // A file this vault already knows under the same id is a CHANGE, whatever
+      // the caller asked for. The save path indexes its own write immediately
+      // (reindexFile — the watcher is unreliable on cloud mounts) and chokidar
+      // then reports the very same file as a fresh "add"; passing that through
+      // announced one new memory twice. The map's topbar counter follows add
+      // events, so every save bumped it by +2 and only a reload corrected it.
+      const settled = kind === "add" && oldId === m.fm.id ? "change" : kind;
+      this.emit({ kind: settled, memory: m });
     } catch (err) {
       // An operational failure says nothing about the CONTENT — the file may
       // be perfectly valid and merely unreadable right now (cloud placeholder
