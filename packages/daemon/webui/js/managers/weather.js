@@ -35,13 +35,17 @@
  *      cosmetic: if it fails, the rounded coordinates become the label and the
  *      weather still works.
  *
- *  Refetched every 15 minutes while a place is set — weather does not move
+ *  Refetched every 10 minutes while a place is set — weather does not move
  *  faster, and a tighter poll would only widen the exposure for nothing.
+ *  The interval alone is not enough: a background tab has its timers throttled
+ *  to a crawl (and a sleeping machine runs none at all), so a map left open on
+ *  a second screen showed a reading hours old. Coming back into view therefore
+ *  refetches whatever the timer missed.
  *
  *  @param {() => void} onChange  called whenever conditions or place changed */
 
 const PLACE_KEY = "bastra-vault-map-weather-place";
-const REFRESH_MS = 15 * 60 * 1000;
+const REFRESH_MS = 10 * 60 * 1000;
 const COORD_DECIMALS = 1; // ~11 km — a region, never an address
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 const GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search";
@@ -106,6 +110,7 @@ export function createWeather(onChange) {
   let conditions = { ...CALM };
   let timer = 0;
   let lastError = "";
+  let lastFetch = 0; // ms epoch of the last attempt — the catch-up check reads it
 
   function readPlace() {
     try {
@@ -181,6 +186,7 @@ export function createWeather(onChange) {
 
   async function fetchWeather() {
     if (!place) return;
+    lastFetch = Date.now();
     try {
       const url =
         `${FORECAST_URL}?latitude=${place.lat}&longitude=${place.lon}` +
@@ -226,6 +232,16 @@ export function createWeather(onChange) {
   }
 
   arm();
+
+  // The timer is the plan; this is the correction. Chrome throttles interval
+  // timers in hidden tabs and a sleeping machine fires none at all, so the
+  // reading silently goes stale. Whenever the map becomes visible again, catch
+  // up on anything the timer slept through — bounded by the same interval, so
+  // switching tabs in a working session costs no extra requests.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !place) return;
+    if (Date.now() - lastFetch >= REFRESH_MS) void fetchWeather();
+  });
 
   return {
     /** The four dials for the decor layer; all zero while no place is set. */

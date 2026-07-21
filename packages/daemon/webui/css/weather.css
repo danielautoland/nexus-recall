@@ -23,7 +23,10 @@
 #weather-chip.on { color: var(--text); }
 #weather-chip.on #weather-icon { color: var(--accent); }
 #weather-chip[aria-expanded="true"] { border-color: var(--accent); }
-#weather-icon { width: 17px; height: 17px; flex: none; }
+/* 17px war zu klein: die Icons sind auf 24px gezeichnet, und die feinen
+   Strahlen/Tropfen verschmolzen beim Herunterskalieren zu einem Fleck, dem
+   man die Wetterlage nicht mehr ansah */
+#weather-icon { width: 21px; height: 21px; flex: none; }
 /* readout sits LEFT of the icon; single-line + ellipsis (UI convention), so a
    long place name can never wrap the topbar into two rows */
 #weather-readout {
