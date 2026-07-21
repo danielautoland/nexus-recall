@@ -53,7 +53,7 @@ interface Poll {
 /** boots a vault + a tiny server around handleUiUpdates; `call(seq?)` polls,
  *  omitting `since` when seq is undefined (baseline request). */
 async function harness(
-  opts: { debounceMs?: number; maxEntries?: number } = {},
+  opts: { debounceMs?: number; maxEntries?: number; maxWaitMs?: number } = {},
 ): Promise<{
   vault: Vault;
   live: ReturnType<typeof createLiveUpdates>;
@@ -335,6 +335,36 @@ test("live updates: a recall notice carries its band and re-announces at most on
     r = await call(cursor);
     assert.equal(r.json.updates.length, 1, "the window reopens");
     assert.equal(r.json.updates[0].band, "optional");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("live updates: a memory that never goes quiet still finalizes at the max-wait cap", async () => {
+  // Regression: the quiet window was re-armed on EVERY follow-up event, with no
+  // ceiling. A memory an enricher/reindexer touches faster than the window was
+  // therefore never delivered — no notice, no supernova, and the topbar memory
+  // counter (webui bumpCounter) stopped moving. The cap bounds how long one
+  // entry may be held back without giving up the "one entry with ×N" guarantee
+  // from #234.
+  const h = await harness({ debounceMs: 150, maxWaitMs: 400 });
+  const { vault, memDir, call } = h;
+
+  try {
+    await h.enableUi();
+    await writeFile(join(memDir, "busy-one.md"), memoryMarkdown("busy-one", "Busy one"));
+
+    // an event every 80 ms: shorter than the 150 ms quiet window, and in sum
+    // well past the 400 ms cap
+    for (let i = 0; i < 8; i++) {
+      await vault.reindexFile(join(memDir, "busy-one.md"));
+      await delay(80);
+    }
+
+    const r = await call(0);
+    assert.ok(r.json.updates.length >= 1, "the cap delivers despite the steady stream");
+    assert.equal(r.json.updates[0].id, "busy-one");
+    assert.ok(r.json.updates[0].count > 1, "the held-back events count as ×N");
   } finally {
     await h.cleanup();
   }

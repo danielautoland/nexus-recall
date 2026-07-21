@@ -11,8 +11,13 @@
  * Two guarantees (#234):
  *   1. Coalescing — rapid events on the SAME memory (an agent re-reading it, a
  *      save → enrich → reindex burst) collapse into ONE entry that finalizes
- *      only after DEBOUNCE_MS of quiet for that id, carrying a `count` (×N).
+ *      after DEBOUNCE_MS of quiet for that id, carrying a `count` (×N).
  *      DIFFERENT memories never collapse together — each keeps its own timer.
+ *      MAX_WAIT_MS caps how long that window may be re-armed: a memory an
+ *      enricher touches faster than the window used to be held back FOREVER —
+ *      no notice, no supernova, and the topbar counter (webui bumpCounter)
+ *      stopped following the vault. The cap keeps the ×N guarantee and only
+ *      bounds the delay.
  *   2. Lossless delivery — every finalized entry gets a monotone `seq`; the
  *      client polls with the last seq it saw and receives every entry with a
  *      higher seq. The ring buffer is large and never age-drops undelivered
@@ -57,7 +62,19 @@ export interface LiveUpdate {
 }
 
 const MAX_ENTRIES = 500; // ring buffer — lossless within realistic poll gaps
-const DEBOUNCE_MS = 2000; // quiet window per memory id before an entry finalizes
+const DEBOUNCE_MS = 600; // quiet window per memory id before an entry finalizes
+/**
+ * Hard ceiling on the quiet window, measured from an entry's FIRST event.
+ *
+ * Without it the window re-armed on every follow-up event with no bound, so a
+ * memory under steady write load (an enricher, a reindexer) never finalized at
+ * all — no notice, no supernova, and the topbar counter silently stopped
+ * following the vault. Distinct from REANNOUNCE_MS below: that one throttles
+ * how often the SAME id may be announced again, this one bounds how long ONE
+ * announcement may be held back. Events arriving after the cap open a fresh
+ * window, so the ×N coalescing guarantee is unharmed.
+ */
+const MAX_WAIT_MS = 1500;
 /**
  * #221: Wiederankündigungs-Sperre pro id. Recall ist der mit Abstand
  * häufigste Pfad — dieselbe Memory taucht über eine Arbeitssitzung dutzendfach
@@ -82,11 +99,17 @@ interface PendingEntry {
   update: LiveUpdate; // hottest kind so far + the latest event's data
   count: number;
   timer: ReturnType<typeof setTimeout>;
+  firstAt: number; // when this window opened — the max-wait cap measures from here
 }
 
 export function createLiveUpdates(
   vault: Vault,
-  opts: { debounceMs?: number; maxEntries?: number; reannounceMs?: number } = {},
+  opts: {
+    debounceMs?: number;
+    maxEntries?: number;
+    reannounceMs?: number;
+    maxWaitMs?: number;
+  } = {},
 ): {
   handleUiUpdates: (req: IncomingMessage, res: ServerResponse, settingsPath?: string) => Promise<void>;
   notifyRead: (id: string, band?: RecallBand) => void;
@@ -95,6 +118,7 @@ export function createLiveUpdates(
   const debounceMs = opts.debounceMs ?? DEBOUNCE_MS;
   const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
   const reannounceMs = opts.reannounceMs ?? REANNOUNCE_MS;
+  const maxWaitMs = opts.maxWaitMs ?? MAX_WAIT_MS;
 
   const recent: LiveUpdate[] = []; // finalized entries, ascending seq
   const pending = new Map<string, PendingEntry>();
@@ -148,12 +172,21 @@ export function createLiveUpdates(
       const kind = KIND_RANK[next.kind] >= KIND_RANK[cur.update.kind] ? next.kind : cur.update.kind;
       cur.update = { ...next, kind };
       cur.count += 1;
-      cur.timer = setTimeout(() => finalize(next.id), debounceMs);
+      // Re-arming is what collapses a burst — but only up to maxWaitMs after
+      // the FIRST event (see MAX_WAIT_MS). Past the ceiling the entry ships
+      // immediately; anything after it opens a fresh window.
+      const remaining = maxWaitMs - (Date.now() - cur.firstAt);
+      if (remaining <= 0) {
+        finalize(next.id);
+        return;
+      }
+      cur.timer = setTimeout(() => finalize(next.id), Math.min(debounceMs, remaining));
     } else {
       pending.set(next.id, {
         update: next,
         count: 1,
         timer: setTimeout(() => finalize(next.id), debounceMs),
+        firstAt: Date.now(),
       });
     }
   };
