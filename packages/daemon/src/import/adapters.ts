@@ -98,6 +98,11 @@ interface MapContext {
    *  Must NOT come from idByBase: two files sharing a basename would collapse
    *  onto one id and the second would overwrite the first. */
   selfId: string;
+  /** Canonical POSIX source path relative to the import root — the node's
+   *  provenance stamp (#240, Codex gegencheck 5cf71bb). Written into `source`
+   *  so a later reimport can tell "my own prior node" (overwrite is fine) from
+   *  "a stranger that collides on this id" (must never be overwritten). */
+  relKey: string;
 }
 
 function buildInput(
@@ -147,7 +152,9 @@ function buildInput(
     folder: ctx.folder,
     write_origin: "user-directed",
     overwrite: ctx.overwrite,
-    source: `${adapter}:${ctx.label}`,
+    // "<adapter>:<label>:<relKey>" — the relKey is the per-file provenance the
+    // ownership check reads back on reimport (#240, Codex gegencheck 5cf71bb).
+    source: `${adapter}:${ctx.label}:${ctx.relKey}`,
   };
 }
 

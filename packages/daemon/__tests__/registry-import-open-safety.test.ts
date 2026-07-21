@@ -444,6 +444,98 @@ test("A10 (Weg C): a genuinely failed save leaves everything untouched", async (
   assert.ok(vault.get("demo-note"), "the legacy node must survive a failed successor save");
 });
 
+test("P1-a: an id freed by a removed sibling is not stolen to overwrite a stranger", async (t) => {
+  // Codex gegencheck of 5cf71bb: Weg C removed the TRASH path, but the routine
+  // saveMemory(overwrite:true) is itself a silent-replace. `a/note.md` and
+  // `a-note.md` both slugify to `demo-a-note`; on the first import the sorted
+  // walk gives `demo-a-note` to `a/note.md` and `demo-a-note-2` to `a-note.md`.
+  // Remove `a/note.md`, reimport: with a fresh batch allocator `a-note.md`
+  // grabbed the freed `demo-a-note` and overwrote the OTHER note's content —
+  // temp+rename, so it was gone, not even in trash.
+  const { importVault } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-steal-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(join(src, "a"), { recursive: true });
+  await mkdir(target, { recursive: true });
+
+  // Distinct content on each side — path-slug collision, different memories.
+  await writeFile(join(src, "a", "note.md"), "# Nested Beta\n\nNESTED-BETA unique body.\n", "utf8");
+  await writeFile(join(src, "a-note.md"), "# Root Alpha\n\nROOT-ALPHA unique body.\n", "utf8");
+  await importVault(target, src, { label: "demo" });
+
+  // The file that owned `demo-a-note` is removed; only `a-note.md` remains.
+  await rm(join(src, "a", "note.md"));
+  await importVault(target, src, { label: "demo" });
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+  const bodies = vault.list().map((m) => m.body).join("\n");
+  assert.ok(bodies.includes("ROOT-ALPHA"), "the reimported file's own content must be present");
+  assert.ok(
+    bodies.includes("NESTED-BETA"),
+    "the removed sibling's node must NOT be overwritten — its unique content must still be active",
+  );
+  assert.equal(
+    existsSync(join(target, ".bastra", "trash", "demo-a-note.md")),
+    false,
+    "and it must not have been silently discarded to trash either",
+  );
+});
+
+test("P1-b: the synthetic index never overwrites a foreign node on its fallback id", async (t) => {
+  // Codex gegencheck of 5cf71bb: the synthetic index draws `uniqueId(label-index)`
+  // from the batch allocator only. A pre-existing `demo-index-2` on disk (a
+  // different memory) is invisible to that allocator, so the index landed its
+  // `-2` fallback right on top of it — overwrite:true, unique content gone.
+  const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
+  const root = await mkdtemp(join(tmpdir(), "bastra-import-idxsteal-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const src = join(root, "src");
+  const target = join(root, "vault");
+  await mkdir(src, { recursive: true });
+  const folder = join(target, IMPORT_ROOT, "demo");
+  await mkdir(folder, { recursive: true });
+
+  // A foreign node already sitting on the id the synthetic index will fall back to.
+  await writeFile(
+    join(folder, "demo-index-2.md"),
+    `---\nid: demo-index-2\ntitle: Legacy Index Two\ntype: reference\nsummary: unique legacy\ntopic_path: [imported, demo]\ntags: [imported]\nscope: demo\nrecall_when: ["x"]\nsource: legacy-hand-authored\ncreated: 2026-06-01\nupdated: 2026-06-01\n---\n\nUNIQUE-LEGACY-INDEX-2 body.\n`,
+    "utf8",
+  );
+  // A source whose index.md takes `demo-index`, plus a MEMORY.md that mints the
+  // synthetic index — which then needs a fallback id and hits `demo-index-2`.
+  await writeFile(
+    join(src, "index.md"),
+    "---\ntype: reference\nname: Source Index Note\n---\n\nSource index content.\n",
+    "utf8",
+  );
+  await writeFile(join(src, "other.md"), "# Other\n\nOther body.\n", "utf8");
+  await writeFile(
+    join(src, "MEMORY.md"),
+    "# Memory\n\n## Section A\n\n- [Index](index.md) the index note\n- [Other](other.md) another\n",
+    "utf8",
+  );
+
+  const res = await importVault(target, src, { label: "demo" });
+
+  const vault = new Vault(target);
+  await vault.init();
+  t.after(async () => {
+    await vault.stop?.();
+  });
+  const legacy = vault.get("demo-index-2");
+  assert.ok(
+    legacy && legacy.body.includes("UNIQUE-LEGACY-INDEX-2"),
+    "the synthetic index must not overwrite a foreign node sitting on its fallback id",
+  );
+  assert.notEqual(res.indexNode, "demo-index-2", "the synthetic index needs an id that is not foreign-owned");
+});
+
 // ─── B11: open_document tells the truth ─────────────────────────
 
 test("B11: opening a document whose file is gone reports failure", async (t) => {

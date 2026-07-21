@@ -26,7 +26,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { saveMemory, slugify, extractWikilinks } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
-import { linkKey, safeSlug, uniqueId } from "./import/identity.js";
+import { linkKey, pathHash, safeSlug, uniqueId } from "./import/identity.js";
 import { harvestIndex, looksLikeIndexHub } from "./import/index-harvest.js";
 import { looksLikeClaudeCode, mapFile, safeParse } from "./import/adapters.js";
 
@@ -54,6 +54,12 @@ export interface ImportVaultOptions {
 /** Always-skipped directory names (#220): archives hold retired copies of
  *  live notes — importing them mints `-2`/`-3` collision twins. */
 const DEFAULT_EXCLUDED_DIRS = new Set(["_archive", "archive"]);
+
+/** Adapter prefixes the ownership check recognizes in a node's `source` stamp
+ *  (`<adapter>:<label>:<relKey>`). A stamp that starts with one of these AND
+ *  carries this label is a prior node of THIS importer; anything else on a
+ *  colliding id is foreign and must never be overwritten (#240). */
+const KNOWN_ADAPTERS = new Set(["claude-code-memory", "markdown"]);
 
 export interface ImportVaultSkip {
   path: string;
@@ -174,6 +180,41 @@ export async function importVault(
     }
   }
 
+  // #240 (Codex gegencheck 5cf71bb): the import must NEVER overwrite a FOREIGN
+  // node. saveMemory(overwrite:true) is itself a silent replace — temp+rename,
+  // no trash — so removing the migration (Weg C) was not enough: a colliding
+  // batch-allocated id could still land on a stranger. Ownership is read back
+  // from the `source` stamp: files carry "<adapter>:<label>:<relKey>", the
+  // synthetic index carries "index:<label>".
+  const ownership = async (id: string, myKey: string, isIndex: boolean): Promise<"free" | "mine" | "foreign"> => {
+    let data: Record<string, unknown>;
+    try {
+      data = safeParse(await readFile(join(vaultRoot, folder, `${id}.md`), "utf8")).data;
+    } catch {
+      return "free"; // no node on this id
+    }
+    const src = typeof data.source === "string" ? data.source : "";
+    if (isIndex) return src === `index:${label}` ? "mine" : "foreign";
+    const parts = src.split(":");
+    if (parts[1] === label && KNOWN_ADAPTERS.has(parts[0])) {
+      // stamped with a relKey → strict match; a pre-stamp import (no relKey,
+      // same label+adapter) is treated as mine — backfilled on overwrite.
+      return parts.length >= 3 ? (parts.slice(2).join(":") === myKey ? "mine" : "foreign") : "mine";
+    }
+    return "foreign"; // hand-authored, the index role, or a different label
+  };
+  /** Batch-unique id that never resolves onto a FOREIGN on-disk node: on
+   *  foreign collision, fall back to a path-stable hash suffix (same across
+   *  runs because `seed` is stable). The guard bounds the (practically
+   *  impossible) hash-collision-with-a-stranger case. */
+  const allocateOwnedId = async (base: string, seed: string, isIndex = false): Promise<string> => {
+    let id = uniqueId(base, used);
+    for (let guard = 0; guard < 8 && (await ownership(id, seed, isIndex)) === "foreign"; guard++) {
+      id = uniqueId(`${base}-${pathHash(guard === 0 ? seed : `${seed}#${guard}`)}`, used);
+    }
+    return id;
+  };
+
   // #240/A10 Pass 0: mint every final id from the SOURCE PATHS first, before
   // a single body is mapped. The ids carry the relative directory now, so
   // each resolver below has to look the target up here instead of
@@ -188,11 +229,14 @@ export async function importVault(
   // source note's content was gone.
   const idByBase = new Map<string, string>();
   const idByPath = new Map<string, string>();
+  const relKeyByPath = new Map<string, string>();
   for (const filePath of files) {
+    const relKey = relative(sourceDir, filePath).split(sep).join("/"); // POSIX provenance key
+    relKeyByPath.set(filePath, relKey);
     const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
     const fileBase = basename(filePath, extname(filePath));
     const relSegments = relDir ? relDir.split(sep).filter(Boolean) : [];
-    const id = uniqueId(slugify([label, ...relSegments, fileBase].join("-")), used);
+    const id = await allocateOwnedId(slugify([label, ...relSegments, fileBase].join("-")), relKey);
     idByPath.set(filePath, id);
     // Keyed by the LINK form, not the raw basename: a body writes `[[two]]`
     // while the file is `Two.md`, so both sides have to pass through the same
@@ -258,7 +302,8 @@ export async function importVault(
     const fileBase = basename(filePath, extname(filePath));
     const selfId = idByPath.get(filePath);
     if (selfId === undefined) continue; // not part of the minted set
-    const mapped = mapFile(fileBase, raw, { label, folder, relDir, overwrite, used, referenced, harvest, idByBase, selfId });
+    const relKey = relKeyByPath.get(filePath) ?? relative(sourceDir, filePath).split(sep).join("/");
+    const mapped = mapFile(fileBase, raw, { label, folder, relDir, relKey, overwrite, used, referenced, harvest, idByBase, selfId });
     if (!mapped.ok) {
       skipped.push({ path: filePath, reason: mapped.reason });
       continue;
@@ -304,7 +349,10 @@ export async function importVault(
       lines.push("");
     }
     if (linkCount > 0) {
-      const id = uniqueId(slugify(`${label}-index`), used);
+      // Role-scoped ownership: the synthetic index may only overwrite a node
+      // that is itself `source: index:<label>` — never a foreign node that
+      // happens to sit on the `-index`/`-index-2` fallback id (#240 P1-b).
+      const id = await allocateOwnedId(slugify(`${label}-index`), `index:${label}`, true);
       const sectionCount = [...bySection.keys()].filter((s) => s.length > 0).length;
       try {
         await saveMemory(vaultRoot, {

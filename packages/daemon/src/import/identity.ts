@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { slugify } from "@bastra-recall/core";
 
 export const WIKILINK_RE = /\[\[([a-z0-9][a-z0-9_-]{0,79})\]\]/g;
@@ -56,4 +57,13 @@ export function uniqueId(base: string, used: Set<string>): string {
   while (used.has(id)) id = `${base}-${n++}`;
   used.add(id);
   return id;
+}
+
+/** Short, run-stable hash of a canonical source key (relative path, or the
+ *  synthetic index's role key). Used as a DETERMINISTIC id suffix when the
+ *  readable id is already owned by a FOREIGN on-disk node — so the import lands
+ *  beside the stranger instead of overwriting it, and picks the SAME suffix on
+ *  every reimport of that source. Hex only → always slug/path-safe. */
+export function pathHash(key: string): string {
+  return createHash("sha1").update(key).digest("hex").slice(0, 8);
 }
