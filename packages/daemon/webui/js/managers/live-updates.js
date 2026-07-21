@@ -23,10 +23,16 @@ import { drawBurstAt, BURST_LIFE } from "./orbit-view.js";
 
 const $ = (sel) => document.querySelector(sel);
 const LIVE_KEY = "bastra-vault-map-live";
-const POLL_MS = 5000;
+// The poll is the second half of the live latency (the first is the quiet
+// window in the daemon, live-updates.ts). At 5 s a fresh memory felt like it
+// arrived ten seconds late — dead, for a display you watch out of the corner
+// of your eye while working. A tiny JSON answer against localhost carries the
+// shorter interval without trouble.
+const POLL_MS = 1500;
 const CARD_LIFE_MS = 120000; // matches the burst lifetime
 const MAX_CARDS_PER_POLL = 4;
 const HISTORY_MAX = 300;
+const REPLAY_LIFE_MS = 3000; // history click: a short re-flare, not a new event
 
 const KIND_META = {
   add: { label: "new memory", icon: "✦" },
@@ -66,6 +72,27 @@ export function createLiveUpdates(deps) {
     if (!historyEl.hidden) renderHistory();
   }
 
+  /** Bolt replay (#217): clicking an event fires the same flare, neighbour
+   *  bolts included, once more. Used by BOTH surfaces that show an event — the
+   *  notice card and the history row — so a click means the same thing in
+   *  either place. A past event is then not just re-readable but findable
+   *  again on the map: the row says WHAT happened, the bolt says WHERE.
+   *
+   *  Shorter than the original (REPLAY_LIFE_MS): this is a look-up, not a new
+   *  event, and should not feel like one. If the node does not (or no longer)
+   *  exist — deleted, or the history outlived a graph reload — nothing
+   *  happens. */
+  function replayFlash(h) {
+    if (!deps.sim.byId.has(h.id)) return;
+    // `add` deliberately carries no flash colour: on the live path a birth is
+    // the supernova, not a flare. By look-up time that star has long burned
+    // out, so the replay borrows the theme's accent instead.
+    const color =
+      KIND_META[h.kind]?.flash ??
+      getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+    deps.renderer.flashNode?.(h.id, color, REPLAY_LIFE_MS);
+  }
+
   function renderHistory() {
     if (history.length === 0) {
       const empty = document.createElement("div");
@@ -94,7 +121,10 @@ export function createLiveUpdates(deps) {
         time.textContent = timeOf(h.seenAt);
         row.append(icon, label, title, time);
         if (h.kind !== "delete") {
-          row.addEventListener("click", () => deps.openMemory?.(h.id));
+          row.addEventListener("click", () => {
+            replayFlash(h);
+            deps.openMemory?.(h.id);
+          });
         }
         return row;
       }),
@@ -158,12 +188,16 @@ export function createLiveUpdates(deps) {
         if (entry.kind === "add") {
           const wasOrbit = deps.getView() === "orbit";
           if (!wasOrbit) deps.switchView("orbit");
-          // after a view switch the flight needs a beat before refocusing
+          // after a view switch the flight needs a beat before refocusing —
+          // and the bolt has to wait for the same beat, or it fires while the
+          // old view is still on screen and is simply not seen
           setTimeout(() => {
             deps.orbitView.focusBurst(entry.id);
+            replayFlash(entry);
             deps.openMemory?.(entry.id);
           }, wasOrbit ? 0 : 1100);
         } else {
+          replayFlash(entry);
           deps.openMemory?.(entry.id);
         }
       });
@@ -213,7 +247,11 @@ export function createLiveUpdates(deps) {
     // der Node leuchtet kurz in der Kind-Farbe auf — das Ereignis ist in der
     // Map verortbar, nicht nur als Card am Rand
     const flash = KIND_META[u.kind]?.flash;
-    if (flash) deps.renderer.flashNode?.(n.id, flash);
+    // #217: the flare's lifetime carries HOW MUCH happened there. The daemon
+    // coalesces a burst of hits on the same memory into one entry with ×N — so
+    // a node something touched five times should burn longer than one with a
+    // single hit. Capped in the renderer.
+    if (flash) deps.renderer.flashNode?.(n.id, flash, 5000 + Math.min(u.count - 1, 4) * 2500);
     if (u.kind === "change") {
       n.title = u.title;
       n.summary = u.summary;

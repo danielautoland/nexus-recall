@@ -5,6 +5,45 @@
 
 import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE } from "./graph-data.js";
 
+// Activity bolts (#217): a flaring node briefly arcs to its direct neighbours.
+// Deliberately kept narrow — ONE hop level, few neighbours, a short twitch. The
+// whole appeal is that it catches the eye without demanding it; a web of bolts
+// would be exactly the opposite.
+const BOLT_HOPS = 1; // documents the intent: NEVER beyond the first level
+const BOLT_NEIGHBORS = 5; // a hub with degree 40 would otherwise draw a web
+const BOLT_MS = 420; // arc duration — a fraction of the node's flare lifetime
+const BOLT_SEGMENTS = 7; // zigzag points per bolt
+const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
+const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
+
+/** Deterministic 0..1 value. Local rather than imported from orbit-galaxy.js:
+ *  the renderer is the lower layer, the managers hang off IT. */
+function boltRnd(seed) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Zigzag polyline from (x0,y0) to (x1,y1). The deflection dies out at both
+ *  ends (sin taper) so the bolt sticks to both nodes instead of ending beside
+ *  them. `seed` advances on a time tick — that is what produces the flicker. */
+function drawBolt(ctx, x0, y0, x1, y1, seed, camScale) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const amp = Math.min(len * 0.13, 26 / camScale);
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  for (let i = 1; i < BOLT_SEGMENTS; i++) {
+    const p = i / BOLT_SEGMENTS;
+    const j = (boltRnd(seed + i * 7.31) - 0.5) * 2 * amp * Math.sin(p * Math.PI);
+    ctx.lineTo(x0 + dx * p + nx * j, y0 + dy * p + ny * j);
+  }
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+}
+
 export function createRenderer(canvas, sim, initialHues) {
   const ctx = canvas.getContext("2d");
   let hues = initialHues; // swapped on structure-mode change
@@ -16,7 +55,22 @@ export function createRenderer(canvas, sim, initialHues) {
   let pivotSince = 0; // … so the pulses ease in instead of popping
   let focusSince = 0; // focus beacon: birth burst + sonar timing
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
-  const flashes = new Map(); // live-notice flash (#216): id → {color, born, life}
+  const flashes = new Map(); // live-notice flash (#216): id → {color, born, life, boltAt, links}
+
+  /** Direct neighbours (BOLT_HOPS = 1) for the activity bolts. Resolved once
+   *  when the flare is lit and kept on the flash — the POSITIONS are re-read
+   *  from n.x/n.y every frame by the draw loop, only the selection is fixed.
+   *  The first BOLT_NEIGHBORS win: on a hub any selection is arbitrary, and
+   *  "the first ones" is the cheapest honest answer. */
+  function neighborsOf(id) {
+    const out = [];
+    for (const e of sim.edges) {
+      const other = e.s?.id === id ? e.t : e.t?.id === id ? e.s : null;
+      if (other && !other.ringHidden) out.push(other);
+      if (out.length >= BOLT_NEIGHBORS) break;
+    }
+    return out;
+  }
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
   let decorFn = null; // view decor (ring guides, center emblem), world space
@@ -363,6 +417,22 @@ export function createRenderer(canvas, sim, initialHues) {
         continue;
       }
       const r = drawRadius(n);
+      // Activity bolts FIRST: they run underneath the ring and the halo, so the
+      // flaring node stays the hero and the edges merely hint at where the
+      // activity radiates.
+      const boltT = (now - f.boltAt) / BOLT_MS;
+      if (boltT < 1 && f.links.length) {
+        const tick = Math.floor(now / BOLT_TICK_MS);
+        // fast in, slow out — a bolt strikes and then burns down
+        ctx.globalAlpha = 0.34 * Math.min(boltT * 6, 1) * (1 - boltT);
+        ctx.strokeStyle = f.color;
+        ctx.lineWidth = 1.1 / camera.scale;
+        ctx.lineJoin = "round";
+        f.links.forEach((m, i) => {
+          if (m.ringHidden) return;
+          drawBolt(ctx, n.x, n.y, m.x, m.y, tick + i * 131, camera.scale);
+        });
+      }
       const ringT = Math.min((now - f.born) / 900, 1);
       if (ringT < 1) {
         const ringR = Math.max(r * 2, 10 / camera.scale) + ringT * (80 / camera.scale);
@@ -519,9 +589,29 @@ export function createRenderer(canvas, sim, initialHues) {
     pickClusterLabel,
     toWorld,
     refreshTheme,
-    /** Live-Notice (#216): Node blitzt kurz in der Kind-Farbe auf. */
-    flashNode: (id, color, lifeMs = 5000) =>
-      flashes.set(id, { color, born: performance.now(), life: lifeMs }),
+    /** Live notice (#216): the node flares briefly in the kind's colour, and a
+     *  bolt arcs to its direct neighbours (#217).
+     *
+     *  Calling this again for the same id EXTENDS the flare rather than
+     *  restarting it: repeated hits on the same memory should feel like
+     *  sustained activity, not like a single hit that happens to start over.
+     *  Every call re-fires the bolts.
+     *
+     *  Note: the re-announce cooldown in the daemon (live-updates.ts) throttles
+     *  repeated "read" notices for the same id — so the extension mostly bites
+     *  when several DIFFERENT memories flare at once, and through the ×N count
+     *  the caller folds into lifeMs. */
+    flashNode: (id, color, lifeMs = 5000) => {
+      const now = performance.now();
+      const prev = flashes.get(id);
+      if (prev) {
+        prev.color = color;
+        prev.life = Math.min(prev.life + lifeMs, FLASH_LIFE_MAX);
+        prev.boltAt = now;
+        return;
+      }
+      flashes.set(id, { color, born: now, life: lifeMs, boltAt: now, links: neighborsOf(id) });
+    },
     setHover: (n) => (hover = n),
     setFocus: (n) => {
       if ((n?.id ?? null) !== (focus?.id ?? null)) focusSince = performance.now();
