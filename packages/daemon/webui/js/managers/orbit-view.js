@@ -460,6 +460,11 @@ export function createOrbitView(deps) {
       g.sy = pr.y;
       g.d = pr.d;
       g.scale = depthScale(pr);
+      // UNclamped perspective — g.scale is clamped to [0.55, 1.5] so glows and
+      // cores can't degenerate. Labels, though, should really grow and shrink
+      // with distance; with the clamp the whole cloud reads as flat. Only the
+      // labels use this value (orbit-decor.js).
+      g.rawScale = pr.scale;
     }
     for (const s of universe.systems) {
       s.sunWorld = worldPos(s.sunId, tSec);
@@ -480,6 +485,7 @@ export function createOrbitView(deps) {
     getMode: () => mode,
     getEnterAt: () => enterAt,
     getR: () => R,
+    getWeather: deps.getWeather ?? (() => null),
     project, trigNow, inPlane, add, scale3, norm,
     depthScale, depthFade, frontFade, viewRect, inView,
     getSatLight: deps.getSatLight,

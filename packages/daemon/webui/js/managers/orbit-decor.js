@@ -1,14 +1,26 @@
 /** Orbit decor (#216/#217) — the universe's backdrop, split out of
  *  orbit-view.js: starfield (shell + drifters, twinkle), the shooting star,
- *  galaxy glows + nebulae + labels, solar-system rings, and the galactic
- *  mode's orbit guides + black-hole core. Pure drawing: all view state
- *  arrives through the env getters, geometry helpers are passed in from the
- *  view (they close over its camera state). */
+ *  galaxy glows + nebulae + labels, solar-system rings, the galactic mode's
+ *  orbit guides + black-hole core, and the opt-in weather layer (#217: rain
+ *  streaks, distant thunder, cloud/fog haze — see managers/weather.js). Pure
+ *  drawing: all view state arrives through the env getters, geometry helpers
+ *  are passed in from the view (they close over its camera state). */
 
 import { clusterColor, glowSprite } from "../graph-data.js";
 import { rnd } from "./orbit-galaxy.js";
 
 const SHOOTING_EVERY = 24000;
+
+// Weather layer (#217): the user's local weather modulates the backdrop. Every
+// value here is deliberately small — the brief was "really, really subtle". It
+// should register that something changed without the viewer being able to name
+// what. Whoever looks at this map is working; they are not watching.
+const RAIN_STREAKS_MAX = 6; // concurrent rain streaks in steady rain
+const RAIN_ALPHA = 0.13; // a fraction of the real shooting star (0.5)
+const THUNDER_EVERY = 11000; // base interval between two sheet-lightning flashes
+const THUNDER_ALPHA = 0.05; // full-screen lift — at the threshold of perception
+const HAZE_BANDS = 8; // cloud/fog banks drifting through the volume
+const HAZE_ALPHA = 0.035;
 
 /** @param {object} env  getters + geometry helpers from createOrbitView */
 export function createOrbitDecor(env) {
@@ -61,6 +73,81 @@ export function createOrbitDecor(env) {
         ctx.lineTo(pr.x, pr.y + g);
         ctx.stroke();
       }
+    }
+    ctx.globalAlpha = 1;
+
+    // ── Weather (#217) — only if the user switched it on; otherwise all four
+    // dials are 0 and the three blocks below fall straight through.
+    const wx = env.getWeather() ?? { rain: 0, thunder: 0, clouds: 0, fog: 0 };
+
+    // Clouds + fog: ONE shared bank layer. Two separate systems would not be
+    // tellable apart against a starfield — clouds are the large, faster banks
+    // here, fog the dense ground veil.
+    const haze = Math.min(wx.clouds * 0.7 + wx.fog, 1);
+    if (haze > 0.02) {
+      ctx.globalCompositeOperation = theme.flowBlend;
+      for (let i = 0; i < HAZE_BANDS; i++) {
+        const drift = tSec * (0.004 + rnd(i, 191) * 0.006) + rnd(i, 193) * Math.PI * 2;
+        const p = {
+          px: Math.cos(drift) * R * (0.6 + rnd(i, 197) * 0.9),
+          py: (rnd(i, 199) - 0.5) * R * 0.7,
+          pz: Math.sin(drift) * R * (0.6 + rnd(i, 211) * 0.9),
+        };
+        const pr = project(p, trig, cx, cy);
+        if (!inView(view, pr.x, pr.y)) continue;
+        const br = R * (0.28 + rnd(i, 223) * 0.3) * depthScale(pr) * (1 + wx.clouds * 0.4);
+        ctx.globalAlpha = HAZE_ALPHA * haze * depthFade(pr.d) * fadeIn;
+        ctx.drawImage(glowSprite(theme.label), pr.x - br, pr.y - br, br * 2, br * 2);
+      }
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+    }
+
+    // Thunderstorm: NO forked lightning. Zigzags belong to the activity bolts
+    // at the nodes (renderer.js) — a second zigzag effect would be exactly the
+    // confusion you can never unsee. A storm here is distant sheet lightning:
+    // the sky brightens for a moment, the source stays off-frame.
+    if (wx.thunder > 0.02) {
+      const every = THUNDER_EVERY / (0.5 + wx.thunder);
+      const epoch = Math.floor(now / every);
+      const t = (now % every) / every;
+      // two flickers in quick succession — a single flash reads as a rendering
+      // glitch, the double reads as a storm
+      const flash = t < 0.03 ? 1 - t / 0.03 : t > 0.08 && t < 0.1 ? 0.5 : 0;
+      if (flash > 0 && rnd(epoch, 227) < 0.55 + wx.thunder * 0.4) {
+        ctx.globalAlpha = THUNDER_ALPHA * flash * wx.thunder * fadeIn;
+        ctx.fillStyle = theme.label;
+        ctx.fillRect(view.l, view.t, view.r - view.l, view.b - view.t);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Rain: the existing shooting star is NOT clocked faster — it stays the
+    // rare event. Rain is its OWN layer of short, pale streaks that all fall
+    // roughly the same way.
+    const streaks = Math.round(wx.rain * RAIN_STREAKS_MAX);
+    for (let i = 0; i < streaks; i++) {
+      const period = 1400 + rnd(i, 229) * 900;
+      const epoch = Math.floor(now / period) + i * 17;
+      const p = (now % period) / period;
+      const s0 = {
+        px: (rnd(epoch, 233) - 0.5) * R * 2.4,
+        py: R * 0.9,
+        pz: (rnd(epoch, 239) - 0.5) * R * 2.4,
+      };
+      const fall = R * 0.5;
+      const head = { ...s0, py: s0.py - p * fall };
+      const tail = { ...s0, py: s0.py - Math.max(p - 0.16, 0) * fall };
+      const a = project(head, trig, cx, cy);
+      const b = project(tail, trig, cx, cy);
+      if (!inView(view, a.x, a.y)) continue;
+      ctx.globalAlpha = RAIN_ALPHA * Math.sin(p * Math.PI) * wx.rain * fadeIn;
+      ctx.strokeStyle = theme.label;
+      ctx.lineWidth = 0.7 / camera.scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
@@ -177,20 +264,33 @@ export function createOrbitDecor(env) {
     }
     ctx.globalCompositeOperation = "source-over";
 
-    // galaxy names — screen-px floors, outside the additive batch
+    // galaxy names — outside the additive batch. Two deliberate departures from
+    // the screen-px playbook, both for the same reason: the nameplate should
+    // belong to its galaxy, not float above the scene.
+    //
+    // 1) FIXED world offset instead of g.r * 1.4. The old offset grew with the
+    //    disc radius, and since that grows with member count, the name of a
+    //    large area drifted further and further above the thing it names. All
+    //    labels now sit the same distance above their galaxy.
+    // 2) NO screen-px floor on the font size, but g.rawScale (the unclamped
+    //    perspective) instead. A floor renders far and near labels at the same
+    //    size, which made the cloud read as flat. The small remaining floor only
+    //    stops very distant names from rastering into mush — the lesson the
+    //    floor originally came from.
+    const LABEL_LIFT = 34; // world units above the galaxy centre
     for (const g of sorted) {
       if (!inView(view, g.sx, g.sy)) continue;
       const depthAlpha = depthFade(g.d) * fadeIn;
       if (depthAlpha <= 0.05) continue;
       const color = clusterColor(hues, g.key, sat, light);
       ctx.globalAlpha = 0.7 * depthAlpha;
-      const fontPx = Math.max((g.dwarf ? 9.5 : 11) * g.scale, 10 / camera.scale);
+      const fontPx = Math.max((g.dwarf ? 9.5 : 11) * g.rawScale, 4.5 / camera.scale);
       ctx.font = `700 ${fontPx}px "Avenir Next", system-ui, sans-serif`;
       ctx.textAlign = "center";
       ctx.lineWidth = 3 / camera.scale;
       ctx.lineJoin = "round";
       ctx.strokeStyle = theme.labelHalo;
-      const ly = g.sy - g.r * g.scale * 1.4 - 6 / camera.scale;
+      const ly = g.sy - LABEL_LIFT * g.rawScale;
       ctx.strokeText(g.key.toUpperCase(), g.sx, ly);
       ctx.fillStyle = color;
       ctx.fillText(g.key.toUpperCase(), g.sx, ly);

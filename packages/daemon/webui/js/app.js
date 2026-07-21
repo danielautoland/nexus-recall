@@ -20,6 +20,7 @@ import { createAreasManager } from "./managers/areas-manager.js";
 import { createLiveUpdates } from "./managers/live-updates.js";
 import { createSidebarPanels } from "./managers/sidebar-panels.js";
 import { createViewControls } from "./managers/view-controls.js";
+import { createWeather } from "./managers/weather.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -155,12 +156,21 @@ async function main() {
   const visibleNodes = () => sim.nodes.filter((n) => !n.ringHidden);
 
   const semanticView = createSemanticView({ sim, renderer, getInteractions: () => interactions });
+  // Weather layer (#217): opt-in, off by default. The manager asks for the
+  // location only when it is switched on — until then nothing happens here.
+  // The callback goes through a variable because viewControls is created
+  // further down; touching that `const` from up here would be a TDZ error,
+  // which optional chaining does NOT catch.
+  let onWeatherChange = () => {};
+  const weather = createWeather(() => onWeatherChange());
+
   const orbitView = createOrbitView({
     sim,
     renderer,
     getInteractions: () => interactions,
     getHues: () => hues,
     getSatLight: () => [sat, light],
+    getWeather: () => weather.get(),
   });
 
   // ── drill switcher (sidebar): appears for instance-mode areas like
@@ -609,11 +619,14 @@ async function main() {
     sim,
     semanticView,
     orbitView,
+    weather,
     getInteractions: () => interactions,
     getCurrentView: () => currentView,
     isBusy: () => Boolean(viewTransition),
     setTransition: (t) => (viewTransition = t),
   });
+  onWeatherChange = () => viewControls.renderWeatherSwitch();
+  viewControls.renderWeatherSwitch();
 
   $("#structure-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-structure]");
