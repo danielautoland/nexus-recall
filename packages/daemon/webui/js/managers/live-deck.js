@@ -104,6 +104,16 @@ export function createLiveDeck({ cardsEl }) {
     const TAIL_STEP = 0.05; // s between the hidden ones
     const stackTail = FAN_LEAD + (DECK_VISIBLE - 1) * STACK_STEP + TAIL_GAP;
     const list = cards();
+    // How far a covered card has to sit above its slot to be COMPLETELY behind
+    // the pile. The deck's resting overlap (-62px) only hides a card of that
+    // height — a real notice is taller, so a card starting there began its
+    // journey already sticking out, which reads as appearing rather than
+    // sliding. Measured off the visible cards, since the covered ones are
+    // display:none and report no height of their own.
+    const tallest = list
+      .slice(0, DECK_VISIBLE)
+      .reduce((max, c) => Math.max(max, c.offsetHeight), 0);
+    if (tallest > 0) cardsEl.style.setProperty("--card-hide", `-${tallest + 16}px`);
     list.forEach((card, i) => {
       // the first child has no preceding sibling, so the rule that animates
       // margin-top never applies to it — the second card opens the fan

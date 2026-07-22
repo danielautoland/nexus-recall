@@ -232,7 +232,16 @@ body.panel-pinned #live-lane { right: 270px; }
    collapsing — which is what made the opening read as two fights rather than
    one gesture. Closing has no delay: a collapse that staggers feels sluggish. */
 .live-card + .live-card { margin-top: var(--deck-overlap); }
-.live-card:nth-child(n + 4) { display: none; }
+/* Covered cards rest FULLY behind the pile, not at the deck's overlap: they
+   carry a lower z-index than the cards above them, so a card pulled up by its
+   own height plus a margin is genuinely out of sight. --card-hide is measured
+   in live-deck.js; the fallback only has to be deep enough for a first paint.
+   This is also where they return to on close, so the slide back stays
+   symmetric instead of snapping the last stretch. */
+.live-card:nth-child(n + 4) {
+  display: none;
+  margin-top: var(--card-hide, -140px);
+}
 #live-lane:hover .live-card + .live-card {
   margin-top: 10px;
   /* one delay per property, in the order of the shorthand above
@@ -251,7 +260,7 @@ body.panel-pinned #live-lane { right: 270px; }
    stacked, exactly where the deck was hiding it, and slides out from there. */
 @starting-style {
   #live-lane:hover .live-card:nth-child(n + 4) {
-    margin-top: var(--deck-overlap);
+    margin-top: var(--card-hide, -140px);
   }
 }
 .live-card:hover { border-color: var(--accent); }
