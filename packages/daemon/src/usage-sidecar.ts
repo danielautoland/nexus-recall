@@ -48,13 +48,47 @@ export type UsageAggregate = Record<string, UsageEntry>;
  * Demand-Uhr neben der Valenz: der Daemon stampt sie beim Graph-Serve auf
  * die Nodes (core/graph.ts bleibt reine Vault-Projektion).
  */
-export function computeHeat(usage: UsageAggregate): Record<string, number> {
+/**
+ * Half-life of a memory's heat, in days (#227).
+ *
+ * A clock with no time term isn't a clock: without it a memory reached fifty
+ * times last year outranks one reached three times this week, permanently.
+ * zzallirog measured that the order turns over at 3.8 days of history — five of
+ * ten top slots — while the same test on a heavily-worked vault moves one slot.
+ * The variable is not elapsed time but the age spread among the contenders: an
+ * exponential term scales a uniformly-fresh top group by roughly the same
+ * factor and leaves it alone, and reorders as soon as the ages differ. So it is
+ * inert exactly where it would change nothing, and decisive where it matters.
+ *
+ * 7 and 14 days produce the same ranking on both vaults measured; 30 is already
+ * too sluggish to separate them. 14 keeps a week-old memory at ~71%.
+ */
+const HEAT_HALF_LIFE_DAYS = 14;
+const DAY_MS = 86_400_000;
+
+/** Newest contact stamp on an entry, or null when it carries none. */
+function lastContactMs(e: UsageEntry): number | null {
+  let newest = 0;
+  for (const s of [e.last_acted_on_at, e.last_loaded_at, e.last_surfaced_at]) {
+    if (typeof s !== "string" || s === "") continue;
+    const t = Date.parse(s);
+    if (Number.isFinite(t) && t > newest) newest = t;
+  }
+  return newest > 0 ? newest : null;
+}
+
+export function computeHeat(usage: UsageAggregate, now: number = Date.now()): Record<string, number> {
   const raw = new Map<string, number>();
   let max = 0;
   for (const [id, e] of Object.entries(usage)) {
     const w = (e.loaded ?? 0) + 2 * (e.acted_on ?? 0);
     if (w <= 0) continue;
-    const v = Math.log1p(w);
+    // No stamp means "we don't know when", not "long ago" — an entry written
+    // before the timestamps existed must not be demoted for our bookkeeping.
+    const last = lastContactMs(e);
+    const ageDays = last === null ? 0 : Math.max(0, (now - last) / DAY_MS);
+    const decay = 0.5 ** (ageDays / HEAT_HALF_LIFE_DAYS);
+    const v = Math.log1p(w) * decay;
     raw.set(id, v);
     if (v > max) max = v;
   }
