@@ -81,20 +81,27 @@ export function createLiveDeck({ cardsEl }) {
     moreEl.replaceChildren(total, ...parts);
   }
 
-  /** Stagger the fan-out from the BOTTOM card upwards.
+  /** Stagger the fan-out from the TOP card downwards.
    *
-   *  Cards are prepended, so the newest is the FIRST child and the oldest the
-   *  last — counting from the end gives the visual bottom-to-top order. Every
-   *  card also waits out FAN_LEAD first, which is how long the lane takes to
-   *  drift down: the deck settles, THEN it opens, instead of doing both at
-   *  once and reading as a jump. */
+   *  Cards are prepended, so the first child is the newest and sits on top of
+   *  the pile. It leaves first, the card beneath follows, and the ones the deck
+   *  was hiding come up last — the order the eye already reads the deck in.
+   *  Going bottom-up instead made the oldest note lead the movement, which is
+   *  backwards for a stack you read from the top.
+   *
+   *  FAN_LEAD is not decoration: it holds every card still until #live-more has
+   *  finished collapsing (0.34s in live.css), so the pile slides down as one
+   *  block before anything unfolds. Overlap the two and the gesture reads as
+   *  two competing animations. */
   function paintFanDelays() {
-    const FAN_LEAD = 0.1; // s — the lane's downward drift goes first
-    const FAN_STEP = 0.035; // s per card, bottom → top
+    const FAN_LEAD = 0.34; // s — matches #live-more's collapse in live.css
+    const FAN_STEP = 0.05; // s per card, top → bottom
     const list = cards();
     list.forEach((card, i) => {
-      const fromBottom = list.length - 1 - i;
-      card.style.setProperty("--fan-delay", `${FAN_LEAD + fromBottom * FAN_STEP}s`);
+      // the first child has no preceding sibling, so the rule that animates
+      // margin-top never applies to it — the second card opens the fan
+      const order = Math.max(0, i - 1);
+      card.style.setProperty("--fan-delay", `${FAN_LEAD + order * FAN_STEP}s`);
     });
   }
 

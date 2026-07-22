@@ -46,12 +46,13 @@
   display: flex;
   align-items: flex-end;
   pointer-events: none;
-  /* `bottom` animates because the deck DRIFTS DOWN before it opens (see the
-     fan-out below) — the drop is the first beat of the gesture, not a layout
-     tweak. */
-  transition: right 0.28s ease, bottom 0.22s var(--ease-fly);
+  /* The lane's distance from the bottom edge is FIXED — it must not change on
+     hover. It used to drop to 10px as the opening beat, which ate 8px of the
+     margin the deck was placed with and made the whole block lurch downward
+     under the cursor. The downward move the gesture needs comes from #live-more
+     collapsing underneath the cards, not from moving the lane itself. */
+  transition: right 0.28s ease;
 }
-#live-lane:hover { bottom: 10px; }
 /* Docked sidebar — two states, and they need different offsets because the
    topbar only shrinks in ONE of them (sidebar.css: body.panel-pinned #topbar
    { right: 250px }).
@@ -153,14 +154,16 @@ body.panel-pinned #live-lane { right: 270px; }
   border: 1px solid var(--panel-border);
   backdrop-filter: var(--panel-blur);
   -webkit-backdrop-filter: var(--panel-blur);
-  /* same duration/easing as the cards' fan-out, so the deck settles down as
-     one movement rather than two */
+  /* BEAT ONE of the opening, and it runs alone: the bar collapses, and because
+     the lane is anchored to the bottom edge the still-stacked cards slide down
+     over the space it vacates. Slow enough to be read as a movement — the fan
+     below waits this out before a single card unfolds. */
   transition:
     opacity 0.18s ease,
-    height 0.26s var(--ease-fly),
-    margin-top 0.26s var(--ease-fly),
-    padding 0.26s var(--ease-fly),
-    border-width 0.26s var(--ease-fly);
+    height 0.34s var(--ease-fly),
+    margin-top 0.34s var(--ease-fly),
+    padding 0.34s var(--ease-fly),
+    border-width 0.34s var(--ease-fly);
 }
 .lm-total { color: var(--text); }
 /* the breakdown is pushed to the right edge, so the "+N" stays the anchor the
@@ -201,11 +204,17 @@ body.panel-pinned #live-lane { right: 270px; }
    readable strip. Cards past the third are not drawn at all — #live-more
    counts them instead. Everything appears on hover.
 
-   The opening is choreographed in two beats: the lane first drifts DOWN
-   (#live-lane:hover above), then the cards fan out from the BOTTOM card
-   upwards. The per-card --fan-delay is set in live-deck.js, counted from the
-   end of the list — the pile settles, then unfolds, rather than doing both at
-   once. Closing has no delay: a collapse that staggers feels sluggish. */
+   The opening is choreographed in two beats, and they must not overlap:
+
+     1. #live-more collapses and the pile — still stacked — slides down over
+        it. Nothing unfolds yet.
+     2. Only then the cards fan out, TOP first: the newest lifts away, the one
+        beneath follows, and the hidden ones come up behind them in order.
+
+   The per-card --fan-delay is set in live-deck.js and already carries the
+   wait for beat one, so a card cannot start unfolding while the bar is still
+   collapsing — which is what made the opening read as two fights rather than
+   one gesture. Closing has no delay: a collapse that staggers feels sluggish. */
 .live-card + .live-card { margin-top: -62px; }
 .live-card:nth-child(n + 4) { display: none; }
 #live-lane:hover .live-card + .live-card {
