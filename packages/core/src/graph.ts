@@ -46,6 +46,20 @@ export interface GraphNode {
   /** #217 Phase 3: Usage-Heat 0..1 (#154-Sidecar). Wird vom DAEMON beim
    *  Serve gestampt — buildGraph selbst bleibt reine Vault-Projektion. */
   heat?: number;
+  /** #227: die Zahlen HINTER der Heat, unnormalisiert. `heat` ist ein Rang
+   *  innerhalb dieses Vaults (Anteil am heißesten Knoten) — auf einem kalten
+   *  Vault trägt der eine berührte Knoten 1.0. Erst diese Werte erlauben die
+   *  Unterscheidung „oft erreicht" von „sonst wurde nichts erreicht", und
+   *  `last_at` macht die Frage nach einem Zeitterm beantwortbar. Ebenfalls
+   *  vom Daemon beim Serve gestampt. */
+  reach?: {
+    loaded: number;
+    acted_on: number;
+    /** loaded + 2 × acted_on — das Gewicht, aus dem heat berechnet wird */
+    weight: number;
+    /** jüngster Kontakt (ISO) oder null, wenn nie erreicht */
+    last_at: string | null;
+  };
 }
 
 /**

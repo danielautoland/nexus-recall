@@ -64,6 +64,49 @@ export function computeHeat(usage: UsageAggregate): Record<string, number> {
   return out;
 }
 
+/** What a memory's heat is actually made of, unnormalized (#227). */
+export interface UsageReach {
+  loaded: number;
+  acted_on: number;
+  /** The weight heat is computed from: loaded + 2 × acted_on. */
+  weight: number;
+  /** Newest of the three last_*_at stamps, ISO, or null if never reached. */
+  last_at: string | null;
+}
+
+/**
+ * The counts behind the heat, per memory (#227, zzallirog).
+ *
+ * `computeHeat` normalizes against the vault's own hottest node, which makes a
+ * fine within-snapshot rank and a poor absolute: on a vault nobody has recalled
+ * yet, the two memories that happened to be touched carry heat 1.0 — the map
+ * paints them as the hottest thing you own, and they are merely the only ones.
+ * Serving the raw weight next to it lets a viewer tell "reached often" from
+ * "nothing else was reached", which the normalized figure alone cannot express.
+ *
+ * `last_at` is carried too: the timestamps for a decay term already exist in
+ * the sidecar and were simply never read. Whether heat itself should decay is a
+ * separate call — this makes the question answerable from the served data.
+ */
+export function computeReach(usage: UsageAggregate): Record<string, UsageReach> {
+  const out: Record<string, UsageReach> = {};
+  for (const [id, e] of Object.entries(usage)) {
+    const loaded = e.loaded ?? 0;
+    const acted = e.acted_on ?? 0;
+    const stamps = [e.last_acted_on_at, e.last_loaded_at, e.last_surfaced_at].filter(
+      (s): s is string => typeof s === "string" && s.length > 0,
+    );
+    stamps.sort();
+    out[id] = {
+      loaded,
+      acted_on: acted,
+      weight: loaded + 2 * acted,
+      last_at: stamps.length > 0 ? stamps[stamps.length - 1] : null,
+    };
+  }
+  return out;
+}
+
 const USAGE_DIR = join(".bastra", "usage");
 const EVENTS_FILE = "events.jsonl";
 const COMPACTING_FILE = "events.compacting.jsonl";

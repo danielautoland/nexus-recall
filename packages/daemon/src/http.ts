@@ -66,7 +66,7 @@ import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { handleHookReflex } from "./reflex.js";
-import { computeHeat, readUsage } from "./usage-sidecar.js";
+import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import {
   recallHandler,
@@ -703,7 +703,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           (async () => {
             const skills = await listSkills();
             const graph = buildGraph(vault, skills);
-            const heat = computeHeat(await readUsage(toolDeps.vaultPath));
+            const usage = await readUsage(toolDeps.vaultPath);
+            const heat = computeHeat(usage);
+            // #227: die rohen Zähler neben die normalisierte Zahl. heat ist ein
+            // Rang INNERHALB dieses Vaults — auf einem kalten Vault trägt der
+            // eine berührte Knoten 1.0. Wer das unterscheiden will, braucht die
+            // Zahlen dahinter, nicht nur den Anteil.
+            const reach = computeReach(usage);
             // heat IMMER stampfen (0 statt Key-weglassen). zzallirog
             // (2026-07-18): `if (h) n.heat = h` machte kalten Node und Build-
             // ohne-Heat byte-identisch — ein frisch importierter Vault las sich
@@ -711,6 +717,10 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
             // Consumer den falschen Schluss. Jetzt trägt jeder Node `heat`.
             for (const n of graph.nodes) {
               n.heat = heat[n.id] ?? 0;
+              // Immer stampfen, auch bei Null — dieselbe Begründung wie oben
+              // bei heat: eine API, die bei Null verstummt, lehrt Consumer den
+              // falschen Schluss ("Feature fehlt" statt "noch nichts passiert").
+              n.reach = reach[n.id] ?? { loaded: 0, acted_on: 0, weight: 0, last_at: null };
             }
             sendJson(res, 200, graph);
           })().catch((err: Error) => sendJson(res, 500, { error: err.message }));
