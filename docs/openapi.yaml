@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Bastra.Recall REST API
-  version: 0.6.0-beta.1
+  version: 0.8.6
   description: |
     Loopback REST API exposed by the bastra-recall daemon. For hosted clients
     such as ChatGPT Actions, expose `127.0.0.1:6723` through a tunnel and set
@@ -11,6 +11,34 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /health:
+    get:
+      operationId: health
+      summary: Reachability and daemon state
+      description: |
+        Answers without touching the index, so a client can check that the
+        daemon is up and which embedding backend it resolved without spending a
+        recall. Unlike the unauthenticated `/health` outside `/api/v1`, this one
+        carries auth and CORS headers and is therefore usable from a browser.
+      responses:
+        "200":
+          description: Daemon is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  version: { type: string }
+                  vault_size:
+                    type: integer
+                    description: Memories currently indexed.
+                  semantic_recall:
+                    type: string
+                    description: '"on" when an embedding backend is active, else "off".'
+                  embedding_mode:
+                    type: string
+                    description: Resolved provider and model, or "disabled".
   /recall:
     post:
       operationId: recall
