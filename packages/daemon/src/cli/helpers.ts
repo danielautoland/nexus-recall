@@ -112,14 +112,53 @@ export function defaultVaultPath(home: string = homedir()): string {
   return resolve(home, DEFAULT_VAULT_DIRNAME);
 }
 
+// Deliberately one README rather than a set of example memory files: anything
+// carrying a `type:` field is a real memory to the loader, so shipped examples
+// would compete with the user's own memories in every recall. A fenced block
+// inside a file with no frontmatter shows the same shape and stays invisible
+// to the index (#16).
 const VAULT_README = `# Bastra Vault
 
-This folder is your bastra-recall memory vault. Every memory Claude saves —
+This folder is your bastra-recall memory vault. Every memory your AI saves —
 lessons, preferences, decisions, project facts — lives here as a plain
 markdown file you can read, edit, and back up like any other note.
 
+## What a memory looks like
+
+\`\`\`markdown
+---
+id: css-input-focus-ring-stacking
+title: "Don't stack focus styles on inputs"
+type: lesson          # lesson | preference | user-preference | decision |
+                      # project-fact | workflow | meta-working | reference
+summary: "Stacking ring + outline + custom :focus causes double focus rings."
+topic_path: [css, input, focus]
+tags: [css, focus-ring, ui-bug]
+scope: all-projects   # or a project name
+recall_when:          # the situations this should resurface in —
+  - creating new input component      # the highest-weighted field there is
+  - writing input or form css
+---
+
+The rule, then why it exists, then when it applies.
+\`\`\`
+
+\`recall_when\` is what makes a memory findable later: describe the *situation*
+("about to write a Tailwind grid"), not the topic ("CSS").
+
+## Working with it
+
+- You don't have to write these by hand — tell your AI, and it saves them.
+- Anything you edit here is picked up within seconds; no re-index step.
+- Subfolders are free-form. \`.bastra/\` holds derived state (search vectors,
+  audit log, trash) — leave it alone, it rebuilds itself.
+- Files without a \`type:\` field — like this README — are ignored by the index.
+
 Created by \`bastra install\`. To use a different folder, re-run:
 \`bastra install all --vault <path>\`
+
+New here? \`bastra onboard\` is a five-minute interview that seeds this vault
+with your actual preferences instead of leaving you a blank folder.
 `;
 
 /**
