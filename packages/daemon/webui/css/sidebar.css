@@ -186,9 +186,12 @@ body.panel-pinned #topbar { right: 250px; }
 /* Aktivitäts-Regler (#227-Folge): wie lange eine Entladung läuft. Sitzt unter
    dem Stil-Switcher, Wert rechts daneben — die Zahl gehört zum Regler, nicht
    in ein eigenes Label darüber. */
-#bolt-speed-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-#bolt-speed { flex: 1; min-width: 0; accent-color: var(--accent); }
-#bolt-speed-value {
+#bolt-speed-row,
+#bolt-spread-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#bolt-speed,
+#bolt-spread { flex: 1; min-width: 0; accent-color: var(--accent); }
+#bolt-speed-value,
+#bolt-spread-value {
   flex: 0 0 auto;
   min-width: 34px;
   text-align: right;

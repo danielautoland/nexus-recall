@@ -93,7 +93,7 @@
   display: grid;
   place-items: center;
   width: 34px; height: 34px;
-  border-radius: 4px;
+  /* kantig, keine gerundeten Ecken (Daniel 22.07.) */
   border: 1px solid var(--panel-border);
   background: var(--panel);
   backdrop-filter: var(--panel-blur);

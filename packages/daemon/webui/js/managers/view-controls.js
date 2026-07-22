@@ -112,6 +112,21 @@ export function createViewControls(deps) {
   });
   renderBoltSpeed();
 
+  // Ausschlag-Regler: wie weit der Zacken den Strang verlässt. 0 heißt, die
+  // Entladung läuft exakt auf der Verbindung — wer die weiten Zacken nicht
+  // mag, zieht sie damit auf die Linie. Wirkt nur auf "bolt"; pulse und trace
+  // laufen ohnehin auf dem Strang.
+  function renderBoltSpread() {
+    const v = renderer.getBoltSpread();
+    $("#bolt-spread").value = String(Math.round(v * 100));
+    $("#bolt-spread-value").textContent = `${Math.round(v * 100)}%`;
+  }
+  $("#bolt-spread").addEventListener("input", (ev) => {
+    renderer.setBoltSpread(Number(ev.target.value) / 100);
+    renderBoltSpread();
+  });
+  renderBoltSpread();
+
   // Dauerauslöser: keeps firing flares so the styles above can be compared
   // without querying the vault. Starts off on every load — see bolt-demo.js.
   function renderBoltDemoSwitch() {

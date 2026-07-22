@@ -16,6 +16,11 @@ export const BOLT_MS_KEY = "bastra-vault-map-bolt-ms";
 export const BOLT_MS_DEFAULT = 420;
 export const BOLT_MS_MIN = 300;
 export const BOLT_MS_MAX = 4000;
+export const BOLT_SPREAD_KEY = "bastra-vault-map-bolt-spread";
+/** Wie weit der Zacken vom Strang abweicht, 0 = exakt auf der Linie, 1 = wie
+ *  bisher. Manche wollen den Blitz sehen, manche nur die Verbindung leuchten
+ *  haben — das ist Geschmack, also ein Regler statt einer Konstante. */
+export const BOLT_SPREAD_DEFAULT = 1;
 export const BOLT_SEGMENTS = 7; // zigzag points per bolt
 
 /** Deterministic 0..1 value. */
@@ -75,10 +80,12 @@ export const BOLT_STYLES = {
   bolt: {
     label: "bolt",
     draw(s) {
-      const { ctx, e, cp, strength, seed, camScale } = s;
+      const { ctx, e, cp, strength, seed, camScale, spread } = s;
       drawRail(s, 0.32 * strength);
       const len = Math.hypot(e.t.x - e.s.x, e.t.y - e.s.y) || 1;
-      const amp = Math.min(len * 0.13, 26 / camScale);
+      // `spread` zieht den Zacken zum Strang hin: 1 = wie bisher, 0 = die
+      // Entladung läuft exakt auf der Verbindung.
+      const amp = Math.min(len * 0.13, 26 / camScale) * (spread ?? 1);
       ctx.globalAlpha = 0.34 * strength;
       ctx.lineWidth = 1.1 / camScale;
       ctx.lineJoin = "round";
@@ -149,6 +156,17 @@ export function storedBoltStyle() {
     return v && (BOLT_STYLES[v] || v === "off") ? v : "bolt";
   } catch {
     return "bolt"; // private mode / storage disabled — never break the map over a preference
+  }
+}
+
+/** Deflection strength from storage, clamped to 0..1. */
+export function storedBoltSpread() {
+  try {
+    const n = Number(localStorage.getItem(BOLT_SPREAD_KEY));
+    if (!Number.isFinite(n) || n < 0) return BOLT_SPREAD_DEFAULT;
+    return Math.min(1, n);
+  } catch {
+    return BOLT_SPREAD_DEFAULT;
   }
 }
 

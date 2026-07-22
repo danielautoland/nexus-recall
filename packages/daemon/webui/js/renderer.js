@@ -9,10 +9,12 @@ import {
   boltRnd,
   storedBoltStyle,
   storedBoltMs,
+  storedBoltSpread,
   BOLT_STYLE_KEY,
   BOLT_MS_KEY,
   BOLT_MS_MIN,
   BOLT_MS_MAX,
+  BOLT_SPREAD_KEY,
 } from "./bolt-styles.js";
 
 // Activity bolts (#217): a flaring node discharges along its connections.
@@ -70,6 +72,7 @@ export function createRenderer(canvas, sim, initialHues) {
   const flashes = new Map(); // live-notice flash (#216): id → {color, born, life, boltAt, links}
   let boltStyle = storedBoltStyle(); // how activity travels a strand — sidebar switch
   let boltMs = storedBoltMs(); // how long one discharge runs — sidebar slider
+  let boltSpread = storedBoltSpread(); // how far the zigzag leaves the strand
 
   /** The chain of edges an activity bolt travels: breadth-first from the
    *  flaring node, up to BOLT_HOPS levels deep, as [{ e, hop }].
@@ -491,6 +494,7 @@ export function createRenderer(canvas, sim, initialHues) {
             strength,
             seed: tick + i * 131,
             camScale: camera.scale,
+            spread: boltSpread,
             strokeEdge,
           });
         });
@@ -691,6 +695,17 @@ export function createRenderer(canvas, sim, initialHues) {
     /** Activity animation: "bolt" | "pulse" | "trace" (bolt-styles.js). The
      *  choice survives a reload — it is a taste, not a session state. */
     getBoltStyle: () => boltStyle,
+    getBoltSpread: () => boltSpread,
+    setBoltSpread: (v) => {
+      const n = Math.min(1, Math.max(0, Number(v)));
+      if (!Number.isFinite(n)) return;
+      boltSpread = n;
+      try {
+        localStorage.setItem(BOLT_SPREAD_KEY, String(n));
+      } catch {
+        /* storage disabled — the slider still works for this session */
+      }
+    },
     getBoltMs: () => boltMs,
     setBoltMs: (ms) => {
       const n = Math.min(BOLT_MS_MAX, Math.max(BOLT_MS_MIN, Number(ms)));
