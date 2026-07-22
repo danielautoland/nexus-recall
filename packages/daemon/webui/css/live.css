@@ -373,13 +373,15 @@ body.panel-pinned #live-history { right: 270px; }
   min-width: 0;
   overflow-y: auto;
   scrollbar-width: none; /* Firefox */
-  padding-left: 26px; /* Platz für die Leiste, damit keine Zeile darunter läuft */
 }
 #live-history-list::-webkit-scrollbar { display: none; }
 #live-history-ticks[hidden] { display: none; }
+/* AUSSERHALB des Panels, links daneben — wie die Leiste am Notice-Deck.
+   Containing Block ist #live-history (position: fixed), nicht der Body: der
+   clippt (overflow: hidden) und würde die Marken abschneiden. */
 #live-history-ticks {
   position: absolute;
-  left: 8px;
+  right: calc(100% + 12px);
   bottom: 0;
   max-height: 100%;
   display: flex;
@@ -387,18 +389,14 @@ body.panel-pinned #live-history { right: 270px; }
   align-items: flex-start;
   justify-content: flex-end;
   gap: 7px;
-  width: 14px;
+  width: 44px; /* wie am Deck: die aktive Marke reicht bis ans Panel heran */
   overflow: hidden;
   pointer-events: none; /* die Leiste zeigt an, sie fängt keine Klicks */
 }
-/* im Panel ist weniger Platz als neben dem Deck — die Marken bleiben schmaler
-   und wachsen nur beim Hover über der Historie */
-#live-history-ticks .lt-tick { width: 8px; }
-#live-history-ticks .lt-tick.near { width: 11px; }
-#live-history-ticks .lt-tick.active { width: 14px; }
-#live-history:hover .lt-tick { width: 10px; opacity: 0.6; }
-#live-history:hover .lt-tick.near { width: 13px; opacity: 0.75; }
-#live-history:hover .lt-tick.active { width: 14px; opacity: 1; }
+/* und dieselbe Reaktion beim Hover wie am Deck */
+#live-history:hover .lt-tick { width: 22px; opacity: 0.6; }
+#live-history:hover .lt-tick.near { width: 30px; opacity: 0.75; }
+#live-history:hover .lt-tick.active { width: 44px; opacity: 1; }
 .lh-row {
   display: grid;
   grid-template-columns: 16px 62px 1fr auto;
