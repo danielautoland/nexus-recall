@@ -20,21 +20,53 @@ const SEARCH_DEBOUNCE_MS = 300; // one request per pause in typing, not per key
 
 /** Condition → inline SVG path set. Kept here rather than in index.html: the
  *  icon IS the reading, so it has to change with the conditions. */
+/** Condition → inline SVG. The icon IS the reading, so it has to change with
+ *  the conditions — and it has to change ENOUGH: the hand-drawn set before this
+ *  shared one cloud shape across rain, snow and storm, so in everyday weather
+ *  the chip sat on the same picture for days.
+ *
+ *  Paths are Lucide (ISC, © Lucide Icons and Contributors), inlined rather than
+ *  loaded: the CSP allows no external hosts, and bastra.io already draws from
+ *  the same set. Stroke width dialled from 2 to 1.8 to sit with the topbar's
+ *  other icons.
+ *  @see https://lucide.dev */
 const ICONS = {
-  clear: '<circle cx="12" cy="12" r="4.6" fill="none" stroke="currentColor" stroke-width="2"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="2" x2="12" y2="4.4"/><line x1="12" y1="19.6" x2="12" y2="22"/><line x1="2" y1="12" x2="4.4" y2="12"/><line x1="19.6" y1="12" x2="22" y2="12"/><line x1="5" y1="5" x2="6.7" y2="6.7"/><line x1="17.3" y1="17.3" x2="19" y2="19"/><line x1="19" y1="5" x2="17.3" y2="6.7"/><line x1="6.7" y1="17.3" x2="5" y2="19"/></g>',
-  partial:
-    '<circle cx="9" cy="9" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 19.5a3.6 3.6 0 0 1 .5-7.16 5 5 0 0 1 9.6 1.36A3.1 3.1 0 0 1 17.6 19.5H8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
-  cloudy:
-    '<path d="M7 18.5a4 4 0 0 1 .55-7.96 5.5 5.5 0 0 1 10.55 1.5A3.48 3.48 0 0 1 17.5 18.5H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
-  rain: '<path d="M7 15.5a4 4 0 0 1 .55-7.96 5.5 5.5 0 0 1 10.55 1.5A3.48 3.48 0 0 1 17.5 15.5H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="18" x2="8" y2="21"/><line x1="13" y1="18" x2="12" y2="21"/><line x1="17" y1="18" x2="16" y2="21"/></g>',
-  storm:
-    '<path d="M7 14.5a4 4 0 0 1 .55-7.96 5.5 5.5 0 0 1 10.55 1.5A3.48 3.48 0 0 1 17.5 14.5H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M13 16l-3 4h3l-1 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>',
-  snow: '<path d="M7 15.5a4 4 0 0 1 .55-7.96 5.5 5.5 0 0 1 10.55 1.5A3.48 3.48 0 0 1 17.5 15.5H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="18.5" x2="9" y2="21"/><line x1="13" y1="18.5" x2="13" y2="21"/><line x1="17" y1="18.5" x2="17" y2="21"/></g>',
-  fog: '<g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="6" y1="13" x2="18" y2="13"/><line x1="4" y1="17" x2="16" y2="17"/></g>',
+  "sun":
+    '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  "cloud-sun":
+    '<path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/>',
+  "cloud":
+    '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+  "cloudy":
+    '<path d="M17.5 12a1 1 0 1 1 0 9H9.006a7 7 0 1 1 6.702-9z"/><path d="M21.832 9A3 3 0 0 0 19 7h-2.207a5.5 5.5 0 0 0-10.72.61"/>',
+  "cloud-drizzle":
+    '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 19v1"/><path d="M8 14v1"/><path d="M16 19v1"/><path d="M16 14v1"/><path d="M12 21v1"/><path d="M12 16v1"/>',
+  "cloud-rain":
+    '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M16 14v6"/><path d="M8 14v6"/><path d="M12 16v6"/>',
+  "cloud-rain-wind":
+    '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="m9.2 22 3-7"/><path d="m9 13-3 7"/><path d="m17 13-3 7"/>',
+  "cloud-lightning":
+    '<path d="M6 16.326A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 .5 8.973"/><path d="m13 12-3 5h4l-3 5"/>',
+  "cloud-snow":
+    '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01"/><path d="M8 19h.01"/><path d="M12 17h.01"/><path d="M12 21h.01"/><path d="M16 15h.01"/><path d="M16 19h.01"/>',
+  "cloud-fog":
+    '<path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M16 17H7"/><path d="M17 21H9"/>',
+  "wind":
+    '<path d="M12.8 19.6A2 2 0 1 0 14 16H2"/><path d="M17.5 8a2.5 2.5 0 1 1 2 4H2"/><path d="M9.8 4.4A2 2 0 1 1 11 8H2"/>',
 };
+
 const ICON_FOR = {
-  clear: "clear", partly: "partial", cloudy: "cloudy",
-  rain: "rain", storm: "storm", snow: "snow", fog: "fog",
+  clear: "sun",
+  partly: "cloud-sun",
+  cloudy: "cloud",
+  overcast: "cloudy",
+  drizzle: "cloud-drizzle",
+  rain: "cloud-rain",
+  "rain-wind": "cloud-rain-wind",
+  storm: "cloud-lightning",
+  snow: "cloud-snow",
+  fog: "cloud-fog",
+  wind: "wind",
 };
 
 export function createWeatherChip({ weather }) {
@@ -53,7 +85,7 @@ export function createWeatherChip({ weather }) {
   function render() {
     const r = weather.readout();
     chip.classList.toggle("on", weather.isOn());
-    icon.innerHTML = ICONS[ICON_FOR[r?.icon ?? "clear"]] ?? ICONS.cloudy;
+    icon.innerHTML = ICONS[ICON_FOR[r?.icon ?? "clear"]] ?? ICONS.cloud;
 
     if (!r) {
       readout.hidden = true;

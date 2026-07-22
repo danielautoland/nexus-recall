@@ -152,3 +152,20 @@
   line-height: 1.45;
   color: var(--text-dim);
 }
+
+/* Der Egress-Hinweis steht dauerhaft im Picker, nicht als Statuszeile: Wer
+   gerade dabei ist, das Wetter einzuschalten, soll VOR der Entscheidung wissen,
+   dass dabei Koordinaten das Gerät verlassen — danach ist es keine Information
+   mehr, sondern eine Entschuldigung. Abgesetzt durch eine Trennlinie, damit er
+   nicht als weiteres Bedienelement gelesen wird. */
+#wp-privacy {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--panel-border);
+  font: 10px/1.5 var(--font-mono);
+  color: var(--text-dim);
+}
+#wp-privacy b {
+  font-weight: 400;
+  color: var(--text);
+}

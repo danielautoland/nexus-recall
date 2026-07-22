@@ -51,7 +51,12 @@
       <div id="weather-slot">
       <button id="weather-chip" aria-label="Local weather" aria-expanded="false">
         <span id="weather-readout" hidden></span>
-        <svg id="weather-icon" viewBox="0 0 24 24" aria-hidden="true"></svg>
+        <!-- Strich statt Fläche: die Lucide-Pfade tragen selbst keine Mal-
+             attribute, die stehen bei Lucide am svg-Element. Ohne sie füllt der
+             Browser schwarz und das Icon verschwindet auf dunklem Grund. -->
+        <svg id="weather-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true"></svg>
       </button>
       <div id="weather-picker" hidden>
         <div class="wp-head">local weather</div>
@@ -75,6 +80,13 @@
                placeholder="city or region…" aria-label="Search for a place" />
         <ul id="wp-results"></ul>
         <div id="wp-note"></div>
+        <div id="wp-privacy">
+          This is the one thing here that talks to the internet. Your coordinates —
+          rounded to about 11 km first — go to <b>open-meteo.com</b> for the forecast;
+          searching by name uses their geocoder, and <b>GPS</b> additionally asks
+          <b>bigdatacloud.net</b> what the place is called. Turned off, nothing leaves
+          this machine.
+        </div>
       </div>
       </div>
       <button id="import-open" aria-label="Import memories from other AI tools" title="Import memories — seed the vault from ChatGPT, Claude, Gemini…">

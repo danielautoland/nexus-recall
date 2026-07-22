@@ -59,7 +59,13 @@ const CALM = { rain: 0, thunder: 0, clouds: 0, fog: 0, temp: null, label: "", ic
  *  Deliberately coarse: the backdrop has four expressions, so resolving 28
  *  codes into anything finer would be precision the renderer throws away.
  *  @see https://open-meteo.com/en/docs — WMO 4677 code table */
-function conditionsFrom(code, cloudPct, humidityPct, tempC) {
+/** Above this the wind is the thing you'd mention first (km/h). Beaufort 5,
+ *  "fresh breeze" — branches sway, an umbrella becomes a problem. Gusts count
+ *  from 40, because a calm average with 45 km/h gusts is still a windy day. */
+const WINDY_KMH = 20;
+const GUSTY_KMH = 40;
+
+function conditionsFrom(code, cloudPct, humidityPct, tempC, windKmh, gustKmh) {
   const c = {
     rain: 0,
     thunder: 0,
@@ -68,7 +74,10 @@ function conditionsFrom(code, cloudPct, humidityPct, tempC) {
     temp: typeof tempC === "number" ? Math.round(tempC) : null,
     label: "clear",
     icon: "clear",
+    wind: Math.round(windKmh ?? 0),
+    gust: Math.round(gustKmh ?? 0),
   };
+  const windy = (windKmh ?? 0) >= WINDY_KMH || (gustKmh ?? 0) >= GUSTY_KMH;
   // Humidity carries the fog undertone even without a fog code — otherwise a
   // muggy, overcast day looks exactly as dry as a clear one.
   if ((humidityPct ?? 0) > 80) c.fog = Math.min((humidityPct - 80) / 20, 1) * 0.5;
@@ -80,23 +89,46 @@ function conditionsFrom(code, cloudPct, humidityPct, tempC) {
     c.icon = "storm";
   } else if (code >= 80) {
     c.rain = 0.9;
-    c.label = "showers";
-    c.icon = "rain";
+    c.label = windy ? "showers, windy" : "showers";
+    c.icon = windy ? "rain-wind" : "rain";
   } else if (code >= 71 && code <= 77) {
     c.rain = 0.5; // snow falls slower — carried as a thinner streak stream
     c.label = "snow";
     c.icon = "snow";
   } else if (code >= 51) {
-    c.rain = code >= 61 ? 0.7 : 0.35; // rain vs. drizzle
-    c.label = code >= 61 ? "rain" : "drizzle";
-    c.icon = "rain";
+    const heavy = code >= 61;
+    c.rain = heavy ? 0.7 : 0.35; // rain vs. drizzle
+    c.label = (heavy ? "rain" : "drizzle") + (windy ? ", windy" : "");
+    // Nieselregen bekommt sein eigenes Bild — vorher trug er dasselbe wie ein
+    // Landregen, und genau diese Gleichmacherei ließ den Chip stillstehen.
+    c.icon = windy ? "rain-wind" : heavy ? "rain" : "drizzle";
   } else if (code === 45 || code === 48) {
     c.fog = 1;
     c.label = "fog";
     c.icon = "fog";
-  } else if (code >= 1) {
-    c.label = c.clouds > 0.6 ? "overcast" : "partly cloudy";
-    c.icon = c.clouds > 0.6 ? "cloudy" : "partly";
+  } else if (windy) {
+    // Kein Niederschlag, aber es weht: dann ist der Wind die Nachricht. Auch
+    // unter geschlossener Decke — eine Wolke sieht man aus dem Fenster, den
+    // Wind merkt man erst draußen, und genau das soll der Chip vorher sagen.
+    // Die Bewölkung bleibt im Label, damit sie nicht verschwiegen wird.
+    const gustier = (gustKmh ?? 0) >= GUSTY_KMH;
+    const sky = c.clouds > 0.85 ? "overcast, " : c.clouds > 0.55 ? "cloudy, " : "";
+    c.label = sky + (gustier ? "gusty" : "windy");
+    c.icon = "wind";
+  } else if (code >= 1 || c.clouds > 0.25) {
+    // Dreistufig statt zweistufig: zwischen 70% und 100% Bedeckung sah der
+    // Chip vorher identisch aus, und das ist der Bereich, in dem mitteleuro-
+    // päisches Wetter die meiste Zeit steht.
+    if (c.clouds > 0.85) {
+      c.label = windy ? "overcast, windy" : "overcast";
+      c.icon = "overcast";
+    } else if (c.clouds > 0.55) {
+      c.label = windy ? "cloudy, windy" : "cloudy";
+      c.icon = "cloudy";
+    } else {
+      c.label = windy ? "partly cloudy, windy" : "partly cloudy";
+      c.icon = "partly";
+    }
   }
   return c;
 }
@@ -190,7 +222,7 @@ export function createWeather(onChange) {
     try {
       const url =
         `${FORECAST_URL}?latitude=${place.lat}&longitude=${place.lon}` +
-        `&current=temperature_2m,weather_code,cloud_cover,relative_humidity_2m`;
+        `&current=temperature_2m,weather_code,cloud_cover,relative_humidity_2m,wind_speed_10m,wind_gusts_10m`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`weather service answered ${res.status}`);
       const cur = (await res.json()).current ?? {};
@@ -199,6 +231,8 @@ export function createWeather(onChange) {
         cur.cloud_cover,
         cur.relative_humidity_2m,
         cur.temperature_2m,
+        cur.wind_speed_10m,
+        cur.wind_gusts_10m,
       );
       lastError = "";
     } catch (err) {
