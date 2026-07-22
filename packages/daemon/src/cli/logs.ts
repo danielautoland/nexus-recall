@@ -16,6 +16,7 @@
 
 import {
   closeSync,
+  constants,
   createReadStream,
   existsSync,
   fstatSync,
@@ -179,12 +180,21 @@ function readDaemonLines(cutoff: number): Line[] {
     // path twice would leave a window in which the file is rotated or removed
     // — by log retention, a restart, or /tmp cleanup — and the two halves
     // would then describe different files.
+    //
+    // These two paths are fixed names in a world-writable directory, so the
+    // file we open is not necessarily ours: on a shared machine anyone can
+    // create /tmp/bastra-daemon.err first, or point a symlink at something
+    // else, and we would print whatever they wrote as if the daemon had said
+    // it. O_NOFOLLOW refuses the symlink; the uid check refuses the plant.
+    // Both are cheap next to showing a user forged log lines.
     let mtime: number;
     let raw: string;
     let fd: number | null = null;
     try {
-      fd = openSync(path, "r");
-      mtime = fstatSync(fd).mtimeMs;
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const st = fstatSync(fd);
+      if (typeof process.getuid === "function" && st.uid !== process.getuid()) continue;
+      mtime = st.mtimeMs;
       if (mtime < cutoff) continue;
       raw = readFileSync(fd, "utf8");
     } catch {
