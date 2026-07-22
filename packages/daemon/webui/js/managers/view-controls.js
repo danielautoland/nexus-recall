@@ -8,6 +8,8 @@ const $ = (sel) => document.querySelector(sel);
 export function createViewControls(deps) {
   const {
     sim,
+    renderer,
+    boltDemo,
     semanticView,
     orbitView,
     getInteractions,
@@ -79,5 +81,36 @@ export function createViewControls(deps) {
 
 
 
-  return { renderSemanticModeSwitch, renderMindspaceControls };
+  // ── Activity: how a live flare travels its connections (bolt-styles.js).
+  // Unlike the switches above this one is view-independent — flares happen in
+  // every view — so it stays visible and is rendered once at startup.
+  function renderBoltStyleSwitch() {
+    $("#bolt-style-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.bolt === renderer.getBoltStyle()));
+  }
+  $("#bolt-style-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-bolt]");
+    if (!b || b.dataset.bolt === renderer.getBoltStyle()) return;
+    renderer.setBoltStyle(b.dataset.bolt);
+    renderBoltStyleSwitch();
+  });
+  renderBoltStyleSwitch();
+
+  // Dauerauslöser: keeps firing flares so the styles above can be compared
+  // without querying the vault. Starts off on every load — see bolt-demo.js.
+  function renderBoltDemoSwitch() {
+    $("#bolt-demo-switch")
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.toggle("active", b.dataset.bdemo === (boltDemo.isRunning() ? "on" : "off")));
+  }
+  $("#bolt-demo-switch").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-bdemo]");
+    if (!b) return;
+    if (b.dataset.bdemo === "on") boltDemo.start();
+    else boltDemo.stop();
+    renderBoltDemoSwitch();
+  });
+
+  return { renderSemanticModeSwitch, renderMindspaceControls, renderBoltStyleSwitch, renderBoltDemoSwitch };
 }

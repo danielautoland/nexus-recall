@@ -19,6 +19,7 @@ import { createOnboardingDialog } from "./managers/onboarding-dialog.js";
 import { createAreasManager } from "./managers/areas-manager.js";
 import { createLiveUpdates } from "./managers/live-updates.js";
 import { createSidebarPanels } from "./managers/sidebar-panels.js";
+import { createBoltDemo } from "./managers/bolt-demo.js";
 import { createViewControls } from "./managers/view-controls.js";
 import { createWeather } from "./managers/weather.js";
 import { createWeatherChip } from "./managers/weather-chip.js";
@@ -627,8 +628,11 @@ async function main() {
     }
   }
   // ── view controls: semantic + mindspace mode switches (own manager) ──
+  const boltDemo = createBoltDemo({ renderer, sim });
   const viewControls = createViewControls({
     sim,
+    renderer,
+    boltDemo,
     semanticView,
     orbitView,
     weather,

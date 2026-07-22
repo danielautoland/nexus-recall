@@ -4,44 +4,40 @@
  *  focused, then its neighborhood lights up and the rest dims. */
 
 import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE } from "./graph-data.js";
+import { BOLT_STYLES, boltRnd, storedBoltStyle, BOLT_STYLE_KEY } from "./bolt-styles.js";
 
-// Activity bolts (#217): a flaring node briefly arcs to its direct neighbours.
-// Deliberately kept narrow — ONE hop level, few neighbours, a short twitch. The
-// whole appeal is that it catches the eye without demanding it; a web of bolts
-// would be exactly the opposite.
-const BOLT_HOPS = 1; // documents the intent: NEVER beyond the first level
-const BOLT_NEIGHBORS = 5; // a hub with degree 40 would otherwise draw a web
+// Activity bolts (#217): a flaring node discharges along its connections.
+//
+// The bolt travels the STRAND, not the straight line between two nodes: edges
+// are drawn as quadratic curves (edgeBend), so a chord-based zigzag ran beside
+// the very connection it was meant to trace — on cross-cluster edges by up to
+// the full 90px bulge. Same look, right path.
+//
+// And it does not stop at the first neighbour: the discharge carries on, memory
+// to memory to memory. What keeps that from turning into a web is not the hop
+// limit alone but the falloff — the first leg is the event, every further leg
+// is only the echo of it (0.22 per level: 1 · 0.22 · 0.05).
+const BOLT_HOPS = 3; // how far the discharge carries
+// Level 1 takes EVERY connection the flaring memory has — that is the event
+// itself, and hovering the node shows exactly the same set of strands. Beyond
+// it the chain thins out instead of branching: only some neighbours carry on
+// (BOLT_SPREAD_CHANCE), and those take a single strand each. Thinning, not
+// dimming alone, is what keeps a chain from becoming a web.
+const BOLT_FANOUT = [Infinity, 1, 1];
+const BOLT_SPREAD_CHANCE = [1, 0.35, 0.2]; // odds a neighbour passes the discharge on
+const BOLT_MAX_LEGS = 96; // emergency ceiling — a hub with degree 300 must not eat the frame
+const BOLT_HOP_FALLOFF = 0.22; // visibility per level beyond the first
+const BOLT_HOP_DELAY_MS = 110; // stagger per level; < BOLT_MS, so the chain never breaks
 const BOLT_MS = 420; // arc duration — a fraction of the node's flare lifetime
-const BOLT_SEGMENTS = 7; // zigzag points per bolt
 const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
 const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
 
-/** Deterministic 0..1 value. Local rather than imported from orbit-galaxy.js:
- *  the renderer is the lower layer, the managers hang off IT. */
-function boltRnd(seed) {
-  const x = Math.sin(seed * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-/** Zigzag polyline from (x0,y0) to (x1,y1). The deflection dies out at both
- *  ends (sin taper) so the bolt sticks to both nodes instead of ending beside
- *  them. `seed` advances on a time tick — that is what produces the flicker. */
-function drawBolt(ctx, x0, y0, x1, y1, seed, camScale) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const len = Math.hypot(dx, dy) || 1;
-  const nx = -dy / len;
-  const ny = dx / len;
-  const amp = Math.min(len * 0.13, 26 / camScale);
-  ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  for (let i = 1; i < BOLT_SEGMENTS; i++) {
-    const p = i / BOLT_SEGMENTS;
-    const j = (boltRnd(seed + i * 7.31) - 0.5) * 2 * amp * Math.sin(p * Math.PI);
-    ctx.lineTo(x0 + dx * p + nx * j, y0 + dy * p + ny * j);
-  }
-  ctx.lineTo(x1, y1);
-  ctx.stroke();
+/** Stable number for a memory id — the seed for everything about a bolt that
+ *  must not change between two flares of the same memory. */
+function idSeed(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 100000;
+  return h;
 }
 
 export function createRenderer(canvas, sim, initialHues) {
@@ -56,20 +52,47 @@ export function createRenderer(canvas, sim, initialHues) {
   let focusSince = 0; // focus beacon: birth burst + sonar timing
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
   const flashes = new Map(); // live-notice flash (#216): id → {color, born, life, boltAt, links}
+  let boltStyle = storedBoltStyle(); // how activity travels a strand — sidebar switch
 
-  /** Direct neighbours (BOLT_HOPS = 1) for the activity bolts. Resolved once
-   *  when the flare is lit and kept on the flash — the POSITIONS are re-read
-   *  from n.x/n.y every frame by the draw loop, only the selection is fixed.
-   *  The first BOLT_NEIGHBORS win: on a hub any selection is arbitrary, and
-   *  "the first ones" is the cheapest honest answer. */
-  function neighborsOf(id) {
-    const out = [];
-    for (const e of sim.edges) {
-      const other = e.s?.id === id ? e.t : e.t?.id === id ? e.s : null;
-      if (other && !other.ringHidden) out.push(other);
-      if (out.length >= BOLT_NEIGHBORS) break;
+  /** The chain of edges an activity bolt travels: breadth-first from the
+   *  flaring node, up to BOLT_HOPS levels deep, as [{ e, hop }].
+   *
+   *  Resolved once when the flare is lit and kept on the flash — the EDGES are
+   *  held, so the draw loop re-reads n.x/n.y every frame and the chain follows
+   *  moving nodes; only the selection is fixed. A node is entered once
+   *  (`seen`), so the discharge spreads outward instead of bouncing back and
+   *  forth between two hubs. Per level only BOLT_FANOUT branches per node: on a
+   *  hub any selection is arbitrary, and "the first ones" is the cheapest
+   *  honest answer. */
+  function boltChainOf(id) {
+    const legs = [];
+    const seen = new Set([id]);
+    let frontier = [id];
+    for (let hop = 1; hop <= BOLT_HOPS && frontier.length; hop++) {
+      const next = [];
+      const cap = BOLT_FANOUT[hop - 1] ?? 1;
+      const chance = BOLT_SPREAD_CHANCE[hop - 1] ?? 0;
+      for (const from of frontier) {
+        // Beyond the first level only some neighbours carry on. WHICH ones is
+        // derived from the memory's identity, not from the clock: a lit strand
+        // claims "these two belong together", and that claim has to hold still.
+        // The same memory therefore always draws the same chain — recognisable
+        // across flares and across sessions.
+        if (chance < 1 && boltRnd(idSeed(from) + hop * 977.3) > chance) continue;
+        let taken = 0;
+        for (const e of sim.edges) {
+          if (taken >= cap || legs.length >= BOLT_MAX_LEGS) break;
+          const other = e.s?.id === from ? e.t : e.t?.id === from ? e.s : null;
+          if (!other || other.ringHidden || seen.has(other.id)) continue;
+          seen.add(other.id);
+          legs.push({ e, hop });
+          next.push(other.id);
+          taken++;
+        }
+      }
+      frontier = next;
     }
-    return out;
+    return legs;
   }
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
@@ -420,17 +443,35 @@ export function createRenderer(canvas, sim, initialHues) {
       // Activity bolts FIRST: they run underneath the ring and the halo, so the
       // flaring node stays the hero and the edges merely hint at where the
       // activity radiates.
-      const boltT = (now - f.boltAt) / BOLT_MS;
-      if (boltT < 1 && f.links.length) {
+      const chainAge = now - f.boltAt;
+      if (chainAge < BOLT_MS + BOLT_HOPS * BOLT_HOP_DELAY_MS && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
-        // fast in, slow out — a bolt strikes and then burns down
-        ctx.globalAlpha = 0.34 * Math.min(boltT * 6, 1) * (1 - boltT);
+        const style = BOLT_STYLES[boltStyle] ?? BOLT_STYLES.bolt;
         ctx.strokeStyle = f.color;
-        ctx.lineWidth = 1.1 / camera.scale;
         ctx.lineJoin = "round";
-        f.links.forEach((m, i) => {
-          if (m.ringHidden) return;
-          drawBolt(ctx, n.x, n.y, m.x, m.y, tick + i * 131, camera.scale);
+        f.links.forEach((leg, i) => {
+          const e = leg.e;
+          if (e.s.ringHidden || e.t.ringHidden) return;
+          // each level starts a little later, so the discharge visibly runs on
+          // instead of every leg lighting up at once
+          const t = (chainAge - (leg.hop - 1) * BOLT_HOP_DELAY_MS) / BOLT_MS;
+          if (t <= 0 || t >= 1) return;
+          // fast in, slow out — activity strikes and then burns down
+          const strength = Math.min(t * 6, 1) * (1 - t) * BOLT_HOP_FALLOFF ** (leg.hop - 1);
+          // WHICH strands and HOW STRONG is settled here; WHAT is painted on
+          // them belongs to the chosen style (bolt-styles.js). Every style
+          // draws on the strand's own curve — strokeEdge is handed over so the
+          // lit connection is literally the same line the map draws.
+          style.draw({
+            ctx,
+            e,
+            cp: edgeBend(e),
+            t,
+            strength,
+            seed: tick + i * 131,
+            camScale: camera.scale,
+            strokeEdge,
+          });
         });
       }
       const ringT = Math.min((now - f.born) / 900, 1);
@@ -590,7 +631,7 @@ export function createRenderer(canvas, sim, initialHues) {
     toWorld,
     refreshTheme,
     /** Live notice (#216): the node flares briefly in the kind's colour, and a
-     *  bolt arcs to its direct neighbours (#217).
+     *  bolt discharges along its connections, memory to memory to memory (#217).
      *
      *  Calling this again for the same id EXTENDS the flare rather than
      *  restarting it: repeated hits on the same memory should feel like
@@ -610,7 +651,7 @@ export function createRenderer(canvas, sim, initialHues) {
         prev.boltAt = now;
         return;
       }
-      flashes.set(id, { color, born: now, life: lifeMs, boltAt: now, links: neighborsOf(id) });
+      flashes.set(id, { color, born: now, life: lifeMs, boltAt: now, links: boltChainOf(id) });
     },
     setHover: (n) => (hover = n),
     setFocus: (n) => {
@@ -626,6 +667,18 @@ export function createRenderer(canvas, sim, initialHues) {
     setDecor: (fn) => (decorFn = fn),
     setDrawOrder: (fn) => (drawOrder = fn),
     setOverlay: (fn) => (overlayFn = fn),
+    /** Activity animation: "bolt" | "pulse" | "trace" (bolt-styles.js). The
+     *  choice survives a reload — it is a taste, not a session state. */
+    getBoltStyle: () => boltStyle,
+    setBoltStyle: (id) => {
+      if (!BOLT_STYLES[id]) return;
+      boltStyle = id;
+      try {
+        localStorage.setItem(BOLT_STYLE_KEY, id);
+      } catch {
+        /* storage disabled — the switch still works for this session */
+      }
+    },
     setQuietEdges: (on) => (quietEdges = on),
     setBendCenter: (pt) => (bendCenter = pt),
     setSemanticEdges: (list) => (semEdges = list),
