@@ -138,6 +138,8 @@ Three paths, in order of friction. bastra-recall is self-contained: the daemon, 
 
 The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and hands over to the guided setup (`bastra install`): selection lists for the memory vault, your AI clients, and semantic recall — no terminal knowledge required.
 
+Leaving is one double-click too: **Uninstall Bastra.command** (same release) unregisters every client and stops the daemon. It never deletes a memory — your vault and logs stay untouched, and it prints everything it removes.
+
 #### B) One command — for developers
 
 Pre-requisites: Node 22+, Git.
@@ -486,6 +488,8 @@ Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-S
 3. Fertig. Claude Code / Claude Desktop / Cursor neu starten.
 
 Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und startet das geführte Setup (`bastra install`): Auswahllisten für Memory-Vault, AI-Clients und Semantic Recall — kein Terminal-Wissen nötig.
+
+Der Weg hinaus ist genauso kurz: **Uninstall Bastra.command** (gleiches Release) meldet Bastra bei allen Clients ab und stoppt den Daemon. Es löscht keine einzige Memory — Vault und Logs bleiben unangetastet, und jede entfernte Datei wird ausgegeben.
 
 > **Status:** Tap `n0mad-ai/tap` ist live; das `.command`-Asset hängt an jedem GitHub-Release.
 
