@@ -252,7 +252,13 @@ async function rewriteFile(
   // leer (live beobachtet) — Datenverlust-Fenster für Watcher, Cloud-Sync und
   // parallele Reader. Temp liegt im selben Verzeichnis (gleiches Volume,
   // rename bleibt atomar) und endet nicht auf .md (Vault-Walker ignoriert es).
-  const tmp = `${filePath}.${process.pid}.tmp`;
+  // #240/B3, third site: unique per WRITE, not per process. A fixed
+  // `.<pid>.tmp` lets two overlapping enrichments of the same memory — a
+  // backfill and a save arriving together — write into one temp file and race
+  // for the rename; the loser then fails with ENOENT on a file it created
+  // milliseconds earlier. That crash took the daemon down until the detached
+  // call site learned to catch. Same fix as embed-cache.ts and embeddings.ts.
+  const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
   await writeFile(tmp, next, "utf8");
   try {
     await rename(tmp, filePath);

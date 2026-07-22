@@ -202,3 +202,37 @@ test("a failing enrichment cannot take the process down", async () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+test("two enrichments of the same memory do not race for one temp file", async () => {
+  // #240/B3 at its third site: a temp name fixed per process means overlapping
+  // writes to the SAME memory share one file — the loser of the rename gets
+  // ENOENT on a file it wrote milliseconds earlier. Overlap is normal here: a
+  // backfill and a save can both embed the same id.
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-enrich-race-"));
+  try {
+    await writeFile(path.join(dir, "a.md"), memoryMd("a"), "utf8");
+    await writeFile(path.join(dir, "b.md"), memoryMd("b"), "utf8");
+    const vault = new Vault(dir);
+    await vault.init();
+    const { index } = stubEmbeddings([{ id: "b", score: 0.9 }]);
+    const enricher = new RelatedEnricher(vault, index);
+
+    for (let round = 0; round < 20; round++) {
+      const results = await Promise.allSettled([enricher.enrich("a"), enricher.enrich("a")]);
+      const failed = results.filter((r) => r.status === "rejected");
+      assert.deepEqual(
+        failed.map((r) => (r as PromiseRejectedResult).reason?.code ?? String(r)),
+        [],
+        `round ${round}: concurrent enrichment of the same memory must not fail`,
+      );
+      // and the file is intact, not a half-written mixture
+      assert.match(await readFile(path.join(dir, "a.md"), "utf8"), /^---\n/);
+    }
+
+    // no temp files left behind
+    const leftovers = (await readdir(dir)).filter((f) => f.endsWith(".tmp"));
+    assert.deepEqual(leftovers, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
