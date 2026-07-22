@@ -30,6 +30,7 @@ import { cmdImport } from "./cli/import-cmd.js";
 import { cmdOnboard } from "./cli/onboard-cmd.js";
 import { cmdSkills } from "./cli/skills-cmd.js";
 import { cmdFeedback } from "./cli/feedback-cmd.js";
+import { cmdLogs, parseSince } from "./cli/logs.js";
 import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
@@ -63,6 +64,24 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "onboard": return cmdOnboard(args);
     case "skills": return cmdSkills(args);
     case "feedback": return cmdFeedback(args);
+    case "logs": {
+      const sinceMs = args.since === null ? 5 * 60_000 : parseSince(args.since);
+      if (sinceMs === null) {
+        process.stderr.write(`error: cannot read --since '${args.since}' — try 30s, 10min, 2h, 1d\n`);
+        return 2;
+      }
+      const source = args.source ?? "all";
+      if (source !== "daemon" && source !== "hook" && source !== "all") {
+        process.stderr.write(`error: --source must be daemon, hook or all (got '${source}')\n`);
+        return 2;
+      }
+      const lines = args.lines === null ? 200 : Number(args.lines);
+      if (!Number.isFinite(lines) || lines <= 0) {
+        process.stderr.write(`error: --lines must be a positive number (got '${args.lines}')\n`);
+        return 2;
+      }
+      return cmdLogs({ follow: args.follow, sinceMs, source, lines: Math.floor(lines) });
+    }
     default:
       process.stderr.write(`error: unknown command '${args.command}' — run 'bastra help'\n`);
       return 2;
