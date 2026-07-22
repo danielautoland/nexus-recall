@@ -534,8 +534,13 @@ export const GENERIC_TRIGGER_WORDS = new Set([
   "ux",
 ]);
 
+// Unicode-aware: `[a-z0-9]` only matched ASCII, so a non-Latin trigger
+// ("тон письма outward") tokenised to just its one Latin word and tripped the
+// `tokens.length <= 1` "too short/generic" penalty — every Cyrillic/CJK author
+// was structurally penalised on save_quality. `\p{L}\p{N}` + the `u` flag count
+// letters in any script; toLowerCase already folds Unicode case.
 function words(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) ?? [];
+  return text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
 }
 
 const ACTED_ON_STOPWORDS = new Set([
