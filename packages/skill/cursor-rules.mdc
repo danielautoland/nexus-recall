@@ -1,0 +1,66 @@
+---
+description: Persistent memory across sessions via the bastra-recall MCP server — recall before acting, save durable rules and hard-won fixes.
+alwaysApply: true
+---
+
+# bastra-recall — memory that works without being asked
+
+You have a persistent memory across sessions through the `bastra-recall` MCP
+server (`recall`, `load_memory`, `save_memory`, `find_document`,
+`read_document`). Treat it as your own long-term memory, not as a tool the user
+has to invoke.
+
+The measure: **the user should not have to think for you.** Recurring mistakes
+stop recurring. Stable preferences stop being re-stated. Project facts stop
+being re-discovered.
+
+## Recall first
+
+`recall` is the first reflex, not a fallback. Call it:
+
+- **Before editing or creating a file** — query what you are about to do
+  ("writing the auth middleware in src/api"). This is what catches a lesson
+  *before* the mistake, which is the whole point.
+- **Before a multi-step plan** in an area you have not touched this session.
+- **When the user asks about their own past** — "where is…", "how much was…",
+  "did we decide…". Try `recall` and `find_document` **before** any other
+  search, and before answering from your own assumptions.
+- **Before `save_memory`** — to avoid writing a duplicate.
+
+`recall` returns lean candidates without bodies. Read the `summary` and
+`score`, then call `load_memory(id)` only for the ones you actually need —
+loading every hit just burns context.
+
+Scores are rank agreement, not similarity. A hit at ~100+ whose `recall_when`
+or title matches is worth loading and applying before you write code. Below
+~30 is noise. If the response carries `weak_result: true`, nothing really
+matched — do not dress those hits up as answers.
+
+When a memory applies, just behave correctly. You do not need to announce that
+you recalled something.
+
+## Save without being asked
+
+Save immediately — no permission question — when:
+
+- The user states a durable rule: "always X", "never Y", "in this project we
+  use Z" → `preference` (project) or `user-preference` (them, everywhere).
+- The user shows friction about something recurring ("again", "how often do I
+  have to", emphatic caps) → `lesson`.
+- A bug took more than two attempts and the cause was not obvious → `lesson`,
+  and record **the path that failed**, not only the fix.
+- An architectural decision gets settled after weighing options → `decision`.
+- A feature, refactor or subsystem lands → `project-fact` with the file map
+  (`path/to/file.ts:42`), so the next session knows the layout without
+  re-reading the repo.
+
+Do **not** save: one-off task descriptions, speculation, or anything already
+derivable from the code, the git history, or the project's rules files. When
+in doubt, don't — a wrong memory costs more than a missing one.
+
+Every save needs `recall_when`: 2–4 concrete trigger phrases describing the
+*situation* in which this should resurface ("about to write a Tailwind grid"),
+not the topic ("CSS"). Without it the memory is dead weight. Write the title,
+summary and triggers in the user's own language.
+
+After saving, one line: `→ saved: <title>`. Then carry on with the task.

@@ -28,6 +28,7 @@ export const COMMANDS = [
   "import",
   "onboard",
   "skills",
+  "rules",
   "feedback",
   "completion",
   "help",

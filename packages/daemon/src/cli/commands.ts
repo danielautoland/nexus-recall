@@ -99,6 +99,11 @@ Commands:
   logs                       Readable view of what the hooks and the daemon
                              recorded — one line per event, newest last
                              (-f to follow, --since 1h, --source hook|daemon)
+  rules cursor [path]        Write Cursor's memory rules into a project
+                             (.cursor/rules/bastra-recall.mdc). Cursor keeps
+                             rules per repo — there is no global equivalent,
+                             so run this once per project. 'rules remove
+                             cursor [path]' takes it back out
   completion <shell>         Print a Tab-completion script (bash, zsh, fish)
   help                       Show this help
   version                    Show version

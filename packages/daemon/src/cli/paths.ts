@@ -39,6 +39,15 @@ export const SKILL_SOURCE_PATH = firstExisting([
 export const SKILL_TARGET_DIR = resolve(homedir(), ".claude/skills/bastra-recall");
 export const SKILL_TARGET_FILE = resolve(SKILL_TARGET_DIR, "SKILL.md");
 
+/** Cursor's convention layer. Unlike the Claude skill this has no global home:
+ *  Cursor's User Rules live in its settings UI, not on disk, so project rules
+ *  (`<project>/.cursor/rules/*.mdc`) are the only file-based option. */
+export const CURSOR_RULES_SOURCE_PATH = firstExisting([
+  resolve(PACKAGE_ROOT, "skill", "cursor-rules.mdc"),
+  resolve(PACKAGE_ROOT, "..", "skill", "cursor-rules.mdc"),
+]);
+export const CURSOR_RULES_RELATIVE = ".cursor/rules/bastra-recall.mdc";
+
 export const CLAUDE_DESKTOP_CONFIG = resolve(
   homedir(),
   "Library/Application Support/Claude/claude_desktop_config.json",

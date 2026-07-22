@@ -33,6 +33,7 @@
     "dist",
     "webui",
     "skill/SKILL.md",
+    "skill/cursor-rules.mdc",
     "README.md"
   ],
   "scripts": {

@@ -162,7 +162,7 @@ Adapter status:
 |---|---|---|
 | `claude-desktop` | MCP server entry in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implemented |
 | `claude-code` | MCP server in `.claude.json` + Skill in `.claude/skills/` + hooks & powerline statusLine in `.claude/settings.json` | ✅ implemented |
-| `cursor` | MCP server entry in `.cursor/mcp.json` | ✅ implemented (Cursor Rules layer is a separate roadmap item) |
+| `cursor` | MCP server entry in `.cursor/mcp.json`, plus `bastra rules cursor` per project | ✅ implemented — see [Cursor rules](#cursor-rules) for why the rules step is separate |
 
 Every write is **idempotent** (re-runs are no-ops), **atomic** (tmp file + rename), **backed up** (timestamped `.bak-…` next to the original), and **parse-safe** (broken JSON aborts the run instead of corrupting it). Vault path resolves in this order: `--vault <path>` flag → `BASTRA_VAULT_PATH` env → auto-detect from an existing registration in `~/.claude.json` or `claude_desktop_config.json`. If none of those produce a path (a fresh machine), an interactive `bastra install` offers to create `~/BastraVault` for you; non-interactive runs (piped, `--yes`, `--dry-run`) keep the clear deterministic error.
 
@@ -289,6 +289,19 @@ Claude Desktop has no hook system, so bastra makes memory autonomous through the
 `bastra update` pulls the latest release (npm or Homebrew), re-registers every surface, and restarts the daemon. Opt into hands-off updates with `bastra config set update.mode auto` — bastra then stages a new version at session start without disrupting a running session. Running `bastra` with no arguments shows version, update status, daemon health, and vault size.
 
 Full details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (wiki).
+
+### Cursor rules
+
+`bastra install cursor` registers the MCP server globally. The behavioural layer — *recall before editing, save durable rules* — is a second step, once per project:
+
+```bash
+cd your-project
+bastra rules cursor          # writes .cursor/rules/bastra-recall.mdc
+```
+
+This is not an oversight. Cursor's User Rules live in its settings UI, not on disk, so there is no global file to install; project rules live in the repo and are version-controlled. That is also the upside — commit the file and everyone on the repo gets the same behaviour. `bastra rules remove cursor` takes it back out.
+
+Claude Code and Claude Desktop need no equivalent step: they share `~/.claude/skills/`, which `bastra install` writes for you.
 
 ### Shell completion
 
@@ -525,7 +538,7 @@ Adapter-Status:
 |---|---|---|
 | `claude-desktop` | MCP-Server-Eintrag in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implementiert |
 | `claude-code` | MCP-Server in `.claude.json` + Skill in `.claude/skills/` + Hooks & Powerline-statusLine in `.claude/settings.json` | ✅ implementiert |
-| `cursor` | MCP-Server-Eintrag in `.cursor/mcp.json` | ✅ implementiert (Cursor-Rules-Layer separater Roadmap-Punkt) |
+| `cursor` | MCP-Server-Eintrag in `.cursor/mcp.json`, dazu `bastra rules cursor` pro Projekt | ✅ implementiert — siehe [Cursor-Rules](#cursor-rules-1), warum der Rules-Schritt getrennt ist |
 
 Jeder Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-File + Rename), **gesichert** (timestamped `.bak-…` neben dem Original) und **parse-safe** (kaputtes JSON bricht den Lauf ab statt es zu zerstören). Vault-Pfad-Auflösung in dieser Reihenfolge: `--vault <pfad>`-Flag → `BASTRA_VAULT_PATH`-ENV → Auto-Detect aus bestehender Registrierung in `~/.claude.json` oder `claude_desktop_config.json`. Greift nichts davon (frische Maschine), bietet ein interaktives `bastra install` an, `~/BastraVault` anzulegen; nicht-interaktive Läufe (gepiped, `--yes`, `--dry-run`) behalten die klare, deterministische Fehlermeldung.
 
@@ -652,6 +665,19 @@ Claude Desktop hat kein Hook-System, also macht bastra das Gedächtnis über die
 `bastra update` zieht den neuesten Release (npm oder Homebrew), registriert alle Surfaces neu und startet den Daemon neu. Für freihändige Updates `bastra config set update.mode auto` — bastra stagt dann am Session-Start eine neue Version, ohne eine laufende Session zu stören. `bastra` ohne Argument zeigt Version, Update-Status, Daemon-Health und Vault-Größe.
 
 Details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (Wiki).
+
+### Cursor-Rules
+
+`bastra install cursor` registriert den MCP-Server global. Die Verhaltens-Schicht — *Recall vor dem Editieren, dauerhafte Regeln speichern* — ist ein zweiter Schritt, einmal pro Projekt:
+
+```bash
+cd dein-projekt
+bastra rules cursor          # schreibt .cursor/rules/bastra-recall.mdc
+```
+
+Das ist kein Versäumnis: Cursors User Rules liegen in der Settings-UI, nicht auf der Platte — es gibt also keine globale Datei zum Installieren. Projekt-Rules liegen im Repo und sind versioniert. Genau das ist der Vorteil — die Datei committen, und alle im Repo bekommen dasselbe Verhalten. `bastra rules remove cursor` nimmt sie wieder heraus.
+
+Claude Code und Claude Desktop brauchen diesen Schritt nicht: Sie teilen sich `~/.claude/skills/`, das `bastra install` für dich schreibt.
 
 ### Shell-Completion
 

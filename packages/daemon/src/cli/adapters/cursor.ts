@@ -49,7 +49,13 @@ async function cursorInstall(opts: InstallOpts): Promise<InstallResult> {
   await atomicWriteJson(configPath, data);
   return {
     status: "installed",
-    message: `registered '${SERVER_KEY}' — restart Cursor (Cursor Rules layer not installed; coming next)${runtimeNote}`,
+    // The rules layer cannot be installed from here: Cursor has no global
+    // rules file (User Rules live in its settings UI), so the convention layer
+    // is per-project by construction — `bastra rules cursor` does that step.
+    message:
+      `registered '${SERVER_KEY}' — restart Cursor${runtimeNote}\n` +
+      "  next: run 'bastra rules cursor' inside a project to add the memory rules\n" +
+      "        (Cursor keeps rules per repo, so there is nothing global to install)",
     configPath,
     backupPath: backupPath ?? undefined,
   };
