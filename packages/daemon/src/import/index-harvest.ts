@@ -10,6 +10,22 @@ import { WIKILINK_RE } from "./identity.js";
  * parse: a file whose non-heading lines are mostly links is navigation.
  * Only ever applied to frontmatter-less files — declared frontmatter wins.
  */
+/** A line that carries its content in list form — the shape an index is made of. */
+const LIST_LINE_RE = /^\s*(?:[-*+]\s|\d+[.)]\s|>|\|)/;
+/** Prose left on a line once its links and typographic separators are gone. */
+function proseRest(line: string): string {
+  return line
+    .replace(/\[([^\]]*)\]\([^)\s]+\.md(?:#[^)]*)?\)/g, "$1")
+    .replace(WIKILINK_RE, " ")
+    .replace(/[·•|–—]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/** Chars of leftover prose that make a non-list line a real body paragraph. */
+const PARAGRAPH_MIN_CHARS = 60;
+/** An index may open with a line of explanation; two are content. */
+const PARAGRAPH_TOLERANCE = 1;
+
 export function looksLikeIndexHub(body: string): boolean {
   // Code-Spans blanken, bevor gezählt wird: ein Body, der ÜBER Link-Syntax
   // redet (`[[x]]`/`[t](y.md)` im Code-Beispiel), ist kein Index (Parser-Noise
@@ -22,7 +38,18 @@ export function looksLikeIndexHub(body: string): boolean {
   const contentLines = scanned
     .split("\n")
     .filter((l) => l.trim().length > 0 && !/^\s*#/.test(l) && !/^\s*---\s*$/.test(l));
-  return contentLines.length > 0 && links >= contentLines.length * 0.6;
+  if (contentLines.length === 0 || links < contentLines.length * 0.6) return false;
+  // Link density alone was too eager (#221, zzallirog's field test on 0.8.4:
+  // 8 files skipped, 3 of them ordinary notes; the largest came back as a
+  // degree-18 ghost). A dense memory — prose facts separated by `·`, links
+  // inline — clears the density bar while being real content. So the density
+  // has to hold AND the file must have no body paragraphs: strip the links,
+  // and what an index leaves behind is list scaffolding, while a note leaves
+  // sentences. List lines don't count either way — notes use lists too.
+  const paragraphs = contentLines.filter(
+    (l) => !LIST_LINE_RE.test(l) && proseRest(l).length >= PARAGRAPH_MIN_CHARS,
+  ).length;
+  return paragraphs <= PARAGRAPH_TOLERANCE;
 }
 
 /**
