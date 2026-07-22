@@ -20,6 +20,7 @@ import {
   IMPACT_SPILL_BUDGET,
   impactPhase,
   impactProgress,
+  spillPhase,
   drawImpact,
   drawSpill,
   spillEdgesFor,
@@ -539,12 +540,13 @@ export function createRenderer(canvas, sim, initialHues) {
           const hit = sim.byId.get(leg.to);
           if (!hit || hit.ringHidden) return;
           const hop1 = BOLT_HOP_FALLOFF ** (leg.hop - 1);
+          const sPhase = spillPhase(t); // trails the strike, see impact.js
           for (const se of f.spill.get(leg.to) ?? []) {
             if (se.s.ringHidden || se.t.ringHidden) continue;
             drawSpill({
               ctx,
               e: se,
-              phase,
+              phase: sPhase,
               strength: hop1,
               color: f.color,
               camScale: camera.scale,

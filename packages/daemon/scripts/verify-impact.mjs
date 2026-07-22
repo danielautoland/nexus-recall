@@ -9,6 +9,8 @@ import {
   drawSpill,
   spillEdgesFor,
   IMPACT_AT,
+  IMPACT_SPILL_AT,
+  spillPhase,
   IMPACT_SPILL_MAX,
   IMPACT_SPILL_ALPHA,
 } from "../webui/js/impact.js";
@@ -48,6 +50,19 @@ ok("phase peaks inside the arrival window", peak.p > 0.9 && peak.t > IMPACT_AT &
 // rises faster than it falls — a strike, not a breath
 const rise = peak.t - IMPACT_AT, fall = 1 - peak.t;
 ok("rises fast, decays slow", fall > rise * 1.5, `rise ${rise.toFixed(3)} vs fall ${fall.toFixed(3)}`);
+
+// ── 1b. cause before consequence ────────────────────────────────────────────
+// The strike lands first, the neighbourhood answers after. Sharing one phase
+// (which is how it started) flattens the two into a single event.
+ok("the spill starts after the strike", IMPACT_SPILL_AT > IMPACT_AT,
+   `spill ${IMPACT_SPILL_AT} > impact ${IMPACT_AT}`);
+const firstImpact = [...Array(200).keys()].map((i) => i / 200).find((t) => impactPhase(t) > 0);
+const firstSpill = [...Array(200).keys()].map((i) => i / 200).find((t) => spillPhase(t) > 0);
+ok("nothing spills before the strike is visible", firstSpill > firstImpact,
+   `impact from t=${firstImpact.toFixed(3)}, spill from t=${firstSpill.toFixed(3)}`);
+ok("both are done by the end of the leg", impactPhase(0.999) >= 0 && spillPhase(1) === 0);
+// and the strike itself must not sit at the very end of the travel
+ok("the strike is not late in the leg", IMPACT_AT < 0.5, `IMPACT_AT ${IMPACT_AT}`);
 
 // ── 2. the impact stays under the origin flare ──────────────────────────────
 // origin supernova: ring alpha 0.75, halo up to 0.9, ring reach 80px

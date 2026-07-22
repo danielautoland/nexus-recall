@@ -18,9 +18,20 @@
  */
 
 /** When on a leg's own 0..1 timeline the discharge counts as arrived.
- *  Matches `pulse`, whose head reaches the far end at t ≈ 0.87 — the strike
- *  starts just before the fastest style gets there, so no style lands late. */
-export const IMPACT_AT = 0.62;
+ *
+ *  Tuned down from 0.62: keying it to `pulse`, whose head only reaches the far
+ *  end at t ≈ 0.87, made the strike feel like it came after the event rather
+ *  than being it. The default style `bolt` puts its zigzag across the whole
+ *  strand immediately, so the eye is already at the far node long before the
+ *  slowest style gets there. */
+export const IMPACT_AT = 0.38;
+
+/** When the spilled strands pick up, on the same 0..1 leg timeline.
+ *
+ *  Deliberately after IMPACT_AT: the strike lands, and only then does the
+ *  neighbourhood answer. Firing both on one phase — which is what it did at
+ *  first — collapses cause and consequence into a single flat event. */
+export const IMPACT_SPILL_AT = 0.56;
 
 /** How many of the target's other strands glow along. Three is the most that
  *  still reads as "a couple"; beyond that a hub turns into a starburst. */
@@ -63,6 +74,14 @@ export function impactProgress(t) {
   if (t <= IMPACT_AT) return 0;
   if (t >= 1) return 1;
   return (t - IMPACT_AT) / (1 - IMPACT_AT);
+}
+
+/** Brightness of the spilled strands — same shape as impactPhase, but starting
+ *  later, so the glow trails the strike instead of sharing its instant. */
+export function spillPhase(t) {
+  if (t <= IMPACT_SPILL_AT || t >= 1) return 0;
+  const u = (t - IMPACT_SPILL_AT) / (1 - IMPACT_SPILL_AT);
+  return (Math.min(u / IMPACT_RISE, 1) * (1 - u)) / (1 - IMPACT_RISE);
 }
 
 /** The strike itself: a tight ring that opens once, plus a small core glow.
