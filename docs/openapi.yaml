@@ -1,3 +1,11 @@
+# Hand-maintained starter spec — written by hand, kept in sync by hand, and
+# deliberately kept at that level. It documents the routes a tunnelled client
+# needs today; it is not generated from the route table and nothing in the
+# build reads it.
+#
+# Generating this spec from the actual REST routes (plus a drift gate and a
+# reference Custom-GPT Action JSON) is tracked separately in issue #13 and is
+# not part of this file.
 openapi: 3.0.3
 info:
   title: Bastra.Recall REST API
@@ -6,6 +14,8 @@ info:
     Loopback REST API exposed by the bastra-recall daemon. For hosted clients
     such as ChatGPT Actions, expose `127.0.0.1:6723` through a tunnel and set
     `BASTRA_API_TOKEN`.
+
+    Hand-maintained starter spec — see the comment at the top of this file.
 servers:
   - url: http://127.0.0.1:6723/api/v1
 security:
