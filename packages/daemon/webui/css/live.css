@@ -37,6 +37,11 @@
    meant for the map. It does NOT break the hover: :hover still applies to the
    ancestors of a hovered card, whose own pointer-events are auto. */
 #live-lane {
+  /* How deep a card sits under the one above it while the deck is closed.
+     Named because two rules need the identical value — the resting stack and
+     the @starting-style that lets a covered card slide out of it. Drifting
+     apart would make the hidden cards enter from the wrong place. */
+  --deck-overlap: -62px;
   position: fixed;
   /* flush with the topbar's icon row: #topbar carries padding 0 20px, so the
      theme toggle's right edge sits at 20px — the deck lines up under it */
@@ -102,7 +107,11 @@ body.panel-pinned #live-lane { right: 270px; }
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  /* Right-aligned so a longer mark grows AWAY from the deck, not toward it.
+     Growing inward pointed every mark at the cards and made the rail read as
+     an arm reaching into them; outward, the active mark just extends into open
+     space and the deck's left edge stays a clean line. */
+  align-items: flex-end;
   justify-content: flex-end;
   gap: 7px;
   width: 44px;
@@ -198,7 +207,14 @@ body.panel-pinned #live-lane { right: 270px; }
   box-shadow: var(--shadow);
   cursor: pointer;
   animation: live-in 0.45s var(--ease-fly);
-  transition: opacity 0.9s ease, border-color 0.15s ease, margin-top 0.26s var(--ease-fly);
+  /* `display` rides along with allow-discrete so a covered card can be part of
+     the choreography instead of popping in: it turns on at the end of its own
+     delay, and on the way out it stays until the slide back is finished. */
+  transition:
+    opacity 0.9s ease,
+    border-color 0.15s ease,
+    margin-top 0.26s var(--ease-fly),
+    display 0.26s var(--ease-fly) allow-discrete;
 }
 /* The deck itself: the newest card covers at most TWO others, each leaving a
    readable strip. Cards past the third are not drawn at all — #live-more
@@ -215,16 +231,29 @@ body.panel-pinned #live-lane { right: 270px; }
    wait for beat one, so a card cannot start unfolding while the bar is still
    collapsing — which is what made the opening read as two fights rather than
    one gesture. Closing has no delay: a collapse that staggers feels sluggish. */
-.live-card + .live-card { margin-top: -62px; }
+.live-card + .live-card { margin-top: var(--deck-overlap); }
 .live-card:nth-child(n + 4) { display: none; }
 #live-lane:hover .live-card + .live-card {
   margin-top: 10px;
   /* one delay per property, in the order of the shorthand above
-     (opacity · border-color · margin-top) — a bare transition-delay would
-     also postpone the card's own hover border, which then feels broken */
-  transition-delay: 0s, 0s, var(--fan-delay, 0s);
+     (opacity · border-color · margin-top · display) — a bare transition-delay
+     would also postpone the card's own hover border, which then feels broken */
+  transition-delay: 0s, 0s, var(--fan-delay, 0s), var(--fan-delay, 0s);
 }
+/* The covered cards join the layout at their turn — `display` is discrete, so
+   it flips at the end of its delay rather than easing, which is exactly the
+   "now I exist" moment we want each card to have. */
 #live-lane:hover .live-card:nth-child(n + 4) { display: block; }
+/* …and they must ARRIVE from under the pile, not appear in place. A card
+   coming out of `display: none` has no previous value to animate from, so the
+   browser skips the transition entirely and the card simply blinks into its
+   final position. @starting-style gives it that missing first frame: it starts
+   stacked, exactly where the deck was hiding it, and slides out from there. */
+@starting-style {
+  #live-lane:hover .live-card:nth-child(n + 4) {
+    margin-top: var(--deck-overlap);
+  }
+}
 .live-card:hover { border-color: var(--accent); }
 .live-card.fade { opacity: 0; }
 @keyframes live-in {
@@ -398,7 +427,7 @@ body.panel-pinned #live-history { right: 270px; }
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: flex-end; /* wie am Deck: längere Marken wachsen nach AUSSEN */
   justify-content: flex-start;
   gap: 7px;
   width: 44px; /* wie am Deck: die aktive Marke reicht bis ans Panel heran */

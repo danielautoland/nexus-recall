@@ -95,13 +95,23 @@ export function createLiveDeck({ cardsEl }) {
    *  two competing animations. */
   function paintFanDelays() {
     const FAN_LEAD = 0.34; // s — matches #live-more's collapse in live.css
-    const FAN_STEP = 0.05; // s per card, top → bottom
+    // The three the deck shows are read one at a time: each reaches its resting
+    // gap before the next starts, so the eye follows a sequence instead of
+    // watching a block expand. The covered cards then arrive as one wave —
+    // stepping them this slowly would turn twenty notices into five seconds.
+    const STACK_STEP = 0.14; // s between the visible cards
+    const TAIL_GAP = 0.1; // s of quiet before the hidden ones start
+    const TAIL_STEP = 0.05; // s between the hidden ones
+    const stackTail = FAN_LEAD + (DECK_VISIBLE - 1) * STACK_STEP + TAIL_GAP;
     const list = cards();
     list.forEach((card, i) => {
       // the first child has no preceding sibling, so the rule that animates
       // margin-top never applies to it — the second card opens the fan
-      const order = Math.max(0, i - 1);
-      card.style.setProperty("--fan-delay", `${FAN_LEAD + order * FAN_STEP}s`);
+      const delay =
+        i < DECK_VISIBLE
+          ? FAN_LEAD + Math.max(0, i - 1) * STACK_STEP
+          : stackTail + (i - DECK_VISIBLE) * TAIL_STEP;
+      card.style.setProperty("--fan-delay", `${delay.toFixed(3)}s`);
     });
   }
 
