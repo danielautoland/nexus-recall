@@ -93,36 +93,58 @@ export function createLiveDeck({ cardsEl }) {
    *  finished collapsing (0.34s in live.css), so the pile slides down as one
    *  block before anything unfolds. Overlap the two and the gesture reads as
    *  two competing animations. */
+  /** Resting overlap of the visible pile, from live.css — the distance those
+   *  three cards travel is what sets the speed everything else matches. */
+  const DECK_OVERLAP = 62;
+  const OPEN_GAP = 10; // the gap cards settle into once fanned out
+  const BASE_DUR = 0.26; // s for the visible cards' own travel
+  const SPEED = (DECK_OVERLAP + OPEN_GAP) / BASE_DUR; // px per second
+
+  /** Delays, durations and hide-depths for one opening and one closing.
+   *
+   *  Opening: #live-more collapses (FAN_LEAD), then the three on top unfold one
+   *  at a time so each can be read, then the covered ones follow as a wave.
+   *  Closing is the same gesture reversed — bottom card home first, top card
+   *  last, and only then the bar returns.
+   *
+   *  Every card moves at the SAME SPEED rather than for the same duration. A
+   *  covered card starts a full card-height down, so a shared duration would
+   *  make it race while the ones above it drift. */
   function paintFanDelays() {
     const FAN_LEAD = 0.34; // s — matches #live-more's collapse in live.css
-    // The three the deck shows are read one at a time: each reaches its resting
-    // gap before the next starts, so the eye follows a sequence instead of
-    // watching a block expand. The covered cards then arrive as one wave —
-    // stepping them this slowly would turn twenty notices into five seconds.
-    const STACK_STEP = 0.14; // s between the visible cards
-    const TAIL_GAP = 0.1; // s of quiet before the hidden ones start
-    const TAIL_STEP = 0.05; // s between the hidden ones
+    const STACK_STEP = 0.14; // s between the visible cards, read one by one
+    const TAIL_GAP = 0.1; // s of quiet before the covered ones start
+    const TAIL_STEP = 0.05; // s between the covered ones
+    const FOLD_STEP = 0.05; // s between cards on the way back
     const stackTail = FAN_LEAD + (DECK_VISIBLE - 1) * STACK_STEP + TAIL_GAP;
     const list = cards();
-    // How far a covered card has to sit above its slot to be COMPLETELY behind
-    // the pile. The deck's resting overlap (-62px) only hides a card of that
-    // height — a real notice is taller, so a card starting there began its
-    // journey already sticking out, which reads as appearing rather than
-    // sliding. Measured off the visible cards, since the covered ones are
-    // display:none and report no height of their own.
-    const tallest = list
-      .slice(0, DECK_VISIBLE)
-      .reduce((max, c) => Math.max(max, c.offsetHeight), 0);
-    if (tallest > 0) cardsEl.style.setProperty("--card-hide", `-${tallest + 16}px`);
+    let slowest = BASE_DUR;
+
     list.forEach((card, i) => {
-      // the first child has no preceding sibling, so the rule that animates
-      // margin-top never applies to it — the second card opens the fan
-      const delay =
-        i < DECK_VISIBLE
-          ? FAN_LEAD + Math.max(0, i - 1) * STACK_STEP
-          : stackTail + (i - DECK_VISIBLE) * TAIL_STEP;
-      card.style.setProperty("--fan-delay", `${delay.toFixed(3)}s`);
+      const covered = i >= DECK_VISIBLE;
+      // A covered card hides behind exactly its own height: deeper would drag
+      // the whole deck upward (it would contribute negative height), shallower
+      // and it peeks out from under the pile.
+      if (covered) card.style.setProperty("--self-hide", `-${card.offsetHeight}px`);
+      const travel = (covered ? card.offsetHeight : DECK_OVERLAP) + OPEN_GAP;
+      const dur = travel / SPEED;
+      if (dur > slowest) slowest = dur;
+      card.style.setProperty("--fan-dur", `${dur.toFixed(3)}s`);
+
+      // opening: top first, the pile reads downward
+      const open = covered
+        ? stackTail + (i - DECK_VISIBLE) * TAIL_STEP
+        : FAN_LEAD + Math.max(0, i - 1) * STACK_STEP;
+      card.style.setProperty("--fan-delay", `${open.toFixed(3)}s`);
+
+      // closing: the reverse — the last card folds home first
+      const fold = (list.length - 1 - i) * FOLD_STEP;
+      card.style.setProperty("--fold-delay", `${fold.toFixed(3)}s`);
     });
+
+    // the bar may only come back once the last card has landed
+    const foldTotal = (list.length - 1) * FOLD_STEP + slowest;
+    laneEl.style.setProperty("--fold-total", `${foldTotal.toFixed(3)}s`);
   }
 
   /** Called by live-updates.js after any card was added or removed. */

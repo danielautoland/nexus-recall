@@ -37,10 +37,10 @@
    meant for the map. It does NOT break the hover: :hover still applies to the
    ancestors of a hovered card, whose own pointer-events are auto. */
 #live-lane {
-  /* How deep a card sits under the one above it while the deck is closed.
-     Named because two rules need the identical value — the resting stack and
-     the @starting-style that lets a covered card slide out of it. Drifting
-     apart would make the hidden cards enter from the wrong place. */
+  /* How deep a card sits under the one above it while the deck is closed. The
+     distance those cards travel when the deck opens also sets the speed every
+     other card matches — live-deck.js reads this number, so the two must stay
+     in step. */
   --deck-overlap: -62px;
   position: fixed;
   /* flush with the topbar's icon row: #topbar carries padding 0 20px, so the
@@ -173,6 +173,11 @@ body.panel-pinned #live-lane { right: 270px; }
     margin-top 0.34s var(--ease-fly),
     padding 0.34s var(--ease-fly),
     border-width 0.34s var(--ease-fly);
+  /* Closing is the opening played backwards, so the bar comes back LAST — it
+     waits for every card to be home again (--fold-total, measured in
+     live-deck.js) and then unfolds. It used to simply reappear underneath
+     cards that were still moving. */
+  transition-delay: var(--fold-total, 0s);
 }
 .lm-total { color: var(--text); }
 /* the breakdown is pushed to the right edge, so the "+N" stays the anchor the
@@ -190,6 +195,7 @@ body.panel-pinned #live-lane { right: 270px; }
   padding-top: 0;
   padding-bottom: 0;
   border-width: 0;
+  transition-delay: 0s; /* opening, the bar goes FIRST — no waiting */
 }
 .live-card {
   pointer-events: auto;
@@ -207,14 +213,13 @@ body.panel-pinned #live-lane { right: 270px; }
   box-shadow: var(--shadow);
   cursor: pointer;
   animation: live-in 0.45s var(--ease-fly);
-  /* `display` rides along with allow-discrete so a covered card can be part of
-     the choreography instead of popping in: it turns on at the end of its own
-     delay, and on the way out it stays until the slide back is finished. */
+  /* --fan-dur is per card, because the covered ones travel further than the
+     three on top: same SPEED, longer distance, longer duration. A single
+     duration would have them racing to catch up. */
   transition:
     opacity 0.9s ease,
     border-color 0.15s ease,
-    margin-top 0.26s var(--ease-fly),
-    display 0.26s var(--ease-fly) allow-discrete;
+    margin-top var(--fan-dur, 0.26s) var(--ease-fly);
 }
 /* The deck itself: the newest card covers at most TWO others, each leaving a
    readable strip. Cards past the third are not drawn at all — #live-more
@@ -231,37 +236,31 @@ body.panel-pinned #live-lane { right: 270px; }
    wait for beat one, so a card cannot start unfolding while the bar is still
    collapsing — which is what made the opening read as two fights rather than
    one gesture. Closing has no delay: a collapse that staggers feels sluggish. */
-.live-card + .live-card { margin-top: var(--deck-overlap); }
-/* Covered cards rest FULLY behind the pile, not at the deck's overlap: they
-   carry a lower z-index than the cards above them, so a card pulled up by its
-   own height plus a margin is genuinely out of sight. --card-hide is measured
-   in live-deck.js; the fallback only has to be deep enough for a first paint.
-   This is also where they return to on close, so the slide back stays
-   symmetric instead of snapping the last stretch. */
-.live-card:nth-child(n + 4) {
-  display: none;
-  margin-top: var(--card-hide, -140px);
+/* The resting state is also the CLOSING state, so the fold-back is staggered
+   here — bottom card first, top card last, the exact reverse of the opening.
+   Without it every card snapped home at once while #live-more popped back in
+   underneath them. */
+.live-card + .live-card {
+  margin-top: var(--deck-overlap);
+  transition-delay: 0s, 0s, var(--fold-delay, 0s);
 }
+/* Covered cards stay in the layout — they are simply pulled up by exactly
+   their own height, so they sit completely behind the card above (lower
+   z-index) and contribute nothing to the stack's height. That last part is why
+   the offset must be the card's OWN height: any deeper and thirty notices
+   would drag the deck upward; any shallower and they peek out.
+   `display: none` used to do this job, and it was the whole bug — an element
+   returning from it has no previous value to animate from, so those cards
+   appeared instead of moving while the three above them slid properly. Same
+   layout, same rule, same animation now. --self-hide is measured per card in
+   live-deck.js. */
+.live-card:nth-child(n + 4) { margin-top: var(--self-hide, -140px); }
 #live-lane:hover .live-card + .live-card {
   margin-top: 10px;
   /* one delay per property, in the order of the shorthand above
-     (opacity · border-color · margin-top · display) — a bare transition-delay
-     would also postpone the card's own hover border, which then feels broken */
-  transition-delay: 0s, 0s, var(--fan-delay, 0s), var(--fan-delay, 0s);
-}
-/* The covered cards join the layout at their turn — `display` is discrete, so
-   it flips at the end of its delay rather than easing, which is exactly the
-   "now I exist" moment we want each card to have. */
-#live-lane:hover .live-card:nth-child(n + 4) { display: block; }
-/* …and they must ARRIVE from under the pile, not appear in place. A card
-   coming out of `display: none` has no previous value to animate from, so the
-   browser skips the transition entirely and the card simply blinks into its
-   final position. @starting-style gives it that missing first frame: it starts
-   stacked, exactly where the deck was hiding it, and slides out from there. */
-@starting-style {
-  #live-lane:hover .live-card:nth-child(n + 4) {
-    margin-top: var(--card-hide, -140px);
-  }
+     (opacity · border-color · margin-top) — a bare transition-delay would
+     also postpone the card's own hover border, which then feels broken */
+  transition-delay: 0s, 0s, var(--fan-delay, 0s);
 }
 .live-card:hover { border-color: var(--accent); }
 .live-card.fade { opacity: 0; }
