@@ -355,7 +355,50 @@ body.panel-pinned #live-history { right: 270px; }
   border-bottom: 1px solid var(--panel-border);
 }
 #live-history .lh-session { color: var(--text-dim); letter-spacing: 0.1em; }
-#live-history-list { overflow-y: auto; }
+/* Die Historie trägt dieselbe Tick-Leiste wie das Notice-Deck statt einer
+   Scrollbar. Die native wird ausgeblendet, nicht umgestylt: eine gestylte
+   ::-webkit-scrollbar reserviert einen Gutter und schrumpft den Inhalt, eine
+   ausgeblendete tut das nicht. Die Leiste hängt absolut im Body — als
+   Flex-Geschwister würde sie die Höhe mitbestimmen (dieselbe Falle wie am
+   Deck), so gibt die Liste die Höhe vor und die Marken hängen daneben. */
+#live-history-body {
+  position: relative;
+  display: flex;
+  flex: 1; /* das Panel ist ein Column-Flex mit max-height: 62vh */
+  min-height: 0; /* ohne das scrollt das Kind nicht, es wächst */
+  overflow: hidden;
+}
+#live-history-list {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-width: none; /* Firefox */
+  padding-left: 26px; /* Platz für die Leiste, damit keine Zeile darunter läuft */
+}
+#live-history-list::-webkit-scrollbar { display: none; }
+#live-history-ticks[hidden] { display: none; }
+#live-history-ticks {
+  position: absolute;
+  left: 8px;
+  bottom: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 7px;
+  width: 14px;
+  overflow: hidden;
+  pointer-events: none; /* die Leiste zeigt an, sie fängt keine Klicks */
+}
+/* im Panel ist weniger Platz als neben dem Deck — die Marken bleiben schmaler
+   und wachsen nur beim Hover über der Historie */
+#live-history-ticks .lt-tick { width: 8px; }
+#live-history-ticks .lt-tick.near { width: 11px; }
+#live-history-ticks .lt-tick.active { width: 14px; }
+#live-history:hover .lt-tick { width: 10px; opacity: 0.6; }
+#live-history:hover .lt-tick.near { width: 13px; opacity: 0.75; }
+#live-history:hover .lt-tick.active { width: 14px; opacity: 1; }
 .lh-row {
   display: grid;
   grid-template-columns: 16px 62px 1fr auto;

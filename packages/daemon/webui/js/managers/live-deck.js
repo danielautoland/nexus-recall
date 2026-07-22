@@ -27,6 +27,8 @@ const DECK_VISIBLE = 3;
 
 /** Order the hidden-kind breakdown is read in — loudest event first, so a
  *  deletion never hides behind a pile of reads. */
+import { createTickRail } from "../components/tick-rail.js";
+
 const KIND_ORDER = ["delete", "add", "change", "read"];
 
 export function createLiveDeck({ cardsEl }) {
@@ -34,91 +36,13 @@ export function createLiveDeck({ cardsEl }) {
   const moreEl = $("#live-more");
   const stackEl = $("#live-stack");
   const laneEl = $("#live-lane");
-  let activeIndex = 0;
+  // Die Leiste selbst lebt in components/tick-rail.js — dieselbe benutzt die
+  // Live-Historie. Der Stapel gibt die Höhe vor, nicht die Kartenliste: die
+  // Leiste hängt absolut an ihm (siehe live.css).
+  const rail = createTickRail({ railEl: ticksEl, scrollEl: cardsEl, sizeEl: stackEl });
 
   const cards = () => [...cardsEl.children];
 
-  /** Which tick is lit, from the scroll POSITION rather than from which card
-   *  happens to sit at the top edge.
-   *
-   *  The first version asked "which is the topmost fully scrolled-past card",
-   *  which can never reach the last one: scrolled all the way down, the final
-   *  card sits at the BOTTOM of the port, not the top, so the rail stopped one
-   *  or two marks short of the end and the deck looked like it had more below.
-   *  A fraction of the scrollable distance is exact at both ends by
-   *  construction — 0 at the top, n-1 at the bottom. */
-  function computeActive() {
-    const n = cards().length;
-    if (n < 2) return 0;
-    const scrollable = cardsEl.scrollHeight - cardsEl.clientHeight;
-    if (scrollable <= 1) return 0; // nothing to scroll — everything is "at the top"
-    const frac = Math.min(Math.max(cardsEl.scrollTop / scrollable, 0), 1);
-    return Math.round(frac * (n - 1));
-  }
-
-  function paintTicks() {
-    const list = cards();
-    // one tick is not a scale, it is a dot — hide the rail until there is
-    // actually something to navigate
-    ticksEl.hidden = list.length < 2;
-    if (ticksEl.hidden) {
-      ticksEl.replaceChildren();
-      return;
-    }
-    if (ticksEl.children.length !== list.length) {
-      ticksEl.replaceChildren(
-        ...list.map(() => {
-          const t = document.createElement("span");
-          t.className = "lt-tick";
-          return t;
-        }),
-      );
-    }
-    [...ticksEl.children].forEach((t, i) => {
-      t.classList.toggle("active", i === activeIndex);
-      // neighbours of the active tick lean towards it, so the mark reads as a
-      // position on a rail instead of a lone bright dash
-      t.classList.toggle("near", Math.abs(i - activeIndex) === 1);
-    });
-    fitTicks(list.length);
-  }
-
-  /** Keep the rail no taller than the deck beside it.
-   *
-   *  The rail draws one mark per notice, but the collapsed deck is only ever
-   *  three cards tall — so past a handful of notices the rail grew straight
-   *  past the top of the stack and stopped reading as its axis. The marks
-   *  themselves are fixed at 2px (any thinner and they vanish), so the only
-   *  thing that can give is the spacing between them: it shrinks to fit and
-   *  bottoms out at MIN_GAP. At that floor roughly 30 marks still fit beside a
-   *  collapsed deck, well past what the 120s card lifetime produces — beyond
-   *  it the overflow clips at the TOP, i.e. the oldest end, which is also the
-   *  end you care about least. */
-  function fitTicks(count) {
-    const MAX_GAP = 7;
-    const MIN_GAP = 1;
-    const TICK_H = 2;
-    const available = stackEl.offsetHeight;
-    if (!available || count < 2) return;
-    const gap = (available - count * TICK_H) / (count - 1);
-    ticksEl.style.gap = `${Math.min(Math.max(gap, MIN_GAP), MAX_GAP)}px`;
-  }
-
-  /** The kind of a card, read back off its own class. The cards are the single
-   *  source of truth here — live-deck never sees the update objects, and a
-   *  parallel tally would drift the moment a card expires on its own timer.
-   *  Summary cards ("+N more live events") carry no kind and count only
-   *  towards the total. */
-  function kindOf(card) {
-    for (const c of card.classList) {
-      if (c.startsWith("kind-")) return c.slice(5);
-    }
-    return null;
-  }
-
-  /** "+4  ✕1 · ◉3" — how many are still below, and WHAT they were. A bare
-   *  count would hide the one thing worth surfacing: a deletion buried under a
-   *  pile of reads still deserves to be noticed. */
   function paintMore() {
     const hiddenCards = cards().slice(DECK_VISIBLE);
     moreEl.hidden = hiddenCards.length === 0;
@@ -163,8 +87,7 @@ export function createLiveDeck({ cardsEl }) {
 
   /** Called by live-updates.js after any card was added or removed. */
   function sync() {
-    activeIndex = computeActive();
-    paintTicks();
+    rail.update(cards().length);
     paintMore();
     paintFanDelays();
   }
@@ -172,14 +95,11 @@ export function createLiveDeck({ cardsEl }) {
   // The deck changes height when it opens, so the rail's spacing has to be
   // recomputed — after the transition, not during it, or it measures a size
   // the deck is still moving through.
-  laneEl.addEventListener("mouseenter", () => setTimeout(() => paintTicks(), 320));
-  laneEl.addEventListener("mouseleave", () => setTimeout(() => paintTicks(), 320));
+  laneEl.addEventListener("mouseenter", () => setTimeout(() => rail.paint(cards().length), 320));
+  laneEl.addEventListener("mouseleave", () => setTimeout(() => rail.paint(cards().length), 320));
 
   cardsEl.addEventListener("scroll", () => {
-    const next = computeActive();
-    if (next === activeIndex) return;
-    activeIndex = next;
-    paintTicks();
+    if (rail.sync(cards().length)) rail.paint(cards().length);
   });
 
   return { sync };

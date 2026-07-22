@@ -22,6 +22,7 @@
 import { drawBurstAt, BURST_LIFE } from "./orbit-view.js";
 import { createLiveDeck } from "./live-deck.js";
 import { KIND_META } from "./live-kinds.js";
+import { createTickRail } from "../components/tick-rail.js";
 
 const $ = (sel) => document.querySelector(sel);
 const LIVE_KEY = "bastra-vault-map-live";
@@ -43,6 +44,15 @@ export function createLiveUpdates(deps) {
   const historyEl = $("#live-history");
   const historyList = $("#live-history-list");
   const historyCount = $("#live-history-count");
+  // Dieselbe Leiste wie am Notice-Deck (components/tick-rail.js), nur auf die
+  // Historie angewandt: die native Scrollbar ist ausgeblendet, die Position
+  // steht links als Marken. Gedeckelt, weil eine Session dreistellig viele
+  // Zeilen bekommen kann und eine Marke pro Zeile eine Wand wäre.
+  const historyRail = createTickRail({
+    railEl: $("#live-history-ticks"),
+    scrollEl: historyList,
+    maxTicks: 24,
+  });
   let on = (localStorage.getItem(LIVE_KEY) ?? "on") === "on";
   let sinceSeq = null; // last delivery seq we've seen; null → not yet baselined
   let pollTimer = 0;
@@ -98,6 +108,7 @@ export function createLiveUpdates(deps) {
       empty.className = "lh-empty";
       empty.textContent = "no live events this session yet";
       historyList.replaceChildren(empty);
+      historyRail.update(0);
       return;
     }
     historyList.replaceChildren(
@@ -128,12 +139,22 @@ export function createLiveUpdates(deps) {
         return row;
       }),
     );
+    historyRail.update(history.length);
   }
 
   historyBtn.addEventListener("click", () => {
     historyEl.hidden = !historyEl.hidden;
     historyBtn.classList.toggle("open", !historyEl.hidden);
-    if (!historyEl.hidden) renderHistory();
+    if (!historyEl.hidden) {
+      renderHistory();
+      // Erst nach dem Einblenden hat die Liste eine Höhe — vorher misst die
+      // Leiste ein Panel, das noch 0 hoch ist, und rechnet ihren Abstand falsch.
+      requestAnimationFrame(() => historyRail.paint(history.length));
+    }
+  });
+
+  historyList.addEventListener("scroll", () => {
+    if (historyRail.sync(history.length)) historyRail.paint(history.length);
   });
 
   // ── notice cards ───────────────────────────────────────────────────
