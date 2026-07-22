@@ -8,7 +8,7 @@
  *  escaped attribute values and http(s)-restricted hrefs. Raw HTML in a
  *  memory body renders as text, never as markup. */
 
-import { fetchNode } from "./graph-data.js";
+import { fetchNode, HEAT_MIN_WEIGHT } from "./graph-data.js";
 
 const esc = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -146,6 +146,37 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
       </div>`;
   }
 
+  /** Was die Karte über dieses Memory behauptet, in Worten (#227).
+   *
+   *  zzallirog: der Renderer „führt die Zahl auf, statt sie zu berichten" — ein
+   *  heller Knoten war nicht von einem zu unterscheiden, der nur hell ist, weil
+   *  sonst nichts berührt wurde. `heat` ist ein ANTEIL am wärmsten Memory
+   *  dieses Vaults, also nur innerhalb dieses Bildes lesbar; die Zahlen
+   *  dahinter sind es absolut. Deshalb stehen beide da, und die rohen zuerst.
+   *
+   *  Ohne Kontakt bleibt die Zeile weg — eine 0 zu behaupten wäre auch eine
+   *  Aussage, und zwar eine, die niemand gefragt hat. */
+  function demandLine(node) {
+    const r = node.reach;
+    if (!r || !r.weight) return "";
+    const parts = [];
+    if (r.loaded) parts.push(`${r.loaded}× geladen`);
+    if (r.acted_on) parts.push(`${r.acted_on}× angewendet`);
+    if (r.last_at) {
+      const days = (Date.now() - Date.parse(r.last_at)) / 86400000;
+      parts.push(
+        days < 1 ? "zuletzt heute" : days < 2 ? "zuletzt gestern" : `zuletzt vor ${Math.round(days)} Tagen`,
+      );
+    }
+    // Der Anteil nur, wenn die Karte ihn auch zeichnet — sonst erklärt die
+    // Zeile ein Leuchten, das gar nicht da ist.
+    const share =
+      typeof node.heat === "number" && node.heat > 0 && r.weight >= HEAT_MIN_WEIGHT
+        ? ` · ${Math.round(node.heat * 100)}% der wärmsten hier`
+        : "";
+    return `<div class="insp-meta">${esc(parts.join(" · "))}${share}</div>`;
+  }
+
   function kicker(node) {
     const kindLabel = node.kind === "ghost" ? "unwritten" : node.kind === "skill" ? "skill" : node.type;
     return `<div class="insp-kicker">
@@ -217,6 +248,7 @@ export function createInspector(el, contentEl, { knownIds, onNavigate, clusterCo
       <div class="insp-title">${esc(full.title)}</div>
       ${chips([full.scope, ...full.tags], true)}
       <div class="insp-meta">updated ${esc(full.updated)}${full.source ? ` · ${esc(full.source)}` : ""}</div>
+      ${demandLine(node)}
       <div class="insp-body">${renderMarkdown(full.body, knownIds)}</div>
       ${node.bridge ? `<div class="insp-section-title">Bridges into</div>${chips(node.bridge)}` : ""}
       ${linkList("Connections", full.related)}
