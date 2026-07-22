@@ -14,7 +14,16 @@
  * rather than being presented as a log the user is missing.
  */
 
-import { createReadStream, existsSync, readFileSync, statSync, watch } from "node:fs";
+import {
+  closeSync,
+  createReadStream,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  statSync,
+  watch,
+} from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaultLogDir } from "../learned-recall/harvest.js";
@@ -166,17 +175,28 @@ async function readHookLines(logDir: string, cutoff: number): Promise<Line[]> {
 function readDaemonLines(cutoff: number): Line[] {
   const out: Line[] = [];
   for (const path of DAEMON_STDOUT) {
-    // No existsSync pre-check: between the check and the read the file can be
-    // rotated or removed — by log retention, by a restart, by /tmp cleanup —
-    // and the failed read is the only answer that is actually current.
+    // Open once, then stat and read through that one handle. Resolving the
+    // path twice would leave a window in which the file is rotated or removed
+    // — by log retention, a restart, or /tmp cleanup — and the two halves
+    // would then describe different files.
     let mtime: number;
     let raw: string;
+    let fd: number | null = null;
     try {
-      mtime = statSync(path).mtimeMs;
+      fd = openSync(path, "r");
+      mtime = fstatSync(fd).mtimeMs;
       if (mtime < cutoff) continue;
-      raw = readFileSync(path, "utf8");
+      raw = readFileSync(fd, "utf8");
     } catch {
       continue;
+    } finally {
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* already gone */
+        }
+      }
     }
     for (const line of raw.split("\n")) {
       if (line.trim()) out.push({ ts: mtime, source: "daemon", text: line.trimEnd() });
