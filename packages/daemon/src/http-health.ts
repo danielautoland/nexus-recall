@@ -1,0 +1,65 @@
+/**
+ * The health payload — one shape, two doors.
+ *
+ * `GET /health` is loopback-only and token-free; `GET /api/v1/health` is the
+ * same answer for a browser (token + CORS). Browsers cannot read /health at
+ * all: CORS headers are only sent for /api/v1/*, by design — everything
+ * token-free stays same-machine.
+ *
+ * Why the second door exists: bastra.io's admin bridge used to probe
+ * reachability with a real `recall("health", k=1)` every 60 seconds. That is a
+ * full embedding + vector search (~1.2s) for two booleans, and since #221 every
+ * recall above the floor also emits a "read" notice — so the map kept flashing
+ * activity on whichever memory happened to match the word "health". 21,972 of
+ * those probes sat in the telemetry log before anyone noticed.
+ *
+ * Extracted from http.ts because that file is past the size where a small
+ * change means reading a large file (file-size convention).
+ */
+
+import type { EmbeddingRuntimeHealth } from "@bastra-recall/core";
+import type { EmbeddingStatus } from "./embedding-status.js";
+import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
+import type { UpdateState } from "./update-check.js";
+
+export interface HealthDeps {
+  vaultSize: () => number;
+  version: string;
+  embedding: EmbeddingStatus;
+  embeddingHealth?: () => EmbeddingRuntimeHealth | null;
+  embeddingBreaker?: () => EmbeddingBreakerSnapshot | null;
+  updateState: () => UpdateState | null;
+}
+
+export function buildHealthPayload(deps: HealthDeps): Record<string, unknown> {
+  const updateState = deps.updateState();
+  // Runtime-degradation (#92): boot config said ON, but the last provider call
+  // failed (model deleted / Ollama died) → report "degraded" instead of
+  // advertising semantic recall that silently runs BM25-only.
+  const rt = deps.embeddingHealth?.() ?? null;
+  const degraded = deps.embedding.on && rt !== null && !rt.ok;
+  // Breaker state (#165): cheap snapshot, makes it visible whether recall is
+  // deliberately serving BM25-only (open) rather than merely "degraded".
+  const breaker = deps.embeddingBreaker?.() ?? null;
+  return {
+    ok: true,
+    vault_size: deps.vaultSize(),
+    version: deps.version,
+    // Embedding mode — lets `bastra status` show whether semantic recall is
+    // live without relying on the daemon's discarded stderr (#79).
+    semantic_recall: deps.embedding.on ? (degraded ? "degraded" : "on") : "off",
+    embedding_mode: deps.embedding.providerId ?? "disabled",
+    embedding_source: deps.embedding.source,
+    ...(degraded ? { embedding_error: rt.lastError } : {}),
+    ...(breaker ? { embedding_breaker: breaker } : {}),
+    update_available:
+      updateState && updateState.hasUpdate
+        ? {
+            current: updateState.current,
+            latest: updateState.latest,
+            html_url: updateState.html_url,
+            published_at: updateState.published_at,
+          }
+        : null,
+  };
+}

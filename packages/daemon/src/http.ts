@@ -14,6 +14,9 @@
  *
  * Endpoints:
  *   GET  /health                         → { ok, vault_size, version }
+ *   GET  /api/v1/health                  → dasselbe für den Browser (Token+
+ *                                          CORS; /health trägt keine CORS-
+ *                                          Header, siehe http-health.ts)
  *   POST /hook/recall                    → hook-spezifisch (Telemetry-Pfad,
  *                                          loopback-only, kein Auth)
  *
@@ -64,6 +67,7 @@ import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { handleHookReflex } from "./reflex.js";
 import { computeHeat, readUsage } from "./usage-sidecar.js";
+import { buildHealthPayload } from "./http-health.js";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -134,7 +138,8 @@ export interface HttpOptions {
   version: string;
   toolDeps: ToolDeps;
   documentWriteEnabled: boolean;
-  /** Called on every real request (everything except GET /health). Lets the
+  /** Called on every real request (everything except the liveness probes
+   *  GET /health and GET /api/v1/health). Lets the
    *  daemon track activity for idle self-shutdown. */
   onActivity?: () => void;
   /** Resolved embedding mode — surfaced on /health so `bastra status` can show
@@ -328,14 +333,29 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 
+  /** Reachability + vault size, shared by /health and /api/v1/health. */
+  const healthPayload = (): Record<string, unknown> =>
+    buildHealthPayload({
+      vaultSize: () => vault.size(),
+      version,
+      embedding: opts.embedding,
+      embeddingHealth: opts.embeddingHealth,
+      embeddingBreaker: opts.embeddingBreaker,
+      updateState: getUpdateState,
+    });
+
+  /** Liveness probes, on both doors — they must not count as activity. */
+  const isHealthProbe = (url: string): boolean => url === "/health" || url === "/api/v1/health";
+
   const server = createServer((req, res) => {
     const t0 = Date.now();
     const url = req.url ?? "";
     const method = req.method ?? "GET";
 
-    // Activity signal for idle self-shutdown — count real work, not the
-    // cheap /health liveness ping (else a monitor would keep us alive forever).
-    if (url !== "/health") onActivity?.();
+    // Activity signal for idle self-shutdown — count real work, not the cheap
+    // liveness pings (else a monitor, or bastra.io's admin bridge probing every
+    // 60s, would keep us alive forever).
+    if (!isHealthProbe(url)) onActivity?.();
 
     // DNS-Rebinding-Gate für alles außer /api/v1/* (dort schützt das Token):
     // die offenen Endpoints sind loopback-only by design — ein nicht-loopback
@@ -362,35 +382,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
 
     if (method === "GET" && url === "/health") {
-      const updateState = getUpdateState();
-      // Runtime-degradation (#92): boot config said ON, but the last provider
-      // call failed (model deleted / Ollama died) → report "degraded" instead
-      // of advertising semantic recall that silently runs BM25-only.
-      const rt = opts.embeddingHealth?.() ?? null;
-      const degraded = opts.embedding.on && rt !== null && !rt.ok;
-      // Breaker-Zustand (#165): billiger Snapshot, macht sichtbar ob Recall
-      // gerade bewusst BM25-only serviert wird (open) statt nur "degraded".
-      const breaker = opts.embeddingBreaker?.() ?? null;
-      sendJson(res, 200, {
-        ok: true,
-        vault_size: vault.size(),
-        version,
-        // Embedding mode — lets `bastra status` show whether semantic recall is
-        // live without relying on the daemon's discarded stderr (#79).
-        semantic_recall: opts.embedding.on ? (degraded ? "degraded" : "on") : "off",
-        embedding_mode: opts.embedding.providerId ?? "disabled",
-        embedding_source: opts.embedding.source,
-        ...(degraded ? { embedding_error: rt.lastError } : {}),
-        ...(breaker ? { embedding_breaker: breaker } : {}),
-        update_available: updateState && updateState.hasUpdate
-          ? {
-              current: updateState.current,
-              latest: updateState.latest,
-              html_url: updateState.html_url,
-              published_at: updateState.published_at,
-            }
-          : null,
-      });
+      sendJson(res, 200, healthPayload());
       return;
     }
 
@@ -685,6 +677,14 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       // Tools; die loopback-Join-Variante fürs Hook-CLI ist /hook/floors).
       if (method === "GET") {
         const u = new URL(url, "http://127.0.0.1");
+        // Reachability for a BROWSER. Same answer as /health, which a browser
+        // cannot read (no CORS on token-free routes). Exists so a bridge never
+        // has to spend a real recall — embedding, vector search and a "read"
+        // notice — on the question "are you there".
+        if (u.pathname === "/api/v1/health") {
+          sendJson(res, 200, healthPayload());
+          return;
+        }
         if (u.pathname === "/api/v1/floors") {
           const scope = u.searchParams.get("scope") ?? undefined;
           listFloors(scope)
