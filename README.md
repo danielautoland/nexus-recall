@@ -56,6 +56,28 @@ If recurring mistakes still recur, if the user still has to re-state preferences
 
 ### How it works
 
+```mermaid
+flowchart TB
+    CC["Claude Code"]
+    CD["Claude Desktop"]
+    CU["Cursor"]
+    WEB["ChatGPT Actions / web apps"]
+
+    CC -->|stdio MCP| FWD["MCP forwarder<br/>stdio to HTTP"]
+    CD -->|stdio MCP| FWD
+    CU -->|stdio MCP| FWD
+    WEB -->|"REST /api/v1 + token"| D
+    CC -.->|"hooks: recall before edits,<br/>context at session start"| D
+
+    FWD --> D["bastra-recall daemon<br/>127.0.0.1:6723<br/>one process for every client"]
+    D --> IDX["BM25 index<br/>+ optional embeddings"]
+    IDX --> V[("Your vault<br/>plain markdown + YAML<br/>on your disk")]
+
+    D -.->|"save_memory writes a file,<br/>then re-indexes it"| V
+```
+
+Everything above runs on your machine. Nothing leaves it unless you point a tunnel at the REST gateway yourself.
+
 ```
 Vault (configurable, plain markdown + YAML frontmatter, Obsidian-compatible)
           │  chokidar (auto-polls on cloud-storage mounts)
@@ -429,6 +451,28 @@ Eine persistente Gedächtnis-Schicht, die:
 Wenn wiederkehrende Fehler weiter auftreten, wenn der User in jeder Sitzung dieselben Vorlieben wiederholen muss — dann ist das Projekt gescheitert, egal wie sauber die Architektur ist.
 
 ### Wie es funktioniert
+
+```mermaid
+flowchart TB
+    CC["Claude Code"]
+    CD["Claude Desktop"]
+    CU["Cursor"]
+    WEB["ChatGPT Actions / Web-Apps"]
+
+    CC -->|stdio MCP| FWD["MCP-Forwarder<br/>stdio zu HTTP"]
+    CD -->|stdio MCP| FWD
+    CU -->|stdio MCP| FWD
+    WEB -->|"REST /api/v1 + Token"| D
+    CC -.->|"Hooks: Recall vor Edits,<br/>Kontext beim Session-Start"| D
+
+    FWD --> D["bastra-recall-Daemon<br/>127.0.0.1:6723<br/>ein Prozess für alle Clients"]
+    D --> IDX["BM25-Index<br/>+ optionale Embeddings"]
+    IDX --> V[("Dein Vault<br/>reines Markdown + YAML<br/>auf deiner Platte")]
+
+    D -.->|"save_memory schreibt eine Datei<br/>und indiziert sie neu"| V
+```
+
+Alles davon läuft auf deiner Maschine. Nichts verlässt sie, solange du nicht selbst einen Tunnel auf das REST-Gateway legst.
 
 ```
 Vault (konfigurierbar, reines Markdown + YAML-Frontmatter, Obsidian-kompatibel)
