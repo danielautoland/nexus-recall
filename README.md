@@ -140,6 +140,22 @@ confidence: 0.95
 
 The `recall_when` field is the bridge between save and recall: when saving, the AI declares the contexts under which future-sessions should be reminded. See [docs/memory-schema.md](./docs/memory-schema.md) for full field semantics and six example memories covering `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
+### Cookbook
+
+What this actually looks like in a working week.
+
+**1. The convention you stop re-explaining.** You tell Claude Code once that this repo puts route handlers, business logic and DB access in separate files. It saves a `preference` scoped to the project. Six sessions later, in a file it has never opened, the PreToolUse hook surfaces that rule *before* it writes the handler — and it splits the file without being asked.
+
+**2. The bug that only bites twice.** A focus-ring bug takes four iterations to pin down: stacked `:focus` styles on a nested input. When it's fixed, the fix and the *failed path* go in as a `lesson` with `recall_when: ["creating new input component", "writing input or form css"]`. The next time anyone touches an input, the wrong turn is already on the table.
+
+**3. One vault, two tools.** You work out a deployment sequence with Claude Code on Monday. On Thursday you're in Cursor, ask "how do we ship this again", and get your own Monday answer back — same daemon, same vault, no export step.
+
+**4. The preference that isn't about code.** "German, du-Form, terse, no closing summaries" is a `user-preference`. It costs one save and applies in every project and every client from then on — including the ones you set up next month.
+
+**5. Recall before the plan, not after it.** Ask for a multi-step plan in an area you haven't touched in weeks, and the session hook pulls the topology memory for that subsystem first: which files matter, what was deliberately left undone. The plan starts from where you left off instead of from a fresh reading of the repo.
+
+Memories are plain files — write them by hand in Obsidian if you'd rather, or let the AI save them and correct what it got wrong.
+
 ### Self-learning taxonomy
 
 The vault grows its own structure. When recent memories keep forming the same ad-hoc cluster (people, places, tools, …) without a home, the stop hook suggests recording a **convention** — a memory in the reserved scope `taxonomy` that fixes the cluster's folder, `topic_path` shape and tags. Active conventions are injected at session start and are binding for future saves. `save_memory` takes a `folder` argument so cluster members get a real folder (e.g. `memories/people/`), and re-saving with a changed folder *moves* the file (the old copy lands in the vault trash, recoverable). All of it lives per-vault on the free axes — the `type` schema stays fixed. Details: [docs/taxonomy.md](./docs/taxonomy.md).
@@ -535,6 +551,22 @@ confidence: 0.95
 ```
 
 Das `recall_when`-Feld ist die Brücke zwischen Save und Recall: beim Speichern deklariert die AI die Kontexte, in denen die spätere Sitzung daran erinnert werden soll. Siehe [docs/memory-schema.md](./docs/memory-schema.md) für die vollständige Feld-Semantik und sechs Beispiel-Memories für `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
+
+### Kochbuch
+
+Wie sich das in einer Arbeitswoche tatsächlich anfühlt.
+
+**1. Die Konvention, die du nicht mehr erklärst.** Du sagst Claude Code einmal, dass in diesem Repo Route-Handler, Business-Logik und DB-Zugriff in getrennte Dateien gehören. Das landet als projekt-bezogene `preference`. Sechs Sessions später, in einer Datei, die es nie geöffnet hat, holt der PreToolUse-Hook diese Regel hervor — *bevor* der Handler geschrieben wird. Die Datei wird geteilt, ohne dass du etwas sagst.
+
+**2. Der Bug, der nur zweimal beißt.** Ein Focus-Ring-Bug braucht vier Anläufe: gestapelte `:focus`-Styles auf einem verschachtelten Input. Wenn er sitzt, wandern die Lösung **und der Irrweg** als `lesson` in den Vault, mit `recall_when: ["neue Input-Komponente bauen", "Input- oder Form-CSS schreiben"]`. Beim nächsten Input liegt der Irrweg schon auf dem Tisch.
+
+**3. Ein Vault, zwei Tools.** Montag erarbeitest du mit Claude Code eine Deployment-Reihenfolge. Donnerstag sitzt du in Cursor, fragst „wie shippen wir das nochmal" — und bekommst deine eigene Montagsantwort zurück. Gleicher Daemon, gleicher Vault, kein Export dazwischen.
+
+**4. Die Präferenz, die nichts mit Code zu tun hat.** „Deutsch, Du-Form, knapp, keine Zusammenfassungen am Ende" ist eine `user-preference`. Ein Save, und sie gilt in jedem Projekt und jedem Client — auch in denen, die du nächsten Monat einrichtest.
+
+**5. Recall vor dem Plan, nicht danach.** Frag nach einem mehrstufigen Plan in einem Bereich, den du seit Wochen nicht angefasst hast: Der Session-Hook zieht zuerst die Topologie-Memory dieses Subsystems — welche Dateien zählen, was bewusst offen blieb. Der Plan setzt dort an, wo du aufgehört hast, statt beim Neulesen des Repos.
+
+Memories sind einfache Dateien — schreib sie von Hand in Obsidian, wenn dir das lieber ist, oder lass die AI speichern und korrigiere, was sie falsch verstanden hat.
 
 ### Selbstlernende Taxonomie
 
