@@ -16,6 +16,14 @@ import {
   BOLT_MS_MAX,
   BOLT_SPREAD_KEY,
 } from "./bolt-styles.js";
+import {
+  IMPACT_SPILL_BUDGET,
+  impactPhase,
+  impactProgress,
+  drawImpact,
+  drawSpill,
+  spillEdgesFor,
+} from "./impact.js";
 
 // Activity bolts (#217): a flaring node discharges along its connections.
 //
@@ -105,7 +113,10 @@ export function createRenderer(canvas, sim, initialHues) {
           const other = e.s?.id === from ? e.t : e.t?.id === from ? e.s : null;
           if (!other || other.ringHidden || seen.has(other.id)) continue;
           seen.add(other.id);
-          legs.push({ e, hop });
+          // `to` is the END the discharge travels toward — the edge alone does
+          // not say which of its two nodes gets struck, and the impact needs
+          // exactly that.
+          legs.push({ e, hop, to: other.id });
           next.push(other.id);
           taken++;
         }
@@ -113,6 +124,29 @@ export function createRenderer(canvas, sim, initialHues) {
       frontier = next;
     }
     return legs;
+  }
+
+  /** Which strands glow faintly around each struck node (impact.js).
+   *
+   *  Resolved once with the chain and kept on the flash, for the same reason
+   *  the chain is: the selection must not change between two flares of the
+   *  same memory. Only first-level impacts spill — deeper in the chain the
+   *  legs are already echoes, and an echo of an echo is noise.
+   */
+  function spillOf(legs) {
+    const used = new Set(legs.map((l) => l.e));
+    const byNode = new Map();
+    let budget = IMPACT_SPILL_BUDGET;
+    for (const leg of legs) {
+      if (budget <= 0) break;
+      if (leg.hop !== 1) continue;
+      const picked = spillEdgesFor(leg.to, sim.edges, used, boltRnd, idSeed(leg.to)).slice(0, budget);
+      if (!picked.length) continue;
+      for (const e of picked) used.add(e); // never spill the same strand twice
+      byNode.set(leg.to, picked);
+      budget -= picked.length;
+    }
+    return byNode;
   }
   let highlightLabelKey = null; // cloud label to keep bright while hovering
   let filterFn = null; // active sidebar filter — non-matching nodes dim
@@ -497,6 +531,39 @@ export function createRenderer(canvas, sim, initialHues) {
             spread: boltSpread,
             strokeEdge,
           });
+
+          // …and where it lands. The spill goes first so the struck node's
+          // own light sits on top of the strands it lit, not under them.
+          const phase = impactPhase(t);
+          if (phase <= 0) return;
+          const hit = sim.byId.get(leg.to);
+          if (!hit || hit.ringHidden) return;
+          const hop1 = BOLT_HOP_FALLOFF ** (leg.hop - 1);
+          for (const se of f.spill.get(leg.to) ?? []) {
+            if (se.s.ringHidden || se.t.ringHidden) continue;
+            drawSpill({
+              ctx,
+              e: se,
+              phase,
+              strength: hop1,
+              color: f.color,
+              camScale: camera.scale,
+              strokeEdge,
+            });
+          }
+          ctx.strokeStyle = f.color; // drawSpill/drawImpact reset alpha, not stroke
+          drawImpact({
+            ctx,
+            x: hit.x,
+            y: hit.y,
+            r: drawRadius(hit),
+            phase,
+            progress: impactProgress(t),
+            strength: hop1,
+            color: f.color,
+            camScale: camera.scale,
+            glowSprite,
+          });
         });
       }
       const ringT = Math.min((now - f.born) / 900, 1);
@@ -676,7 +743,8 @@ export function createRenderer(canvas, sim, initialHues) {
         prev.boltAt = now;
         return;
       }
-      flashes.set(id, { color, born: now, life: lifeMs, boltAt: now, links: boltChainOf(id) });
+      const links = boltChainOf(id);
+      flashes.set(id, { color, born: now, life: lifeMs, boltAt: now, links, spill: spillOf(links) });
     },
     setHover: (n) => (hover = n),
     setFocus: (n) => {
