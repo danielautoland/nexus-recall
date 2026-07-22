@@ -23,8 +23,20 @@ function proseRest(line: string): string {
 }
 /** Chars of leftover prose that make a non-list line a real body paragraph. */
 const PARAGRAPH_MIN_CHARS = 60;
-/** An index may open with a line of explanation; two are content. */
-const PARAGRAPH_TOLERANCE = 1;
+/**
+ * Paragraphs per link above which a file is content, not navigation.
+ *
+ * Counting paragraphs absolutely was wrong (zzallirog re-ran #221 against his
+ * vault): a real index may open with a long preamble — his carry 4, 5 and 15
+ * prose lines — and a tolerance of 1 read every one of them as a note. What
+ * separates them is not how much intro an index has but how much of it is
+ * scaffolding: an index stays mostly list even with a long introduction.
+ *
+ * Calibrated on the only real numbers available — his three genuine indexes at
+ * 3.1%, 8.5% and 2.9%, against the reported false positive at 70% and a
+ * list-heavy note at 25%. The gap between 8.5% and 25% is where this sits.
+ */
+const PARAGRAPHS_PER_LINK_MAX = 0.15;
 
 export function looksLikeIndexHub(body: string): boolean {
   // Code-Spans blanken, bevor gezählt wird: ein Body, der ÜBER Link-Syntax
@@ -43,13 +55,14 @@ export function looksLikeIndexHub(body: string): boolean {
   // 8 files skipped, 3 of them ordinary notes; the largest came back as a
   // degree-18 ghost). A dense memory — prose facts separated by `·`, links
   // inline — clears the density bar while being real content. So the density
-  // has to hold AND the file must have no body paragraphs: strip the links,
-  // and what an index leaves behind is list scaffolding, while a note leaves
-  // sentences. List lines don't count either way — notes use lists too.
+  // has to hold AND the prose has to stay marginal against the link volume:
+  // strip the links, and what an index leaves behind is list scaffolding with
+  // at most an introduction, while a note leaves sentences throughout. List
+  // lines don't count either way — notes use lists too.
   const paragraphs = contentLines.filter(
     (l) => !LIST_LINE_RE.test(l) && proseRest(l).length >= PARAGRAPH_MIN_CHARS,
   ).length;
-  return paragraphs <= PARAGRAPH_TOLERANCE;
+  return paragraphs / links <= PARAGRAPHS_PER_LINK_MAX;
 }
 
 /**

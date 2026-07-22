@@ -33,6 +33,34 @@ test("an index may open with one line of explanation and stay an index", () => {
   assert.equal(looksLikeIndexHub(withIntro), true);
 });
 
+/** Vorspann aus `n` echten Prosa-Absätzen, jeder über der 60-Zeichen-Marke. */
+function preamble(n: number): string[] {
+  return Array.from(
+    { length: n },
+    (_, i) =>
+      `Absatz ${i + 1}: Diese Datei hält die beiden Gedächtniszonen auseinander und erklärt, wofür sie da ist.`,
+  );
+}
+
+// zzallirogs Nachmessung an seinem Vault (#221): seine echten Indexe öffnen mit
+// 4, 5 und 15 Prosa-Absätzen. Eine absolute Absatz-Toleranz las sie alle als
+// Notiz — nach dem Fix blieb KEIN einziger Index mehr erkannt.
+test("a real index survives a long preamble — 4 paragraphs over 130 links", () => {
+  const body = ["# MEMORY", ...preamble(4), ...realIndex(130).split("\n").slice(1)].join("\n");
+  assert.equal(looksLikeIndexHub(body), true, "MEMORY.md: 4 Absätze auf 130 Links");
+});
+
+test("a real index survives even 15 paragraphs over 177 links", () => {
+  const body = ["# FEEDBACK_INDEX", ...preamble(15), ...realIndex(177).split("\n").slice(1)].join("\n");
+  assert.equal(looksLikeIndexHub(body), true, "FEEDBACK_INDEX.md: 15 Absätze auf 177 Links");
+});
+
+test("prose that outweighs the links is a note, however many links it carries", () => {
+  // Dieselbe Absatzzahl, aber nur ein Zehntel der Links: das kippt die Waage.
+  const body = ["# note", ...preamble(15), ...realIndex(15).split("\n").slice(1)].join("\n");
+  assert.equal(looksLikeIndexHub(body), false, "15 Absätze auf 15 Links sind Inhalt");
+});
+
 test("#221: a dense note with inline links is content, not navigation", () => {
   // Der gemeldete False Positive: Prosa-Fakten, `·`-getrennt, Links mittendrin.
   const dense = [
