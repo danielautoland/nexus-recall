@@ -366,7 +366,8 @@ body.panel-pinned #live-history { right: 270px; }
   display: flex;
   flex: 1; /* das Panel ist ein Column-Flex mit max-height: 62vh */
   min-height: 0; /* ohne das scrollt das Kind nicht, es wächst */
-  overflow: hidden;
+  /* KEIN overflow: hidden — die Leiste hängt links heraus. Die Liste selbst
+     scrollt (overflow-y), hier ist nichts zu clippen. */
 }
 #live-history-list {
   flex: 1;
@@ -376,18 +377,20 @@ body.panel-pinned #live-history { right: 270px; }
 }
 #live-history-list::-webkit-scrollbar { display: none; }
 #live-history-ticks[hidden] { display: none; }
-/* AUSSERHALB des Panels, links daneben — wie die Leiste am Notice-Deck.
-   Containing Block ist #live-history (position: fixed), nicht der Body: der
-   clippt (overflow: hidden) und würde die Marken abschneiden. */
+/* Links AUSSERHALB, am Anfang der Liste. Anders als am Deck oben verankert:
+   das Deck wächst von unten und schließt unten bündig ab, die Historie liest
+   sich von oben nach unten und fängt oben an. Containing Block ist der Body,
+   damit die erste Marke auf der ersten Zeile sitzt und nicht neben der
+   Kopfzeile — der Body clippt dafür nicht. */
 #live-history-ticks {
   position: absolute;
   right: calc(100% + 12px);
-  bottom: 0;
+  top: 0;
   max-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 7px;
   width: 44px; /* wie am Deck: die aktive Marke reicht bis ans Panel heran */
   overflow: hidden;
