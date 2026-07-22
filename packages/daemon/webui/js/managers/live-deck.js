@@ -31,6 +31,19 @@ import { createTickRail } from "../components/tick-rail.js";
 
 const KIND_ORDER = ["delete", "add", "change", "read"];
 
+/** A card's kind, read back off the class live-updates.js gave it.
+ *
+ *  The deck deliberately owns no state about the cards — it reads what is in
+ *  the DOM, so it cannot drift out of sync with the manager that creates them.
+ *  Summary cards ("+N older changes") carry no kind class and return null:
+ *  they are counted in the total but have nothing to tally. */
+function kindOf(card) {
+  for (const cls of card.classList) {
+    if (cls.startsWith("kind-")) return cls.slice("kind-".length);
+  }
+  return null;
+}
+
 export function createLiveDeck({ cardsEl }) {
   const ticksEl = $("#live-ticks");
   const moreEl = $("#live-more");
