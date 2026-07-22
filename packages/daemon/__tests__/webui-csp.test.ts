@@ -70,11 +70,20 @@ test("CSP: the document carries a policy that bounds where the map may talk", as
 
   // Die Egress-Liste ist der eigentliche Punkt: der Daemon + die drei
   // Wetter-Dienste, und sonst niemand.
+  // Token-Vergleich statt Teilstring-Match: `https://api.open-meteo.com` als
+  // Muster würde auch auf `https://api.open-meteo.com.angreifer.tld` passen —
+  // ausgerechnet der Test, der die Egress-Liste bewacht, hätte den Tippfehler
+  // durchgelassen, gegen den er schützt.
   const connect = /connect-src ([^;]+)/.exec(csp)?.[1] ?? "";
-  assert.match(connect, /'self'/);
-  assert.match(connect, /https:\/\/api\.open-meteo\.com/);
-  assert.match(connect, /https:\/\/geocoding-api\.open-meteo\.com/);
-  assert.match(connect, /https:\/\/api\.bigdatacloud\.net/);
+  const sources = connect.trim().split(/\s+/);
+  for (const src of [
+    "'self'",
+    "https://api.open-meteo.com",
+    "https://geocoding-api.open-meteo.com",
+    "https://api.bigdatacloud.net",
+  ]) {
+    assert.ok(sources.includes(src), `connect-src must list exactly ${src}`);
+  }
   assert.ok(!connect.includes("*"), "a wildcard would make the whole policy decorative");
 
   // Der Viewer hat weder eval noch inline-script — wer das aufweicht, muss

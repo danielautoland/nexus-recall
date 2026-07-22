@@ -65,12 +65,13 @@ test("archive_memory moves the file to the vault trash and drops it from the ind
 
     assert.equal(result.id, "int-1");
     assert.equal(result.superseded_by, "real-1");
-    await stat(result.archived_to); // trash copy exists
     assert.ok(result.archived_to.includes(join(".bastra", "trash")), "lands in the vault trash");
     await assert.rejects(stat(join(dir, "int-1.md")), "original file is gone");
     assert.equal(deps.vault.get("int-1"), undefined, "dropped from the index without waiting for a watcher");
 
-    // audit stamp: the archived copy points at its adopted successor
+    // Audit-Stempel: die archivierte Kopie zeigt auf ihren Nachfolger. Das
+    // Lesen beweist die Existenz gleich mit — ein vorheriges stat() wäre nur
+    // ein zweiter Blick auf dieselbe Datei (stat-dann-open, TOCTOU).
     const raw = await readFile(result.archived_to, "utf8");
     assert.match(raw, /superseded_by: real-1/);
     assert.match(raw, /obsolete: true/);
