@@ -55,8 +55,22 @@ async function install(projectDir: string, dryRun: boolean): Promise<number> {
     }
     // The file is ours by name, but a user may have edited it. Keep a copy
     // rather than silently discarding their wording.
+    //
+    // "wx" on the backup: the name is derived from a timestamp and therefore
+    // predictable, so refusing to write through an existing path (or a symlink
+    // planted at one) is the difference between a backup and an overwrite
+    // primitive. A collision means something is already sitting there — that
+    // is a reason to stop, not to clobber.
     const backup = `${target}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-    await writeFile(backup, existing, "utf8");
+    try {
+      await writeFile(backup, existing, { encoding: "utf8", flag: "wx" });
+    } catch (e) {
+      process.stderr.write(
+        `error: cannot back up the existing rules to ${backup}: ${(e as Error).message}\n` +
+          "  refusing to overwrite your version without one\n",
+      );
+      return 1;
+    }
     await writeFile(target, source, "utf8");
     process.stdout.write(`✓ updated ${target}\n  previous version kept at ${backup}\n`);
     return 0;

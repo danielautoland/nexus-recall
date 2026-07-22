@@ -166,7 +166,9 @@ async function readHookLines(logDir: string, cutoff: number): Promise<Line[]> {
 function readDaemonLines(cutoff: number): Line[] {
   const out: Line[] = [];
   for (const path of DAEMON_STDOUT) {
-    if (!existsSync(path)) continue;
+    // No existsSync pre-check: between the check and the read the file can be
+    // rotated or removed — by log retention, by a restart, by /tmp cleanup —
+    // and the failed read is the only answer that is actually current.
     let mtime: number;
     let raw: string;
     try {
@@ -183,15 +185,32 @@ function readDaemonLines(cutoff: number): Line[] {
   return out;
 }
 
-/** Tail one growing file, emitting whole lines as they land. */
+/**
+ * Tail one growing file, emitting whole lines as they land.
+ *
+ * Everything here asks the filesystem and handles the failure, rather than
+ * checking first and acting second: a followed log can be rotated at midnight,
+ * pruned by retention, or cleared out of /tmp while the tail is running. The
+ * window between a check and the act is exactly when that happens, and a
+ * crashing `bastra logs -f` is a worse answer than a skipped poll.
+ */
 function followFile(path: string, onLine: (text: string) => void): () => void {
-  let offset = existsSync(path) ? statSync(path).size : 0;
+  const sizeOf = (): number | null => {
+    try {
+      return statSync(path).size;
+    } catch {
+      return null; // not there (yet) — the next poll will pick it up
+    }
+  };
+
+  let offset = sizeOf() ?? 0;
   let reading = false;
   let pending = "";
 
   const pump = (): void => {
-    if (reading || !existsSync(path)) return;
-    const size = statSync(path).size;
+    if (reading) return;
+    const size = sizeOf();
+    if (size === null) return;
     if (size < offset) offset = 0; // truncated or rotated out from under us
     if (size === offset) return;
     reading = true;

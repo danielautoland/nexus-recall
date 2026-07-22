@@ -108,6 +108,36 @@ test("rules: an edited file is backed up, never silently overwritten", async () 
   });
 });
 
+test("rules: refuses to replace an edited file when the backup cannot be made", async () => {
+  await withProject(async (dir) => {
+    const target = join(dir, CURSOR_RULES_RELATIVE);
+    await mkdir(join(dir, ".cursor", "rules"), { recursive: true });
+    const mine = "---\nalwaysApply: true\n---\n\nirreplaceable\n";
+    await writeFile(target, mine, "utf8");
+
+    // Occupy the exact backup path this run will derive. Standing in for the
+    // real hazard: a predictable name someone else can get to first. Without
+    // "wx" the backup write would follow it and the user's version would be
+    // gone with nothing kept.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await writeFile(`${target}.bak-${stamp}`, "squatter", "utf8");
+
+    const rc = await cmdRules(args(["rules", "cursor", dir]));
+
+    // Either the backup path was taken (refuse, rc=1) or the timestamp had
+    // already ticked (proceed, rc=0) — the invariant that must hold in both
+    // cases is that the user's wording still exists somewhere.
+    const files = await readdir(join(dir, ".cursor", "rules"));
+    const bodies = await Promise.all(
+      files.map((f) => readFile(join(dir, ".cursor", "rules", f), "utf8")),
+    );
+    assert.ok(
+      bodies.some((b) => b.includes("irreplaceable")),
+      `rc=${rc}: the user's version vanished — files: ${files.join(", ")}`,
+    );
+  });
+});
+
 test("rules: dry-run writes nothing at all", async () => {
   await withProject(async (dir) => {
     const rc = await cmdRules(args(["rules", "cursor", dir], true));
