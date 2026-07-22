@@ -123,7 +123,40 @@ test("api health: same payload as /health — one shape, two doors", async () =>
     const api = await httpReq(port, "GET", "/api/v1/health", {
       Authorization: `Bearer ${TOKEN}`,
     });
-    assert.deepEqual(JSON.parse(api.body), JSON.parse(open.body));
+    const a = JSON.parse(api.body) as Record<string, unknown>;
+    const o = JSON.parse(open.body) as Record<string, unknown>;
+    // uptime_seconds is read at request time, so two calls a moment apart may
+    // legitimately differ by one second. Compare it as a field that exists on
+    // both doors, and the rest byte for byte.
+    assert.deepEqual(Object.keys(a).sort(), Object.keys(o).sort());
+    assert.equal(typeof a.uptime_seconds, "number");
+    assert.equal(typeof o.uptime_seconds, "number");
+    delete a.uptime_seconds;
+    delete o.uptime_seconds;
+    assert.deepEqual(a, o);
+  });
+});
+
+test("health: reports how long this daemon has been up (#22)", async () => {
+  await withServer(async (port) => {
+    const res = await httpReq(port, "GET", "/health");
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body) as { uptime_seconds: number; started_at: string };
+
+    assert.equal(typeof body.uptime_seconds, "number");
+    assert.ok(body.uptime_seconds >= 0, "a fresh daemon is not negative seconds old");
+    assert.ok(body.uptime_seconds < 60, "a test server did not just run for a minute");
+
+    // started_at must be a real ISO timestamp, and the two fields must agree:
+    // the point is a supervisor being able to spot a restart, so a started_at
+    // that drifts from uptime_seconds would defeat the whole feature.
+    const started = Date.parse(body.started_at);
+    assert.ok(!Number.isNaN(started), `started_at is not parseable: ${body.started_at}`);
+    const derived = (Date.now() - started) / 1000;
+    assert.ok(
+      Math.abs(derived - body.uptime_seconds) < 2,
+      `started_at (${derived}s ago) and uptime_seconds (${body.uptime_seconds}) disagree`,
+    );
   });
 });
 

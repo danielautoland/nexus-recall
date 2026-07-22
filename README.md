@@ -305,6 +305,8 @@ Endpoints (all `POST`, JSON body):
 
 In addition, `GET`/`POST /settings/docs` reads/writes the product-docs settings (`{mode, language}`) — loopback-only like `/hook/*`, intended for local UIs such as the Bastra Mac app's options pane.
 
+**Liveness:** `GET /health` (token-free on loopback) and `GET /api/v1/health` (token + CORS, for browsers) return the same document — `ok`, `version`, `vault_size`, `uptime_seconds`, `started_at`, and the semantic-recall state (`on` / `off` / `degraded`). Neither counts as activity, so probing does not keep the daemon from its idle shutdown. A daemon whose `uptime_seconds` keeps resetting is restarting behind your back.
+
 Auth and CORS:
 
 - **Token:** `bastra token` prints the daemon's API token, minting one on first use (`bastra token rotate` issues a fresh one; `bastra token clear` removes it, locking out browser/REST clients). It's stored in `cli-settings.json`; the daemon reads it at startup, so restart after issuing, rotating, or clearing. `bastra` (the status panel) and `bastra status` show whether a token is set, without printing it. `BASTRA_API_TOKEN` overrides it.
@@ -653,6 +655,8 @@ Endpoints (alle `POST`, JSON-Body):
 | `/api/v1/save_product_doc` | Produkt-Doku |
 
 Zusätzlich liest/schreibt `GET`/`POST /settings/docs` die Produkt-Doku-Settings (`{mode, language}`) — loopback-only wie `/hook/*`, gedacht für lokale UIs wie die Options-Pane der Bastra Mac-App.
+
+**Liveness:** `GET /health` (auf Loopback ohne Token) und `GET /api/v1/health` (Token + CORS, für Browser) liefern dasselbe Dokument — `ok`, `version`, `vault_size`, `uptime_seconds`, `started_at` und den Zustand des semantischen Recalls (`on` / `off` / `degraded`). Beide zählen nicht als Aktivität, ein Polling hält den Daemon also nicht vom Idle-Shutdown ab. Ein Daemon, dessen `uptime_seconds` immer wieder zurückspringt, startet unbemerkt neu.
 
 Auth und CORS:
 
