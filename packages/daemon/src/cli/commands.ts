@@ -99,6 +99,7 @@ Commands:
   logs                       Readable view of what the hooks and the daemon
                              recorded — one line per event, newest last
                              (-f to follow, --since 1h, --source hook|daemon)
+  completion <shell>         Print a Tab-completion script (bash, zsh, fish)
   help                       Show this help
   version                    Show version
 

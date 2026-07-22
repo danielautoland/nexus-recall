@@ -31,6 +31,7 @@ import { cmdOnboard } from "./cli/onboard-cmd.js";
 import { cmdSkills } from "./cli/skills-cmd.js";
 import { cmdFeedback } from "./cli/feedback-cmd.js";
 import { cmdLogs, parseSince } from "./cli/logs.js";
+import { cmdCompletion } from "./cli/completion.js";
 import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
@@ -64,6 +65,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "onboard": return cmdOnboard(args);
     case "skills": return cmdSkills(args);
     case "feedback": return cmdFeedback(args);
+    case "completion": return cmdCompletion(args.surface);
     case "logs": {
       const sinceMs = args.since === null ? 5 * 60_000 : parseSince(args.since);
       if (sinceMs === null) {

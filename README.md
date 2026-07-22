@@ -290,6 +290,16 @@ Claude Desktop has no hook system, so bastra makes memory autonomous through the
 
 Full details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (wiki).
 
+### Shell completion
+
+```bash
+bastra completion zsh  > "${fpath[1]}/_bastra"          # zsh
+bastra completion bash > /usr/local/etc/bash_completion.d/bastra
+bastra completion fish > ~/.config/fish/completions/bastra.fish
+```
+
+Completes subcommands, surfaces (`install <TAB>` → `claude-code`, `cursor`, …) and flags. Start a new shell afterwards.
+
 ### REST API (for non-MCP clients)
 
 The daemon exposes a REST API on `http://127.0.0.1:6723/api/v1/` covering every tool the MCP server offers. This is the integration point for clients that can't speak stdio-MCP — most notably **ChatGPT Custom GPT Actions**, which call HTTPS endpoints with an OpenAPI schema.
@@ -642,6 +652,16 @@ Claude Desktop hat kein Hook-System, also macht bastra das Gedächtnis über die
 `bastra update` zieht den neuesten Release (npm oder Homebrew), registriert alle Surfaces neu und startet den Daemon neu. Für freihändige Updates `bastra config set update.mode auto` — bastra stagt dann am Session-Start eine neue Version, ohne eine laufende Session zu stören. `bastra` ohne Argument zeigt Version, Update-Status, Daemon-Health und Vault-Größe.
 
 Details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (Wiki).
+
+### Shell-Completion
+
+```bash
+bastra completion zsh  > "${fpath[1]}/_bastra"          # zsh
+bastra completion bash > /usr/local/etc/bash_completion.d/bastra
+bastra completion fish > ~/.config/fish/completions/bastra.fish
+```
+
+Vervollständigt Subcommands, Surfaces (`install <TAB>` → `claude-code`, `cursor`, …) und Flags. Danach eine neue Shell starten.
 
 ### REST API (für Nicht-MCP-Clients)
 
