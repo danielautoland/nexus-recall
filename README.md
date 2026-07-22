@@ -317,6 +317,17 @@ To reach this daemon from a hosted web app (e.g. a site's admin talking to the u
 
 > **Status:** the ChatGPT Custom GPT Actions path does **not work end-to-end yet**. The REST API and the OpenAPI spec are in place, but the Custom GPT integration is still being worked out — see the roadmap below.
 
+### Troubleshooting
+
+- **Daemon not reachable / `ECONNREFUSED`** — the MCP forwarder normally auto-spawns the daemon on the first tool call. Check with `curl -sS http://127.0.0.1:6723/health`; `bastra status` shows the same thing in readable form. If the forwarder was disabled (`BASTRA_FORWARDER_SPAWN=0`), remove that override and restart your AI client.
+- **MCP is not registered with Claude Code, Claude Desktop, or Cursor** — run `bastra doctor` to see which config is missing or broken, then re-run `bastra install <surface>`. The config paths are printed in both outputs.
+- **Vault path missing or not writable** — pass `--vault <path>` during install or set `BASTRA_VAULT_PATH`. The directory must exist and your user must be able to create `.md` files in it; use a throwaway vault while testing.
+- **Port `6723` already in use** — find the owner with `lsof -i :6723 -P -n`. Either stop the stale process or move the daemon with `BASTRA_HTTP_PORT=<port>` and point forwarders/hooks at the same endpoint via `BASTRA_DAEMON_URL` / `BASTRA_HTTP_URL`.
+- **Recall returns nothing, or hits from the wrong vault** — confirm the registered vault with `bastra doctor`. Memory files need valid YAML frontmatter; files that fail validation are skipped. Weak or missing `recall_when` values are the other common cause — that field carries the most search weight.
+- **Semantic recall shows `degraded`** — the daemon booted with embeddings on, but the provider stopped answering (Ollama not running, model deleted). `/health` reports `semantic_recall: "degraded"` plus the underlying error; recall keeps working on BM25 alone. Fix with `ollama serve` / `bastra embeddings on`.
+- **Where logs live** — `bastra logs` renders them readably (`-f` to follow, `--since 1h`, `--source hook|daemon`); one line per event instead of raw JSONL. The files themselves sit outside the vault at `~/.bastra/logs/events-YYYY-MM-DD.jsonl` (override: `BASTRA_LOG_PATH`). The daemon deletes event logs older than **90 days** (`BASTRA_LOG_RETENTION_DAYS`); the floor is 30 days, because the curator mines that window for reflex promotions and a shorter setting would quietly degrade recall.
+- **Reset derived state without losing memories** — stop the daemon, then delete only derived files inside `<vault>/.bastra/`: `embeddings.json` and `embed-cache.json` rebuild themselves on the next start. Never delete your `.md` files, `audit-log.ndjson`, or `trash/` unless you intend to remove user data.
+
 ### Roadmap
 
 Milestone-based, not phase-based. Each gate is a hard pass/fail.
@@ -654,6 +665,17 @@ Auth und CORS:
 Um diesen Daemon aus einer gehosteten Web-App zu erreichen (z.B. das Admin einer Seite, das aus dem Browser auf den *lokalen* Vault des Users zugreift): `BASTRA_CORS_ORIGIN` auf die Seiten-Origin setzen, `bastra token` ausführen und das Token in der Seite hinterlegen. Läuft die Seite über **HTTPS** (z.B. `https://bastra.io`), schickt Chrome für den Public-Origin-→-localhost-Call einen **Private-Network-Access**-Preflight; der Daemon beantwortet ihn für erlaubte Origins automatisch mit `Access-Control-Allow-Private-Network: true` — ohne Zusatzkonfiguration. Für einen serverseitigen Client wie ChatGPT: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und mit Tunnel-URL + Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
 
 > **Status:** Der ChatGPT-Custom-GPT-Actions-Weg **funktioniert noch nicht end-to-end**. REST-API und OpenAPI-Spec stehen, aber die Custom-GPT-Anbindung ist noch in Arbeit — siehe Roadmap unten.
+
+### Fehlerbehebung
+
+- **Daemon nicht erreichbar / `ECONNREFUSED`** — der MCP-Forwarder startet den Daemon normalerweise beim ersten Tool-Aufruf selbst. Prüfen mit `curl -sS http://127.0.0.1:6723/health`; `bastra status` zeigt dasselbe in lesbar. Falls der Forwarder abgeschaltet wurde (`BASTRA_FORWARDER_SPAWN=0`), die Variable entfernen und den AI-Client neu starten.
+- **MCP ist in Claude Code, Claude Desktop oder Cursor nicht registriert** — `bastra doctor` zeigt, welche Config fehlt oder kaputt ist, danach `bastra install <surface>` erneut ausführen. Die Config-Pfade stehen in beiden Ausgaben.
+- **Vault-Pfad fehlt oder ist nicht beschreibbar** — beim Installieren `--vault <pfad>` übergeben oder `BASTRA_VAULT_PATH` setzen. Der Ordner muss existieren und dein User dort `.md`-Dateien anlegen dürfen; zum Testen einen Wegwerf-Vault nehmen.
+- **Port `6723` ist belegt** — Besitzer finden mit `lsof -i :6723 -P -n`. Entweder den alten Prozess stoppen oder den Daemon per `BASTRA_HTTP_PORT=<port>` umziehen und Forwarder/Hooks über `BASTRA_DAEMON_URL` / `BASTRA_HTTP_URL` auf denselben Endpoint zeigen lassen.
+- **Recall liefert nichts oder Treffer aus dem falschen Vault** — den registrierten Vault mit `bastra doctor` prüfen. Memory-Dateien brauchen gültiges YAML-Frontmatter; ungültige werden übersprungen. Die zweite häufige Ursache sind schwache oder fehlende `recall_when`-Werte — dieses Feld hat das größte Suchgewicht.
+- **Semantischer Recall steht auf `degraded`** — der Daemon ist mit Embeddings gestartet, aber der Provider antwortet nicht mehr (Ollama läuft nicht, Modell gelöscht). `/health` meldet `semantic_recall: "degraded"` samt Fehler; Recall läuft auf BM25 weiter. Beheben mit `ollama serve` bzw. `bastra embeddings on`.
+- **Wo die Logs liegen** — `bastra logs` zeigt sie lesbar an (`-f` zum Mitlaufen, `--since 1h`, `--source hook|daemon`): eine Zeile pro Event statt rohem JSONL. Die Dateien selbst liegen außerhalb des Vaults unter `~/.bastra/logs/events-YYYY-MM-DD.jsonl` (überschreibbar mit `BASTRA_LOG_PATH`). Event-Logs älter als **90 Tage** löscht der Daemon selbst (`BASTRA_LOG_RETENTION_DAYS`); die Untergrenze sind 30 Tage, weil der Curator dieses Fenster für Reflex-Promotions auswertet — ein kleinerer Wert würde den Recall still verschlechtern.
+- **Abgeleiteten Zustand zurücksetzen, ohne Memories zu verlieren** — Daemon stoppen, dann ausschließlich abgeleitete Dateien in `<vault>/.bastra/` löschen: `embeddings.json` und `embed-cache.json` bauen sich beim nächsten Start neu auf. Niemals die `.md`-Dateien, `audit-log.ndjson` oder `trash/` löschen, außer du willst bewusst Nutzerdaten entfernen.
 
 ### Roadmap
 
