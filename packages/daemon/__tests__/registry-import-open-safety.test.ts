@@ -569,6 +569,13 @@ body
   });
 
   const res = await openDocument(vault, { id: "doc-x" });
+  // Die Zusicherung gilt überall; die BEGRÜNDUNG ist plattformabhängig. Auf
+  // macOS greift der Existenz-Check, anderswo steigt open_document schon davor
+  // aus (documents-handler.ts:228) — der Test verlangte bisher überall die
+  // macOS-Meldung und war auf den Linux-Runnern der CI dauerhaft rot.
   assert.equal(res.ok, false, "a missing file must not be reported as opened");
-  assert.match(res.message ?? "", /no longer exists/);
+  assert.match(
+    res.message ?? "",
+    process.platform === "darwin" ? /no longer exists/ : /only supported on macOS/,
+  );
 });
