@@ -158,6 +158,16 @@ export function createLiveUpdates(deps) {
     if (historyRail.sync(history.length)) historyRail.paint(history.length);
   });
 
+  // Same as the deck: the rail marks the row under the cursor, not just the
+  // scroll position. With a few hundred rows the marks are a scale, so several
+  // rows share one — the rail component maps that.
+  historyList.addEventListener("pointerover", (ev) => {
+    const row = ev.target.closest(".lh-row");
+    const rows = [...historyList.querySelectorAll(".lh-row")];
+    historyRail.setHover(row ? rows.indexOf(row) : null, history.length);
+  });
+  historyList.addEventListener("pointerleave", () => historyRail.setHover(null, history.length));
+
   // ── notice cards ───────────────────────────────────────────────────
   function card(entry) {
     const meta = KIND_META[entry.kind] ?? KIND_META.add;

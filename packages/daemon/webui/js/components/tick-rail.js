@@ -33,9 +33,21 @@ const TICK_H = 2;
 export function createTickRail({ railEl, scrollEl, sizeEl = null, maxTicks = 30 }) {
   const heightSource = () => sizeEl ?? scrollEl;
   let activeIndex = 0;
+  /** Which item the pointer is on, independent of where the list is scrolled.
+   *  Two different questions — "where am I in the list" and "what am I touching"
+   *  — so they are two marks, not one fighting over the same state. */
+  let hoverIndex = null;
 
   /** How many marks to draw for `count` items — the count itself, or the cap. */
   const tickCount = (count) => Math.min(count, maxTicks);
+
+  /** Item index → mark index. They are the same until the cap kicks in; past it
+   *  the rail is a scale and several items share a mark. */
+  function tickFor(item, count) {
+    const n = tickCount(count);
+    if (n < 2 || count < 2) return 0;
+    return Math.round((item / (count - 1)) * (n - 1));
+  }
 
   /** Which mark is lit, from the scroll position. Exact at both ends: 0 at the
    *  top, n-1 at the bottom, whatever the item heights do in between. */
@@ -76,11 +88,13 @@ export function createTickRail({ railEl, scrollEl, sizeEl = null, maxTicks = 30 
         }),
       );
     }
+    const hovered = hoverIndex === null ? null : tickFor(hoverIndex, count);
     [...railEl.children].forEach((t, i) => {
       t.classList.toggle("active", i === activeIndex);
       // neighbours lean towards the active mark, so it reads as a position on
       // a rail instead of a lone bright dash
       t.classList.toggle("near", Math.abs(i - activeIndex) === 1);
+      t.classList.toggle("hover", i === hovered);
     });
     fit(n);
   }
@@ -94,6 +108,14 @@ export function createTickRail({ railEl, scrollEl, sizeEl = null, maxTicks = 30 
       return true;
     },
     paint,
+    /** Point the rail at the item under the cursor, or clear it with null.
+     *  Redraws only on a real change — this runs off pointer movement. */
+    setHover(item, count) {
+      const next = item === null || item === undefined ? null : item;
+      if (next === hoverIndex) return;
+      hoverIndex = next;
+      paint(count);
+    },
     /** Full pass: read the scroll position, then redraw. */
     update(count) {
       this.sync(count);

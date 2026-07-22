@@ -72,6 +72,21 @@ body.panel-open #live-lane { right: 286px; }
 body.panel-pinned #live-lane { right: 270px; }
 /* `relative` because the tick rail is anchored to THIS box (see below) */
 #live-stack { position: relative; display: flex; flex-direction: column; width: 280px; }
+/* Hover bridge. The first beat of the opening slides the pile DOWN into the
+   space #live-more vacates — which pulls the top card out from under a cursor
+   resting on its upper edge. The hover then dies mid-gesture and the deck
+   snaps shut, and you have to chase it with the mouse. This strip covers
+   exactly that retreat, so the pointer keeps something to hold on to. It is
+   invisible and only as tall as the bar it compensates for. */
+#live-stack::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -30px;
+  height: 30px;
+  pointer-events: auto;
+}
 
 #live-cards {
   display: flex;
@@ -139,6 +154,14 @@ body.panel-pinned #live-lane { right: 270px; }
 #live-lane:hover .lt-tick { width: 22px; opacity: 0.6; }
 #live-lane:hover .lt-tick.near { width: 30px; opacity: 0.75; }
 #live-lane:hover .lt-tick.active { width: 44px; opacity: 1; }
+/* The mark for the item under the cursor. Deliberately the accent colour
+   rather than a longer dash: the rail already uses LENGTH for the scroll
+   position, and two lengths competing on one rail cannot be told apart. */
+.lt-tick.hover,
+#live-lane:hover .lt-tick.hover {
+  background: var(--accent);
+  opacity: 1;
+}
 
 /* ── "+N still below", broken down by kind ───────────────────────── */
 #live-more[hidden] { display: none; }

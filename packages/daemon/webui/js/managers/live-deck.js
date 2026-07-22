@@ -164,5 +164,15 @@ export function createLiveDeck({ cardsEl }) {
     if (rail.sync(cards().length)) rail.paint(cards().length);
   });
 
+  // The rail answers two questions at once: the lit mark says where the list is
+  // scrolled, this one says which card the cursor is on. Delegated, so cards
+  // arriving and expiring need no wiring of their own.
+  cardsEl.addEventListener("pointerover", (ev) => {
+    const card = ev.target.closest(".live-card");
+    const list = cards();
+    rail.setHover(card ? list.indexOf(card) : null, list.length);
+  });
+  cardsEl.addEventListener("pointerleave", () => rail.setHover(null, cards().length));
+
   return { sync };
 }
