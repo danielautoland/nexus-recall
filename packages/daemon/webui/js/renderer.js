@@ -15,6 +15,8 @@ import {
   BOLT_MS_MIN,
   BOLT_MS_MAX,
   BOLT_SPREAD_KEY,
+  hopDelayFor,
+  legDurationFor,
 } from "./bolt-styles.js";
 import {
   IMPACT_SPILL_BUDGET,
@@ -505,14 +507,15 @@ export function createRenderer(canvas, sim, initialHues) {
       // flaring node stays the hero and the edges merely hint at where the
       // activity radiates.
       const chainAge = now - f.boltAt;
-      const hopDelay = boltMs * BOLT_HOP_DELAY_RATIO;
+      const hopDelay = hopDelayFor(boltMs, BOLT_HOP_DELAY_RATIO);
       const style = BOLT_STYLES[boltStyle] ?? null; // "off" resolves to nothing on purpose
-      // The window has to outlast the bolt by the impact/afterglow tail: at
-      // short durations those have a millisecond floor and would otherwise be
-      // cut off mid-fade — which is exactly how the afterglow went missing
-      // below ~1s while looking right at 2s.
-      const tail = tailMs(boltMs);
-      if (style && chainAge < boltMs + BOLT_HOPS * hopDelay + tail && f.links.length) {
+      // The window has to outlast the LONGEST leg plus its tail: later levels
+      // have their own floor (legDurationFor) and the impact/afterglow have
+      // theirs, and anything cut off here is cut off mid-fade — which is
+      // exactly how the afterglow went missing below ~1s while looking right
+      // at 2s.
+      const slowestLeg = legDurationFor(2, boltMs);
+      if (style && chainAge < slowestLeg + BOLT_HOPS * hopDelay + tailMs(slowestLeg) && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
         ctx.strokeStyle = f.color;
         ctx.lineJoin = "round";
@@ -521,9 +524,13 @@ export function createRenderer(canvas, sim, initialHues) {
           if (e.s.ringHidden || e.t.ringHidden) return;
           // each level starts a little later, so the discharge visibly runs on
           // instead of every leg lighting up at once
+          // The slider times the BOLT; a level that fires afterwards gets its
+          // own travel time, or a short discharge would compress the whole
+          // chain into one twitch.
+          const legDur = legDurationFor(leg.hop, boltMs);
           const legMs = chainAge - (leg.hop - 1) * hopDelay;
-          const t = legMs / boltMs;
-          if (legMs <= 0 || t >= 1 + tail / boltMs) return;
+          const t = legMs / legDur;
+          if (legMs <= 0 || legMs >= legDur + tailMs(legDur)) return;
           // fast in, slow out — activity strikes and then burns down
           const strength = Math.min(t * 6, 1) * (1 - t) * BOLT_HOP_FALLOFF ** (leg.hop - 1);
           // WHICH strands and HOW STRONG is settled here; WHAT is painted on
@@ -548,8 +555,8 @@ export function createRenderer(canvas, sim, initialHues) {
 
           // …and where it lands. The spill goes first so the struck node's
           // own light sits on top of the strands it lit, not under them.
-          const phase = impactPhase(legMs, boltMs);
-          const sPhase = spillPhase(legMs, boltMs); // trails the strike, see impact.js
+          const phase = impactPhase(legMs, legDur);
+          const sPhase = spillPhase(legMs, legDur); // trails the strike, see impact.js
           if (phase <= 0 && sPhase <= 0) return;
           const hit = sim.byId.get(leg.to);
           if (!hit || hit.ringHidden) return;
@@ -573,7 +580,7 @@ export function createRenderer(canvas, sim, initialHues) {
             y: hit.y,
             r: drawRadius(hit),
             phase,
-            progress: impactProgress(legMs, boltMs),
+            progress: impactProgress(legMs, legDur),
             strength: hop1,
             color: f.color,
             camScale: camera.scale,

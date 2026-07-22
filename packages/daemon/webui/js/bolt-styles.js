@@ -23,6 +23,32 @@ export const BOLT_SPREAD_KEY = "bastra-vault-map-bolt-spread";
 export const BOLT_SPREAD_DEFAULT = 1;
 export const BOLT_SEGMENTS = 7; // zigzag points per bolt
 
+/** What the duration slider actually governs, and what it does not.
+ *
+ *  The slider sets the time for THE BOLT — the first-level discharge, the thing
+ *  the eye follows. The strands that fire afterwards are a separate event and
+ *  need their own room: deriving their duration from the slider means that at
+ *  300ms the onward chain gets 300ms per level and 128ms between levels, which
+ *  is not a chain travelling outward but three near-simultaneous twitches.
+ *
+ *  So levels beyond the first have a floor of their own, in real milliseconds.
+ *  Above ~520ms the slider is already more generous and nothing changes — the
+ *  long end of the range, including the 2s look, is untouched. */
+export const CHAIN_MIN_LEG_MS = 520; // a following level's own travel time
+export const CHAIN_MIN_HOP_DELAY_MS = 190; // and the gap before it starts
+
+/** Stagger between chain levels: a fraction of the discharge, but never so
+ *  small that the levels collapse into each other. */
+export function hopDelayFor(boltMs, ratio) {
+  return Math.max(CHAIN_MIN_HOP_DELAY_MS, boltMs * ratio);
+}
+
+/** How long one leg of the chain travels. Level 1 is the bolt itself and obeys
+ *  the slider exactly; later levels get their own minimum. */
+export function legDurationFor(hop, boltMs) {
+  return hop === 1 ? boltMs : Math.max(CHAIN_MIN_LEG_MS, boltMs);
+}
+
 /** Deterministic 0..1 value. */
 export function boltRnd(seed) {
   const x = Math.sin(seed * 12.9898) * 43758.5453;

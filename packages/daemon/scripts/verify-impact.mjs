@@ -19,7 +19,13 @@ import {
   IMPACT_SPILL_MAX,
   IMPACT_SPILL_ALPHA,
 } from "../webui/js/impact.js";
-import { boltRnd } from "../webui/js/bolt-styles.js";
+import {
+  boltRnd,
+  legDurationFor,
+  hopDelayFor,
+  CHAIN_MIN_LEG_MS,
+  CHAIN_MIN_HOP_DELAY_MS,
+} from "../webui/js/bolt-styles.js";
 
 const ok = (name, cond, detail = "") => {
   console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
@@ -100,6 +106,31 @@ for (const ms of SLIDER) {
                         spillWindow(ms).start + spillWindow(ms).dur) - ms;
   ok(`tail budget covers the overhang at ${ms}ms`, tailMs(ms) >= Math.max(0, need) - 1e-9,
      `tail ${Math.round(tailMs(ms))}ms vs needed ${Math.round(Math.max(0, need))}ms`);
+}
+
+
+// ── 1d. the slider times the BOLT; what fires after gets its own time ───────
+// "die zeit der animation muss gemessen werden für die blitze, die anderen
+// verbindungen die dann feuern brauchen extra ihre zeit". Deriving the onward
+// chain from the slider means that at 300ms three levels arrive within 380ms
+// of each other, each lasting 300ms — not a chain travelling outward.
+const RATIO = 180 / 420;
+for (const ms of [300, 420, 1000, 2000, 4000]) {
+  ok(`level 1 obeys the slider exactly at ${ms}ms`, legDurationFor(1, ms) === ms);
+  ok(`following levels get room at ${ms}ms`, legDurationFor(2, ms) >= CHAIN_MIN_LEG_MS,
+     `${legDurationFor(2, ms)}ms`);
+  ok(`levels stay apart at ${ms}ms`, hopDelayFor(ms, RATIO) >= CHAIN_MIN_HOP_DELAY_MS,
+     `${Math.round(hopDelayFor(ms, RATIO))}ms between levels`);
+}
+// the long end must be pure slider — no floor may touch the signed-off look
+for (const ms of [1000, 2000, 4000]) {
+  ok(`no floor bites at ${ms}ms`,
+     legDurationFor(2, ms) === ms && Math.abs(hopDelayFor(ms, RATIO) - ms * RATIO) < 1e-9,
+     `leg ${legDurationFor(2, ms)}ms, gap ${Math.round(hopDelayFor(ms, RATIO))}ms`);
+}
+// a following level must never be SHORTER than the bolt that spawned it
+for (const ms of [300, 420, 1000, 2000, 4000]) {
+  ok(`level 2 is never shorter than level 1 at ${ms}ms`, legDurationFor(2, ms) >= legDurationFor(1, ms));
 }
 
 // ── 2. the impact stays under the origin flare ──────────────────────────────
