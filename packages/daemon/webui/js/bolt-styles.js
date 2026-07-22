@@ -12,6 +12,10 @@
  */
 
 export const BOLT_STYLE_KEY = "bastra-vault-map-bolt-style";
+export const BOLT_MS_KEY = "bastra-vault-map-bolt-ms";
+export const BOLT_MS_DEFAULT = 420;
+export const BOLT_MS_MIN = 300;
+export const BOLT_MS_MAX = 4000;
 export const BOLT_SEGMENTS = 7; // zigzag points per bolt
 
 /** Deterministic 0..1 value. */
@@ -136,12 +140,25 @@ export const BOLT_STYLES = {
   },
 };
 
-/** Style id from storage, falling back to the original look. */
+/** Style id from storage, falling back to the original look. "off" is a valid
+ *  stored value even though it has no entry here — the renderer resolves an
+ *  unknown id to "draw nothing", which is exactly what off means. */
 export function storedBoltStyle() {
   try {
     const v = localStorage.getItem(BOLT_STYLE_KEY);
-    return v && BOLT_STYLES[v] ? v : "bolt";
+    return v && (BOLT_STYLES[v] || v === "off") ? v : "bolt";
   } catch {
     return "bolt"; // private mode / storage disabled — never break the map over a preference
+  }
+}
+
+/** Discharge duration from storage, clamped into the slider's own range. */
+export function storedBoltMs() {
+  try {
+    const n = Number(localStorage.getItem(BOLT_MS_KEY));
+    if (!Number.isFinite(n) || n <= 0) return BOLT_MS_DEFAULT;
+    return Math.min(BOLT_MS_MAX, Math.max(BOLT_MS_MIN, n));
+  } catch {
+    return BOLT_MS_DEFAULT;
   }
 }

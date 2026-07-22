@@ -97,6 +97,21 @@ export function createViewControls(deps) {
   });
   renderBoltStyleSwitch();
 
+  // Duration slider: zzallirog asked for "longer, parallel, rather than a short
+  // blast" — but the right length is taste, not a constant, so it moves here
+  // instead of into a second hardcoded number. Applies to every style; the
+  // level stagger scales with it, so a slow discharge keeps its rhythm.
+  function renderBoltSpeed() {
+    const ms = renderer.getBoltMs();
+    $("#bolt-speed").value = String(ms);
+    $("#bolt-speed-value").textContent = `${(ms / 1000).toFixed(1)}s`;
+  }
+  $("#bolt-speed").addEventListener("input", (ev) => {
+    renderer.setBoltMs(Number(ev.target.value));
+    renderBoltSpeed();
+  });
+  renderBoltSpeed();
+
   // Dauerauslöser: keeps firing flares so the styles above can be compared
   // without querying the vault. Starts off on every load — see bolt-demo.js.
   function renderBoltDemoSwitch() {

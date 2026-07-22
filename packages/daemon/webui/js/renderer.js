@@ -4,7 +4,16 @@
  *  focused, then its neighborhood lights up and the rest dims. */
 
 import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE, HEAT_MIN_WEIGHT } from "./graph-data.js";
-import { BOLT_STYLES, boltRnd, storedBoltStyle, BOLT_STYLE_KEY } from "./bolt-styles.js";
+import {
+  BOLT_STYLES,
+  boltRnd,
+  storedBoltStyle,
+  storedBoltMs,
+  BOLT_STYLE_KEY,
+  BOLT_MS_KEY,
+  BOLT_MS_MIN,
+  BOLT_MS_MAX,
+} from "./bolt-styles.js";
 
 // Activity bolts (#217): a flaring node discharges along its connections.
 //
@@ -27,8 +36,15 @@ const BOLT_FANOUT = [Infinity, 1, 1];
 const BOLT_SPREAD_CHANCE = [1, 0.35, 0.2]; // odds a neighbour passes the discharge on
 const BOLT_MAX_LEGS = 96; // emergency ceiling — a hub with degree 300 must not eat the frame
 const BOLT_HOP_FALLOFF = 0.22; // visibility per level beyond the first
-const BOLT_HOP_DELAY_MS = 110; // stagger per level; < BOLT_MS, so the chain never breaks
-const BOLT_MS = 420; // arc duration — a fraction of the node's flare lifetime
+// Duration of one discharge, adjustable from the sidebar. 420ms is the look
+// that shipped; zzallirog asked for the option of something far calmer
+// ("longer, parallel, rather than a short blast"), hence a slider instead of a
+// second hardcoded number.
+const BOLT_MS_DEFAULT = 420;
+// Stagger between levels as a FRACTION of the duration, not a fixed 110ms: the
+// chain has to keep its rhythm when the whole thing is stretched to 4s, and a
+// fraction below 1 also guarantees the levels overlap, so it never breaks apart.
+const BOLT_HOP_DELAY_RATIO = 110 / 420;
 const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
 const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
 
@@ -53,6 +69,7 @@ export function createRenderer(canvas, sim, initialHues) {
   let highlightFn = null; // legend hover predicate (nodes outside it dim)
   const flashes = new Map(); // live-notice flash (#216): id → {color, born, life, boltAt, links}
   let boltStyle = storedBoltStyle(); // how activity travels a strand — sidebar switch
+  let boltMs = storedBoltMs(); // how long one discharge runs — sidebar slider
 
   /** The chain of edges an activity bolt travels: breadth-first from the
    *  flaring node, up to BOLT_HOPS levels deep, as [{ e, hop }].
@@ -447,9 +464,10 @@ export function createRenderer(canvas, sim, initialHues) {
       // flaring node stays the hero and the edges merely hint at where the
       // activity radiates.
       const chainAge = now - f.boltAt;
-      if (chainAge < BOLT_MS + BOLT_HOPS * BOLT_HOP_DELAY_MS && f.links.length) {
+      const hopDelay = boltMs * BOLT_HOP_DELAY_RATIO;
+      const style = BOLT_STYLES[boltStyle] ?? null; // "off" resolves to nothing on purpose
+      if (style && chainAge < boltMs + BOLT_HOPS * hopDelay && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
-        const style = BOLT_STYLES[boltStyle] ?? BOLT_STYLES.bolt;
         ctx.strokeStyle = f.color;
         ctx.lineJoin = "round";
         f.links.forEach((leg, i) => {
@@ -457,7 +475,7 @@ export function createRenderer(canvas, sim, initialHues) {
           if (e.s.ringHidden || e.t.ringHidden) return;
           // each level starts a little later, so the discharge visibly runs on
           // instead of every leg lighting up at once
-          const t = (chainAge - (leg.hop - 1) * BOLT_HOP_DELAY_MS) / BOLT_MS;
+          const t = (chainAge - (leg.hop - 1) * hopDelay) / boltMs;
           if (t <= 0 || t >= 1) return;
           // fast in, slow out — activity strikes and then burns down
           const strength = Math.min(t * 6, 1) * (1 - t) * BOLT_HOP_FALLOFF ** (leg.hop - 1);
@@ -673,8 +691,19 @@ export function createRenderer(canvas, sim, initialHues) {
     /** Activity animation: "bolt" | "pulse" | "trace" (bolt-styles.js). The
      *  choice survives a reload — it is a taste, not a session state. */
     getBoltStyle: () => boltStyle,
+    getBoltMs: () => boltMs,
+    setBoltMs: (ms) => {
+      const n = Math.min(BOLT_MS_MAX, Math.max(BOLT_MS_MIN, Number(ms)));
+      if (!Number.isFinite(n)) return;
+      boltMs = n;
+      try {
+        localStorage.setItem(BOLT_MS_KEY, String(n));
+      } catch {
+        /* storage disabled — the slider still works for this session */
+      }
+    },
     setBoltStyle: (id) => {
-      if (!BOLT_STYLES[id]) return;
+      if (!BOLT_STYLES[id] && id !== "off") return;
       boltStyle = id;
       try {
         localStorage.setItem(BOLT_STYLE_KEY, id);
