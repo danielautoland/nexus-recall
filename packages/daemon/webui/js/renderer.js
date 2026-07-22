@@ -3,7 +3,7 @@
  *  Calm by default: edges are near-invisible until a node is hovered or
  *  focused, then its neighborhood lights up and the rest dims. */
 
-import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE } from "./graph-data.js";
+import { clusterColor, nodeRadius, glowSprite, EMOTION_CORE, HEAT_MIN_WEIGHT } from "./graph-data.js";
 import { BOLT_STYLES, boltRnd, storedBoltStyle, BOLT_STYLE_KEY } from "./bolt-styles.js";
 
 // Activity bolts (#217): a flaring node discharges along its connections.
@@ -365,9 +365,12 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
         ctx.fill();
-        if (n.heat && !dimmed) {
+        if (n.heat && (n.reach?.weight ?? 0) >= HEAT_MIN_WEIGHT && !dimmed) {
           // #217: Usage-Heat (#154) — oft angewandte Memories tragen einen
           // hellen Kern; die zweite Demand-Uhr neben dem Salience-Glow.
+          // #227: erst ab HEAT_MIN_WEIGHT. Ein einzelnes `loaded` ist ein
+          // Streifschuss — auf einem kalten Vault trüge es sonst 1.0 und die
+          // Karte behauptete, das sei die heißeste Memory überhaupt.
           ctx.globalAlpha = nodeAlpha * n.heat * 0.5;
           ctx.fillStyle = "#ffffff";
           ctx.beginPath();

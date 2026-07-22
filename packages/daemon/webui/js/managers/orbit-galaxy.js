@@ -9,6 +9,8 @@
  *  Also home of the orbit math primitives the view shares (GOLDEN, rnd,
  *  discRFor) — they have no DOM/state dependencies either. */
 
+import { HEAT_MIN_WEIGHT } from "../graph-data.js";
+
 export const GOLDEN = 2.399963; // radians — Fibonacci / phyllotaxis step
 export const DWARF_MAX = 4;
 
@@ -61,7 +63,11 @@ export function galaxyPlacement(entries, edges, distanceMode) {
   const scored = entries
     .filter(([key]) => key !== "user")
     .map(([key, members], i) => {
-      const heatAvg = members.reduce((s, n) => s + (n.heat ?? 0), 0) / members.length;
+      // #227: dieselbe Schwelle wie der Halo. Sonst zieht ein Knoten, der
+      // sichtbar NICHT als heiß gilt, trotzdem still an der Anordnung.
+      const heatAvg =
+        members.reduce((s, n) => s + ((n.reach?.weight ?? 0) >= HEAT_MIN_WEIGHT ? (n.heat ?? 0) : 0), 0) /
+        members.length;
       const weave = (toUser.get(key) ?? 0) / members.length + heatAvg * 0.5;
       return { key, members, i, weave, intake: isIntake(key, members), discR: discRFor(members.length) };
     });

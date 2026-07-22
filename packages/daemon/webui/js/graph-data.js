@@ -144,6 +144,22 @@ export function clusterColor(hues, key, sat, light) {
 
 /** #217 Valenz: emotion → heißer Glow-Core. Cluster-Fill bleibt die
  *  Karten-Identität; das Gefühl sitzt im Kern des Glows. neutral = kein Core. */
+/** Events a memory needs before its heat is drawn at all (#227).
+ *
+ *  `heat` is a share of THIS vault's hottest node, so on a cold corpus a single
+ *  event reads as 1.0 — zzallirog measured two of 528 nodes painted as the
+ *  hottest memories he owned, and they were merely the only ones touched. On
+ *  this vault 83 of 215 reached nodes sit at weight 1: one `loaded`, nothing
+ *  else. That is a graze, not demand.
+ *
+ *  Two is the honest floor because `acted_on` counts double: a memory that was
+ *  APPLIED once keeps its core, one that was merely opened does not. Applied
+ *  counts, looked-at doesn't.
+ *
+ *  Deliberately a display rule, not an API one — the daemon keeps serving heat
+ *  and reach in full, the map decides what it shows. */
+export const HEAT_MIN_WEIGHT = 2;
+
 export const EMOTION_CORE = {
   frustration: "hsl(8 70% 60%)",
   success: "hsl(140 55% 55%)",
