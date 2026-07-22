@@ -19,19 +19,20 @@
 
 /** When on a leg's own 0..1 timeline the discharge counts as arrived.
  *
- *  Tuned down from 0.62: keying it to `pulse`, whose head only reaches the far
- *  end at t ≈ 0.87, made the strike feel like it came after the event rather
- *  than being it. The default style `bolt` puts its zigzag across the whole
- *  strand immediately, so the eye is already at the far node long before the
- *  slowest style gets there. */
-export const IMPACT_AT = 0.38;
+ *  Walked down 0.62 → 0.38 → 0.22 by eye. The first value was keyed to `pulse`,
+ *  whose head only reaches the far end at t ≈ 0.87; but the default style puts
+ *  its zigzag across the whole strand at once, so the eye is at the far node
+ *  almost immediately and anything later reads as lag. The strike is now near
+ *  the front of the leg — it IS the event, not a report of it. */
+export const IMPACT_AT = 0.22;
 
 /** When the spilled strands pick up, on the same 0..1 leg timeline.
  *
- *  Deliberately after IMPACT_AT: the strike lands, and only then does the
- *  neighbourhood answer. Firing both on one phase — which is what it did at
- *  first — collapses cause and consequence into a single flat event. */
-export const IMPACT_SPILL_AT = 0.56;
+ *  Deliberately well after IMPACT_AT: the strike lands, and the neighbourhood
+ *  answers a beat later. Firing both on one phase — which is what it did at
+ *  first — collapses cause and consequence into a single flat event. Widening
+ *  this gap is what "Einschlag früher, Rest später" means in numbers. */
+export const IMPACT_SPILL_AT = 0.66;
 
 /** How many of the target's other strands glow along. Three is the most that
  *  still reads as "a couple"; beyond that a hub turns into a starburst. */

@@ -52,10 +52,12 @@ const BOLT_HOP_FALLOFF = 0.22; // visibility per level beyond the first
 // ("longer, parallel, rather than a short blast"), hence a slider instead of a
 // second hardcoded number.
 const BOLT_MS_DEFAULT = 420;
-// Stagger between levels as a FRACTION of the duration, not a fixed 110ms: the
-// chain has to keep its rhythm when the whole thing is stretched to 4s, and a
-// fraction below 1 also guarantees the levels overlap, so it never breaks apart.
-const BOLT_HOP_DELAY_RATIO = 110 / 420;
+// Stagger between levels as a FRACTION of the duration, not a fixed number of
+// ms: the chain has to keep its rhythm when the whole thing is stretched to 4s,
+// and a fraction below 1 also guarantees the levels overlap, so it never breaks
+// apart. Widened from 110/420 on Daniel's "Einschlag früher, Rest später" — the
+// onward chain now waits noticeably longer after the strike it follows.
+const BOLT_HOP_DELAY_RATIO = 180 / 420;
 const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
 const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
 
