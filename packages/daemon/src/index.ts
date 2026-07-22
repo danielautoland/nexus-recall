@@ -87,7 +87,7 @@ import { spawnSync } from "node:child_process";
 // env-Flag — wenn ein Pro-License-Service kommt, ersetzt der das hier.
 const DOCUMENT_WRITE_ENABLED = envFirst("BASTRA_DOCUMENT_WRITE", "NEXUS_DOCUMENT_WRITE") === "1";
 
-const DAEMON_VERSION = "0.8.5";
+const DAEMON_VERSION = "0.8.6";
 const DEFAULT_HTTP_PORT = 6723;
 
 // ── CLI delegation guard ─────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ async function main(): Promise<void> {
         });
 
   const server = new Server(
-    { name: "bastra-recall", version: "0.8.5" },
+    { name: "bastra-recall", version: "0.8.6" },
     { capabilities: { tools: {} } },
   );
 

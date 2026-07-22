@@ -6,6 +6,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.6] — 2026-07-22
+
+The mindspace stops being a picture of your vault and starts being a view of it
+working. Alongside that, the import path came through an adversarial re-audit —
+several findings were destructive, and they are the reason this release exists.
+
+### Added
+
+- **Activity travels the strands.** When a memory is recalled, read or written,
+  the bolt now runs along the actual edges to its neighbours instead of cutting
+  across empty space — memory to memory to memory. How far a bolt may leave its
+  strand, how long activity keeps running, and whether it runs at all are
+  sliders and a switch in the sidebar, because ambient motion is a preference,
+  not a feature.
+- **Nodes say why they glow.** Usage heat is drawn only where there is real
+  demand rather than after a single graze, the demand clock carries a time term
+  so old attention fades, and a node's tooltip explains its own brightness.
+  `GET /api/v1/graph` now serves the raw counts behind the normalized share, so
+  the number is auditable and not just pretty.
+- **Live notices for recall.** Every hit that `recall` and the PreToolUse hook
+  actually serve surfaces as a notice — you can watch which memories your agent
+  is being handed while it works. The notices are a deck with a tick rail
+  instead of a wall of cards, and the session history uses the same rail.
+- **Local weather, opt-in.** The map can tint its backdrop with the weather
+  where you are — picked by GPS or typed into a topbar chip that shows
+  temperature, condition and place. Off until you choose a place; coordinates
+  are rounded to ~11 km and the picker states plainly, before you decide, that
+  they leave the machine.
+- **Depth-true galaxy labels** in the universe view, and a re-tuned mindspace
+  that reads as space rather than as a disc.
+- **`GET /api/v1/health`** — reachability without spending a recall.
+- **A TypeScript producer for the anno-check symbol table** (`tools/`), built
+  from the compiler. The annotation gate's reference producer reads a code-graph
+  engine we do not run; the format needs neither. Verified against the reference
+  implementation's own fixture, symbol for symbol.
+- **doc2query bridge for colloquial RU/UA → EN** in the eval corpus, with a
+  register guard so documents already written in the target register are not
+  expanded a second time.
+
+### Fixed
+
+- **`save_memory` with `overwrite` is a patch, not a replace** (#240, #239,
+  #242). It silently dropped every field the caller did not resend — provenance,
+  valence, relations. Overwriting to fix a typo could strip a memory bare.
+- **Import never overwrites a foreign node** (#240). Provenance is checked
+  before a write, and the automatic legacy migration was removed outright rather
+  than made safer: it could lose data, and no import needs it.
+- **No destructive or half-applied file operations** (#240/A4, A5). Trash moves
+  are versioned, document writes cannot land partially, and a failed step leaves
+  the vault as it was.
+- **An import batch keeps its structure.** A single-batch import collapsed every
+  memory into one cluster because the source hierarchy sat unread in
+  `topic_path` — found and fixed by **zzallirog** (#243), whose PR also brought
+  the re-announce cooldown for live notices.
+- **A save no longer announces itself twice.** The save path indexes its own
+  write and the watcher then reported the same file as a fresh add, so the
+  topbar counter rose by two per save and only a reload put it straight.
+- **A notice reaches its memory after a daemon restart.** The delivery cursor
+  lives in daemon memory and resets to zero on restart, which silently swallowed
+  the events an open map had not yet seen — including the birth of a node it
+  then could not open.
+- **A busy memory still announces itself.** The quiet window could be re-armed
+  without bound by a steady writer, so a memory under load never surfaced at all.
+- **Index detection judges prose per link**, not preamble length, so a genuine
+  index is not mistaken for a note and vice versa.
+- **`find_document` reports `docs_indexed`**, so an empty result is readable as
+  "nothing indexed" rather than "nothing found".
+- **The weather chip catches up** instead of showing a reading from hours ago
+  when the tab has been in the background.
+
+### Security
+
+- **The map runs under a Content-Security-Policy** that bounds its egress to the
+  hosts it actually needs.
+- **Three patchable advisories pinned out** of the MCP SDK's dependency tail.
+- The CSP test compares hosts instead of matching substrings, so a permissive
+  policy can no longer pass by accident.
+- `BASTRA_ALLOW_REMOTE_OLLAMA` is documented as the explicit opt-in it is.
+
 ## [0.8.5] — 2026-07-19
 
 ### Added
@@ -701,6 +780,8 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.6
+[0.8.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.5
 [0.8.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.4
 [0.8.3]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.3
 [0.8.2]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.2
