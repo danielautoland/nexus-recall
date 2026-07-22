@@ -56,6 +56,7 @@ export function createLiveUpdates(deps) {
   let on = (localStorage.getItem(LIVE_KEY) ?? "on") === "on";
   let sinceSeq = null; // last delivery seq we've seen; null → not yet baselined
   let pollTimer = 0;
+  let inFlight = false; // one poll at a time — see the note in poll()
   const history = []; // session-scope, newest first
   let cardDepth = 0; // rising z-index so the newest card tops the deck
   // deck presentation (overlap limit, "+N", the left tick rail) lives apart —
@@ -307,7 +308,16 @@ export function createLiveUpdates(deps) {
   }
 
   async function poll() {
-    if (!on) return;
+    if (!on || inFlight) return;
+    // One request at a time. The interval fires on a clock, not on completion,
+    // so a slow answer (or a tab catching up on coalesced timers) used to leave
+    // two polls in the air holding the SAME cursor: both then replayed the same
+    // entries into cards, and whichever landed second could carry the LOWER seq
+    // — which the restart check below reads as a new server and rewinds to, so
+    // the next poll fetches those entries yet again. A pile of notices that
+    // never drains and a "daemon restarted" every few seconds, from nothing but
+    // overlapping requests.
+    inFlight = true;
     try {
       const res = await fetch(sinceSeq === null ? "/ui/updates" : `/ui/updates?since=${sinceSeq}`);
       if (!res.ok) return;
@@ -346,6 +356,8 @@ export function createLiveUpdates(deps) {
       );
     } catch {
       // daemon briefly away — next poll retries
+    } finally {
+      inFlight = false;
     }
   }
 

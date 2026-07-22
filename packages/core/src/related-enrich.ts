@@ -80,7 +80,17 @@ export class RelatedEnricher {
   start(): void {
     if (this.detach) return;
     this.detach = this.embeddings.onEmbed((id) => {
-      void this.enrich(id);
+      // Enrichment is best-effort and runs detached, so an error here has no
+      // caller to reach — it becomes an unhandled rejection, and Node ends the
+      // process for those. It killed the daemon in practice: on a cloud-synced
+      // vault the provider can remove the temp file before the atomic rename
+      // reaches it (ENOENT on a file written milliseconds earlier), and every
+      // save that hit it took the whole daemon down. launchd then restarted it,
+      // which the map honestly reported as "daemon restarted" — a background
+      // nicety must never be able to do that.
+      void this.enrich(id).catch((err) => {
+        console.error(`[bastra.related] enrich failed for ${id}: ${(err as Error).message}`);
+      });
     });
   }
 

@@ -146,3 +146,59 @@ test("Hysterese: bestehender Link überlebt bis threshold−ε, neuer braucht th
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+/** Stub whose onEmbed hands the listener back, so a test can fire it. */
+function firableEmbeddings(hits: { id: string; score: number }[]) {
+  let listener: ((id: string) => void) | null = null;
+  const stub = {
+    findSimilarById(_id: string, _k: number) {
+      return hits;
+    },
+    onEmbed(l: (id: string) => void) {
+      listener = l;
+      return () => {
+        listener = null;
+      };
+    },
+  };
+  return { index: stub as unknown as EmbeddingIndex, fire: (id: string) => listener?.(id) };
+}
+
+test("a failing enrichment cannot take the process down", async () => {
+  // Enrichment runs detached from the embed event, so a throw inside it has no
+  // caller to reach: it surfaces as an unhandled rejection, and Node ends the
+  // process for those. That happened for real — on a cloud-synced vault the
+  // provider can delete the temp file before the atomic rename gets to it, and
+  // every save that hit the race killed the daemon.
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-enrich-detached-"));
+  const rejections: unknown[] = [];
+  const onRejection = (err: unknown): void => {
+    rejections.push(err);
+  };
+  process.on("unhandledRejection", onRejection);
+  try {
+    await writeFile(path.join(dir, "a.md"), memoryMd("a"), "utf8");
+    await writeFile(path.join(dir, "b.md"), memoryMd("b"), "utf8");
+    const vault = new Vault(dir);
+    await vault.init();
+
+    // The file disappears while the vault still has it indexed — the same shape
+    // as the cloud-provider race, and enough to make the rewrite throw.
+    await rm(path.join(dir, "a.md"));
+
+    const { index, fire } = firableEmbeddings([{ id: "b", score: 0.9 }]);
+    const enricher = new RelatedEnricher(vault, index);
+    enricher.start();
+
+    assert.doesNotThrow(() => fire("a"));
+    // give the detached promise a chance to reject
+    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setImmediate(r));
+
+    assert.deepEqual(rejections, [], "the detached enrichment must swallow its own failure");
+    enricher.stop();
+  } finally {
+    process.off("unhandledRejection", onRejection);
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
