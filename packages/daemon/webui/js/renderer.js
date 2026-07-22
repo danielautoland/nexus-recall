@@ -21,6 +21,7 @@ import {
   impactPhase,
   impactProgress,
   spillPhase,
+  tailMs,
   drawImpact,
   drawSpill,
   spillEdgesFor,
@@ -506,7 +507,12 @@ export function createRenderer(canvas, sim, initialHues) {
       const chainAge = now - f.boltAt;
       const hopDelay = boltMs * BOLT_HOP_DELAY_RATIO;
       const style = BOLT_STYLES[boltStyle] ?? null; // "off" resolves to nothing on purpose
-      if (style && chainAge < boltMs + BOLT_HOPS * hopDelay && f.links.length) {
+      // The window has to outlast the bolt by the impact/afterglow tail: at
+      // short durations those have a millisecond floor and would otherwise be
+      // cut off mid-fade — which is exactly how the afterglow went missing
+      // below ~1s while looking right at 2s.
+      const tail = tailMs(boltMs);
+      if (style && chainAge < boltMs + BOLT_HOPS * hopDelay + tail && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
         ctx.strokeStyle = f.color;
         ctx.lineJoin = "round";
@@ -515,34 +521,39 @@ export function createRenderer(canvas, sim, initialHues) {
           if (e.s.ringHidden || e.t.ringHidden) return;
           // each level starts a little later, so the discharge visibly runs on
           // instead of every leg lighting up at once
-          const t = (chainAge - (leg.hop - 1) * hopDelay) / boltMs;
-          if (t <= 0 || t >= 1) return;
+          const legMs = chainAge - (leg.hop - 1) * hopDelay;
+          const t = legMs / boltMs;
+          if (legMs <= 0 || t >= 1 + tail / boltMs) return;
           // fast in, slow out — activity strikes and then burns down
           const strength = Math.min(t * 6, 1) * (1 - t) * BOLT_HOP_FALLOFF ** (leg.hop - 1);
           // WHICH strands and HOW STRONG is settled here; WHAT is painted on
           // them belongs to the chosen style (bolt-styles.js). Every style
           // draws on the strand's own curve — strokeEdge is handed over so the
           // lit connection is literally the same line the map draws.
-          style.draw({
-            ctx,
-            e,
-            cp: edgeBend(e),
-            t,
-            strength,
-            seed: tick + i * 131,
-            camScale: camera.scale,
-            spread: boltSpread,
-            strokeEdge,
-          });
+          // Only while the bolt is actually travelling: past t=1 the leg is
+          // kept alive purely for the tail, and `strength` has gone negative.
+          if (t < 1) {
+            style.draw({
+              ctx,
+              e,
+              cp: edgeBend(e),
+              t,
+              strength,
+              seed: tick + i * 131,
+              camScale: camera.scale,
+              spread: boltSpread,
+              strokeEdge,
+            });
+          }
 
           // …and where it lands. The spill goes first so the struck node's
           // own light sits on top of the strands it lit, not under them.
-          const phase = impactPhase(t);
-          if (phase <= 0) return;
+          const phase = impactPhase(legMs, boltMs);
+          const sPhase = spillPhase(legMs, boltMs); // trails the strike, see impact.js
+          if (phase <= 0 && sPhase <= 0) return;
           const hit = sim.byId.get(leg.to);
           if (!hit || hit.ringHidden) return;
           const hop1 = BOLT_HOP_FALLOFF ** (leg.hop - 1);
-          const sPhase = spillPhase(t); // trails the strike, see impact.js
           for (const se of f.spill.get(leg.to) ?? []) {
             if (se.s.ringHidden || se.t.ringHidden) continue;
             drawSpill({
@@ -562,7 +573,7 @@ export function createRenderer(canvas, sim, initialHues) {
             y: hit.y,
             r: drawRadius(hit),
             phase,
-            progress: impactProgress(t),
+            progress: impactProgress(legMs, boltMs),
             strength: hop1,
             color: f.color,
             camScale: camera.scale,

@@ -11,6 +11,11 @@ import {
   IMPACT_AT,
   IMPACT_SPILL_AT,
   spillPhase,
+  impactWindow,
+  spillWindow,
+  tailMs,
+  IMPACT_MIN_MS,
+  SPILL_MIN_MS,
   IMPACT_SPILL_MAX,
   IMPACT_SPILL_ALPHA,
 } from "../webui/js/impact.js";
@@ -41,9 +46,10 @@ function recorder() {
 const glowSprite = () => ({ sprite: true });
 
 // ── 1. phase curve ──────────────────────────────────────────────────────────
-ok("phase is 0 while the bolt is still travelling", impactPhase(0) === 0 && impactPhase(IMPACT_AT) === 0);
-ok("phase is 0 once the leg is over", impactPhase(1) === 0 && impactPhase(1.2) === 0);
-const peak = [...Array(101).keys()].map((i) => ({ t: i / 100, p: impactPhase(i / 100) }))
+const REF = 420; // the shipped default duration
+ok("phase is 0 while the bolt is still travelling", impactPhase(0, REF) === 0 && impactPhase(IMPACT_AT * REF, REF) === 0);
+ok("phase is 0 once its own window is over", impactPhase(impactWindow(REF).start + impactWindow(REF).dur, REF) === 0);
+const peak = [...Array(101).keys()].map((i) => ({ t: i / 100, p: impactPhase((i / 100) * REF, REF) }))
   .reduce((a, b) => (b.p > a.p ? b : a));
 ok("phase peaks inside the arrival window", peak.p > 0.9 && peak.t > IMPACT_AT && peak.t < 1,
    `peak ${peak.p.toFixed(2)} at t=${peak.t}`);
@@ -56,13 +62,45 @@ ok("rises fast, decays slow", fall > rise * 1.5, `rise ${rise.toFixed(3)} vs fal
 // (which is how it started) flattens the two into a single event.
 ok("the spill starts after the strike", IMPACT_SPILL_AT > IMPACT_AT,
    `spill ${IMPACT_SPILL_AT} > impact ${IMPACT_AT}`);
-const firstImpact = [...Array(200).keys()].map((i) => i / 200).find((t) => impactPhase(t) > 0);
-const firstSpill = [...Array(200).keys()].map((i) => i / 200).find((t) => spillPhase(t) > 0);
+const firstImpact = [...Array(200).keys()].map((i) => i / 200).find((t) => impactPhase(t * REF, REF) > 0);
+const firstSpill = [...Array(200).keys()].map((i) => i / 200).find((t) => spillPhase(t * REF, REF) > 0);
 ok("nothing spills before the strike is visible", firstSpill > firstImpact,
    `impact from t=${firstImpact.toFixed(3)}, spill from t=${firstSpill.toFixed(3)}`);
-ok("both are done by the end of the leg", impactPhase(0.999) >= 0 && spillPhase(1) === 0);
+ok("both fade to nothing eventually", impactPhase(9999, REF) === 0 && spillPhase(9999, REF) === 0);
 // and the strike itself must not sit at the very end of the travel
 ok("the strike is not late in the leg", IMPACT_AT < 0.5, `IMPACT_AT ${IMPACT_AT}`);
+
+
+// ── 1c. the slider must not be able to hide the afterglow ───────────────────
+// The bug this pins: every window used to be a FRACTION of the discharge, so
+// at 300ms the afterglow got 102ms — geometrically correct, perceptually gone,
+// while the same design read perfectly at 2s.
+const SLIDER = [300, 420, 700, 1000, 2000, 4000];
+const PERCEPTIBLE_MS = 250;
+for (const ms of SLIDER) {
+  const s = spillWindow(ms), i = impactWindow(ms);
+  ok(`afterglow stays perceptible at ${ms}ms`, s.dur >= PERCEPTIBLE_MS,
+     `${Math.round(s.dur)}ms`);
+  ok(`strike stays perceptible at ${ms}ms`, i.dur >= PERCEPTIBLE_MS, `${Math.round(i.dur)}ms`);
+}
+// the 2s look is the reference — it must be untouched by the floors
+const ref2s = { i: impactWindow(2000), s: spillWindow(2000) };
+ok("the 2s reference is purely proportional (floors do not bite)",
+   Math.abs(ref2s.i.dur - 0.78 * 2000) < 1 && Math.abs(ref2s.s.dur - 0.34 * 2000) < 1,
+   `impact ${Math.round(ref2s.i.dur)}ms, spill ${Math.round(ref2s.s.dur)}ms`);
+// and the ordering survives everywhere
+for (const ms of SLIDER) {
+  const fi = [...Array(400).keys()].map((k) => (k / 400) * ms * 2).find((x) => impactPhase(x, ms) > 0);
+  const fs = [...Array(400).keys()].map((k) => (k / 400) * ms * 2).find((x) => spillPhase(x, ms) > 0);
+  ok(`strike still precedes afterglow at ${ms}ms`, fs > fi, `${Math.round(fi)}ms → ${Math.round(fs)}ms`);
+}
+// legs must be kept alive long enough for the tail
+for (const ms of SLIDER) {
+  const need = Math.max(impactWindow(ms).start + impactWindow(ms).dur,
+                        spillWindow(ms).start + spillWindow(ms).dur) - ms;
+  ok(`tail budget covers the overhang at ${ms}ms`, tailMs(ms) >= Math.max(0, need) - 1e-9,
+     `tail ${Math.round(tailMs(ms))}ms vs needed ${Math.round(Math.max(0, need))}ms`);
+}
 
 // ── 2. the impact stays under the origin flare ──────────────────────────────
 // origin supernova: ring alpha 0.75, halo up to 0.9, ring reach 80px
@@ -84,7 +122,7 @@ for (let i = 0; i <= 40; i++) {
   const r = recorder();
   drawImpact({
     ctx: r.ctx, x: 0, y: 0, r: 4, phase: 1 /* forced: isolate geometry */,
-    progress: impactProgress(t), strength: 1, color: "#fff", camScale: 1, glowSprite,
+    progress: impactProgress(t * REF, REF), strength: 1, color: "#fff", camScale: 1, glowSprite,
   });
   const arc = r.calls.find((c) => c.op === "arc");
   if (arc) radii.push(arc.r);
@@ -94,9 +132,9 @@ ok("impact ring never contracts", monotonic,
    `${radii[0].toFixed(1)}px → ${radii[radii.length - 1].toFixed(1)}px`);
 ok("impact ring actually travels", radii[radii.length - 1] > radii[0] * 2);
 ok("progress is monotonic across the window",
-   [...Array(50).keys()].every((i, _, a) => {
-     const t0 = i / 49, t1 = (i + 1) / 49;
-     return impactProgress(t1) >= impactProgress(t0);
+   [...Array(50).keys()].every((i) => {
+     const t0 = (i / 49) * REF, t1 = ((i + 1) / 49) * REF;
+     return impactProgress(t1, REF) >= impactProgress(t0, REF);
    }));
 
 // ── 3. hop falloff carries into the impact ──────────────────────────────────

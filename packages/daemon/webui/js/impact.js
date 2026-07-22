@@ -46,6 +46,47 @@ export const IMPACT_SPILL_ALPHA = 0.17;
  *  turn a single flare into hundreds of extra strokes per frame. */
 export const IMPACT_SPILL_BUDGET = 18;
 
+/** Floors in REAL milliseconds — the reason this module stopped working in
+ *  normalised leg-time.
+ *
+ *  Everything here used to be a fraction of the discharge duration, which is a
+ *  slider running 300ms…4s. That scales the geometry correctly and the
+ *  PERCEPTION not at all: at 2s the afterglow ran 680ms and read beautifully;
+ *  at 300ms the same fraction gave it 102ms, which is below the threshold where
+ *  a faint stroke registers as anything but a flicker. Same design, invisible.
+ *
+ *  So the strike and the afterglow have a minimum lifetime in wall-clock time.
+ *  Above roughly a second the proportional value already exceeds these and
+ *  nothing changes — the 2s look Daniel signed off on is untouched. Below it,
+ *  they stop shrinking and simply outlast the bolt, which is what an afterglow
+ *  is entitled to do. */
+export const IMPACT_MIN_MS = 260;
+export const SPILL_MIN_MS = 420;
+
+/** How long the strike lives, and when it starts, for a given discharge. */
+export function impactWindow(boltMs) {
+  return {
+    start: IMPACT_AT * boltMs,
+    dur: Math.max(IMPACT_MIN_MS, (1 - IMPACT_AT) * boltMs),
+  };
+}
+
+/** Same for the afterglow on the neighbouring strands. */
+export function spillWindow(boltMs) {
+  return {
+    start: IMPACT_SPILL_AT * boltMs,
+    dur: Math.max(SPILL_MIN_MS, (1 - IMPACT_SPILL_AT) * boltMs),
+  };
+}
+
+/** How long a leg needs to be kept alive after its own travel is over, so a
+ *  strike or an afterglow with a floor is never cut off mid-fade. */
+export function tailMs(boltMs) {
+  const i = impactWindow(boltMs);
+  const s = spillWindow(boltMs);
+  return Math.max(0, i.start + i.dur - boltMs, s.start + s.dur - boltMs);
+}
+
 /** Where the rise finishes and the decay takes over, on the window's own 0..1
  *  axis. The quarter is what makes it read as a strike rather than a breath. */
 const IMPACT_RISE = 0.25;
@@ -57,10 +98,15 @@ const IMPACT_RISE = 0.25;
  *  at 1 - IMPACT_RISE, and every brightness downstream would silently inherit
  *  that factor — the strike would be dimmer than the constants claim, for no
  *  reason anyone could find later. */
-export function impactPhase(t) {
-  if (t <= IMPACT_AT || t >= 1) return 0;
-  const u = (t - IMPACT_AT) / (1 - IMPACT_AT);
+function shape(u) {
+  if (u <= 0 || u >= 1) return 0;
   return (Math.min(u / IMPACT_RISE, 1) * (1 - u)) / (1 - IMPACT_RISE);
+}
+
+/** Strike brightness at `ms` into the leg, for a discharge of `boltMs`. */
+export function impactPhase(ms, boltMs) {
+  const { start, dur } = impactWindow(boltMs);
+  return shape((ms - start) / dur);
 }
 
 /** Linear 0..1 across the same window — how FAR along the strike is, as
@@ -71,18 +117,17 @@ export function impactPhase(t) {
  *  sized off the phase starts wide, collapses inward as the strike brightens,
  *  and only then expands. An impact that implodes first is not a subtle bug —
  *  it is the opposite of the gesture. */
-export function impactProgress(t) {
-  if (t <= IMPACT_AT) return 0;
-  if (t >= 1) return 1;
-  return (t - IMPACT_AT) / (1 - IMPACT_AT);
+export function impactProgress(ms, boltMs) {
+  const { start, dur } = impactWindow(boltMs);
+  return Math.max(0, Math.min(1, (ms - start) / dur));
 }
 
 /** Brightness of the spilled strands — same shape as impactPhase, but starting
- *  later, so the glow trails the strike instead of sharing its instant. */
-export function spillPhase(t) {
-  if (t <= IMPACT_SPILL_AT || t >= 1) return 0;
-  const u = (t - IMPACT_SPILL_AT) / (1 - IMPACT_SPILL_AT);
-  return (Math.min(u / IMPACT_RISE, 1) * (1 - u)) / (1 - IMPACT_RISE);
+ *  later and living longer, so the glow trails the strike instead of sharing
+ *  its instant and survives a short discharge. */
+export function spillPhase(ms, boltMs) {
+  const { start, dur } = spillWindow(boltMs);
+  return shape((ms - start) / dur);
 }
 
 /** The strike itself: a tight ring that opens once, plus a small core glow.

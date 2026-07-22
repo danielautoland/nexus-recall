@@ -176,3 +176,37 @@ for (let i = 0; i < 80; i++) {
   }
 }
 ok("style 'off' leaves the neighbours untouched", offStruck === 0, `${offStruck} strikes while off`);
+
+// ── 7. the afterglow exists at every slider position ───────────────────────
+// Daniel's report: "geringere Zeit kommt das Nachleuchten nicht durch".
+//
+// Two things could not be measured well here and are deliberately left to
+// verify-impact.mjs, which knows the windows exactly: how LONG the glow lasts
+// (the origin halo lives for the whole flash and swamps any duration measured
+// from the canvas) and the ordering. What this checks is the part that only an
+// end-to-end run can show: that spill strokes are actually emitted at every
+// slider position, not just at the comfortable ones.
+localStorage.setItem("bastra-vault-map-bolt-style", "bolt");
+const spillSeen = {};
+for (const ms of [300, 420, 1000, 2000, 4000]) {
+  localStorage.setItem("bastra-vault-map-bolt-ms", String(ms));
+  const P = buildSim(), Q = buildSim();
+  const rP = createRenderer(canvasEl, P.sim, hues);
+  const rQ = createRenderer(canvasEl, Q.sim, hues);
+  rP.flashNode("hub", "#ff0000", ms * 4 + 2000);
+  let best = 0;
+  for (let k = 0; k * 16 < ms * 4 + 1500; k++) {
+    clock = 1000 + k * 16;
+    const a = capture(rP), b = capture(rQ);
+    // more lit strands than the chain has legs ⇒ spill is on screen
+    const extra = a.filter((o) => o.op === "stroke").length - b.filter((o) => o.op === "stroke").length;
+    best = Math.max(best, extra - P.ring1.length);
+  }
+  spillSeen[ms] = best;
+}
+console.log("   surplus lit strands beyond the chain:", JSON.stringify(spillSeen));
+ok("spill strands appear at every slider position",
+   Object.values(spillSeen).every((v) => v > 0), JSON.stringify(spillSeen));
+ok("the shortest duration is not the poorest",
+   spillSeen[300] >= Math.max(...Object.values(spillSeen)) * 0.5,
+   `300ms: ${spillSeen[300]} vs best ${Math.max(...Object.values(spillSeen))}`);
