@@ -11,6 +11,8 @@
  *  large file (file-size convention).
  */
 
+import { IMPACT_LEAD_MS, IMPACT_MS } from "./impact.js";
+
 export const BOLT_STYLE_KEY = "bastra-vault-map-bolt-style";
 export const BOLT_MS_KEY = "bastra-vault-map-bolt-ms";
 export const BOLT_MS_DEFAULT = 420;
@@ -22,6 +24,44 @@ export const BOLT_SPREAD_KEY = "bastra-vault-map-bolt-spread";
  *  haben — das ist Geschmack, also ein Regler statt einer Konstante. */
 export const BOLT_SPREAD_DEFAULT = 1;
 export const BOLT_SEGMENTS = 7; // zigzag points per bolt
+
+/** What the duration slider governs, and what it does NOT.
+ *
+ *  The slider is the time of the FIRST bolt — level 1, the discharge the eye
+ *  follows — and nothing else. Everything that fires afterwards (the onward
+ *  chain and its impacts) has its own fixed time, in real milliseconds,
+ *  completely decoupled from the slider.
+ *
+ *  This is the third attempt at it, so it is worth being blunt about why the
+ *  first two were wrong. Deriving a following level from the slider (`boltMs`
+ *  or `max(floor, boltMs)`) couples them back together at one end or the other:
+ *  at 300ms the whole chain fires inside a few hundred ms, at 2s the followers
+ *  balloon to 2s each. Both are "the followers depend on the slider", which is
+ *  exactly what must not happen. A constant is the only shape that does not. */
+export const CHAIN_LEG_MS = 680; // a following level's own travel time — fixed
+
+/** How long one leg travels. Level 1 IS the bolt and obeys the slider; every
+ *  later level runs for the fixed CHAIN_LEG_MS regardless of the slider. */
+export function legDurationFor(hop, boltMs) {
+  return hop === 1 ? boltMs : CHAIN_LEG_MS;
+}
+
+/** When level `hop` starts, in ms since the flash began.
+ *
+ *  The whole point (Daniel): each level fires only AFTER the previous level's
+ *  strike has fully played out — not gestured at with a fixed hop-delay while
+ *  the strike is still running. So level 1 is the bolt (slider-timed), and
+ *  every later level waits out the level before it: that level's own travel,
+ *  minus the strike's lead, plus the strike's full run. Each animation keeps
+ *  its own duration; they simply queue up, so nothing lands on top of anything
+ *  else and nothing gets cut off. */
+export function levelStartOffset(hop, boltMs) {
+  let off = 0;
+  for (let h = 1; h < hop; h++) {
+    off += legDurationFor(h, boltMs) - IMPACT_LEAD_MS + IMPACT_MS; // through h's strike
+  }
+  return off;
+}
 
 /** Deterministic 0..1 value. */
 export function boltRnd(seed) {
