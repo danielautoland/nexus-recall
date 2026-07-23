@@ -96,6 +96,15 @@ Commands:
   doctor [surface|all]       Check status of one or every surface
   doctor [surface|all] --fix Check status and repair missing/broken pieces
   status                     Check daemon and adapters status (supports --json, -q)
+  logs                       Readable view of what the hooks and the daemon
+                             recorded — one line per event, newest last
+                             (-f to follow, --since 1h, --source hook|daemon)
+  rules cursor [path]        Write Cursor's memory rules into a project
+                             (.cursor/rules/bastra-recall.mdc). Cursor keeps
+                             rules per repo — there is no global equivalent,
+                             so run this once per project. 'rules remove
+                             cursor [path]' takes it back out
+  completion <shell>         Print a Tab-completion script (bash, zsh, fish)
   help                       Show this help
   version                    Show version
 
@@ -113,6 +122,10 @@ Options:
   --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
   --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~620 MB)
   --no-ollama                Skip the Ollama setup (semantic recall uses BM25 keyword search)
+  -f, --follow               Keep printing new entries as they arrive (logs only)
+  --since <duration>         How far back to read: 30s, 10min, 2h, 1d (logs only, default 5min)
+  --source <daemon|hook|all> Which log source to read (logs only, default all)
+  --lines <n>                Cap the number of lines printed (logs only, default 200)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --no-stop-hook             Skip the Stop save-eval hook (registered by default)
   --help, -h                 Show this help
@@ -153,6 +166,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     origin: null,
     extension: false,
     exclude: [],
+    follow: false,
+    since: null,
+    source: null,
+    lines: null,
     positional: [],
   };
 
@@ -175,6 +192,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
     } else if (a.startsWith("--exclude=")) {
       const v = a.slice("--exclude=".length);
       if (v) result.exclude.push(v);
+    }
+    else if (a === "--follow" || a === "-f") result.follow = true;
+    else if (a === "--since") {
+      result.since = argv[++i] ?? null;
+    } else if (a.startsWith("--since=")) {
+      result.since = a.slice("--since=".length);
+    } else if (a === "--source") {
+      result.source = argv[++i] ?? null;
+    } else if (a.startsWith("--source=")) {
+      result.source = a.slice("--source=".length);
+    } else if (a === "--lines") {
+      result.lines = argv[++i] ?? null;
+    } else if (a.startsWith("--lines=")) {
+      result.lines = a.slice("--lines=".length);
     }
     else if (a === "--extension") result.extension = true;
     else if (a === "--ollama") result.ollama = "auto";

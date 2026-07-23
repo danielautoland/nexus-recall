@@ -29,6 +29,10 @@ export interface HealthDeps {
   embeddingHealth?: () => EmbeddingRuntimeHealth | null;
   embeddingBreaker?: () => EmbeddingBreakerSnapshot | null;
   updateState: () => UpdateState | null;
+  /** Epoch ms when this process started serving. Injected rather than read
+   *  from `process.uptime()` so the value is testable and so a restart is
+   *  visible as a reset rather than as a silently continuing clock. */
+  startedAtMs?: number;
 }
 
 export function buildHealthPayload(deps: HealthDeps): Record<string, unknown> {
@@ -41,10 +45,21 @@ export function buildHealthPayload(deps: HealthDeps): Record<string, unknown> {
   // Breaker state (#165): cheap snapshot, makes it visible whether recall is
   // deliberately serving BM25-only (open) rather than merely "degraded".
   const breaker = deps.embeddingBreaker?.() ?? null;
+  // Liveness detail (#22): how long this process has been up. A supervisor or
+  // a user chasing "did it just restart?" gets the answer without reading
+  // logs — and a flapping daemon is visible as an uptime that keeps resetting.
+  const uptime =
+    deps.startedAtMs === undefined
+      ? {}
+      : {
+          uptime_seconds: Math.max(0, Math.round((Date.now() - deps.startedAtMs) / 1000)),
+          started_at: new Date(deps.startedAtMs).toISOString(),
+        };
   return {
     ok: true,
     vault_size: deps.vaultSize(),
     version: deps.version,
+    ...uptime,
     // Embedding mode — lets `bastra status` show whether semantic recall is
     // live without relying on the daemon's discarded stderr (#79).
     semantic_recall: deps.embedding.on ? (degraded ? "degraded" : "on") : "off",

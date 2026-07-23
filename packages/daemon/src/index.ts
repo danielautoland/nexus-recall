@@ -39,6 +39,7 @@ import { startHttpServer } from "./http.js";
 import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
 import { runCuratorPass } from "./curator-run.js";
+import { pruneEventLogs } from "./log-retention.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
@@ -726,6 +727,27 @@ async function main(): Promise<void> {
     });
   }, 15 * 60_000);
   curatorTimer.unref();
+
+  // Log retention (#23): the event logs are the only thing here that grows
+  // without bound. Once at startup (a forwarder-spawned daemon may not live
+  // long enough for a timer to fire), then daily for long-lived ones.
+  const prune = (): void => {
+    void pruneEventLogs()
+      .then((r) => {
+        if (r.removed.length > 0) {
+          const mb = (r.freedBytes / 1024 / 1024).toFixed(1);
+          console.error(
+            `[bastra-recall] log retention: removed ${r.removed.length} event log(s) older than ${r.keptDays}d (${mb} MB)`,
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(`[bastra-recall] log retention failed (non-fatal): ${(err as Error)?.message ?? err}`);
+      });
+  };
+  prune();
+  const retentionTimer = setInterval(prune, 24 * 60 * 60_000);
+  retentionTimer.unref();
 }
 
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";

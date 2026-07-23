@@ -108,6 +108,7 @@ packages/
 distribution/
   homebrew/   Brew formula (head-only)
   Install Bastra.command   Double-click installer
+  Uninstall Bastra.command Double-click uninstaller (never touches the vault)
 scripts/      One-off telemetry / eval / backfill scripts
 ```
 

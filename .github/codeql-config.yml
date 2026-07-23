@@ -1,0 +1,23 @@
+name: bastra-recall CodeQL config
+
+# Test code is excluded from the scan, not from review.
+#
+# The concrete reason: tests build fixtures under os.tmpdir() (mkdtemp) and
+# hand those paths to the CLI functions under test. CodeQL follows that as a
+# taint flow into production code and reports js/insecure-temporary-file on
+# writes whose path, in production, comes from the user's own argument or cwd
+# — a temp directory only ever appears in the harness. Hardening the product
+# against its own tests would mean changing real behaviour to satisfy a flow
+# that cannot occur at runtime.
+#
+# The trade-off is deliberate: a vulnerability that exists only in test code
+# is not reachable by an attacker, while the noise from these flows would bury
+# genuine findings in the code that ships. Anything under paths: below is
+# scanned normally.
+paths-ignore:
+  - "**/__tests__/**"
+  - "**/*.test.ts"
+  - "**/*.test.mjs"
+  - "packages/daemon/scripts/**"
+  - "packages/eval/**"
+  - "tools/__tests__/**"

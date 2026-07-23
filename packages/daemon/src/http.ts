@@ -333,6 +333,11 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 
+  // Stamped when the server is wired up, not at module load: the value that
+  // matters is "how long has this daemon been answering", and the two differ
+  // by whatever the vault took to index.
+  const startedAtMs = Date.now();
+
   /** Reachability + vault size, shared by /health and /api/v1/health. */
   const healthPayload = (): Record<string, unknown> =>
     buildHealthPayload({
@@ -342,6 +347,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       embeddingHealth: opts.embeddingHealth,
       embeddingBreaker: opts.embeddingBreaker,
       updateState: getUpdateState,
+      startedAtMs,
     });
 
   /** Liveness probes, on both doors — they must not count as activity. */

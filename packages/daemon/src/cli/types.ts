@@ -66,6 +66,12 @@ export interface ParsedArgs {
   // `import vault --exclude <dir>` (#220, repeatable): additional directory
   // names to skip anywhere in the source tree.
   exclude: string[];
+  // `logs` (#11): live tail, time window, source filter and output cap.
+  // Kept as raw strings — `cmdLogs` owns parsing and the error messages.
+  follow: boolean;
+  since: string | null;
+  source: string | null;
+  lines: string | null;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];

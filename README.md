@@ -56,6 +56,28 @@ If recurring mistakes still recur, if the user still has to re-state preferences
 
 ### How it works
 
+```mermaid
+flowchart TB
+    CC["Claude Code"]
+    CD["Claude Desktop"]
+    CU["Cursor"]
+    WEB["ChatGPT Actions / web apps"]
+
+    CC -->|stdio MCP| FWD["MCP forwarder<br/>stdio to HTTP"]
+    CD -->|stdio MCP| FWD
+    CU -->|stdio MCP| FWD
+    WEB -->|"REST /api/v1 + token"| D
+    CC -.->|"hooks: recall before edits,<br/>context at session start"| D
+
+    FWD --> D["bastra-recall daemon<br/>127.0.0.1:6723<br/>one process for every client"]
+    D --> IDX["BM25 index<br/>+ optional embeddings"]
+    IDX --> V[("Your vault<br/>plain markdown + YAML<br/>on your disk")]
+
+    D -.->|"save_memory writes a file,<br/>then re-indexes it"| V
+```
+
+Everything above runs on your machine. Nothing leaves it unless you point a tunnel at the REST gateway yourself.
+
 ```
 Vault (configurable, plain markdown + YAML frontmatter, Obsidian-compatible)
           │  chokidar (auto-polls on cloud-storage mounts)
@@ -118,6 +140,22 @@ confidence: 0.95
 
 The `recall_when` field is the bridge between save and recall: when saving, the AI declares the contexts under which future-sessions should be reminded. See [docs/memory-schema.md](./docs/memory-schema.md) for full field semantics and six example memories covering `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
+### Cookbook
+
+What this actually looks like in a working week.
+
+**1. The convention you stop re-explaining.** You tell Claude Code once that this repo puts route handlers, business logic and DB access in separate files. It saves a `preference` scoped to the project. Six sessions later, in a file it has never opened, the PreToolUse hook surfaces that rule *before* it writes the handler — and it splits the file without being asked.
+
+**2. The bug that only bites twice.** A focus-ring bug takes four iterations to pin down: stacked `:focus` styles on a nested input. When it's fixed, the fix and the *failed path* go in as a `lesson` with `recall_when: ["creating new input component", "writing input or form css"]`. The next time anyone touches an input, the wrong turn is already on the table.
+
+**3. One vault, two tools.** You work out a deployment sequence with Claude Code on Monday. On Thursday you're in Cursor, ask "how do we ship this again", and get your own Monday answer back — same daemon, same vault, no export step.
+
+**4. The preference that isn't about code.** "German, du-Form, terse, no closing summaries" is a `user-preference`. It costs one save and applies in every project and every client from then on — including the ones you set up next month.
+
+**5. Recall before the plan, not after it.** Ask for a multi-step plan in an area you haven't touched in weeks, and the session hook pulls the topology memory for that subsystem first: which files matter, what was deliberately left undone. The plan starts from where you left off instead of from a fresh reading of the repo.
+
+Memories are plain files — write them by hand in Obsidian if you'd rather, or let the AI save them and correct what it got wrong.
+
 ### Self-learning taxonomy
 
 The vault grows its own structure. When recent memories keep forming the same ad-hoc cluster (people, places, tools, …) without a home, the stop hook suggests recording a **convention** — a memory in the reserved scope `taxonomy` that fixes the cluster's folder, `topic_path` shape and tags. Active conventions are injected at session start and are binding for future saves. `save_memory` takes a `folder` argument so cluster members get a real folder (e.g. `memories/people/`), and re-saving with a changed folder *moves* the file (the old copy lands in the vault trash, recoverable). All of it lives per-vault on the free axes — the `type` schema stays fixed. Details: [docs/taxonomy.md](./docs/taxonomy.md).
@@ -137,6 +175,8 @@ Three paths, in order of friction. bastra-recall is self-contained: the daemon, 
 3. Done. Restart Claude Code / Claude Desktop / Cursor.
 
 The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and hands over to the guided setup (`bastra install`): selection lists for the memory vault, your AI clients, and semantic recall — no terminal knowledge required.
+
+Leaving is one double-click too: **Uninstall Bastra.command** (same release) unregisters every client and stops the daemon. It never deletes a memory — your vault and logs stay untouched, and it prints everything it removes.
 
 #### B) One command — for developers
 
@@ -160,7 +200,7 @@ Adapter status:
 |---|---|---|
 | `claude-desktop` | MCP server entry in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implemented |
 | `claude-code` | MCP server in `.claude.json` + Skill in `.claude/skills/` + hooks & powerline statusLine in `.claude/settings.json` | ✅ implemented |
-| `cursor` | MCP server entry in `.cursor/mcp.json` | ✅ implemented (Cursor Rules layer is a separate roadmap item) |
+| `cursor` | MCP server entry in `.cursor/mcp.json`, plus `bastra rules cursor` per project | ✅ implemented — see [Cursor rules](#cursor-rules) for why the rules step is separate |
 
 Every write is **idempotent** (re-runs are no-ops), **atomic** (tmp file + rename), **backed up** (timestamped `.bak-…` next to the original), and **parse-safe** (broken JSON aborts the run instead of corrupting it). Vault path resolves in this order: `--vault <path>` flag → `BASTRA_VAULT_PATH` env → auto-detect from an existing registration in `~/.claude.json` or `claude_desktop_config.json`. If none of those produce a path (a fresh machine), an interactive `bastra install` offers to create `~/BastraVault` for you; non-interactive runs (piped, `--yes`, `--dry-run`) keep the clear deterministic error.
 
@@ -288,6 +328,29 @@ Claude Desktop has no hook system, so bastra makes memory autonomous through the
 
 Full details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (wiki).
 
+### Cursor rules
+
+`bastra install cursor` registers the MCP server globally. The behavioural layer — *recall before editing, save durable rules* — is a second step, once per project:
+
+```bash
+cd your-project
+bastra rules cursor          # writes .cursor/rules/bastra-recall.mdc
+```
+
+This is not an oversight. Cursor's User Rules live in its settings UI, not on disk, so there is no global file to install; project rules live in the repo and are version-controlled. That is also the upside — commit the file and everyone on the repo gets the same behaviour. `bastra rules remove cursor` takes it back out.
+
+Claude Code and Claude Desktop need no equivalent step: they share `~/.claude/skills/`, which `bastra install` writes for you.
+
+### Shell completion
+
+```bash
+bastra completion zsh  > "${fpath[1]}/_bastra"          # zsh
+bastra completion bash > /usr/local/etc/bash_completion.d/bastra
+bastra completion fish > ~/.config/fish/completions/bastra.fish
+```
+
+Completes subcommands, surfaces (`install <TAB>` → `claude-code`, `cursor`, …) and flags. Start a new shell afterwards.
+
 ### REST API (for non-MCP clients)
 
 The daemon exposes a REST API on `http://127.0.0.1:6723/api/v1/` covering every tool the MCP server offers. This is the integration point for clients that can't speak stdio-MCP — most notably **ChatGPT Custom GPT Actions**, which call HTTPS endpoints with an OpenAPI schema.
@@ -305,6 +368,8 @@ Endpoints (all `POST`, JSON body):
 
 In addition, `GET`/`POST /settings/docs` reads/writes the product-docs settings (`{mode, language}`) — loopback-only like `/hook/*`, intended for local UIs such as the Bastra Mac app's options pane.
 
+**Liveness:** `GET /health` (token-free on loopback) and `GET /api/v1/health` (token + CORS, for browsers) return the same document — `ok`, `version`, `vault_size`, `uptime_seconds`, `started_at`, and the semantic-recall state (`on` / `off` / `degraded`). Neither counts as activity, so probing does not keep the daemon from its idle shutdown. A daemon whose `uptime_seconds` keeps resetting is restarting behind your back.
+
 Auth and CORS:
 
 - **Token:** `bastra token` prints the daemon's API token, minting one on first use (`bastra token rotate` issues a fresh one; `bastra token clear` removes it, locking out browser/REST clients). It's stored in `cli-settings.json`; the daemon reads it at startup, so restart after issuing, rotating, or clearing. `bastra` (the status panel) and `bastra status` show whether a token is set, without printing it. `BASTRA_API_TOKEN` overrides it.
@@ -316,6 +381,17 @@ Auth and CORS:
 To reach this daemon from a hosted web app (e.g. a site's admin talking to the user's *local* vault from the browser), set `BASTRA_CORS_ORIGIN` to the site origin, run `bastra token`, and paste the token into the site. When that site is served over **HTTPS** (e.g. `https://bastra.io`), Chrome sends a **Private Network Access** preflight for the public-origin → localhost call; the daemon answers it automatically with `Access-Control-Allow-Private-Network: true` for allowed origins — no extra config. For a server-side client like ChatGPT, point a tunnel (Cloudflare Tunnel / ngrok / your own reverse proxy) at `127.0.0.1:6723` and configure it with the tunnel URL + your token. An OpenAPI 3.0 starter spec lives in [docs/openapi.yaml](./docs/openapi.yaml).
 
 > **Status:** the ChatGPT Custom GPT Actions path does **not work end-to-end yet**. The REST API and the OpenAPI spec are in place, but the Custom GPT integration is still being worked out — see the roadmap below.
+
+### Troubleshooting
+
+- **Daemon not reachable / `ECONNREFUSED`** — the MCP forwarder normally auto-spawns the daemon on the first tool call. Check with `curl -sS http://127.0.0.1:6723/health`; `bastra status` shows the same thing in readable form. If the forwarder was disabled (`BASTRA_FORWARDER_SPAWN=0`), remove that override and restart your AI client.
+- **MCP is not registered with Claude Code, Claude Desktop, or Cursor** — run `bastra doctor` to see which config is missing or broken, then re-run `bastra install <surface>`. The config paths are printed in both outputs.
+- **Vault path missing or not writable** — pass `--vault <path>` during install or set `BASTRA_VAULT_PATH`. The directory must exist and your user must be able to create `.md` files in it; use a throwaway vault while testing.
+- **Port `6723` already in use** — find the owner with `lsof -i :6723 -P -n`. Either stop the stale process or move the daemon with `BASTRA_HTTP_PORT=<port>` and point forwarders/hooks at the same endpoint via `BASTRA_DAEMON_URL` / `BASTRA_HTTP_URL`.
+- **Recall returns nothing, or hits from the wrong vault** — confirm the registered vault with `bastra doctor`. Memory files need valid YAML frontmatter; files that fail validation are skipped. Weak or missing `recall_when` values are the other common cause — that field carries the most search weight.
+- **Semantic recall shows `degraded`** — the daemon booted with embeddings on, but the provider stopped answering (Ollama not running, model deleted). `/health` reports `semantic_recall: "degraded"` plus the underlying error; recall keeps working on BM25 alone. Fix with `ollama serve` / `bastra embeddings on`.
+- **Where logs live** — `bastra logs` renders them readably (`-f` to follow, `--since 1h`, `--source hook|daemon`); one line per event instead of raw JSONL. The files themselves sit outside the vault at `~/.bastra/logs/events-YYYY-MM-DD.jsonl` (override: `BASTRA_LOG_PATH`). The daemon deletes event logs older than **90 days** (`BASTRA_LOG_RETENTION_DAYS`); the floor is 30 days, because the curator mines that window for reflex promotions and a shorter setting would quietly degrade recall.
+- **Reset derived state without losing memories** — stop the daemon, then delete only derived files inside `<vault>/.bastra/`: `embeddings.json` and `embed-cache.json` rebuild themselves on the next start. Never delete your `.md` files, `audit-log.ndjson`, or `trash/` unless you intend to remove user data.
 
 ### Roadmap
 
@@ -392,6 +468,28 @@ Wenn wiederkehrende Fehler weiter auftreten, wenn der User in jeder Sitzung dies
 
 ### Wie es funktioniert
 
+```mermaid
+flowchart TB
+    CC["Claude Code"]
+    CD["Claude Desktop"]
+    CU["Cursor"]
+    WEB["ChatGPT Actions / Web-Apps"]
+
+    CC -->|stdio MCP| FWD["MCP-Forwarder<br/>stdio zu HTTP"]
+    CD -->|stdio MCP| FWD
+    CU -->|stdio MCP| FWD
+    WEB -->|"REST /api/v1 + Token"| D
+    CC -.->|"Hooks: Recall vor Edits,<br/>Kontext beim Session-Start"| D
+
+    FWD --> D["bastra-recall-Daemon<br/>127.0.0.1:6723<br/>ein Prozess für alle Clients"]
+    D --> IDX["BM25-Index<br/>+ optionale Embeddings"]
+    IDX --> V[("Dein Vault<br/>reines Markdown + YAML<br/>auf deiner Platte")]
+
+    D -.->|"save_memory schreibt eine Datei<br/>und indiziert sie neu"| V
+```
+
+Alles davon läuft auf deiner Maschine. Nichts verlässt sie, solange du nicht selbst einen Tunnel auf das REST-Gateway legst.
+
 ```
 Vault (konfigurierbar, reines Markdown + YAML-Frontmatter, Obsidian-kompatibel)
           │  chokidar (Auto-Polling auf Cloud-Storage-Mounts)
@@ -454,6 +552,22 @@ confidence: 0.95
 
 Das `recall_when`-Feld ist die Brücke zwischen Save und Recall: beim Speichern deklariert die AI die Kontexte, in denen die spätere Sitzung daran erinnert werden soll. Siehe [docs/memory-schema.md](./docs/memory-schema.md) für die vollständige Feld-Semantik und sechs Beispiel-Memories für `lesson`, `preference`, `project-fact`, `meta-working`, `decision`, `workflow`.
 
+### Kochbuch
+
+Wie sich das in einer Arbeitswoche tatsächlich anfühlt.
+
+**1. Die Konvention, die du nicht mehr erklärst.** Du sagst Claude Code einmal, dass in diesem Repo Route-Handler, Business-Logik und DB-Zugriff in getrennte Dateien gehören. Das landet als projekt-bezogene `preference`. Sechs Sessions später, in einer Datei, die es nie geöffnet hat, holt der PreToolUse-Hook diese Regel hervor — *bevor* der Handler geschrieben wird. Die Datei wird geteilt, ohne dass du etwas sagst.
+
+**2. Der Bug, der nur zweimal beißt.** Ein Focus-Ring-Bug braucht vier Anläufe: gestapelte `:focus`-Styles auf einem verschachtelten Input. Wenn er sitzt, wandern die Lösung **und der Irrweg** als `lesson` in den Vault, mit `recall_when: ["neue Input-Komponente bauen", "Input- oder Form-CSS schreiben"]`. Beim nächsten Input liegt der Irrweg schon auf dem Tisch.
+
+**3. Ein Vault, zwei Tools.** Montag erarbeitest du mit Claude Code eine Deployment-Reihenfolge. Donnerstag sitzt du in Cursor, fragst „wie shippen wir das nochmal" — und bekommst deine eigene Montagsantwort zurück. Gleicher Daemon, gleicher Vault, kein Export dazwischen.
+
+**4. Die Präferenz, die nichts mit Code zu tun hat.** „Deutsch, Du-Form, knapp, keine Zusammenfassungen am Ende" ist eine `user-preference`. Ein Save, und sie gilt in jedem Projekt und jedem Client — auch in denen, die du nächsten Monat einrichtest.
+
+**5. Recall vor dem Plan, nicht danach.** Frag nach einem mehrstufigen Plan in einem Bereich, den du seit Wochen nicht angefasst hast: Der Session-Hook zieht zuerst die Topologie-Memory dieses Subsystems — welche Dateien zählen, was bewusst offen blieb. Der Plan setzt dort an, wo du aufgehört hast, statt beim Neulesen des Repos.
+
+Memories sind einfache Dateien — schreib sie von Hand in Obsidian, wenn dir das lieber ist, oder lass die AI speichern und korrigiere, was sie falsch verstanden hat.
+
 ### Selbstlernende Taxonomie
 
 Der Vault baut sich seine Struktur selbst. Wenn jüngste Memories wiederholt dasselbe Ad-hoc-Cluster bilden (Personen, Orte, Tools, …), ohne dass es eine Heimat hat, schlägt der Stop-Hook vor, eine **Konvention** festzuhalten — ein Memory im reservierten Scope `taxonomy`, das Ordner, `topic_path`-Form und Tags des Clusters festlegt. Aktive Konventionen werden bei Session-Start injiziert und sind für künftige Saves bindend. `save_memory` nimmt ein `folder`-Argument, damit Cluster-Mitglieder einen echten Ordner bekommen (z.B. `memories/people/`); ein erneutes Speichern mit geändertem Ordner *verschiebt* die Datei (die alte Kopie landet recoverbar im Vault-Trash). Alles lebt pro Vault auf den freien Achsen — das `type`-Schema bleibt fix. Details: [docs/taxonomy.md](./docs/taxonomy.md).
@@ -473,6 +587,8 @@ Drei Wege, nach Aufwand sortiert. bastra-recall ist eigenständig: Daemon, MCP-S
 3. Fertig. Claude Code / Claude Desktop / Cursor neu starten.
 
 Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und startet das geführte Setup (`bastra install`): Auswahllisten für Memory-Vault, AI-Clients und Semantic Recall — kein Terminal-Wissen nötig.
+
+Der Weg hinaus ist genauso kurz: **Uninstall Bastra.command** (gleiches Release) meldet Bastra bei allen Clients ab und stoppt den Daemon. Es löscht keine einzige Memory — Vault und Logs bleiben unangetastet, und jede entfernte Datei wird ausgegeben.
 
 > **Status:** Tap `n0mad-ai/tap` ist live; das `.command`-Asset hängt an jedem GitHub-Release.
 
@@ -498,7 +614,7 @@ Adapter-Status:
 |---|---|---|
 | `claude-desktop` | MCP-Server-Eintrag in `claude_desktop_config.json` + Skill in `.claude/skills/` | ✅ implementiert |
 | `claude-code` | MCP-Server in `.claude.json` + Skill in `.claude/skills/` + Hooks & Powerline-statusLine in `.claude/settings.json` | ✅ implementiert |
-| `cursor` | MCP-Server-Eintrag in `.cursor/mcp.json` | ✅ implementiert (Cursor-Rules-Layer separater Roadmap-Punkt) |
+| `cursor` | MCP-Server-Eintrag in `.cursor/mcp.json`, dazu `bastra rules cursor` pro Projekt | ✅ implementiert — siehe [Cursor-Rules](#cursor-rules-1), warum der Rules-Schritt getrennt ist |
 
 Jeder Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-File + Rename), **gesichert** (timestamped `.bak-…` neben dem Original) und **parse-safe** (kaputtes JSON bricht den Lauf ab statt es zu zerstören). Vault-Pfad-Auflösung in dieser Reihenfolge: `--vault <pfad>`-Flag → `BASTRA_VAULT_PATH`-ENV → Auto-Detect aus bestehender Registrierung in `~/.claude.json` oder `claude_desktop_config.json`. Greift nichts davon (frische Maschine), bietet ein interaktives `bastra install` an, `~/BastraVault` anzulegen; nicht-interaktive Läufe (gepiped, `--yes`, `--dry-run`) behalten die klare, deterministische Fehlermeldung.
 
@@ -626,6 +742,29 @@ Claude Desktop hat kein Hook-System, also macht bastra das Gedächtnis über die
 
 Details: **[Updating & settings](https://github.com/n0mad-ai/bastra-recall/wiki/Updating)** (Wiki).
 
+### Cursor-Rules
+
+`bastra install cursor` registriert den MCP-Server global. Die Verhaltens-Schicht — *Recall vor dem Editieren, dauerhafte Regeln speichern* — ist ein zweiter Schritt, einmal pro Projekt:
+
+```bash
+cd dein-projekt
+bastra rules cursor          # schreibt .cursor/rules/bastra-recall.mdc
+```
+
+Das ist kein Versäumnis: Cursors User Rules liegen in der Settings-UI, nicht auf der Platte — es gibt also keine globale Datei zum Installieren. Projekt-Rules liegen im Repo und sind versioniert. Genau das ist der Vorteil — die Datei committen, und alle im Repo bekommen dasselbe Verhalten. `bastra rules remove cursor` nimmt sie wieder heraus.
+
+Claude Code und Claude Desktop brauchen diesen Schritt nicht: Sie teilen sich `~/.claude/skills/`, das `bastra install` für dich schreibt.
+
+### Shell-Completion
+
+```bash
+bastra completion zsh  > "${fpath[1]}/_bastra"          # zsh
+bastra completion bash > /usr/local/etc/bash_completion.d/bastra
+bastra completion fish > ~/.config/fish/completions/bastra.fish
+```
+
+Vervollständigt Subcommands, Surfaces (`install <TAB>` → `claude-code`, `cursor`, …) und Flags. Danach eine neue Shell starten.
+
 ### REST API (für Nicht-MCP-Clients)
 
 Der Daemon exponiert eine REST-API unter `http://127.0.0.1:6723/api/v1/`, die alle Tools des MCP-Servers abdeckt. Das ist der Integrationspunkt für Clients, die kein stdio-MCP sprechen können — allen voran **ChatGPT Custom GPT Actions**, die HTTPS-Endpoints mit OpenAPI-Schema aufrufen.
@@ -643,6 +782,8 @@ Endpoints (alle `POST`, JSON-Body):
 
 Zusätzlich liest/schreibt `GET`/`POST /settings/docs` die Produkt-Doku-Settings (`{mode, language}`) — loopback-only wie `/hook/*`, gedacht für lokale UIs wie die Options-Pane der Bastra Mac-App.
 
+**Liveness:** `GET /health` (auf Loopback ohne Token) und `GET /api/v1/health` (Token + CORS, für Browser) liefern dasselbe Dokument — `ok`, `version`, `vault_size`, `uptime_seconds`, `started_at` und den Zustand des semantischen Recalls (`on` / `off` / `degraded`). Beide zählen nicht als Aktivität, ein Polling hält den Daemon also nicht vom Idle-Shutdown ab. Ein Daemon, dessen `uptime_seconds` immer wieder zurückspringt, startet unbemerkt neu.
+
 Auth und CORS:
 
 - **Token:** `bastra token` zeigt das API-Token des Daemons und erzeugt beim ersten Aufruf eines (`bastra token rotate` erneuert es; `bastra token clear` entfernt es und sperrt Browser-/REST-Clients aus). Es liegt in `cli-settings.json`; der Daemon liest es beim Start, also nach Erzeugen, Erneuern oder Entfernen neu starten. `bastra` (das Status-Panel) und `bastra status` zeigen, ob ein Token gesetzt ist, ohne es anzuzeigen. `BASTRA_API_TOKEN` hat Vorrang.
@@ -654,6 +795,17 @@ Auth und CORS:
 Um diesen Daemon aus einer gehosteten Web-App zu erreichen (z.B. das Admin einer Seite, das aus dem Browser auf den *lokalen* Vault des Users zugreift): `BASTRA_CORS_ORIGIN` auf die Seiten-Origin setzen, `bastra token` ausführen und das Token in der Seite hinterlegen. Läuft die Seite über **HTTPS** (z.B. `https://bastra.io`), schickt Chrome für den Public-Origin-→-localhost-Call einen **Private-Network-Access**-Preflight; der Daemon beantwortet ihn für erlaubte Origins automatisch mit `Access-Control-Allow-Private-Network: true` — ohne Zusatzkonfiguration. Für einen serverseitigen Client wie ChatGPT: einen Tunnel (Cloudflare Tunnel / ngrok / eigener Reverse-Proxy) auf `127.0.0.1:6723` legen und mit Tunnel-URL + Token konfigurieren. Eine OpenAPI-3.0-Starter-Spec liegt in [docs/openapi.yaml](./docs/openapi.yaml).
 
 > **Status:** Der ChatGPT-Custom-GPT-Actions-Weg **funktioniert noch nicht end-to-end**. REST-API und OpenAPI-Spec stehen, aber die Custom-GPT-Anbindung ist noch in Arbeit — siehe Roadmap unten.
+
+### Fehlerbehebung
+
+- **Daemon nicht erreichbar / `ECONNREFUSED`** — der MCP-Forwarder startet den Daemon normalerweise beim ersten Tool-Aufruf selbst. Prüfen mit `curl -sS http://127.0.0.1:6723/health`; `bastra status` zeigt dasselbe in lesbar. Falls der Forwarder abgeschaltet wurde (`BASTRA_FORWARDER_SPAWN=0`), die Variable entfernen und den AI-Client neu starten.
+- **MCP ist in Claude Code, Claude Desktop oder Cursor nicht registriert** — `bastra doctor` zeigt, welche Config fehlt oder kaputt ist, danach `bastra install <surface>` erneut ausführen. Die Config-Pfade stehen in beiden Ausgaben.
+- **Vault-Pfad fehlt oder ist nicht beschreibbar** — beim Installieren `--vault <pfad>` übergeben oder `BASTRA_VAULT_PATH` setzen. Der Ordner muss existieren und dein User dort `.md`-Dateien anlegen dürfen; zum Testen einen Wegwerf-Vault nehmen.
+- **Port `6723` ist belegt** — Besitzer finden mit `lsof -i :6723 -P -n`. Entweder den alten Prozess stoppen oder den Daemon per `BASTRA_HTTP_PORT=<port>` umziehen und Forwarder/Hooks über `BASTRA_DAEMON_URL` / `BASTRA_HTTP_URL` auf denselben Endpoint zeigen lassen.
+- **Recall liefert nichts oder Treffer aus dem falschen Vault** — den registrierten Vault mit `bastra doctor` prüfen. Memory-Dateien brauchen gültiges YAML-Frontmatter; ungültige werden übersprungen. Die zweite häufige Ursache sind schwache oder fehlende `recall_when`-Werte — dieses Feld hat das größte Suchgewicht.
+- **Semantischer Recall steht auf `degraded`** — der Daemon ist mit Embeddings gestartet, aber der Provider antwortet nicht mehr (Ollama läuft nicht, Modell gelöscht). `/health` meldet `semantic_recall: "degraded"` samt Fehler; Recall läuft auf BM25 weiter. Beheben mit `ollama serve` bzw. `bastra embeddings on`.
+- **Wo die Logs liegen** — `bastra logs` zeigt sie lesbar an (`-f` zum Mitlaufen, `--since 1h`, `--source hook|daemon`): eine Zeile pro Event statt rohem JSONL. Die Dateien selbst liegen außerhalb des Vaults unter `~/.bastra/logs/events-YYYY-MM-DD.jsonl` (überschreibbar mit `BASTRA_LOG_PATH`). Event-Logs älter als **90 Tage** löscht der Daemon selbst (`BASTRA_LOG_RETENTION_DAYS`); die Untergrenze sind 30 Tage, weil der Curator dieses Fenster für Reflex-Promotions auswertet — ein kleinerer Wert würde den Recall still verschlechtern.
+- **Abgeleiteten Zustand zurücksetzen, ohne Memories zu verlieren** — Daemon stoppen, dann ausschließlich abgeleitete Dateien in `<vault>/.bastra/` löschen: `embeddings.json` und `embed-cache.json` bauen sich beim nächsten Start neu auf. Niemals die `.md`-Dateien, `audit-log.ndjson` oder `trash/` löschen, außer du willst bewusst Nutzerdaten entfernen.
 
 ### Roadmap
 
