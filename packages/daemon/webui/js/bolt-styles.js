@@ -11,6 +11,8 @@
  *  large file (file-size convention).
  */
 
+import { IMPACT_LEAD_MS, IMPACT_MS } from "./impact.js";
+
 export const BOLT_STYLE_KEY = "bastra-vault-map-bolt-style";
 export const BOLT_MS_KEY = "bastra-vault-map-bolt-ms";
 export const BOLT_MS_DEFAULT = 420;
@@ -37,18 +39,28 @@ export const BOLT_SEGMENTS = 7; // zigzag points per bolt
  *  balloon to 2s each. Both are "the followers depend on the slider", which is
  *  exactly what must not happen. A constant is the only shape that does not. */
 export const CHAIN_LEG_MS = 680; // a following level's own travel time — fixed
-export const CHAIN_HOP_DELAY_MS = 300; // gap before the next level starts — fixed
-
-/** Start-to-start gap between chain levels. Constant: a following level's
- *  timing has nothing to do with how long the first bolt is on screen. */
-export function hopDelayFor() {
-  return CHAIN_HOP_DELAY_MS;
-}
 
 /** How long one leg travels. Level 1 IS the bolt and obeys the slider; every
  *  later level runs for the fixed CHAIN_LEG_MS regardless of the slider. */
 export function legDurationFor(hop, boltMs) {
   return hop === 1 ? boltMs : CHAIN_LEG_MS;
+}
+
+/** When level `hop` starts, in ms since the flash began.
+ *
+ *  The whole point (Daniel): each level fires only AFTER the previous level's
+ *  strike has fully played out — not gestured at with a fixed hop-delay while
+ *  the strike is still running. So level 1 is the bolt (slider-timed), and
+ *  every later level waits out the level before it: that level's own travel,
+ *  minus the strike's lead, plus the strike's full run. Each animation keeps
+ *  its own duration; they simply queue up, so nothing lands on top of anything
+ *  else and nothing gets cut off. */
+export function levelStartOffset(hop, boltMs) {
+  let off = 0;
+  for (let h = 1; h < hop; h++) {
+    off += legDurationFor(h, boltMs) - IMPACT_LEAD_MS + IMPACT_MS; // through h's strike
+  }
+  return off;
 }
 
 /** Deterministic 0..1 value. */

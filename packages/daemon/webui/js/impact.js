@@ -17,23 +17,6 @@
  *  reading a large file (file-size convention).
  */
 
-/** When on a leg's own 0..1 timeline the discharge counts as arrived.
- *
- *  Walked down 0.62 → 0.38 → 0.22 by eye. The first value was keyed to `pulse`,
- *  whose head only reaches the far end at t ≈ 0.87; but the default style puts
- *  its zigzag across the whole strand at once, so the eye is at the far node
- *  almost immediately and anything later reads as lag. The strike is now near
- *  the front of the leg — it IS the event, not a report of it. */
-export const IMPACT_AT = 0.22;
-
-/** When the spilled strands pick up, on the same 0..1 leg timeline.
- *
- *  Deliberately well after IMPACT_AT: the strike lands, and the neighbourhood
- *  answers a beat later. Firing both on one phase — which is what it did at
- *  first — collapses cause and consequence into a single flat event. Widening
- *  this gap is what "Einschlag früher, Rest später" means in numbers. */
-export const IMPACT_SPILL_AT = 0.66;
-
 /** How many of the target's other strands glow along. Three is the most that
  *  still reads as "a couple"; beyond that a hub turns into a starburst. */
 export const IMPACT_SPILL_MAX = 3;
@@ -46,88 +29,72 @@ export const IMPACT_SPILL_ALPHA = 0.17;
  *  turn a single flare into hundreds of extra strokes per frame. */
 export const IMPACT_SPILL_BUDGET = 18;
 
-/** Floors in REAL milliseconds — the reason this module stopped working in
- *  normalised leg-time.
+/** Everything AFTER the bolt, in FIXED milliseconds.
  *
- *  Everything here used to be a fraction of the discharge duration, which is a
- *  slider running 300ms…4s. That scales the geometry correctly and the
- *  PERCEPTION not at all: at 2s the afterglow ran 680ms and read beautifully;
- *  at 300ms the same fraction gave it 102ms, which is below the threshold where
- *  a faint stroke registers as anything but a flicker. Same design, invisible.
+ *  THE RULE (Daniel, repeatedly, finally understood): the slider — `boltMs` —
+ *  is the display time of the FIRST bolt and NOTHING else. It must not appear
+ *  in any other animation, not as a duration and not as a start offset. Every
+ *  attempt that put `boltMs` (or `IMPACT_AT · boltMs`, or `max(floor, boltMs)`)
+ *  into the strike or the follow-up was wrong for the same reason: it let the
+ *  slider change an animation that is not the first bolt.
  *
- *  So the strike and the afterglow have a minimum lifetime in wall-clock time.
- *  Above roughly a second the proportional value already exceeds these and
- *  nothing changes — the 2s look Daniel signed off on is untouched. Below it,
- *  they stop shrinking and simply outlast the bolt, which is what an afterglow
- *  is entitled to do. */
-export const IMPACT_MIN_MS = 260;
-export const SPILL_MIN_MS = 420;
+ *  So the strike and the follow-up run on their OWN clock, measured from the
+ *  moment the bolt reaches the target (its travel end). That hand-off point is
+ *  the only place the bolt's length enters — as "when did the bolt finish", not
+ *  as a duration of anything downstream. Change these to retune; none of them
+ *  touches the slider. */
+export const IMPACT_LEAD_MS = 250; // strike fires this long BEFORE the bolt's travel ends
+export const IMPACT_MS = 2000; // strike animation length
+export const SPILL_GAP_MS = 90; // pause between strike and follow-up
+export const SPILL_MS = 1000; // follow-up animation length on the onward strands
 
-/** How long the strike lives, and when it starts, for a given discharge. */
-export function impactWindow(boltMs) {
-  return {
-    start: IMPACT_AT * boltMs,
-    dur: Math.max(IMPACT_MIN_MS, (1 - IMPACT_AT) * boltMs),
-  };
-}
-
-/** Same for the afterglow on the neighbouring strands. */
-export function spillWindow(boltMs) {
-  return {
-    start: IMPACT_SPILL_AT * boltMs,
-    dur: Math.max(SPILL_MIN_MS, (1 - IMPACT_SPILL_AT) * boltMs),
-  };
-}
-
-/** How long a leg needs to be kept alive after its own travel is over, so a
- *  strike or an afterglow with a floor is never cut off mid-fade. */
-export function tailMs(boltMs) {
-  const i = impactWindow(boltMs);
-  const s = spillWindow(boltMs);
-  return Math.max(0, i.start + i.dur - boltMs, s.start + s.dur - boltMs);
-}
-
-/** Where the rise finishes and the decay takes over, on the window's own 0..1
- *  axis. The quarter is what makes it read as a strike rather than a breath. */
+/** Rise/decay split of the 0→1→0 brightness curve. A quarter up, three
+ *  quarters down, so it reads as a strike and not a breath. */
 const IMPACT_RISE = 0.25;
 
-/** 0 → 1 → 0 over the arrival window: rises fast, falls slow. Returns 0 before
- *  the discharge has arrived, which is what keeps the strike off the origin.
- *
- *  Normalised so the peak really is 1: without the divisor the curve tops out
- *  at 1 - IMPACT_RISE, and every brightness downstream would silently inherit
- *  that factor — the strike would be dimmer than the constants claim, for no
- *  reason anyone could find later. */
+/** 0 → 1 → 0 over a window, normalised so the peak is a true 1. */
 function shape(u) {
   if (u <= 0 || u >= 1) return 0;
   return (Math.min(u / IMPACT_RISE, 1) * (1 - u)) / (1 - IMPACT_RISE);
 }
 
-/** Strike brightness at `ms` into the leg, for a discharge of `boltMs`. */
-export function impactPhase(ms, boltMs) {
-  const { start, dur } = impactWindow(boltMs);
-  return shape((ms - start) / dur);
-}
-
-/** Linear 0..1 across the same window — how FAR along the strike is, as
- *  opposed to how bright.
+/** Milliseconds since the strike fired.
  *
- *  These have to be two different numbers. Brightness rises and then falls, so
- *  anything geometric driven by it runs backwards for the first quarter: a ring
- *  sized off the phase starts wide, collapses inward as the strike brightens,
- *  and only then expands. An impact that implodes first is not a subtle bug —
- *  it is the opposite of the gesture. */
-export function impactProgress(ms, boltMs) {
-  const { start, dur } = impactWindow(boltMs);
-  return Math.max(0, Math.min(1, (ms - start) / dur));
+ *  The strike fires a FIXED IMPACT_LEAD_MS before the bolt finishes travelling
+ *  — the head reaches the target shortly before the tail burns out, and that is
+ *  when the hit should register. A constant lead, never a fraction of the
+ *  length: shorten the bolt and the end moves in, but the strike stays exactly
+ *  IMPACT_LEAD_MS ahead of it, at the same on-screen distance every time. This
+ *  `legDur` is the ONLY use of the bolt's length past the bolt itself. */
+function sinceArrival(legMs, legDur) {
+  return legMs - (legDur - IMPACT_LEAD_MS);
 }
 
-/** Brightness of the spilled strands — same shape as impactPhase, but starting
- *  later and living longer, so the glow trails the strike instead of sharing
- *  its instant and survives a short discharge. */
-export function spillPhase(ms, boltMs) {
-  const { start, dur } = spillWindow(boltMs);
-  return shape((ms - start) / dur);
+/** Strike brightness. Fixed IMPACT_MS window opening at the bolt's arrival. */
+export function impactPhase(legMs, legDur) {
+  return shape(sinceArrival(legMs, legDur) / IMPACT_MS);
+}
+
+/** How FAR along the strike is (linear 0..1), for the ring radius. Separate
+ *  from brightness: brightness rises then falls, and a radius driven by it
+ *  would implode before it expands. */
+export function impactProgress(legMs, legDur) {
+  return Math.max(0, Math.min(1, sinceArrival(legMs, legDur) / IMPACT_MS));
+}
+
+/** Follow-up brightness on the onward strands. Its own fixed SPILL_MS window,
+ *  opening after the strike has played out (IMPACT_MS + SPILL_GAP_MS past
+ *  arrival) — "nachdem die Einschlagsanimation gespielt hat". */
+export function spillPhase(legMs, legDur) {
+  return shape((sinceArrival(legMs, legDur) - IMPACT_MS - SPILL_GAP_MS) / SPILL_MS);
+}
+
+/** How long a leg must stay alive past its bolt so the whole fixed sequence
+ *  (strike → gap → follow-up) can finish. The strike opens IMPACT_LEAD_MS
+ *  before the bolt ends, so the sequence's end sits that much earlier too.
+ *  Constant — no slider term. */
+export function tailMs() {
+  return IMPACT_MS + SPILL_GAP_MS + SPILL_MS - IMPACT_LEAD_MS;
 }
 
 /** The strike itself: a tight ring that opens once, plus a small core glow.

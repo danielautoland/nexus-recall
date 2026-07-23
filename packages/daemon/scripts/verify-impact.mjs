@@ -8,23 +8,20 @@ import {
   drawImpact,
   drawSpill,
   spillEdgesFor,
-  IMPACT_AT,
-  IMPACT_SPILL_AT,
   spillPhase,
-  impactWindow,
-  spillWindow,
   tailMs,
-  IMPACT_MIN_MS,
-  SPILL_MIN_MS,
+  IMPACT_LEAD_MS,
+  IMPACT_MS,
+  SPILL_GAP_MS,
+  SPILL_MS,
   IMPACT_SPILL_MAX,
   IMPACT_SPILL_ALPHA,
 } from "../webui/js/impact.js";
 import {
   boltRnd,
   legDurationFor,
-  hopDelayFor,
+  levelStartOffset,
   CHAIN_LEG_MS,
-  CHAIN_HOP_DELAY_MS,
 } from "../webui/js/bolt-styles.js";
 
 const ok = (name, cond, detail = "") => {
@@ -51,62 +48,61 @@ function recorder() {
 }
 const glowSprite = () => ({ sprite: true });
 
-// ── 1. phase curve ──────────────────────────────────────────────────────────
-const REF = 420; // the shipped default duration
-ok("phase is 0 while the bolt is still travelling", impactPhase(0, REF) === 0 && impactPhase(IMPACT_AT * REF, REF) === 0);
-ok("phase is 0 once its own window is over", impactPhase(impactWindow(REF).start + impactWindow(REF).dur, REF) === 0);
-const peak = [...Array(101).keys()].map((i) => ({ t: i / 100, p: impactPhase((i / 100) * REF, REF) }))
+// ── 1. the post-bolt clock: measured from the bolt's arrival, in fixed ms ────
+// legMs is time since the bolt started; legDur is how long the bolt travelled.
+// A leg of 420ms and a leg of 4000ms must produce the SAME strike/spill once
+// the bolt has arrived — that is the whole rule.
+// the strike fires IMPACT_LEAD_MS before the bolt ends — a fixed lead, not the
+// bolt's end and not a fraction of its length
+const arrival = (legDur) => legDur - IMPACT_LEAD_MS;
+ok("nothing strikes before the fixed lead point", impactPhase(arrival(420) - 5, 420) === 0);
+ok("the strike is lit at the lead point", impactPhase(arrival(420) + 5, 420) > 0);
+ok("the strike fires exactly IMPACT_LEAD_MS before the bolt ends", (() => {
+  for (const legDur of [300, 420, 1000, 2000, 4000]) {
+    let first = null;
+    for (let legMs = 0; legMs <= legDur + 100; legMs += 1) if (impactPhase(legMs, legDur) > 0) { first = legMs; break; }
+    if (Math.abs(legDur - first - IMPACT_LEAD_MS) > 1.5) return false;
+  }
+  return true;
+})(), `${IMPACT_LEAD_MS}ms before the end, every slider`);
+// peak brightness sits inside the fixed strike window, near its front
+const strikePeak = [...Array(200).keys()]
+  .map((i) => ({ since: (i / 200) * IMPACT_MS, p: impactPhase(arrival(1000) + (i / 200) * IMPACT_MS, 1000) }))
   .reduce((a, b) => (b.p > a.p ? b : a));
-ok("phase peaks inside the arrival window", peak.p > 0.9 && peak.t > IMPACT_AT && peak.t < 1,
-   `peak ${peak.p.toFixed(2)} at t=${peak.t}`);
-// rises faster than it falls — a strike, not a breath
-const rise = peak.t - IMPACT_AT, fall = 1 - peak.t;
-ok("rises fast, decays slow", fall > rise * 1.5, `rise ${rise.toFixed(3)} vs fall ${fall.toFixed(3)}`);
+ok("strike peaks near 1, early in its window", strikePeak.p > 0.9 && strikePeak.since < IMPACT_MS * 0.4,
+   `peak ${strikePeak.p.toFixed(2)} at +${Math.round(strikePeak.since)}ms`);
+ok("both fade to nothing eventually", impactPhase(99999, 420) === 0 && spillPhase(99999, 420) === 0);
 
 // ── 1b. cause before consequence ────────────────────────────────────────────
-// The strike lands first, the neighbourhood answers after. Sharing one phase
-// (which is how it started) flattens the two into a single event.
-ok("the spill starts after the strike", IMPACT_SPILL_AT > IMPACT_AT,
-   `spill ${IMPACT_SPILL_AT} > impact ${IMPACT_AT}`);
-const firstImpact = [...Array(200).keys()].map((i) => i / 200).find((t) => impactPhase(t * REF, REF) > 0);
-const firstSpill = [...Array(200).keys()].map((i) => i / 200).find((t) => spillPhase(t * REF, REF) > 0);
-ok("nothing spills before the strike is visible", firstSpill > firstImpact,
-   `impact from t=${firstImpact.toFixed(3)}, spill from t=${firstSpill.toFixed(3)}`);
-ok("both fade to nothing eventually", impactPhase(9999, REF) === 0 && spillPhase(9999, REF) === 0);
-// and the strike itself must not sit at the very end of the travel
-ok("the strike is not late in the leg", IMPACT_AT < 0.5, `IMPACT_AT ${IMPACT_AT}`);
+// Strike first, then — after it has PLAYED OUT, not during — the neighbourhood.
+const iStart = [...Array(600).keys()].map((k) => k * 5).find((s) => impactPhase(1000 + s, 1000) > 0);
+const iEnd = [...Array(600).keys()].map((k) => k * 5).reverse().find((s) => impactPhase(1000 + s, 1000) > 0);
+const sStart = [...Array(600).keys()].map((k) => k * 5).find((s) => spillPhase(1000 + s, 1000) > 0);
+ok("the follow-up starts after the strike has finished", sStart >= iEnd,
+   `strike +${iStart}..${iEnd}ms, follow-up from +${sStart}ms`);
+ok("the gap between them matches SPILL_GAP_MS", Math.abs(sStart - iEnd - SPILL_GAP_MS) < 20,
+   `gap ~${sStart - iEnd}ms vs ${SPILL_GAP_MS}ms`);
 
-
-// ── 1c. the slider must not be able to hide the afterglow ───────────────────
-// The bug this pins: every window used to be a FRACTION of the discharge, so
-// at 300ms the afterglow got 102ms — geometrically correct, perceptually gone,
-// while the same design read perfectly at 2s.
+// ── 1c. THE RULE: the slider touches the first bolt and nothing else ─────────
+// The strike and the follow-up, measured from arrival, are byte-for-byte the
+// same at every slider position. If they weren't, the slider would be changing
+// an animation that is not the first bolt — the exact thing Daniel ruled out.
 const SLIDER = [300, 420, 700, 1000, 2000, 4000];
-const PERCEPTIBLE_MS = 250;
-for (const ms of SLIDER) {
-  const s = spillWindow(ms), i = impactWindow(ms);
-  ok(`afterglow stays perceptible at ${ms}ms`, s.dur >= PERCEPTIBLE_MS,
-     `${Math.round(s.dur)}ms`);
-  ok(`strike stays perceptible at ${ms}ms`, i.dur >= PERCEPTIBLE_MS, `${Math.round(i.dur)}ms`);
-}
-// the 2s look is the reference — it must be untouched by the floors
-const ref2s = { i: impactWindow(2000), s: spillWindow(2000) };
-ok("the 2s reference is purely proportional (floors do not bite)",
-   Math.abs(ref2s.i.dur - 0.78 * 2000) < 1 && Math.abs(ref2s.s.dur - 0.34 * 2000) < 1,
-   `impact ${Math.round(ref2s.i.dur)}ms, spill ${Math.round(ref2s.s.dur)}ms`);
-// and the ordering survives everywhere
-for (const ms of SLIDER) {
-  const fi = [...Array(400).keys()].map((k) => (k / 400) * ms * 2).find((x) => impactPhase(x, ms) > 0);
-  const fs = [...Array(400).keys()].map((k) => (k / 400) * ms * 2).find((x) => spillPhase(x, ms) > 0);
-  ok(`strike still precedes afterglow at ${ms}ms`, fs > fi, `${Math.round(fi)}ms → ${Math.round(fs)}ms`);
-}
-// legs must be kept alive long enough for the tail
-for (const ms of SLIDER) {
-  const need = Math.max(impactWindow(ms).start + impactWindow(ms).dur,
-                        spillWindow(ms).start + spillWindow(ms).dur) - ms;
-  ok(`tail budget covers the overhang at ${ms}ms`, tailMs(ms) >= Math.max(0, need) - 1e-9,
-     `tail ${Math.round(tailMs(ms))}ms vs needed ${Math.round(Math.max(0, need))}ms`);
-}
+const profile = (fn, legDur) => [...Array(400).keys()].map((k) => fn(legDur + k * 6, legDur) > 0.001 ? 1 : 0).join("");
+const strikeProfiles = SLIDER.map((ms) => profile(impactPhase, ms));
+const spillProfiles = SLIDER.map((ms) => profile(spillPhase, ms));
+ok("the strike is identical at every slider position (arrival-relative)",
+   strikeProfiles.every((p) => p === strikeProfiles[0]), `${new Set(strikeProfiles).size} distinct profiles`);
+ok("the follow-up is identical at every slider position (arrival-relative)",
+   spillProfiles.every((p) => p === spillProfiles[0]), `${new Set(spillProfiles).size} distinct profiles`);
+// the follow-up has to be a comfortable length — it was "zu schnell" before
+ok("the follow-up is a calm, perceptible length", SPILL_MS >= 900, `${SPILL_MS}ms`);
+// the strike and follow-up each have their own length; neither is derived from
+// the other, so their relative order is a free choice, not an invariant.
+// the keep-alive tail is a constant with no slider term (the sequence ends
+// IMPACT_LEAD_MS earlier because it also starts that much before the bolt end)
+ok("tailMs carries the whole fixed sequence and no slider term",
+   tailMs() === IMPACT_MS + SPILL_GAP_MS + SPILL_MS - IMPACT_LEAD_MS, `${tailMs()}ms`);
 
 
 // ── 1d. the slider times level 1 ONLY — everything after is decoupled ───────
@@ -121,15 +117,28 @@ for (const ms of S1) {
 const legFollow = S1.map((ms) => legDurationFor(2, ms));
 ok("a following level's duration never depends on the slider",
    legFollow.every((v) => v === CHAIN_LEG_MS), `[${legFollow.join(", ")}]`);
-const delays = S1.map(() => hopDelayFor());
-ok("the gap between levels never depends on the slider",
-   delays.every((v) => v === CHAIN_HOP_DELAY_MS), `[${delays.join(", ")}]`);
-// hop 3 is timed the same way as hop 2 — both are followers
 ok("all following levels share one fixed duration",
    legDurationFor(2, 300) === legDurationFor(3, 4000));
-// and a follower is a real, perceptible length regardless of a tiny slider
-ok("followers stay perceptible even at the shortest slider",
-   legDurationFor(2, 300) >= 250, `${legDurationFor(2, 300)}ms`);
+
+// ── 1e. the levels QUEUE: each starts only after the previous strike ────────
+// "Nach diesen 2 Sekunden müssen dann die anderen Sachen zünden." Level N+1
+// must not overlap level N's strike — it starts once that strike has run out.
+for (const ms of S1) {
+  ok(`level 1 starts at 0 at ${ms}ms`, levelStartOffset(1, ms) === 0);
+  // level 2 begins exactly when level 1's strike ends: (boltMs - LEAD) + IMPACT_MS
+  const l1StrikeEnd = ms - IMPACT_LEAD_MS + IMPACT_MS;
+  ok(`level 2 starts as level 1's strike ends at ${ms}ms`,
+     Math.abs(levelStartOffset(2, ms) - l1StrikeEnd) < 1e-9,
+     `start ${levelStartOffset(2, ms)}ms vs strike-end ${l1StrikeEnd}ms`);
+  // level 3 begins after level 2's strike, which is a fixed length (no slider)
+  const l2StrikeEnd = levelStartOffset(2, ms) + CHAIN_LEG_MS - IMPACT_LEAD_MS + IMPACT_MS;
+  ok(`level 3 starts as level 2's strike ends at ${ms}ms`,
+     Math.abs(levelStartOffset(3, ms) - l2StrikeEnd) < 1e-9);
+  // the offset between level 2 and 3 is slider-independent (both are followers)
+}
+const l23Gap = S1.map((ms) => levelStartOffset(3, ms) - levelStartOffset(2, ms));
+ok("the gap between two following levels never depends on the slider",
+   l23Gap.every((g) => Math.abs(g - l23Gap[0]) < 1e-9), `[${l23Gap.map(Math.round).join(", ")}]`);
 
 // ── 2. the impact stays under the origin flare ──────────────────────────────
 // origin supernova: ring alpha 0.75, halo up to 0.9, ring reach 80px
@@ -145,13 +154,14 @@ ok("impact ring stays well inside the supernova's reach", ring.r < 45, `reach ${
 // The bug this pins: sizing the ring off `phase` (which rises then falls) makes
 // it start wide, collapse inward while the strike brightens, and only then
 // expand. Radius must follow progress, which is monotonic.
+const LEG = 420;
 const radii = [];
 for (let i = 0; i <= 40; i++) {
-  const t = IMPACT_AT + ((1 - IMPACT_AT) * i) / 40;
+  const legMs = LEG + (IMPACT_MS * i) / 40; // step across the strike window, from arrival
   const r = recorder();
   drawImpact({
     ctx: r.ctx, x: 0, y: 0, r: 4, phase: 1 /* forced: isolate geometry */,
-    progress: impactProgress(t * REF, REF), strength: 1, color: "#fff", camScale: 1, glowSprite,
+    progress: impactProgress(legMs, LEG), strength: 1, color: "#fff", camScale: 1, glowSprite,
   });
   const arc = r.calls.find((c) => c.op === "arc");
   if (arc) radii.push(arc.r);
@@ -162,8 +172,8 @@ ok("impact ring never contracts", monotonic,
 ok("impact ring actually travels", radii[radii.length - 1] > radii[0] * 2);
 ok("progress is monotonic across the window",
    [...Array(50).keys()].every((i) => {
-     const t0 = (i / 49) * REF, t1 = ((i + 1) / 49) * REF;
-     return impactProgress(t1, REF) >= impactProgress(t0, REF);
+     const t0 = LEG + (i / 49) * IMPACT_MS, t1 = LEG + ((i + 1) / 49) * IMPACT_MS;
+     return impactProgress(t1, LEG) >= impactProgress(t0, LEG);
    }));
 
 // ── 3. hop falloff carries into the impact ──────────────────────────────────

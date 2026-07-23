@@ -15,7 +15,7 @@ import {
   BOLT_MS_MIN,
   BOLT_MS_MAX,
   BOLT_SPREAD_KEY,
-  hopDelayFor,
+  levelStartOffset,
   legDurationFor,
 } from "./bolt-styles.js";
 import {
@@ -55,9 +55,9 @@ const BOLT_HOP_FALLOFF = 0.22; // visibility per level beyond the first
 // ("longer, parallel, rather than a short blast"), hence a slider instead of a
 // second hardcoded number.
 const BOLT_MS_DEFAULT = 420;
-// The stagger between levels is a fixed number of ms now (bolt-styles.js:
-// hopDelayFor) — a follower's timing is deliberately independent of the
-// slider, so there is no ratio here any more.
+// When each level starts is decided by levelStartOffset (bolt-styles.js): a
+// level fires only after the previous level's strike has finished, so there is
+// no per-level delay constant here any more.
 const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
 const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
 
@@ -494,8 +494,23 @@ export function createRenderer(canvas, sim, initialHues) {
         flashes.delete(id);
         continue;
       }
-      const t = (now - f.born) / f.life;
-      if (t >= 1) {
+      const chainAge = now - f.boltAt;
+      // The cascade — bolt, strike, and the follow-up on the onward strands —
+      // runs on its OWN summed clock, not the notice's `life`. Each level fires
+      // only after the previous level's strike has played out (levelStartOffset),
+      // each animation keeps its own fixed duration, and the whole thing simply
+      // takes as long as it takes. NOTHING may be cut off, so the flash lives
+      // until BOTH the halo's life has elapsed AND the last level's sequence has
+      // finished — never the shorter of the two.
+      let cascadeEnd = 0;
+      for (let hop = 1; hop <= BOLT_HOPS; hop++) {
+        cascadeEnd = Math.max(
+          cascadeEnd,
+          levelStartOffset(hop, boltMs) + legDurationFor(hop, boltMs) + tailMs(),
+        );
+      }
+      const haloT = (now - f.born) / f.life;
+      if (haloT >= 1 && chainAge >= cascadeEnd) {
         flashes.delete(id);
         continue;
       }
@@ -503,17 +518,8 @@ export function createRenderer(canvas, sim, initialHues) {
       // Activity bolts FIRST: they run underneath the ring and the halo, so the
       // flaring node stays the hero and the edges merely hint at where the
       // activity radiates.
-      const chainAge = now - f.boltAt;
-      const hopDelay = hopDelayFor(); // fixed — a follower's start is not slider-timed
       const style = BOLT_STYLES[boltStyle] ?? null; // "off" resolves to nothing on purpose
-      // The window must outlast whichever finishes last: level 1 ends at
-      // boltMs (+tail), while the final follower starts at (HOPS-1)*hopDelay
-      // and runs CHAIN_LEG_MS (+tail). At a long slider level 1 wins; at a
-      // short one the followers do. Anything cut off here is cut off mid-fade.
-      const lvl1End = boltMs + tailMs(boltMs);
-      const followEnd =
-        (BOLT_HOPS - 1) * hopDelay + legDurationFor(2, boltMs) + tailMs(legDurationFor(2, boltMs));
-      if (style && chainAge < Math.max(lvl1End, followEnd) && f.links.length) {
+      if (style && chainAge < cascadeEnd && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
         ctx.strokeStyle = f.color;
         ctx.lineJoin = "round";
@@ -523,12 +529,13 @@ export function createRenderer(canvas, sim, initialHues) {
           // each level starts a little later, so the discharge visibly runs on
           // instead of every leg lighting up at once
           // The slider times the BOLT; a level that fires afterwards gets its
-          // own travel time, or a short discharge would compress the whole
-          // chain into one twitch.
+          // own travel time and starts only once the previous level's strike
+          // has finished (levelStartOffset), so the levels queue instead of
+          // overlapping.
           const legDur = legDurationFor(leg.hop, boltMs);
-          const legMs = chainAge - (leg.hop - 1) * hopDelay;
+          const legMs = chainAge - levelStartOffset(leg.hop, boltMs);
           const t = legMs / legDur;
-          if (legMs <= 0 || legMs >= legDur + tailMs(legDur)) return;
+          if (legMs <= 0 || legMs >= legDur + tailMs()) return;
           // fast in, slow out — activity strikes and then burns down
           const strength = Math.min(t * 6, 1) * (1 - t) * BOLT_HOP_FALLOFF ** (leg.hop - 1);
           // WHICH strands and HOW STRONG is settled here; WHAT is painted on
@@ -596,11 +603,16 @@ export function createRenderer(canvas, sim, initialHues) {
         ctx.arc(n.x, n.y, ringR, 0, Math.PI * 2);
         ctx.stroke();
       }
-      const ease = 1 - t * t;
-      const fr = Math.max(r * 4, 36 / camera.scale) * (1 + 0.15 * Math.sin(now / 160));
-      ctx.globalAlpha = Math.min(1, 0.9 * ease);
-      ctx.drawImage(glowSprite(f.color, theme.label), n.x - fr, n.y - fr, fr * 2, fr * 2);
-      ctx.globalAlpha = 1;
+      // Halo fades over the notice's own life. If the cascade outlasts it, the
+      // halo is simply gone by then while the strands keep animating — the
+      // origin glow was never meant to hold for a multi-second sequence.
+      if (haloT < 1) {
+        const ease = 1 - haloT * haloT;
+        const fr = Math.max(r * 4, 36 / camera.scale) * (1 + 0.15 * Math.sin(now / 160));
+        ctx.globalAlpha = Math.min(1, 0.9 * ease);
+        ctx.drawImage(glowSprite(f.color, theme.label), n.x - fr, n.y - fr, fr * 2, fr * 2);
+        ctx.globalAlpha = 1;
+      }
     }
 
     // ── overlay (live supernovae): after nodes, in every view ──
