@@ -23,30 +23,32 @@ export const BOLT_SPREAD_KEY = "bastra-vault-map-bolt-spread";
 export const BOLT_SPREAD_DEFAULT = 1;
 export const BOLT_SEGMENTS = 7; // zigzag points per bolt
 
-/** What the duration slider actually governs, and what it does not.
+/** What the duration slider governs, and what it does NOT.
  *
- *  The slider sets the time for THE BOLT — the first-level discharge, the thing
- *  the eye follows. The strands that fire afterwards are a separate event and
- *  need their own room: deriving their duration from the slider means that at
- *  300ms the onward chain gets 300ms per level and 128ms between levels, which
- *  is not a chain travelling outward but three near-simultaneous twitches.
+ *  The slider is the time of the FIRST bolt — level 1, the discharge the eye
+ *  follows — and nothing else. Everything that fires afterwards (the onward
+ *  chain and its impacts) has its own fixed time, in real milliseconds,
+ *  completely decoupled from the slider.
  *
- *  So levels beyond the first have a floor of their own, in real milliseconds.
- *  Above ~520ms the slider is already more generous and nothing changes — the
- *  long end of the range, including the 2s look, is untouched. */
-export const CHAIN_MIN_LEG_MS = 520; // a following level's own travel time
-export const CHAIN_MIN_HOP_DELAY_MS = 190; // and the gap before it starts
+ *  This is the third attempt at it, so it is worth being blunt about why the
+ *  first two were wrong. Deriving a following level from the slider (`boltMs`
+ *  or `max(floor, boltMs)`) couples them back together at one end or the other:
+ *  at 300ms the whole chain fires inside a few hundred ms, at 2s the followers
+ *  balloon to 2s each. Both are "the followers depend on the slider", which is
+ *  exactly what must not happen. A constant is the only shape that does not. */
+export const CHAIN_LEG_MS = 680; // a following level's own travel time — fixed
+export const CHAIN_HOP_DELAY_MS = 300; // gap before the next level starts — fixed
 
-/** Stagger between chain levels: a fraction of the discharge, but never so
- *  small that the levels collapse into each other. */
-export function hopDelayFor(boltMs, ratio) {
-  return Math.max(CHAIN_MIN_HOP_DELAY_MS, boltMs * ratio);
+/** Start-to-start gap between chain levels. Constant: a following level's
+ *  timing has nothing to do with how long the first bolt is on screen. */
+export function hopDelayFor() {
+  return CHAIN_HOP_DELAY_MS;
 }
 
-/** How long one leg of the chain travels. Level 1 is the bolt itself and obeys
- *  the slider exactly; later levels get their own minimum. */
+/** How long one leg travels. Level 1 IS the bolt and obeys the slider; every
+ *  later level runs for the fixed CHAIN_LEG_MS regardless of the slider. */
 export function legDurationFor(hop, boltMs) {
-  return hop === 1 ? boltMs : Math.max(CHAIN_MIN_LEG_MS, boltMs);
+  return hop === 1 ? boltMs : CHAIN_LEG_MS;
 }
 
 /** Deterministic 0..1 value. */

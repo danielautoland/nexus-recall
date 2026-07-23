@@ -55,12 +55,9 @@ const BOLT_HOP_FALLOFF = 0.22; // visibility per level beyond the first
 // ("longer, parallel, rather than a short blast"), hence a slider instead of a
 // second hardcoded number.
 const BOLT_MS_DEFAULT = 420;
-// Stagger between levels as a FRACTION of the duration, not a fixed number of
-// ms: the chain has to keep its rhythm when the whole thing is stretched to 4s,
-// and a fraction below 1 also guarantees the levels overlap, so it never breaks
-// apart. Widened from 110/420 on Daniel's "Einschlag früher, Rest später" — the
-// onward chain now waits noticeably longer after the strike it follows.
-const BOLT_HOP_DELAY_RATIO = 180 / 420;
+// The stagger between levels is a fixed number of ms now (bolt-styles.js:
+// hopDelayFor) — a follower's timing is deliberately independent of the
+// slider, so there is no ratio here any more.
 const BOLT_TICK_MS = 55; // re-rolling the zigzag: below ~40ms it turns to noise
 const FLASH_LIFE_MAX = 20000; // ceiling, so constant access can't flare forever
 
@@ -507,15 +504,16 @@ export function createRenderer(canvas, sim, initialHues) {
       // flaring node stays the hero and the edges merely hint at where the
       // activity radiates.
       const chainAge = now - f.boltAt;
-      const hopDelay = hopDelayFor(boltMs, BOLT_HOP_DELAY_RATIO);
+      const hopDelay = hopDelayFor(); // fixed — a follower's start is not slider-timed
       const style = BOLT_STYLES[boltStyle] ?? null; // "off" resolves to nothing on purpose
-      // The window has to outlast the LONGEST leg plus its tail: later levels
-      // have their own floor (legDurationFor) and the impact/afterglow have
-      // theirs, and anything cut off here is cut off mid-fade — which is
-      // exactly how the afterglow went missing below ~1s while looking right
-      // at 2s.
-      const slowestLeg = legDurationFor(2, boltMs);
-      if (style && chainAge < slowestLeg + BOLT_HOPS * hopDelay + tailMs(slowestLeg) && f.links.length) {
+      // The window must outlast whichever finishes last: level 1 ends at
+      // boltMs (+tail), while the final follower starts at (HOPS-1)*hopDelay
+      // and runs CHAIN_LEG_MS (+tail). At a long slider level 1 wins; at a
+      // short one the followers do. Anything cut off here is cut off mid-fade.
+      const lvl1End = boltMs + tailMs(boltMs);
+      const followEnd =
+        (BOLT_HOPS - 1) * hopDelay + legDurationFor(2, boltMs) + tailMs(legDurationFor(2, boltMs));
+      if (style && chainAge < Math.max(lvl1End, followEnd) && f.links.length) {
         const tick = Math.floor(now / BOLT_TICK_MS);
         ctx.strokeStyle = f.color;
         ctx.lineJoin = "round";

@@ -23,8 +23,8 @@ import {
   boltRnd,
   legDurationFor,
   hopDelayFor,
-  CHAIN_MIN_LEG_MS,
-  CHAIN_MIN_HOP_DELAY_MS,
+  CHAIN_LEG_MS,
+  CHAIN_HOP_DELAY_MS,
 } from "../webui/js/bolt-styles.js";
 
 const ok = (name, cond, detail = "") => {
@@ -109,29 +109,27 @@ for (const ms of SLIDER) {
 }
 
 
-// ── 1d. the slider times the BOLT; what fires after gets its own time ───────
-// "die zeit der animation muss gemessen werden für die blitze, die anderen
-// verbindungen die dann feuern brauchen extra ihre zeit". Deriving the onward
-// chain from the slider means that at 300ms three levels arrive within 380ms
-// of each other, each lasting 300ms — not a chain travelling outward.
-const RATIO = 180 / 420;
-for (const ms of [300, 420, 1000, 2000, 4000]) {
+// ── 1d. the slider times level 1 ONLY — everything after is decoupled ───────
+// "Die Zeit am Regler ist einzig und allein die Zeit, in der der erste Blitz
+// auf erster Linie angezeigt wird. Die Folgeblitze dürfen nicht mit dieser
+// Zeit zusammenhängen." So the invariant is not a floor — it is INDEPENDENCE:
+// a following level's timing is byte-for-byte the same at 300ms and at 4s.
+const S1 = [300, 420, 1000, 2000, 4000];
+for (const ms of S1) {
   ok(`level 1 obeys the slider exactly at ${ms}ms`, legDurationFor(1, ms) === ms);
-  ok(`following levels get room at ${ms}ms`, legDurationFor(2, ms) >= CHAIN_MIN_LEG_MS,
-     `${legDurationFor(2, ms)}ms`);
-  ok(`levels stay apart at ${ms}ms`, hopDelayFor(ms, RATIO) >= CHAIN_MIN_HOP_DELAY_MS,
-     `${Math.round(hopDelayFor(ms, RATIO))}ms between levels`);
 }
-// the long end must be pure slider — no floor may touch the signed-off look
-for (const ms of [1000, 2000, 4000]) {
-  ok(`no floor bites at ${ms}ms`,
-     legDurationFor(2, ms) === ms && Math.abs(hopDelayFor(ms, RATIO) - ms * RATIO) < 1e-9,
-     `leg ${legDurationFor(2, ms)}ms, gap ${Math.round(hopDelayFor(ms, RATIO))}ms`);
-}
-// a following level must never be SHORTER than the bolt that spawned it
-for (const ms of [300, 420, 1000, 2000, 4000]) {
-  ok(`level 2 is never shorter than level 1 at ${ms}ms`, legDurationFor(2, ms) >= legDurationFor(1, ms));
-}
+const legFollow = S1.map((ms) => legDurationFor(2, ms));
+ok("a following level's duration never depends on the slider",
+   legFollow.every((v) => v === CHAIN_LEG_MS), `[${legFollow.join(", ")}]`);
+const delays = S1.map(() => hopDelayFor());
+ok("the gap between levels never depends on the slider",
+   delays.every((v) => v === CHAIN_HOP_DELAY_MS), `[${delays.join(", ")}]`);
+// hop 3 is timed the same way as hop 2 — both are followers
+ok("all following levels share one fixed duration",
+   legDurationFor(2, 300) === legDurationFor(3, 4000));
+// and a follower is a real, perceptible length regardless of a tiny slider
+ok("followers stay perceptible even at the shortest slider",
+   legDurationFor(2, 300) >= 250, `${legDurationFor(2, 300)}ms`);
 
 // ── 2. the impact stays under the origin flare ──────────────────────────────
 // origin supernova: ring alpha 0.75, halo up to 0.9, ring reach 80px
