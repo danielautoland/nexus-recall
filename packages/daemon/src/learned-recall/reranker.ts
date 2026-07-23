@@ -66,6 +66,51 @@ export function ollamaChat(opts: { baseURL?: string; model?: string; timeoutMs?:
   };
 }
 
+/**
+ * Installed Ollama models via GET /api/tags. Throws a clear error when Ollama is not
+ * reachable — so the harvest path can distinguish "daemon down" from "model not pulled"
+ * instead of dying on a cryptic 404 at the first /api/chat call.
+ */
+export async function listOllamaModels(opts: { baseURL?: string; timeoutMs?: number } = {}): Promise<string[]> {
+  const baseURL = (opts.baseURL ?? process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434").replace(/\/+$/, "");
+  assertLocalOrOptIn(baseURL);
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${baseURL}/api/tags`, { signal: ctrl.signal });
+    if (!resp.ok) throw new Error(`Ollama tags HTTP ${resp.status}`);
+    const json = (await resp.json()) as { models?: Array<{ name?: string }> };
+    return (json.models ?? []).map((m) => m.name ?? "").filter(Boolean);
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+export interface RerankModelChoice {
+  /** The model to use, or null when nothing usable is installed. */
+  model: string | null;
+  /** True when the preferred model was absent and a fallback was chosen. */
+  fellBack: boolean;
+}
+
+/**
+ * Resolve the reranker model against what Ollama actually has installed. Prefers the
+ * exact requested tag; then the same family under a different tag (gemma3:12b for a
+ * requested gemma3:4b); then any other installed chat model, skipping embedding models
+ * (they cannot answer a pick-one prompt). Returns model:null when nothing usable is
+ * installed, so the caller tells the user to pull one instead of firing a request that
+ * 404s at case 1/50 — the first-run trap zzallirog hit on a machine without gemma3:4b.
+ */
+export function resolveRerankModel(installed: string[], preferred: string): RerankModelChoice {
+  const base = (m: string): string => m.split(":")[0];
+  if (installed.includes(preferred)) return { model: preferred, fellBack: false };
+  const sameFamily = installed.find((m) => base(m) === base(preferred));
+  if (sameFamily) return { model: sameFamily, fellBack: true };
+  const fallback = installed.find((m) => !/embed/i.test(m));
+  return { model: fallback ?? null, fellBack: fallback != null };
+}
+
 /** Build the RankGPT-light prompt: query + numbered candidates, pick-one-or-none. */
 export function buildRerankPrompt(query: string, candidates: RerankCandidate[]): string {
   const list = candidates.map((c, i) => `${i + 1}. ${c.text.replace(/\s+/g, " ").slice(0, 200)}`).join("\n");

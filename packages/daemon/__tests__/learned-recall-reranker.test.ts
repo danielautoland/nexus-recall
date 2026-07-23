@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { assertLocalOrOptIn, buildRerankPrompt, parseRerankAnswer, rerank, type RerankCandidate } from "../src/learned-recall/reranker.js";
+import { assertLocalOrOptIn, buildRerankPrompt, parseRerankAnswer, rerank, resolveRerankModel, type RerankCandidate } from "../src/learned-recall/reranker.js";
 
 const CANDS: RerankCandidate[] = [
   { id: "a", text: "css flexbox note" },
@@ -53,6 +53,36 @@ test("rerank handles an empty candidate list without calling the model", async (
   const r = await rerank("q", [], async () => { called++; return "1"; });
   assert.equal(called, 0);
   assert.equal(r.bestId, null);
+});
+
+test("resolveRerankModel: exact tag installed → used, no fallback", () => {
+  const c = resolveRerankModel(["gemma3:4b", "qwen2.5:7b"], "gemma3:4b");
+  assert.equal(c.model, "gemma3:4b");
+  assert.equal(c.fellBack, false);
+});
+
+test("resolveRerankModel: same family, different tag → that tag, fellBack", () => {
+  const c = resolveRerankModel(["gemma3:12b", "nomic-embed-text:latest"], "gemma3:4b");
+  assert.equal(c.model, "gemma3:12b");
+  assert.equal(c.fellBack, true);
+});
+
+test("resolveRerankModel: preferred absent → first non-embedding chat model, fellBack", () => {
+  const c = resolveRerankModel(["nomic-embed-text:latest", "qwen2.5:7b"], "gemma3:4b");
+  assert.equal(c.model, "qwen2.5:7b");
+  assert.equal(c.fellBack, true);
+});
+
+test("resolveRerankModel: only embedding models installed → null (tell user to pull)", () => {
+  const c = resolveRerankModel(["nomic-embed-text:latest", "mxbai-embed-large:latest"], "gemma3:4b");
+  assert.equal(c.model, null);
+  assert.equal(c.fellBack, false);
+});
+
+test("resolveRerankModel: nothing installed → null", () => {
+  const c = resolveRerankModel([], "gemma3:4b");
+  assert.equal(c.model, null);
+  assert.equal(c.fellBack, false);
 });
 
 test("assertLocalOrOptIn allows loopback endpoints", () => {

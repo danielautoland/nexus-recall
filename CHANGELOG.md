@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bastra bridges harvest` no longer dies on a model it never pulled.**
+  The far-slice reranker fired its default Ollama chat model blind and 404'd
+  at the first case on any machine without it. Harvest now probes `/api/tags`
+  first and resolves to an installed model — exact tag, same family, or any
+  other chat model — and when nothing fits it says which model to pull instead
+  of erroring mid-run. `BASTRA_RERANK_MODEL` still overrides. Reported by
+  zzallirog.
+
 ## [0.8.6] — 2026-07-22
 
 The mindspace stops being a picture of your vault and starts being a view of it

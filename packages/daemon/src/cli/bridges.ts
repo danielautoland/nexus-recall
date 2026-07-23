@@ -28,7 +28,7 @@ import { envFirst } from "../env.js";
 import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
 import { BridgePool, distinctiveTerms } from "../learned-recall/bridges.js";
 import { readEventLog, reconstructReaches, harvestBridges, writeBridges, extractCandidatePools, harvestFarBridges } from "../learned-recall/harvest.js";
-import { ollamaChat, DEFAULT_RERANK_MODEL } from "../learned-recall/reranker.js";
+import { ollamaChat, DEFAULT_RERANK_MODEL, listOllamaModels, resolveRerankModel } from "../learned-recall/reranker.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "../learned-recall/language.js";
 
 /** Bridges share the Commons clone. Env override kept for tests/relocation. */
@@ -139,9 +139,38 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
           terms: distinctiveTerms([m.fm.title, m.fm.summary, ...m.fm.recall_when, ...m.fm.tags, m.body].join(" ")),
         };
       };
-      const model = process.env.BASTRA_RERANK_MODEL ?? DEFAULT_RERANK_MODEL;
+      // Probe what Ollama actually has before firing 50 chat calls: on a machine that
+      // never pulled the default model, /api/chat 404s and the run dies at case 1/50
+      // with a cryptic error. Resolve to an installed model (or a clear "pull it" hint).
+      const preferred = process.env.BASTRA_RERANK_MODEL ?? DEFAULT_RERANK_MODEL;
+      const ollamaURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
+      let installed: string[];
+      try {
+        installed = await listOllamaModels();
+      } catch (err) {
+        process.stderr.write(
+          `✗ local reranker unavailable — Ollama not reachable at ${ollamaURL} (${(err as Error).message}).\n` +
+            "  start Ollama, or run 'bastra models on' to set it up.\n",
+        );
+        return 1;
+      }
+      const choice = resolveRerankModel(installed, preferred);
+      if (!choice.model) {
+        process.stderr.write(
+          `✗ reranker model '${preferred}' is not pulled and no other chat model is installed.\n` +
+            `  run 'ollama pull ${preferred}' (or set BASTRA_RERANK_MODEL to a model you already have).\n`,
+        );
+        return 1;
+      }
+      if (choice.fellBack) {
+        process.stderr.write(
+          `  note: '${preferred}' is not pulled — falling back to '${choice.model}'. ` +
+            `run 'ollama pull ${preferred}' or set BASTRA_RERANK_MODEL to pin one.\n`,
+        );
+      }
+      const model = choice.model;
       process.stdout.write(`harvesting far slice with local reranker (${model}) over ${pools.length} pools…\n`);
-      const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat(), {
+      const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat({ model }), {
         onProgress: (done, total) => process.stderr.write(`  judged ${done}/${total}\r`),
       });
       const written = await writeBridges(bridgesPath(), result.bridges);
