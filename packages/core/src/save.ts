@@ -234,7 +234,11 @@ export function slugify(input: string): string {
     .normalize("NFKD")
     .replace(/\p{Diacritic}/gu, "");
   const slug = lower
-    .replace(/[^a-z0-9]+/g, "-")
+    // `[^a-z0-9]` erased every non-Latin letter into a separator, so a
+    // Cyrillic/CJK-only title collapsed to "" and threw. `\p{L}\p{N}` + `u`
+    // keep letters of any script (UTF-8 filenames are fine); ASCII titles are
+    // unaffected. Umlauts still transliterate above, before this runs.
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, SLUG_MAX_LEN);
   if (!slug) throw new Error(`cannot slugify: ${JSON.stringify(input)}`);
