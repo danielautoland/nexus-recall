@@ -214,6 +214,26 @@ export function checkCueRegistration(
     if (at("evaluation_rule") == null) {
       issues.push({ where: "evaluation_rule", problem: "fixed before the run, so the analysis is not chosen after seeing the data (§18.3)" });
     }
+
+    // §18.3: "Die Aufteilung beziehungsweise das Verschachtelungsschema ist
+    // Teil der Registrierung." A split named but not quantified is not a
+    // registered split — it leaves the one number that decides how much of the
+    // gold set the comparison ever sees open until someone picks it, which is
+    // the contamination the guard exists to prevent.
+    const admissible = at("admissible_designs") as Record<string, Record<string, unknown>> | undefined;
+    const guard = admissible?.[String(design)]?.contamination_guard as Record<string, unknown> | undefined;
+    if (guard?.mode === "selection_holdout_split") {
+      const sel = guard.selection_share;
+      const hold = guard.holdout_share;
+      if (typeof sel !== "number" || typeof hold !== "number") {
+        issues.push({ where: "contamination_guard", problem: "selection_share and holdout_share are part of the registration (§18.3)" });
+      } else if (Math.abs(sel + hold - 1) > 1e-9) {
+        issues.push({ where: "contamination_guard", problem: `shares must cover the case set exactly: ${sel} + ${hold} != 1` });
+      }
+      if (guard.split_seed == null) {
+        issues.push({ where: "contamination_guard", problem: "the split needs a seed, or it is not the same split on the next run" });
+      }
+    }
   }
   return issues;
 }

@@ -84,16 +84,22 @@ test("the real registry is mostly unrankable, and that is the finding", () => {
   assert.ok(blocked / pairs > 0.9, `expected nearly every pair blocked, got ${blocked}/${pairs}`);
 });
 
-test("the cue registration is structurally sound and honest about its stage", () => {
+test("the committed cue registration satisfies the M0 gate and is honest about its stage", () => {
   const reg = loadCueRegistration();
-  // Registered structure, undecided design: the numbers depend on the M0
-  // baseline (§18.1) and the design choice is a product-owner call.
-  assert.equal(reg.status, "structure_pending_decision");
-  assert.equal(reg.design, null);
+  // Design A on descriptive/item with a selection/holdout split — the
+  // product-owner decisions of 2026-07-26. The numbers still wait on the M0
+  // baseline (§18.1), which is what the stage says.
+  assert.equal(reg.status, "structure_registered");
+  assert.equal(reg.design, "A");
 
-  // At that stage the M0 gate is not yet satisfied, and the check says so.
-  const issues = checkCueRegistration("structure_registered", reg);
-  assert.ok(issues.some((i) => /must be registered before the run/.test(i.problem)));
+  const a = (reg.admissible_designs as Record<string, Record<string, unknown>>).A;
+  assert.deepEqual(a.fixed_cue_configuration, { descriptive_associative: "descriptive", item_scene: "item" });
+  assert.equal((a.contamination_guard as Record<string, unknown>).mode, "selection_holdout_split");
+
+  // M0's gate condition is met at this stage.
+  assert.deepEqual(checkCueRegistration("structure_registered", reg), []);
+  // An M2 run is not — the numbers and the split shares are still missing.
+  assert.ok(checkCueRegistration("numbers_registered", reg).length > 0);
 
   // The parts that do NOT depend on the baseline are registered now, because
   // the point of pre-registration is that they are not chosen after the data.
@@ -156,4 +162,41 @@ test("an M2 run additionally requires the numbers, separately for main effects a
   const issues = checkCueRegistration("numbers_registered", structureOnly).map((i) => i.problem).join(" | ");
   assert.match(issues, /minimum N is required/, "the interaction N is missing and the interaction needs the larger one");
   assert.match(issues, /not chosen after seeing the data/, "the evaluation rule is missing");
+});
+
+test("a named split is not a registered split until it is quantified", () => {
+  const withSplit = (guard: Record<string, unknown>) => ({
+    status: "numbers_registered",
+    design: "A",
+    admissible_designs: {
+      A: {
+        condition_count: 2,
+        interaction_evaluated: false,
+        fixed_cue_configuration: { descriptive_associative: "descriptive", item_scene: "item" },
+        contamination_guard: { mode: "selection_holdout_split", ...guard },
+      },
+    },
+    power_assumption: { main_effects: { min_n: 120 }, interaction: { min_n: 480 } },
+    evaluation_rule: "paired comparison of Recall@3 on the holdout",
+  });
+
+  const unquantified = checkCueRegistration("numbers_registered", withSplit({})).map((i) => i.problem).join(" | ");
+  assert.match(unquantified, /selection_share and holdout_share are part of the registration/);
+
+  const lopsided = checkCueRegistration(
+    "numbers_registered",
+    withSplit({ selection_share: 0.3, holdout_share: 0.6, split_seed: 1 }),
+  ).map((i) => i.problem).join(" | ");
+  assert.match(lopsided, /must cover the case set exactly/, "a gap between the parts silently drops cases");
+
+  const unseeded = checkCueRegistration(
+    "numbers_registered",
+    withSplit({ selection_share: 0.3, holdout_share: 0.7 }),
+  ).map((i) => i.problem).join(" | ");
+  assert.match(unseeded, /needs a seed/);
+
+  assert.deepEqual(
+    checkCueRegistration("numbers_registered", withSplit({ selection_share: 0.3, holdout_share: 0.7, split_seed: 20260726 })),
+    [],
+  );
 });

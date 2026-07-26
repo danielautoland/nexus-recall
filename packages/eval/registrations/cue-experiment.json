@@ -3,12 +3,13 @@
   "schema_version": 1,
   "registration_version": 1,
   "registered_at": "2026-07-26",
-  "status": "structure_pending_decision",
+  "registered_by": "Daniel Nevoigt",
+  "status": "structure_registered",
 
   "$comment_status": "structure_pending_decision -> structure_registered -> numbers_registered. The validator refuses an M2 run below numbers_registered, and refuses a design choice that does not match §18.3.",
 
-  "design": null,
-  "$comment_design": "PRODUCT-OWNER DECISION, still open. Exactly two designs are admissible (§18.3) and there is no third; adding the generation path as an extra arm during or after a run is inadmissible, because that yields an incompletely occupied design whose main effects are confounded with the generation path.",
+  "design": "A",
+  "$comment_design": "Product-owner decision, taken 2026-07-26. Exactly two designs are admissible (§18.3) and there is no third; adding the generation path as an extra arm during or after a run is inadmissible, because that yields an incompletely occupied design whose main effects are confounded with the generation path. A was chosen because it is paired on the same gold cases, which lowers the required N substantially, and because the open question is whether the generation path matters at all — B's eight cells are only worth their N once A shows an effect.",
 
   "admissible_designs": {
     "A": {
@@ -19,15 +20,20 @@
       "$comment_cells": "Two CONDITIONS, not four cells. The 2x2 belongs to the cue-axis experiment; here the axes are held fixed, so those cells do not exist (C-074).",
       "paired": true,
       "paired_on": "the same gold cases run through both generation paths, which lowers the required N substantially",
-      "fixed_cue_configuration": null,
-      "$comment_configuration": "OPEN: which single configuration of the two cue axes (descriptive|associative x item|scene) the comparison is held at. The result of design A is valid ONLY for that configuration.",
+      "fixed_cue_configuration": {
+        "descriptive_associative": "descriptive",
+        "item_scene": "item"
+      },
+      "$comment_configuration": "Decided 2026-07-26. The result of design A is valid ONLY for this configuration; whether a generation path performs differently at another one stays unanswered and must not be asserted.",
       "contamination_guard": {
-        "mode": null,
-        "$comment": "OPEN, one of exactly two permitted options (§18.3): 'selection_holdout_split' — a separate selection part determines the cue configuration and an independent holdout runs the comparison; or 'nested_evaluation' — a pre-registered scheme that separates selection and comparison cleanly inside one case set. The split or the nesting scheme is part of this registration.",
+        "mode": "selection_holdout_split",
+        "$comment": "Decided 2026-07-26, one of exactly two permitted options (§18.3). A separate selection part determines the cue configuration and an independent holdout runs the comparison, so the comparison is not contaminated by the selection.",
         "permitted": ["selection_holdout_split", "nested_evaluation"],
         "selection_share": null,
         "holdout_share": null,
-        "split_seed": null
+        "split_seed": null,
+        "$comment_shares": "STILL OPEN and required before the run (§18.3: the split is part of the registration). The shares are a design choice, not a baseline result — but they trade off against the min-N the baseline will produce, so they are set together with it at the numbers_registered stage.",
+        "split_is_frozen_before_run": true
       },
       "min_n_per_condition": null,
       "interaction_evaluated": false,
