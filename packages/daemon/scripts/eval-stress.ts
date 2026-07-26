@@ -30,8 +30,10 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { Vault, SearchIndex } from "@bastra-recall/core";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { Vault, SearchIndex, EmbeddingIndex, OllamaEmbeddingProvider } from "@bastra-recall/core";
 import type { RecallHit, RecallOptions } from "@bastra-recall/core";
 import { PARAPHRASED_CASES } from "./stress-fixtures/paraphrased.js";
 import { CROSS_MEMORY_CASES } from "./stress-fixtures/cross-memory.js";
@@ -115,6 +117,126 @@ function makeRecaller(search: SearchIndex, hybrid: boolean): Recaller {
     return (q, opts) => search.recallHybrid(q, opts);
   }
   return async (q, opts) => search.recall(q, opts);
+}
+
+// ── Hybrid arm (M0 gate, #261) ─────────────────────────────────
+//
+// Until now `--hybrid` was structurally BM25: makeRecaller asked
+// `search.hasEmbeddings()`, but nothing ever called `useEmbeddings()`, so the
+// answer was always false and the arm reported BM25 numbers under a hybrid
+// label. Every measurement taken through that flag was mislabelled.
+//
+// The M0 gate is "no silent arm fallback": if the hybrid arm cannot be built,
+// the run aborts. It never degrades to BM25 and calls itself hybrid.
+//
+// The index is built from a COPY of the vault's vector store. A measurement
+// must not mutate what it measures — starting an EmbeddingIndex backfills
+// missing vectors and persists them, and an eval run has no business
+// rewriting the production store.
+
+/** Bound on the cold-store backfill — long enough for a real vault, short
+ *  enough that a stuck provider fails the run instead of hanging it. */
+const HYBRID_BACKFILL_TIMEOUT_MS = 15 * 60 * 1000;
+
+interface HybridArm {
+  provider: string;
+  loadedVectors: number;
+  backfilled: number;
+  cleanup: () => Promise<void>;
+}
+
+function providerFromEnv(): OllamaEmbeddingProvider {
+  const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
+  const model = process.env.BASTRA_EMBEDDING_MODEL ?? "embeddinggemma";
+  const dimEnv = process.env.BASTRA_EMBEDDING_DIM;
+  const parsedDim = dimEnv ? Number.parseInt(dimEnv, 10) : undefined;
+  const dim = parsedDim !== undefined && Number.isFinite(parsedDim) ? parsedDim : undefined;
+  const keepAlive = process.env.BASTRA_OLLAMA_KEEP_ALIVE ?? "10m";
+  return new OllamaEmbeddingProvider({ baseURL, model, dim, keepAlive });
+}
+
+async function attachHybrid(vault: Vault, search: SearchIndex, vaultPath: string): Promise<HybridArm> {
+  const provider = providerFromEnv();
+  const tmpRoot = await mkdtemp(join(tmpdir(), "bastra-stress-hybrid-"));
+  const persistPath = join(tmpRoot, "embeddings.json");
+  const cleanup = () => rm(tmpRoot, { recursive: true, force: true });
+
+  // Work on a copy of the production store when there is one; otherwise the
+  // index embeds from scratch and we say so in the report.
+  const source = join(vaultPath, ".bastra", "embeddings.json");
+  let hadStore = false;
+  try {
+    await copyFile(source, persistPath);
+    hadStore = true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+      await cleanup();
+      throw new Error(`--hybrid: cannot read the vector store at ${source}: ${(e as Error).message}`);
+    }
+  }
+
+  // Probe FIRST. EmbeddingIndex.start() swallows a provider failure — it logs
+  // "batch error, requeue" and keeps retrying — so an unreachable provider
+  // would show up only as a backfill that never finishes, i.e. as a fifteen
+  // minute hang followed by a confusing size error. One embed call up front
+  // turns that into an immediate, honest failure.
+  const baseURL = process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434";
+  try {
+    await provider.embed(["probe"]);
+  } catch (e) {
+    await cleanup();
+    throw new Error(
+      `--hybrid: the embedding provider is unreachable (${provider.id} at ${baseURL}): ${(e as Error).message}\n` +
+        `The hybrid arm cannot be built, and a BM25 run must not be reported as hybrid.`,
+    );
+  }
+
+  const emb = new EmbeddingIndex(vault, provider, persistPath);
+  await emb.start();
+
+  // start() fires the backfill with `void flushQueue()` and returns before the
+  // vectors land, so size() is 0 at this point on a cold store. There is no
+  // public way to await it — poll, bounded, and say what is happening.
+  const atStart = emb.size();
+  const want = vault.size();
+  const deadline = Date.now() + HYBRID_BACKFILL_TIMEOUT_MS;
+  let loaded = atStart;
+  while (loaded < want && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    const now = emb.size();
+    if (now !== loaded) console.error(`[stress] embedding ${now}/${want}…`);
+    loaded = now;
+  }
+
+  if (loaded < want) {
+    emb.stop();
+    await cleanup();
+    throw new Error(
+      `--hybrid: only ${loaded}/${want} memories carry a vector after ` +
+        `${Math.round(HYBRID_BACKFILL_TIMEOUT_MS / 1000)}s. The dense leg would be blind for the rest, ` +
+        `so the arm is not hybrid for the whole vault.\n` +
+        `Let the daemon finish embedding the vault, then run again — a partially embedded arm is not a measurement.`,
+    );
+  }
+
+  search.useEmbeddings(emb);
+  if (!search.hasEmbeddings()) {
+    emb.stop();
+    await cleanup();
+    throw new Error("--hybrid: useEmbeddings() did not take effect — refusing to report BM25 as hybrid.");
+  }
+
+  return {
+    provider: `Hybrid (BM25 + Vector RRF) · ${provider.id} · dim ${provider.dim} · ` +
+      `store ${hadStore ? "copied from vault" : "embedded fresh"}` +
+      (loaded > atStart ? ` · ${loaded - atStart} backfilled for this run` : ""),
+    loadedVectors: loaded,
+    backfilled: loaded - atStart,
+    cleanup: async () => {
+      emb.stop();
+      await cleanup();
+    },
+  };
 }
 
 // ── Slice 1: paraphrased ───────────────────────────────────────
@@ -594,9 +716,15 @@ async function main(): Promise<void> {
   const search = new SearchIndex(vault);
   search.start();
 
+  // #261: build the dense leg BEFORE makeRecaller reads hasEmbeddings(), or
+  // the arm silently stays BM25. attachHybrid throws rather than degrade.
+  let arm: HybridArm | undefined;
+  if (args.hybrid) {
+    arm = await attachHybrid(vault, search, vaultPath);
+    console.error(`[stress] hybrid arm: ${arm.loadedVectors}/${vault.size()} vectors`);
+  }
   const recall = makeRecaller(search, args.hybrid);
-  const provider =
-    args.hybrid && search.hasEmbeddings() ? "Hybrid (BM25 + Vector RRF)" : "BM25-only";
+  const provider = arm ? arm.provider : "BM25-only";
   console.error(`[stress] provider: ${provider}`);
 
   const para = args.slices.includes("paraphrased")
@@ -612,6 +740,13 @@ async function main(): Promise<void> {
   // ── stdout report ─────────────────────────────────────────
   console.log("\n# Bastra Recall — Stress Eval\n");
   console.log(`Vault: **${loaded}** memories  ·  Provider: **${provider}**`);
+  // #261: the production candidate pool is `max(k * 4, 20)` (search.ts:294,
+  // :464). It caps what any slice can retrieve, so a number is only readable
+  // next to the pool it was measured in.
+  console.log(
+    `Candidate pool per slice (production formula \`max(k*4, 20)\`): ` +
+      `paraphrased k=10 → 40  ·  cross k=max(4, |expected|) → ≥20  ·  anti k=3 → 20`,
+  );
   if (para) printParaphrased(para);
   if (cross) printCross(cross);
   if (anti) printAnti(anti);
@@ -690,6 +825,7 @@ async function main(): Promise<void> {
   }
 
   search.stop();
+  if (arm) await arm.cleanup();
   await vault.stop();
 
   process.exit(allPass ? 0 : 1);
