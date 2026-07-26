@@ -29,8 +29,8 @@
  * pass their respective thresholds.
  */
 
-import { writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 import { attachHybrid, makeControlRecaller, makeRecaller, type HybridArm } from "./stress-arm.js";
 import {
@@ -127,6 +127,36 @@ Env:
   BASTRA_VAULT_PATH (required)         path to the markdown vault
 `,
   );
+}
+
+/**
+ * Refuses a path that lands inside a git working tree (#261).
+ *
+ * `--out` writes the per-case rows — every paraphrase query and every gold id —
+ * and resolves against the cwd, which is normally this checkout. That is the
+ * same leak `stress-report.md` was: vault-derived text one `git add .` away
+ * from a public repo. §18.1 and C-025 allow only aggregated reports without
+ * vault-derived query text there.
+ *
+ * A hard refusal rather than a warning, and it costs nothing: the run artifact
+ * under ~/.bastra/eval-runs/ already holds the identical `results.json`.
+ */
+function assertOutsideGitTree(target: string): void {
+  let dir = dirname(resolve(target));
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) {
+      throw new Error(
+        `--out ${target} points inside a git working tree (${dir}).\n` +
+          `The JSON carries every paraphrase query and gold id; only aggregated reports without ` +
+          `vault-derived query text belong in a repository (§18.1, C-025).\n` +
+          `The same data is already in the run artifact under ~/.bastra/eval-runs/<date>-<hash>/results.json — ` +
+          `pass a path outside the checkout if you need a second copy.`,
+      );
+    }
+    const up = dirname(dir);
+    if (up === dir) return;
+    dir = up;
+  }
 }
 
 // ── Output helpers ─────────────────────────────────────────────
@@ -628,7 +658,8 @@ async function main(): Promise<void> {
       },
       overall_pass: allPass,
     };
-    writeFileSync(resolve(args.out), JSON.stringify(json, null, 2));
+    assertOutsideGitTree(args.out);
+    writeFileSync(resolve(args.out), JSON.stringify(json, null, 2), { mode: 0o600 });
     console.error(`[stress] wrote JSON report to ${args.out}`);
   }
 

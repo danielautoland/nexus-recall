@@ -18,6 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const SCRIPT = resolve(import.meta.dirname, "..", "scripts", "eval-stress.ts");
@@ -56,4 +57,22 @@ test("without --hybrid the harness reports BM25-only and says so in the report",
   // next to the numbers rather than in the reader's head.
   assert.match(out, /Candidate pool per slice/, "the production pool formula is stated in the report");
   assert.match(out, /max\(k\*4, 20\)/);
+});
+
+test("--out refuses a path inside a git working tree", () => {
+  // Same leak class as the tracked stress-report.md: the JSON carries every
+  // paraphrase query and gold id, and --out resolves against the cwd, which is
+  // normally this checkout. Refusing costs nothing — results.json in the run
+  // artifact holds the identical data.
+  const res = runStress(["--slice", "anti", "--out", "./should-never-exist.json"], {});
+
+  const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  assert.notEqual(res.status, 0, "writing vault-derived rows into the repo must fail the run");
+  assert.match(out, /points inside a git working tree/);
+  assert.match(out, /eval-runs/, "the message names where the data already is");
+  assert.equal(
+    existsSync(resolve(import.meta.dirname, "..", "..", "..", "should-never-exist.json")),
+    false,
+    "and nothing was written",
+  );
 });
