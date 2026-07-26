@@ -16,8 +16,14 @@
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082.
 > Alle zwölf Zwischenfassungen und der Ausgangsstand liegen unverändert unter
 > `docs/architecture-history/`; sie sind Belegmaterial, keine geltenden
-> Verträge. Die englische Schwesterfassung liegt dort ebenfalls im Stand
-> C-001–C-028 und ist nicht nachgeführt.
+> Verträge.
+>
+> **Sprachfassungen.** Diese deutsche Fassung ist der geprüfte Original- und
+> Vertragstext. `docs/Evolution Architecture V1 to V2.md` ist eine Übersetzung
+> davon; sie dient der Lesbarkeit, nicht der Auslegung. Weichen die Fassungen
+> voneinander ab, gilt die deutsche. Jede Änderung wird zuerst hier vorgenommen
+> und danach übersetzt, nie umgekehrt. Die frühere englische Fassung im Stand
+> C-001–C-028 liegt im Archiv und ist überholt.
 >
 > Jede Passage ist über das Ledger in 0.4 und das Delta-Ledger in Abschnitt 28
 > auf genau eine C-ID zurückführbar. Kein Eintrag deutet ein früheres Urteil um;
@@ -6123,9 +6129,9 @@ Memory-Schema übernommen werden sollen.
 die Reihenfolge innerhalb der vier Prüfstufen; die Wahl des konkreten
 handlungsorientierten Benchmarks; alle numerischen Größen nach dem
 M0-Baseline-Run, jetzt einschließlich des Grad-Schwellenwerts aus C-078;
-`max_provenance_hops` = 2 als Startkandidat. Die englische Fassung unter
-`docs/architecture-history/Evolution Architecture V1 to V2 (Stand C-028).md`
-liegt elf Revisionen zurück und ist neu zu erstellen. Nebenbefund ohne C-ID: Die Daemon-README
+`max_provenance_hops` = 2 als Startkandidat. Die englische Übersetzung dieses
+Stands liegt unter `docs/Evolution Architecture V1 to V2.md`; die alte Fassung
+im Stand C-001–C-028 ist ins Archiv gewandert. Nebenbefund ohne C-ID: Die Daemon-README
 beschreibt abgelaufene Memories als „(or excluded if expired)"; der Code dämpft
 sie nur auf 20 %.
 
