@@ -6,10 +6,34 @@
  * prints. The summary types are the contract between the two halves.
  */
 import type { Vault } from "@bastra-recall/core";
-import type { Recaller } from "./stress-arm.js";
-import { PARAPHRASED_CASES } from "./stress-fixtures/paraphrased.js";
-import { CROSS_MEMORY_CASES } from "./stress-fixtures/cross-memory.js";
+import { seededShuffle, type Recaller } from "./stress-arm.js";
+import { PARAPHRASED_CASES, type ParaphrasedCase } from "./stress-fixtures/paraphrased.js";
+import { CROSS_MEMORY_CASES, type CrossMemoryCase } from "./stress-fixtures/cross-memory.js";
 import { ANTI_HALLUCINATION_CASES } from "./stress-fixtures/anti-hallucination.js";
+
+// ── Label-shuffle null (M0 gate, #261) ─────────────────────────
+//
+// The null hypothesis for every gold-labelled slice: keep the queries, keep
+// the gold ids, break only the pairing between them. A harness that still
+// scores well on permuted labels is not measuring retrieval — it is measuring
+// the shape of the gold set, or leaking the answer through the query. The
+// null is what makes a headline number readable: 45% means nothing until you
+// know whether shuffled labels also score 45%.
+//
+// Seeded, so the null is reproducible; a null that moves per run cannot be
+// cited next to the number it qualifies.
+
+/** Reassigns gold ids across cases, keeping every query and every id in play. */
+export function shuffleParaphrasedLabels(cases: readonly ParaphrasedCase[], seed: number): ParaphrasedCase[] {
+  const ids = seededShuffle(cases.map((c) => c.id), seed);
+  return cases.map((c, i) => ({ ...c, id: ids[i] }));
+}
+
+/** Same for the cross slice: the expected SETS move between queries intact. */
+export function shuffleCrossLabels(cases: readonly CrossMemoryCase[], seed: number): CrossMemoryCase[] {
+  const expected = seededShuffle(cases.map((c) => ({ expected: c.expected, oneHop: c.oneHop })), seed);
+  return cases.map((c, i) => ({ ...c, expected: expected[i].expected, oneHop: expected[i].oneHop }));
+}
 
 // ── Slice 1: paraphrased ───────────────────────────────────────
 
@@ -37,13 +61,14 @@ export interface ParaphrasedSummary {
 export async function runParaphrased(
   vault: Vault,
   recall: Recaller,
+  cases: readonly ParaphrasedCase[] = PARAPHRASED_CASES,
 ): Promise<ParaphrasedSummary> {
   const knownIds = new Set(vault.list().map((m) => m.fm.id));
   const unknownIds: string[] = [];
   const rows: ParaphrasedResult[] = [];
   const perMemory = new Map<string, { hits: number; tests: number }>();
 
-  for (const c of PARAPHRASED_CASES) {
+  for (const c of cases) {
     if (!knownIds.has(c.id)) {
       unknownIds.push(c.id);
       continue;
@@ -113,11 +138,12 @@ export interface CrossSummary {
 export async function runCrossMemory(
   vault: Vault,
   recall: Recaller,
+  cases: readonly CrossMemoryCase[] = CROSS_MEMORY_CASES,
 ): Promise<CrossSummary> {
   const knownIds = new Set(vault.list().map((m) => m.fm.id));
   const rows: CrossResult[] = [];
 
-  for (const c of CROSS_MEMORY_CASES) {
+  for (const c of cases) {
     const validExpected = c.expected.filter((id) => knownIds.has(id));
     const validOneHop = (c.oneHop ?? []).filter((id) => knownIds.has(id));
     const k = Math.max(4, validExpected.length);

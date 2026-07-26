@@ -142,3 +142,56 @@ export async function attachHybrid(vault: Vault, search: SearchIndex, vaultPath:
     },
   };
 }
+
+// ── Control arm (M0 gate, #261) ────────────────────────────────
+//
+// The floor every real arm has to clear. It ranks candidates at random, so
+// its Recall@k is what the metric reports when there is no retrieval signal
+// at all. Without it a number like "45.2% Recall@3" has no scale: nobody can
+// say whether it is retrieval or the shape of the gold set.
+//
+// Seeded, because a control arm that moves between runs is not a control.
+
+/** Deterministic 32-bit PRNG (mulberry32) — no dependency, same draw everywhere. */
+export function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Fisher-Yates against a seeded draw. Returns a new array. */
+export function seededShuffle<T>(items: readonly T[], seed: number): T[] {
+  const rnd = seededRandom(seed);
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/**
+ * A Recaller that ignores the query and returns a seeded random ranking of the
+ * vault. Scores descend so downstream rank logic behaves normally; they carry
+ * no meaning beyond ordering.
+ *
+ * The permutation is drawn per query (seed mixed with the query string), not
+ * once per run — a single fixed order would accidentally favour whichever gold
+ * ids happen to sit near its front.
+ */
+export function makeControlRecaller(vault: Vault, seed: number): Recaller {
+  const ids = vault.list().map((m) => m.fm.id);
+  return async (query, opts) => {
+    let mix = seed >>> 0;
+    for (let i = 0; i < query.length; i++) mix = (Math.imul(mix, 31) + query.charCodeAt(i)) >>> 0;
+    const k = opts?.k ?? 10;
+    return seededShuffle(ids, mix)
+      .slice(0, k)
+      .map((id, i) => ({ id, score: k - i }) as RecallHit);
+  };
+}
+

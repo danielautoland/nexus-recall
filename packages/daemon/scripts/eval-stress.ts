@@ -32,15 +32,21 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
-import { attachHybrid, makeRecaller, type HybridArm } from "./stress-arm.js";
+import { attachHybrid, makeControlRecaller, makeRecaller, type HybridArm } from "./stress-arm.js";
 import {
   runParaphrased,
   runCrossMemory,
   runAntiHallucination,
+  shuffleParaphrasedLabels,
+  shuffleCrossLabels,
   type ParaphrasedSummary,
   type CrossSummary,
   type AntiSummary,
 } from "./stress-slices.js";
+import { computeHashes, writeRunArtifact, type RunManifest } from "./stress-artifact.js";
+import { PARAPHRASED_CASES } from "./stress-fixtures/paraphrased.js";
+import { CROSS_MEMORY_CASES } from "./stress-fixtures/cross-memory.js";
+import { ANTI_HALLUCINATION_CASES } from "./stress-fixtures/anti-hallucination.js";
 
 // ── CLI parsing ────────────────────────────────────────────────
 
@@ -49,6 +55,8 @@ interface Args {
   out: string | null;
   cutoff: number;
   hybrid: boolean;
+  /** Drives the control arm and the label-shuffle null (#261). */
+  seed: number;
 }
 
 type Slice = "paraphrased" | "cross" | "anti";
@@ -59,6 +67,9 @@ function parseArgs(argv: string[]): Args {
     out: null,
     cutoff: 80,
     hybrid: false,
+    // Fixed by default: a baseline that moves between runs cannot qualify the
+    // number it sits next to. Override only to check the null is stable.
+    seed: 20260726,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -82,6 +93,10 @@ function parseArgs(argv: string[]): Args {
       const n = Number(argv[++i]);
       if (!Number.isFinite(n)) throw new Error("--cutoff must be a number");
       args.cutoff = n;
+    } else if (a === "--seed") {
+      const n = Number(argv[++i]);
+      if (!Number.isInteger(n)) throw new Error("--seed must be an integer");
+      args.seed = n;
     } else if (a === "--hybrid") {
       args.hybrid = true;
     } else if (a === "-h" || a === "--help") {
@@ -103,6 +118,7 @@ Flags:
   --out report.json                    write JSON report
   --cutoff 80                          anti-slice noise cutoff (default 80)
   --hybrid                             use SearchIndex.recallHybrid (BM25+vector)
+  --seed 20260726                      seed for the control arm + shuffle null
   -h, --help                           this message
 
 Env:
@@ -341,6 +357,21 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // #261: the artifact keeps the RAW output, so tee both streams from here
+  // on. Reconstructing the report from the structured results afterwards
+  // would record what we meant to print, not what we printed.
+  const captured = { out: [] as string[], err: [] as string[] };
+  const realLog = console.log.bind(console);
+  const realErr = console.error.bind(console);
+  console.log = (...a: unknown[]) => {
+    captured.out.push(a.join(" ") + "\n");
+    realLog(...a);
+  };
+  console.error = (...a: unknown[]) => {
+    captured.err.push(a.join(" ") + "\n");
+    realErr(...a);
+  };
+
   const vault = new Vault(vaultPath);
   const { loaded, skipped } = await vault.init();
   if (skipped.length) {
@@ -373,6 +404,29 @@ async function main(): Promise<void> {
     ? await runAntiHallucination(vault, recall, args.cutoff)
     : undefined;
 
+  // #261: two baselines, without which the numbers above have no scale.
+  //
+  // The control arm ranks at random — its Recall@k is what the metric prints
+  // when there is no retrieval signal at all. The label-shuffle null keeps
+  // every query and every gold id but breaks the pairing; a harness that still
+  // scores well there is measuring the gold set's shape, not retrieval.
+  //
+  // Both are seeded. A baseline that moves between runs cannot qualify the
+  // number it sits next to.
+  const control = makeControlRecaller(vault, args.seed);
+  const controlPara = args.slices.includes("paraphrased")
+    ? await runParaphrased(vault, control)
+    : undefined;
+  const controlCross = args.slices.includes("cross")
+    ? await runCrossMemory(vault, control)
+    : undefined;
+  const nullPara = args.slices.includes("paraphrased")
+    ? await runParaphrased(vault, recall, shuffleParaphrasedLabels(PARAPHRASED_CASES, args.seed))
+    : undefined;
+  const nullCross = args.slices.includes("cross")
+    ? await runCrossMemory(vault, recall, shuffleCrossLabels(CROSS_MEMORY_CASES, args.seed))
+    : undefined;
+
   // ── stdout report ─────────────────────────────────────────
   console.log("\n# Bastra Recall — Stress Eval\n");
   console.log(`Vault: **${loaded}** memories  ·  Provider: **${provider}**`);
@@ -386,6 +440,30 @@ async function main(): Promise<void> {
   if (para) printParaphrased(para);
   if (cross) printCross(cross);
   if (anti) printAnti(anti);
+
+  console.log("\n## Baselines\n");
+  console.log(
+    `Seed: \`${args.seed}\`  ·  Control = random ranking, same k  ·  ` +
+      `Null = same arm, gold labels permuted across queries.`,
+  );
+  console.log("\n| slice | measured | control arm | label-shuffle null |");
+  console.log("|---|---:|---:|---:|");
+  if (para) {
+    console.log(
+      `| paraphrased Recall@3 | ${pct(para.recallAt3)} | ${controlPara ? pct(controlPara.recallAt3) : "—"} | ${nullPara ? pct(nullPara.recallAt3) : "—"} |`,
+    );
+  }
+  if (cross) {
+    console.log(
+      `| cross Recall@k | ${pct(cross.recallAtK)} | ${controlCross ? pct(controlCross.recallAtK) : "—"} | ${nullCross ? pct(nullCross.recallAtK) : "—"} |`,
+    );
+  }
+  if (anti) {
+    // The anti slice has no gold ids to permute — it grades "should NOT match",
+    // so a shuffle has nothing to shuffle. Said out loud rather than left as a
+    // blank the reader has to interpret.
+    console.log(`| anti-hallucination | median ${anti.median.toFixed(1)} | n/a | n/a — no gold labels to permute |`);
+  }
 
   const passes: boolean[] = [];
   if (para) passes.push(para.pass);
@@ -459,6 +537,37 @@ async function main(): Promise<void> {
     writeFileSync(outPath, md);
     console.error(`[stress] wrote Markdown report to ${outPath}`);
   }
+
+  // #261: the run artifact. Written before teardown so a failure here is
+  // visible as a failure of the run, not a footnote after it.
+  const manifest: RunManifest = {
+    run_date: new Date().toISOString(),
+    vault_path: vaultPath,
+    vault_size: loaded,
+    provider,
+    command: [process.argv0, ...process.argv.slice(1)].join(" "),
+    hashes: computeHashes({
+      mems: vault.list(),
+      provider,
+      config: { slices: args.slices, cutoff: args.cutoff, hybrid: args.hybrid, seed: args.seed },
+      dataset: { PARAPHRASED_CASES, CROSS_MEMORY_CASES, ANTI_HALLUCINATION_CASES },
+    }),
+    seed: args.seed,
+  };
+  const artifactDir = await writeRunArtifact({
+    manifest,
+    stdout: captured.out.join(""),
+    stderr: captured.err.join(""),
+    results: {
+      slices: { paraphrased: para, cross: cross, anti: anti },
+      baselines: {
+        control: { paraphrased: controlPara, cross: controlCross },
+        label_shuffle_null: { paraphrased: nullPara, cross: nullCross },
+      },
+      verdict: allPass ? "PASS" : "FAIL",
+    },
+  });
+  console.error(`[stress] run artifact: ${artifactDir}`);
 
   search.stop();
   if (arm) await arm.cleanup();
