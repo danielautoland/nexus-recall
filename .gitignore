@@ -82,3 +82,12 @@ temp/
 # Claude Desktop Extension build artifacts
 packages/daemon/mcpb/build/
 packages/daemon/mcpb/*.mcpb
+
+# Local-only webui labs / previews (experiments, not shipped)
+packages/daemon/webui/mindspace-lab*
+
+# Stress-eval report: contains vault-derived query texts, memory ids and the
+# vault path. §18.1/C-025 allow only aggregated reports without vault-derived
+# query text in the public repo, so this now lands in the private run artifact
+# under ~/.bastra/eval-runs/ instead.
+packages/daemon/scripts/stress-report.md

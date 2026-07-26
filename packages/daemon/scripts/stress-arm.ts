@@ -163,6 +163,29 @@ export function seededRandom(seed: number): () => number {
   };
 }
 
+/**
+ * Sattolo's algorithm: a seeded uniform CYCLIC permutation, i.e. a derangement.
+ *
+ * Fisher-Yates draws a uniform permutation, which has one fixed point in
+ * expectation for any N — and a fixed point in a label shuffle is a pairing
+ * that was never broken. At the default seed the 25-case paraphrase fixture had
+ * exactly one, so 4 of the 100 null rows carried the TRUE query/gold pairing
+ * and were scored as genuine hits. The null read ~4% against a true expectation
+ * near 0.5%.
+ *
+ * The one-token difference from Fisher-Yates is `rnd() * i` instead of
+ * `rnd() * (i + 1)` — j is drawn strictly below i, so nothing can stay put.
+ */
+export function seededDerangement<T>(items: readonly T[], seed: number): T[] {
+  const rnd = seededRandom(seed);
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * i);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 /** Fisher-Yates against a seeded draw. Returns a new array. */
 export function seededShuffle<T>(items: readonly T[], seed: number): T[] {
   const rnd = seededRandom(seed);
@@ -189,9 +212,14 @@ export function makeControlRecaller(vault: Vault, seed: number): Recaller {
     let mix = seed >>> 0;
     for (let i = 0; i < query.length; i++) mix = (Math.imul(mix, 31) + query.charCodeAt(i)) >>> 0;
     const k = opts?.k ?? 10;
-    return seededShuffle(ids, mix)
+    const ranked = seededShuffle(ids, mix)
       .slice(0, k)
       .map((id, i) => ({ id, score: k - i }) as RecallHit);
+    // Honour the pool hook so the region split is computed the same way for
+    // the control arm as for the measured one. For a random ranker the regions
+    // are exactly what one would expect — which is the point of a floor.
+    opts?.onCandidatePool?.(ranked);
+    return ranked;
   };
 }
 

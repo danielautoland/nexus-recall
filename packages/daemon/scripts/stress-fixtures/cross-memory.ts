@@ -45,8 +45,8 @@ export const CROSS_MEMORY_CASES: CrossMemoryCase[] = [
   {
     query: "chokidar watcher unzuverlässig auf cloud storage vault",
     expected: [
-      "chokidar-erkennt-neue-files-im-google-drive-vault-nicht-zuverlassig",
-      "watcher-fix-verifiziert-usepolling-reindexfile-lost-cloud-mount-problem",
+      "chokidar-erkennt-neue-files-im-google-drive-vault-nicht-zuverlaessig",
+      "watcher-fix-verifiziert-usepolling-reindexfile-loest-cloud-mount-problem",
     ],
   },
   {
@@ -68,13 +68,13 @@ export const CROSS_MEMORY_CASES: CrossMemoryCase[] = [
   {
     query: "claude code skill plugin disk layout discovery",
     expected: [
-      "claude-code-plugin-skill-mcp-disk-layout-fur-discovery",
+      "claude-code-plugin-skill-mcp-disk-layout-fuer-discovery",
     ],
   },
   {
     query: "m0 eval recall qualität und embeddings entscheidung",
     expected: [
-      "m0-eval-ergebnis-bm25-recall-when-reichen-fur-v0",
+      "m0-eval-ergebnis-bm25-recall-when-reichen-fuer-v0",
     ],
   },
   {

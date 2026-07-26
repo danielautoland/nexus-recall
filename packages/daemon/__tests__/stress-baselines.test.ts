@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { makeControlRecaller, seededShuffle, seededRandom } from "../scripts/stress-arm.js";
+import { makeControlRecaller, seededShuffle, seededDerangement, seededRandom } from "../scripts/stress-arm.js";
 import { shuffleCrossLabels, shuffleParaphrasedLabels } from "../scripts/stress-slices.js";
 import { computeHashes, hashVault, runDirFor, writeRunArtifact, type RunManifest } from "../scripts/stress-artifact.js";
 import type { Vault } from "@bastra-recall/core";
@@ -142,4 +142,40 @@ test("the run artifact records the raw output, and Maps survive the JSON", async
     else process.env.BASTRA_EVAL_RUNS_DIR = prev;
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("the label shuffle is a derangement — no case keeps its own gold", () => {
+  // A fixed point is a pairing that was never broken, and it is scored as a
+  // genuine hit. Fisher-Yates has one in expectation for ANY n, and at the
+  // default seed the real 25-case fixture had exactly one — 4 of 100 null rows
+  // carrying the true pairing, which read as ~4% against a true null near 0.5%.
+  for (const n of [2, 3, 10, 25, 100]) {
+    const items = Array.from({ length: n }, (_, i) => `m${i}`);
+    for (const seed of [1, 20260726, 999_983]) {
+      const d = seededDerangement(items, seed);
+      assert.deepEqual([...d].sort(), [...items].sort(), `n=${n} seed=${seed}: still a permutation`);
+      const fixed = d.filter((v, i) => v === items[i]);
+      assert.deepEqual(fixed, [], `n=${n} seed=${seed}: no element may keep its place`);
+    }
+  }
+  assert.deepEqual(seededDerangement(["a", "b", "c"], 7), seededDerangement(["a", "b", "c"], 7), "still seeded");
+
+  // The plain shuffle keeps its uniform semantics — it is what the control arm
+  // needs, where a fixed point is meaningless.
+  assert.equal(typeof seededShuffle, "function");
+});
+
+test("the real fixture had a fixed point under the old shuffle and has none now", async () => {
+  const { PARAPHRASED_CASES } = await import("../scripts/stress-fixtures/paraphrased.js");
+  const ids = PARAPHRASED_CASES.map((c) => c.id);
+  const SEED = 20260726;
+
+  const uniform = seededShuffle(ids, SEED);
+  assert.ok(
+    uniform.some((id, i) => id === ids[i]),
+    "regression anchor: the uniform shuffle really did leave a case paired with itself at this seed",
+  );
+
+  const deranged = seededDerangement(ids, SEED);
+  assert.deepEqual(deranged.filter((id, i) => id === ids[i]), []);
 });

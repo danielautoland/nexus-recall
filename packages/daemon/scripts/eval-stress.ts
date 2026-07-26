@@ -30,7 +30,7 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 import { attachHybrid, makeControlRecaller, makeRecaller, type HybridArm } from "./stress-arm.js";
 import {
@@ -39,6 +39,8 @@ import {
   runAntiHallucination,
   shuffleParaphrasedLabels,
   shuffleCrossLabels,
+  EVAL_POOL_K,
+  NEAR_RANK,
   type ParaphrasedSummary,
   type CrossSummary,
   type AntiSummary,
@@ -142,14 +144,46 @@ function printParaphrased(s: ParaphrasedSummary): void {
   console.log(
     `Cases: **${s.total}** across ${s.perMemory.size} memories  ·  Pass criterion: Recall@3 ≥ 0.7`,
   );
+  if (s.retiredIds.length) {
+    console.log(`\n_Skipped ${s.retiredIds.length} retired gold ids (on the record, not scored as misses):_`);
+    for (const id of s.retiredIds) console.log(`  - ${id}`);
+  }
   if (s.unknownIds.length) {
-    console.log(`\n_Skipped ${s.unknownIds.length} unknown ids:_`);
+    // Not "skipped" — a broken fixture. Scoring it as a miss would silently
+    // depress every recall number that follows, so it fails the run instead.
+    console.log(`\n**${s.unknownIds.length} UNKNOWN gold ids — M0 gate failure.**`);
+    console.log(`Remove the fixture entry, or retire the id in stress-fixtures/retired-gold.json with a reason:`);
     for (const id of s.unknownIds) console.log(`  - ${id}`);
   }
   console.log(`\n- **Recall@1: ${pct(s.recallAt1)}**`);
   console.log(`- **Recall@3: ${pct(s.recallAt3)}**`);
   console.log(`- **MRR:      ${s.mrr.toFixed(3)}**`);
   console.log(`- Verdict:   ${s.pass ? "PASS" : "FAIL"}`);
+
+  // #261: a miss in far_in_pool is a RANKING failure — the gold was retrieved
+  // and lost the sort. A miss in oop is a RETRIEVAL failure — the first stage
+  // never surfaced it, and no re-ranking can fix that. They read identically
+  // in Recall@3 and need opposite work, which is why they are split here.
+  // Print the depth actually observed, not the formula. max(k*4,20) = 200 is
+  // reachable only on the BM25 path (search.ts:294). recallHybrid fuses
+  // bm25.slice(0,50) with vector.slice(0,50) (search.ts:401, :428), so its pool
+  // is capped at 100 regardless of k — printing 200 there states a depth the
+  // run never had, and makes the two arms' oop shares look comparable.
+  const observedDepth = s.rows.reduce((m, r) => Math.max(m, r.poolLen), 0);
+  console.log(
+    `\n### Region split (observation k=${EVAL_POOL_K}; deepest pool actually observed: ${observedDepth} candidates)\n`,
+  );
+  console.log("| region | cases | share |");
+  console.log("|---|---:|---:|");
+  for (const region of ["near", "far_in_pool", "oop", "unobserved"] as const) {
+    const n = s.regions[region];
+    const label =
+      region === "near" ? `rank ≤ ${NEAR_RANK}`
+      : region === "far_in_pool" ? `${NEAR_RANK} < rank ≤ pool`
+      : region === "oop" ? "never surfaced"
+      : "pool hook did not fire — instrumentation gap, not a result";
+    console.log(`| ${region} (${label}) | ${n} | ${s.total ? pct(n / s.total) : "—"} |`);
+  }
 
   const misses = s.rows.filter((r) => r.rank === 0 || r.rank > 3);
   if (misses.length === 0) {
@@ -168,6 +202,12 @@ function printParaphrased(s: ParaphrasedSummary): void {
 
 function printCross(s: CrossSummary): void {
   console.log("\n## Slice 2 — Cross-Memory\n");
+  if (s.unknownIds.length) {
+    console.log(`**${s.unknownIds.length} UNKNOWN expected ids — M0 gate failure.** ${s.unknownIds.join(", ")}\n`);
+  }
+  if (s.retiredIds.length) {
+    console.log(`_${s.retiredIds.length} retired expected ids on the record:_ ${s.retiredIds.join(", ")}\n`);
+  }
   console.log(
     `Cases: **${s.total}**  ·  Passed: **${s.passed}/${s.total}**  ·  Recall@k: **${pct(s.recallAtK)}**  ·  Verdict: ${s.pass ? "PASS" : "FAIL"}`,
   );
@@ -215,6 +255,21 @@ function printAnti(s: AntiSummary): void {
 
 // ── Markdown report (combined, when --slice all) ────────────────
 
+/**
+ * The historic M0 baseline (#261 / C-029). It is a foreign figure relative to
+ * any current run — a different, much smaller corpus — so it carries its
+ * provenance rather than sitting in the table as three bare literals.
+ */
+const M0_BASELINE = {
+  date: "2026-05-27",
+  vaultSize: 59,
+  cases: 59,
+  recallAt1: 0.983,
+  recallAt3: 1.0,
+  mrr: 0.992,
+  source: "packages/daemon/scripts/save-eval-result.ts",
+} as const;
+
 interface ReportInput {
   vaultPath: string;
   vaultSize: number;
@@ -222,6 +277,14 @@ interface ReportInput {
   para?: ParaphrasedSummary;
   cross?: CrossSummary;
   anti?: AntiSummary;
+  /** The M0 gate result. Without it the file could print PASS on a run that exited 1. */
+  unknownGold: string[];
+  allPass: boolean;
+  seed: number;
+  controlPara?: ParaphrasedSummary;
+  controlCross?: CrossSummary;
+  nullPara?: ParaphrasedSummary;
+  nullCross?: CrossSummary;
 }
 
 function buildMarkdownReport(r: ReportInput): string {
@@ -237,6 +300,17 @@ function buildMarkdownReport(r: ReportInput): string {
   lines.push(`- **Vault size:** ${r.vaultSize} memories`);
   lines.push(`- **Search provider:** ${r.provider}`);
   lines.push("");
+  // The gate first — a reader must not have to reach the bottom to learn the
+  // run was invalid. #261: the file used to print PASS per slice while the
+  // process exited 1 on a broken fixture set.
+  lines.push(`- **Verdict:** ${r.allPass ? "PASS" : "FAIL"}`);
+  if (r.unknownGold.length) {
+    lines.push(
+      `- **M0 gate failure:** ${r.unknownGold.length} unknown gold id(s) — ` +
+        `${r.unknownGold.join(", ")}. Every number below is computed over a reduced case set.`,
+    );
+  }
+  lines.push("");
   lines.push(`## Comparison to M0 baseline`);
   lines.push("");
   lines.push(
@@ -244,18 +318,52 @@ function buildMarkdownReport(r: ReportInput): string {
       "Stress-eval uses paraphrased queries with zero literal-token overlap.",
   );
   lines.push("");
-  lines.push("| metric | M0 (own trigger) | Stress (paraphrased) |");
+  // #261 / C-029: the M0 column is a foreign figure relative to this run and
+  // carries its provenance. It was measured on a different, much smaller
+  // corpus, so the delta is NOT a like-for-like regression — §18.1 forbids a
+  // joint ranking across measurements with differing setups.
+  lines.push(
+    `> The M0 column is a **historic own measurement** (${M0_BASELINE.date}, ` +
+      `${M0_BASELINE.vaultSize} memories, ${M0_BASELINE.cases} own-trigger cases). ` +
+      `This run is ${r.vaultSize} memories with paraphrased queries. Different corpus and ` +
+      `different query construction — read the columns separately, not as one series.`,
+  );
+  lines.push("");
+  lines.push(`| metric | M0 (own trigger, ${M0_BASELINE.vaultSize} memories) | Stress (paraphrased, ${r.vaultSize} memories) |`);
   lines.push("|---|---:|---:|");
+  lines.push(`| Recall@1 | ${pct(M0_BASELINE.recallAt1)} | ${r.para ? pct(r.para.recallAt1) : "—"} |`);
+  lines.push(`| Recall@3 | ${pct(M0_BASELINE.recallAt3)} | ${r.para ? pct(r.para.recallAt3) : "—"} |`);
+  lines.push(`| MRR      | ${M0_BASELINE.mrr.toFixed(3)} | ${r.para ? r.para.mrr.toFixed(3) : "—"} |`);
+  lines.push("");
+
+  // §18.1 requires the control arm and the label-shuffle null "im Report
+  // ausgewiesen". They existed only on stdout.
+  lines.push("## Baselines");
+  lines.push("");
+  lines.push(`Seed \`${r.seed}\`. Control = random ranking at the same k. Null = same arm, gold labels permuted.`);
+  lines.push("");
+  lines.push("| slice | measured | control arm | label-shuffle null |");
+  lines.push("|---|---:|---:|---:|");
   if (r.para) {
-    lines.push(`| Recall@1 | 98.3% | ${pct(r.para.recallAt1)} |`);
-    lines.push(`| Recall@3 | 100.0% | ${pct(r.para.recallAt3)} |`);
-    lines.push(`| MRR      | 0.992 | ${r.para.mrr.toFixed(3)} |`);
-  } else {
-    lines.push("| Recall@1 | 98.3% | — |");
-    lines.push("| Recall@3 | 100.0% | — |");
-    lines.push("| MRR      | 0.992 | — |");
+    lines.push(`| paraphrased Recall@3 | ${pct(r.para.recallAt3)} | ${r.controlPara ? pct(r.controlPara.recallAt3) : "—"} | ${r.nullPara ? pct(r.nullPara.recallAt3) : "—"} |`);
+  }
+  if (r.cross) {
+    lines.push(`| cross Recall@k | ${pct(r.cross.recallAtK)} | ${r.controlCross ? pct(r.controlCross.recallAtK) : "—"} | ${r.nullCross ? pct(r.nullCross.recallAtK) : "—"} |`);
+  }
+  if (r.anti) {
+    lines.push(`| anti-hallucination | median ${r.anti.median.toFixed(1)} | n/a — the control emits synthetic ranks, not BM25 scores | n/a — no gold labels to permute |`);
   }
   lines.push("");
+  if (r.para) {
+    lines.push("### Region split (paraphrased)");
+    lines.push("");
+    lines.push("| region | cases |");
+    lines.push("|---|---:|");
+    for (const region of ["near", "far_in_pool", "oop", "unobserved"] as const) {
+      lines.push(`| ${region} | ${r.para.regions[region]} |`);
+    }
+    lines.push("");
+  }
 
   if (r.para) {
     lines.push("## Slice 1 — Paraphrased");
@@ -415,13 +523,13 @@ async function main(): Promise<void> {
   // number it sits next to.
   const control = makeControlRecaller(vault, args.seed);
   const controlPara = args.slices.includes("paraphrased")
-    ? await runParaphrased(vault, control)
+    ? await runParaphrased(vault, control, undefined, false)
     : undefined;
   const controlCross = args.slices.includes("cross")
     ? await runCrossMemory(vault, control)
     : undefined;
   const nullPara = args.slices.includes("paraphrased")
-    ? await runParaphrased(vault, recall, shuffleParaphrasedLabels(PARAPHRASED_CASES, args.seed))
+    ? await runParaphrased(vault, recall, shuffleParaphrasedLabels(PARAPHRASED_CASES, args.seed), false)
     : undefined;
   const nullCross = args.slices.includes("cross")
     ? await runCrossMemory(vault, recall, shuffleCrossLabels(CROSS_MEMORY_CASES, args.seed))
@@ -465,7 +573,11 @@ async function main(): Promise<void> {
     console.log(`| anti-hallucination | median ${anti.median.toFixed(1)} | n/a | n/a — no gold labels to permute |`);
   }
 
+  // M0 gate: "keine unbekannten Gold-IDs". Not a warning — a fixture pointing
+  // at a memory that no longer exists makes every number below it wrong.
+  const unknownGold = [...(para?.unknownIds ?? []), ...(cross?.unknownIds ?? [])];
   const passes: boolean[] = [];
+  if (unknownGold.length > 0) passes.push(false);
   if (para) passes.push(para.pass);
   if (cross) passes.push(cross.pass);
   if (anti) passes.push(anti.pass);
@@ -520,24 +632,6 @@ async function main(): Promise<void> {
     console.error(`[stress] wrote JSON report to ${args.out}`);
   }
 
-  // ── Markdown report (only when running the full sweep) ────
-  if (args.slices.length === 3) {
-    const md = buildMarkdownReport({
-      vaultPath,
-      vaultSize: loaded,
-      provider,
-      para,
-      cross,
-      anti,
-    });
-    const outPath = resolve(
-      new URL(".", import.meta.url).pathname,
-      "stress-report.md",
-    );
-    writeFileSync(outPath, md);
-    console.error(`[stress] wrote Markdown report to ${outPath}`);
-  }
-
   // #261: the run artifact. Written before teardown so a failure here is
   // visible as a failure of the run, not a footnote after it.
   const manifest: RunManifest = {
@@ -567,6 +661,29 @@ async function main(): Promise<void> {
       verdict: allPass ? "PASS" : "FAIL",
     },
   });
+  // #261: the markdown report lands NEXT TO the artifact, not in the checkout.
+  // It carries every paraphrase query, the gold ids and the vault path, and
+  // §18.1 allows only aggregated reports without vault-derived query text in
+  // the public repo (C-025, §23). It used to be written into scripts/ and was
+  // git-tracked.
+  if (args.slices.length === 3) {
+    const md = buildMarkdownReport({
+      vaultPath,
+      vaultSize: loaded,
+      provider,
+      para,
+      cross,
+      anti,
+      unknownGold,
+      allPass,
+      seed: args.seed,
+      controlPara,
+      controlCross,
+      nullPara,
+      nullCross,
+    });
+    writeFileSync(join(artifactDir, "stress-report.md"), md, { mode: 0o600 });
+  }
   console.error(`[stress] run artifact: ${artifactDir}`);
 
   search.stop();

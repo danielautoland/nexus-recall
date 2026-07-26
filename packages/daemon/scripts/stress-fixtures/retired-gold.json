@@ -1,0 +1,5 @@
+{
+  "$comment": "Retired gold ids (#261; §18.1 'veraltete Gold-IDs werden entfernt oder versioniert'). M0's gate is 'keine unbekannten Gold-IDs' — a fixture pointing at a memory that no longer exists is not a miss, it is a broken case, and counting it as a miss silently depresses every recall number that follows. So an unknown id fails the run unless it is retired HERE, with a reason and a date. That is the 'versioniert' half of the rule; deleting the fixture entry is the 'entfernt' half, and either is fine.",
+  "schema_version": 1,
+  "retired": []
+}

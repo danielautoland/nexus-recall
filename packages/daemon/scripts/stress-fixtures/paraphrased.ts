@@ -146,7 +146,7 @@ export const PARAPHRASED_CASES: ParaphrasedCase[] = [
     ],
   },
   {
-    id: "m0-eval-ergebnis-bm25-recall-when-reichen-fur-v0",
+    id: "m0-eval-ergebnis-bm25-recall-when-reichen-fuer-v0",
     label: "M0 eval result decision",
     paraphrases: [
       "vector search wirklich nötig für version 0",
@@ -156,7 +156,7 @@ export const PARAPHRASED_CASES: ParaphrasedCase[] = [
     ],
   },
   {
-    id: "chokidar-erkennt-neue-files-im-google-drive-vault-nicht-zuverlassig",
+    id: "chokidar-erkennt-neue-files-im-google-drive-vault-nicht-zuverlaessig",
     label: "watcher misses google drive files",
     paraphrases: [
       "fs watcher auf cloud mount unzuverlässig",
@@ -166,7 +166,7 @@ export const PARAPHRASED_CASES: ParaphrasedCase[] = [
     ],
   },
   {
-    id: "watcher-fix-verifiziert-usepolling-reindexfile-lost-cloud-mount-problem",
+    id: "watcher-fix-verifiziert-usepolling-reindexfile-loest-cloud-mount-problem",
     label: "watcher polling fixes cloud",
     paraphrases: [
       "manueller reindex pfad löst sync probleme auf cloud volume",
@@ -226,7 +226,7 @@ export const PARAPHRASED_CASES: ParaphrasedCase[] = [
     ],
   },
   {
-    id: "claude-code-plugin-skill-mcp-disk-layout-fur-discovery",
+    id: "claude-code-plugin-skill-mcp-disk-layout-fuer-discovery",
     label: "claude code disk layout",
     paraphrases: [
       "wo liegen die claude code erweiterungen auf platte",
