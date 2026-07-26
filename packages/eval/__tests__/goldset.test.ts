@@ -24,6 +24,7 @@ import {
 } from "../src/goldset.js";
 import { harvestFromEvents } from "../src/goldset-harvest.js";
 import { mergeCases, templateFor } from "../src/goldset-label.js";
+import { stageBlind } from "../src/goldset-blind.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -190,4 +191,53 @@ test("merging joins the two steps and the coverage names what is still missing",
   assert.equal(cov.by_kind.descriptive, 1);
   assert.equal(cov.by_kind.associative, 1);
   assert.equal(cov.non_application, 0, "C-036 cases are still missing, and the count says so");
+});
+
+test("the no-answer aid is derived from the engine's verdict and stays OUT of step 1", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goldset-aid-"));
+  const file = join(dir, "events-2026-07-26.jsonl");
+  writeFileSync(
+    file,
+    [
+      // Never answered: a genuine no-answer candidate.
+      JSON.stringify({ kind: "recall", query: "was haben wir zu kubernetes entschieden", hit_count: 0, ts: 1 }),
+      // Answered once, empty another time — NOT a candidate. Only the full
+      // history shows that, which is why every occurrence is tracked.
+      JSON.stringify({ kind: "recall", query: "wie war die regel für force pushes", hit_count: 0, ts: 2 }),
+      JSON.stringify({ kind: "recall", query: "wie war die regel für force pushes", top_score: 140, ts: 3 }),
+      // Above the floor throughout.
+      JSON.stringify({ kind: "recall", query: "pinning und floors lifecycle regeln", top_score: 120, ts: 4 }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const r = harvestFromEvents([file], 100, 12);
+  assert.deepEqual(
+    r.noAnswerCandidates,
+    [stagedId("was haben wir zu kubernetes entschieden")],
+    "a query answered even once is not a no-answer candidate",
+  );
+  for (const s of r.staged) {
+    assert.equal("no_answer" in s, false, "the engine's verdict never becomes a field on a staged query");
+    assert.equal("no_answer_candidate" in s, false);
+  }
+});
+
+test("the blind intake stamps who and how, and refuses a harvested origin", () => {
+  const lines = [
+    "# paraphrases",
+    "wie war die regel für force pushes nochmal",
+    "",
+    "what did we decide about the kubernetes migration",
+    "wie war die regel für force pushes nochmal",
+  ];
+  const staged = stageBlind(lines, "second_person", "Sali", "wrote them from memory, vault closed", "q.txt");
+
+  assert.equal(staged.length, 2, "comments, blanks and the repeat drop out");
+  assert.deepEqual(checkStaged(staged), []);
+  assert.match(staged[0].authoring_mode, /vault closed/);
+  assert.match(staged[0].authoring_mode, /authored by Sali/, "a blind batch is only as good as who vouches for it");
+  assert.equal(staged[0].origin_type, "second_person");
+  assert.equal(staged[0].lang, "de");
+  assert.equal(staged[1].lang, "en", "the language balance a harvest cannot deliver comes from here");
 });
