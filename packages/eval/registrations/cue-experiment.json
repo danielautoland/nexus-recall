@@ -1,0 +1,71 @@
+{
+  "$comment": "Pre-registration of the M2 cue experiment (§18.1, §18.3; C-057, C-072, C-074). Registered BEFORE the run. Two things are registered at different times and the status field says which stage this file is in: the STRUCTURE can be fixed now, the NUMBERS cannot — §18.1 puts every numeric quantity after the M0 baseline run, and §32 keeps them on the open list until then. Amending anything after a run has started invalidates that run: bump registration_version and say which version a report belongs to.",
+  "schema_version": 1,
+  "registration_version": 1,
+  "registered_at": "2026-07-26",
+  "status": "structure_pending_decision",
+
+  "$comment_status": "structure_pending_decision -> structure_registered -> numbers_registered. The validator refuses an M2 run below numbers_registered, and refuses a design choice that does not match §18.3.",
+
+  "design": null,
+  "$comment_design": "PRODUCT-OWNER DECISION, still open. Exactly two designs are admissible (§18.3) and there is no third; adding the generation path as an extra arm during or after a run is inadmissible, because that yields an incompletely occupied design whose main effects are confounded with the generation path.",
+
+  "admissible_designs": {
+    "A": {
+      "name": "paired two-condition comparison",
+      "recommended_by_contract": true,
+      "conditions": ["agent_generated_cues", "batch_generated_cues"],
+      "condition_count": 2,
+      "$comment_cells": "Two CONDITIONS, not four cells. The 2x2 belongs to the cue-axis experiment; here the axes are held fixed, so those cells do not exist (C-074).",
+      "paired": true,
+      "paired_on": "the same gold cases run through both generation paths, which lowers the required N substantially",
+      "fixed_cue_configuration": null,
+      "$comment_configuration": "OPEN: which single configuration of the two cue axes (descriptive|associative x item|scene) the comparison is held at. The result of design A is valid ONLY for that configuration.",
+      "contamination_guard": {
+        "mode": null,
+        "$comment": "OPEN, one of exactly two permitted options (§18.3): 'selection_holdout_split' — a separate selection part determines the cue configuration and an independent holdout runs the comparison; or 'nested_evaluation' — a pre-registered scheme that separates selection and comparison cleanly inside one case set. The split or the nesting scheme is part of this registration.",
+        "permitted": ["selection_holdout_split", "nested_evaluation"],
+        "selection_share": null,
+        "holdout_share": null,
+        "split_seed": null
+      },
+      "min_n_per_condition": null,
+      "interaction_evaluated": false,
+      "$comment_interaction": "Not a choice. Design A cannot make an interaction claim: whether a generation path performs differently at another cue configuration stays unanswered and must not be asserted (C-074)."
+    },
+    "B": {
+      "name": "fully crossed 2x2x2",
+      "recommended_by_contract": false,
+      "factors": ["descriptive_associative", "item_scene", "generation_path"],
+      "cell_count": 8,
+      "$comment_cells": "Only design B has eight cells, and only it can measure interactions between generation path and cue axis.",
+      "min_n_per_cell": null,
+      "$comment_min_n": "OPEN, and necessarily larger than A's per-condition N — an interaction of a given size needs roughly four times the N of a main effect of the same size.",
+      "interaction_evaluated": true
+    }
+  },
+
+  "power_assumption": {
+    "$comment": "OPEN until the M0 baseline run. §18.1 requires a power assumption and a minimum N fixed and stored versioned, stated SEPARATELY for the main effects and for the interaction, because the interaction needs the larger N. The effect size of interest cannot be picked honestly before the baseline shows the spread of the metric.",
+    "alpha": null,
+    "power": null,
+    "main_effects": { "smallest_effect_of_interest": null, "unit": null, "min_n": null },
+    "interaction": { "smallest_effect_of_interest": null, "unit": null, "min_n": null },
+    "derived_from": "the M0 baseline run — see the run artifact hash once it exists"
+  },
+
+  "evaluation_rule": null,
+  "$comment_evaluation_rule": "OPEN. Fixed before the run so the analysis is not chosen after seeing the data.",
+
+  "underpowered_fallback": {
+    "$comment": "NOT open — these follow from §18.3 and are registered now, because the whole point is that the answer is not chosen after seeing the data.",
+    "interaction_missed": "reported as explorative; carries neither a gate nor a live release",
+    "main_effect_missed": "the arm is reported as not evaluable — never as a null finding"
+  },
+
+  "gold_set_requirement": {
+    "$comment": "§18.1: the gold set must expose descriptive and associative case sets separately, so both axes of the cue experiment are measurable independently of each other (C-057). Authoring the cases is #262.",
+    "separate_descriptive_and_associative_sets": true,
+    "satisfied": false
+  }
+}
