@@ -241,3 +241,31 @@ test("the blind intake stamps who and how, and refuses a harvested origin", () =
   assert.equal(staged[0].lang, "de");
   assert.equal(staged[1].lang, "en", "the language balance a harvest cannot deliver comes from here");
 });
+
+test("hook-composed strings are not formulations and never reach the set", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goldset-tmpl-"));
+  const file = join(dir, "events-2026-07-26.jsonl");
+  writeFileSync(
+    file,
+    [
+      // The PreToolUse hook composes these from file type + tags. Real traffic,
+      // worth measuring — but nobody formulated them, and on the live logs they
+      // were 112 of 400 staged queries.
+      JSON.stringify({ kind: "hook_recall", query: "editing ts involving typescript, daemon, testing", ts: 1 }),
+      JSON.stringify({ kind: "hook_recall", query: "writing css involving css, styles, flexbox, layout", ts: 2 }),
+      JSON.stringify({ kind: "hook_recall", query: "CarNexus active context project-facts decisions", ts: 3 }),
+      JSON.stringify({ kind: "hook_recall", query: "bastra-pro preferences user-preference active context", ts: 4 }),
+      // A question somebody actually asked survives.
+      JSON.stringify({ kind: "recall", query: "readabilityHandler subprocess pipe blocking read", ts: 5 }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const r = harvestFromEvents([file], 100, 12);
+  assert.equal(r.skippedTemplate, 4);
+  assert.deepEqual(
+    r.staged.map((s) => s.query),
+    ["readabilityHandler subprocess pipe blocking read"],
+    "a quarter of the set being one machine sentence with the nouns swapped is not coverage",
+  );
+});
