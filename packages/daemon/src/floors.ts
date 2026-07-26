@@ -31,6 +31,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { appendAct } from "./floor-acts.js";
 
 export interface FloorEntry {
   memory_id: string;
@@ -148,6 +149,10 @@ export interface AddFloorInput {
   /** Only together with `why` — a surface rewriting a floor AS its re-affirm. */
   affirmed_by?: string;
   why?: string;
+  /** Surface-supplied intent time for the rewrite-as-affirm act (#198). */
+  occurred_at?: string;
+  /** Act-log path override. */
+  acts_path?: string;
 }
 
 /**
@@ -182,6 +187,20 @@ export async function addFloor(input: AddFloorInput, path: string = floorsFilePa
     }
 
     const now = new Date().toISOString();
+    // A rewrite carrying affirmed_by + why IS an affirm (see the doc comment
+    // above), so it belongs in the act log too — otherwise the log is
+    // incomplete from day one and live-intent misses a real re-justification.
+    if (hasBy) {
+      await appendAct(
+        {
+          memory_id: memoryId,
+          ...(input.occurred_at !== undefined ? { occurred_at: input.occurred_at } : {}),
+          affirmed_by: input.affirmed_by!,
+          why: input.why!,
+        },
+        input.acts_path,
+      );
+    }
     const entry: FloorEntry = {
       memory_id: memoryId,
       condition,
@@ -221,20 +240,41 @@ export async function release(condition: string, path: string = floorsFilePath()
   });
 }
 
+export interface AffirmOptions {
+  /**
+   * Surface-supplied intent time, carried opaquely into the act log (#198).
+   * Omit when affirming inline — the engine never back-fills it.
+   */
+  occurredAt?: string;
+  /** Registry path override. */
+  path?: string;
+  /** Act-log path override. */
+  actsPath?: string;
+}
+
 /**
- * Re-affirms a floor: stamps `last_affirmed` = now and stores `affirmed_by` /
- * `why` VERBATIM (opaque audit payload — the engine never interprets them).
+ * Re-affirms a floor: appends the act to the log (#198) and refreshes the
+ * registry row, which is a cache of the act log's answer.
  *
  * Anti-incidental-touch invariant (#142 design thread): BOTH `affirmed_by` and
  * `why` are required. No why = no affirm = the clock does not move — an affirm
  * is a deliberate re-justification, never a side effect of some other write
  * brushing past the entry.
+ *
+ * Append-first: the crash window between the two files then degrades to a
+ * stale cache rather than a lost act — the shape the usage sidecar already
+ * runs, where the events file is truth and the aggregate is derived. A
+ * redelivery of an identical act appends nothing and leaves the row untouched.
+ *
+ * Options bag, not a fourth positional: `path` used to sit in that position,
+ * and inserting `occurredAt` ahead of it would have bound a filesystem path to
+ * an intent time with no type error.
  */
 export async function affirm(
   memoryId: string,
   affirmedBy: string,
   why: string,
-  path: string = floorsFilePath(),
+  opts: AffirmOptions = {},
 ): Promise<FloorEntry> {
   const id = memoryId?.trim() ?? "";
   if (!id) throw new Error("memory_id is required");
@@ -243,13 +283,27 @@ export async function affirm(
       "affirm requires affirmed_by AND why — without a re-justification the last_affirmed clock does not move",
     );
   }
+  const path = opts.path ?? floorsFilePath();
   return withRegistryLock(path, async () => {
     const entries = await readRegistry(path);
     const idx = entries.findIndex((e) => e.memory_id === id);
     if (idx === -1) throw new Error(`memory is not floored: ${id}`);
+
+    const act = await appendAct(
+      {
+        memory_id: id,
+        ...(opts.occurredAt !== undefined ? { occurred_at: opts.occurredAt } : {}),
+        affirmed_by: affirmedBy,
+        why,
+      },
+      opts.actsPath,
+    );
+    // Duplicate redelivery: nothing happened, so nothing moves.
+    if (!act) return entries[idx];
+
     const next: FloorEntry = {
       ...entries[idx],
-      last_affirmed: new Date().toISOString(),
+      last_affirmed: act.recorded,
       affirmed_by: affirmedBy,
       why,
     };

@@ -114,6 +114,7 @@ import { handleHookOnboarding, handleUiOnboarding } from "./onboarding.js";
 import { handleSessionContext } from "./session-context.js";
 import { listConventions, detectTaxonomyDrift } from "./taxonomy.js";
 import { addFloor, affirm, listFloors, release } from "./floors.js";
+import { liveIntent, readActs } from "./floor-acts.js";
 import { handleCuratorRun, handleCuratorState, type CuratorRunDeps } from "./curator-run.js";
 import {
   getApiToken,
@@ -693,8 +694,19 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         }
         if (u.pathname === "/api/v1/floors") {
           const scope = u.searchParams.get("scope") ?? undefined;
-          listFloors(scope)
-            .then((floors) => sendJson(res, 200, { floors }))
+          // #198: the act log is the truth, the registry row is its cache.
+          // Every entry carries `live_intent` so a governance surface never has
+          // to decide which of two answers to believe. The raw `last_affirmed`
+          // /`affirmed_by`/`why` stay on the wire as that cache.
+          Promise.all([listFloors(scope), readActs()])
+            .then(([entries, acts]) =>
+              sendJson(res, 200, {
+                floors: entries.map((e) => ({
+                  ...e,
+                  live_intent: liveIntent(e.memory_id, e.floored_at, acts, e),
+                })),
+              }),
+            )
             .catch((err: Error) => sendJson(res, 500, { error: err.message }));
           return;
         }
@@ -1149,6 +1161,8 @@ async function dispatchApi(
         scope,
         affirmed_by: affirmedBy,
         why,
+        // Carried only when this rewrite IS an affirm (#198).
+        ...(typeof body.occurred_at === "string" ? { occurred_at: body.occurred_at } : {}),
       });
       return { ok: true, entry };
     }
@@ -1158,10 +1172,16 @@ async function dispatchApi(
       return { released };
     }
     case "floors/affirm": {
+      // #198: `occurred_at` is the queuing surface's intent time, carried
+      // verbatim. Only the surface knows when the affirm was meant; a drain
+      // after downtime replays the original time, not the write time. Absent
+      // is legitimate — an inline affirm has no second clock.
+      const occurredAt = typeof body.occurred_at === "string" ? body.occurred_at : undefined;
       const entry = await affirm(
         typeof body.memory_id === "string" ? body.memory_id : "",
         typeof body.affirmed_by === "string" ? body.affirmed_by : "",
         typeof body.why === "string" ? body.why : "",
+        occurredAt !== undefined ? { occurredAt } : {},
       );
       return { ok: true, entry };
     }

@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { listFloors } from "./floors.js";
+import { liveIntent, readActs } from "./floor-acts.js";
 import { listSkills } from "./skills-registry.js";
 import {
   applyDecision,
@@ -139,10 +140,15 @@ function collectStaleCandidates(
 }
 
 async function collectFloorReview(vault: VaultLike, nowMs: number): Promise<ReportFloorEntry[]> {
-  const floors = await listFloors();
+  const [floors, acts] = await Promise.all([listFloors(), readActs()]);
   const out: ReportFloorEntry[] = [];
   for (const f of floors) {
-    const affirmedMs = Date.parse(f.last_affirmed);
+    // #198: the act log answers "when was this last affirmed", not the
+    // registry row. Staleness is measured on the INTENT clock — a replay
+    // delivered yesterday of an affirm meant ten weeks ago leaves the floor
+    // ten weeks stale, which is exactly the row this section exists to raise.
+    const live = liveIntent(f.memory_id, f.floored_at, acts, f);
+    const affirmedMs = Date.parse(live.occurred_at ?? live.recorded);
     if (!Number.isFinite(affirmedMs)) continue;
     const weeks = Math.floor((nowMs - affirmedMs) / (7 * 86_400_000));
     if (weeks < FLOOR_REVIEW_WEEKS) continue;
@@ -151,11 +157,11 @@ async function collectFloorReview(vault: VaultLike, nowMs: number): Promise<Repo
       title: str(vault.get(f.memory_id)?.fm.title),
       reason: f.reason,
       floored_at: f.floored_at,
-      last_affirmed: f.last_affirmed,
-      affirmed_by: f.affirmed_by,
-      why: f.why,
+      last_affirmed: live.occurred_at ?? live.recorded,
+      affirmed_by: live.affirmed_by,
+      why: live.why,
       weeksSinceAffirm: weeks,
-      neverReaffirmed: f.last_affirmed === f.floored_at,
+      neverReaffirmed: live.never_reaffirmed,
     });
   }
   return out.sort((a, b) => b.weeksSinceAffirm - a.weeksSinceAffirm);

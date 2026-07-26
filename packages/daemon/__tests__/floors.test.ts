@@ -50,10 +50,13 @@ function memoryMarkdown(id: string, title: string, scope: string): string {
   ].join("\n");
 }
 
-async function tmpFloorsPath(): Promise<{ path: string; cleanup: () => Promise<void> }> {
+async function tmpFloorsPath(): Promise<{ path: string; actsPath: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "bastra-floors-test-"));
   return {
     path: join(dir, "floors.json"),
+    // #198: affirms append here. Without the override a test would write into
+    // the real ~/.bastra/floor-acts.jsonl.
+    actsPath: join(dir, "floor-acts.jsonl"),
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
 }
@@ -61,7 +64,7 @@ async function tmpFloorsPath(): Promise<{ path: string; cleanup: () => Promise<v
 // ─── Modul-Ebene ─────────────────────────────────────────────────
 
 test("addFloor stamps floored_at + last_affirmed and upserts by memory_id", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     const first = await addFloor({ memory_id: "m1", condition: "decision-a", reason: "killed option" }, path);
     assert.ok(first.floored_at, "floored_at is stamped");
@@ -82,7 +85,7 @@ test("addFloor stamps floored_at + last_affirmed and upserts by memory_id", asyn
 });
 
 test("release(condition) removes ALL entries sharing the token and returns the removed ids", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     await addFloor({ memory_id: "m1", condition: "migration-x", reason: "constraint 1" }, path);
     await addFloor({ memory_id: "m2", condition: "migration-x", reason: "constraint 2" }, path);
@@ -101,35 +104,35 @@ test("release(condition) removes ALL entries sharing the token and returns the r
 });
 
 test("affirm without why (or without affirmed_by) is rejected — the clock does not move", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     const entry = await addFloor({ memory_id: "m1", condition: "decision-a", reason: "hard constraint" }, path);
 
     // Anti-incidental-touch invariant (#142): an affirm is a deliberate
     // re-justification. No why = no affirm.
-    await assert.rejects(() => affirm("m1", "cowork-os", "", path), /affirm requires affirmed_by AND why/);
-    await assert.rejects(() => affirm("m1", "", "still valid", path), /affirm requires affirmed_by AND why/);
-    await assert.rejects(() => affirm("m1", "  ", "   ", path), /affirm requires affirmed_by AND why/);
+    await assert.rejects(() => affirm("m1", "cowork-os", "", { path, actsPath }), /affirm requires affirmed_by AND why/);
+    await assert.rejects(() => affirm("m1", "", "still valid", { path, actsPath }), /affirm requires affirmed_by AND why/);
+    await assert.rejects(() => affirm("m1", "  ", "   ", { path, actsPath }), /affirm requires affirmed_by AND why/);
 
     const after = await listFloors(undefined, path);
     assert.equal(after[0].last_affirmed, entry.last_affirmed, "rejected affirm left last_affirmed untouched");
     assert.equal(after[0].affirmed_by, undefined);
 
-    await assert.rejects(() => affirm("nope", "cowork-os", "why", path), /not floored/);
+    await assert.rejects(() => affirm("nope", "cowork-os", "why", { path, actsPath }), /not floored/);
   } finally {
     await cleanup();
   }
 });
 
 test("affirm with affirmed_by + why stamps last_affirmed and stores both verbatim", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     const entry = await addFloor({ memory_id: "m1", condition: "decision-a", reason: "hard constraint" }, path);
     await new Promise((r) => setTimeout(r, 5)); // let the clock visibly move
 
     const affirmedBy = "cowork-os/memory-update";
     const why = "migration X still pending — reviewed in the weekly sweep";
-    const next = await affirm("m1", affirmedBy, why, path);
+    const next = await affirm("m1", affirmedBy, why, { path, actsPath });
 
     assert.ok(next.last_affirmed > entry.last_affirmed, "last_affirmed moved forward");
     assert.equal(next.floored_at, entry.floored_at, "floored_at never moves on affirm");
@@ -146,7 +149,7 @@ test("affirm with affirmed_by + why stamps last_affirmed and stores both verbati
 });
 
 test(`cap: entry ${MAX_FLOORS + 1} is rejected with an error listing the current set; upsert still passes`, async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     for (let i = 1; i <= MAX_FLOORS; i++) {
       await addFloor({ memory_id: `m${i}`, condition: `cond-${i}`, reason: `reason ${i}` }, path);
@@ -174,11 +177,11 @@ test(`cap: entry ${MAX_FLOORS + 1} is rejected with an error listing the current
 });
 
 test("persistence roundtrip: entries survive as valid JSON on disk and re-read identically", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     const a = await addFloor({ memory_id: "m1", condition: "c1", reason: "r1", scope: "proj-a" }, path);
     const b = await addFloor(
-      { memory_id: "m2", condition: "c2", reason: "r2", affirmed_by: "surface", why: "rewrite-as-affirm" },
+      { memory_id: "m2", condition: "c2", reason: "r2", affirmed_by: "surface", why: "rewrite-as-affirm", acts_path: actsPath },
       path,
     );
 
@@ -200,7 +203,7 @@ test("persistence roundtrip: entries survive as valid JSON on disk and re-read i
 });
 
 test("listFloors(scope) returns scoped + unscoped (global) entries only", async () => {
-  const { path, cleanup } = await tmpFloorsPath();
+  const { path, actsPath, cleanup } = await tmpFloorsPath();
   try {
     await addFloor({ memory_id: "ga", condition: "c", reason: "global floor" }, path);
     await addFloor({ memory_id: "pa", condition: "c", reason: "proj-a floor", scope: "proj-a" }, path);
@@ -270,7 +273,9 @@ async function makeServer(): Promise<{ port: number; floorsPath: string; close: 
   const telemetry = new Telemetry();
   const floorsPath = join(dir, "floors.json");
   const prevEnv = process.env.BASTRA_FLOORS_PATH;
+  const prevActs = process.env.BASTRA_FLOOR_ACTS_PATH;
   process.env.BASTRA_FLOORS_PATH = floorsPath;
+  process.env.BASTRA_FLOOR_ACTS_PATH = join(dir, "floor-acts.jsonl");
   const handle = await startHttpServer({
     port: 0,
     vault,
@@ -287,6 +292,8 @@ async function makeServer(): Promise<{ port: number; floorsPath: string; close: 
     close: async () => {
       if (prevEnv === undefined) delete process.env.BASTRA_FLOORS_PATH;
       else process.env.BASTRA_FLOORS_PATH = prevEnv;
+      if (prevActs === undefined) delete process.env.BASTRA_FLOOR_ACTS_PATH;
+      else process.env.BASTRA_FLOOR_ACTS_PATH = prevActs;
       search.stop();
       await vault.stop?.();
       await handle.close();
