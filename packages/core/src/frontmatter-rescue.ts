@@ -24,7 +24,17 @@
  * user wrote it. Repairs live in `Memory.damaged` so the vault report can show
  * them, which is the whole point: visible degradation instead of silent loss.
  */
+import matter from "gray-matter";
 import type { DamagedField } from "./schema.js";
+
+/** gray-matter's public YAML engine — parses a bare fragment, no document
+ *  delimiters and therefore no constructed parser input. It runs js-yaml's
+ *  safe loader, so no custom tag can instantiate anything. */
+function parseYamlFragment(fragment: string): unknown {
+  return (matter as unknown as {
+    engines: { yaml: { parse: (input: string) => unknown } };
+  }).engines.yaml.parse(fragment);
+}
 
 export interface RescueResult {
   data: Record<string, unknown>;
@@ -96,8 +106,15 @@ export function rescueFrontmatter(matter: MatterFn, raw: string): RescueResult |
   for (const entry of splitTopLevelEntries(block)) {
     if (entry.trim().length === 0) continue;
     try {
-      const parsed = matter(`---\n${entry}\n---\n`).data;
-      if (parsed && typeof parsed === "object") Object.assign(data, parsed);
+      // An entry is a YAML fragment, so parse it AS one. The earlier version
+      // wrapped it back into a `---`-delimited document and re-ran the
+      // frontmatter parser over that string — which meant building a parser
+      // input out of file content, flagged by CodeQL as unsafe code
+      // construction (js/unsafe-code-construction). It was also the wrong
+      // shape: nothing here is a document. `matter.engines.yaml.parse` is
+      // gray-matter's public YAML engine and takes the fragment directly.
+      const parsed = parseYamlFragment(entry);
+      if (parsed && typeof parsed === "object") Object.assign(data, parsed as Record<string, unknown>);
       else damaged.push({ field: entryField(entry), reason: "frontmatter entry did not parse as YAML" });
     } catch (err) {
       damaged.push({
