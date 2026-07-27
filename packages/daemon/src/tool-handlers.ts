@@ -26,6 +26,7 @@ import {
   type RecallHit,
 } from "@bastra-recall/core";
 import { fireAndForget } from "./telemetry.js";
+import { recordAudit } from "./audit-trail.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
@@ -696,6 +697,24 @@ async function saveMemoryInner(
     }),
   );
 
+  // #206: the audit trail existed but covered only the Mac-app bridge — the
+  // MCP/REST path, which is how the assistant writes, left no record at all.
+  // Recorded next to the write rather than through `auditedSave`: that wrapper
+  // throws when an assistant mutation has no `reason`, and the tool schema has
+  // no reason field, so routing through it would break every agent save or
+  // force a fabricated reason into the log.
+  await recordAudit({
+    vaultRoot: deps.vaultPath,
+    memoryId: result.id,
+    operation: result.created ? "create" : "update",
+    actor: "assistant",
+    actorDetail: "mcp:save_memory",
+    diffBefore: previous ? { ...previous.fm } : null,
+    diffAfter: { ...(deps.vault.get(result.id)?.fm ?? {}) },
+    filePath: result.file_path,
+    sessionId: deps.telemetry.runId(),
+  });
+
   const warning = [refileWarning, supersedeWarning].filter(Boolean).join(" ");
   return { ...result, save_quality: saveQuality, ...(warning ? { warning } : {}) };
 }
@@ -741,6 +760,22 @@ export async function archiveMemoryHandler(
       /* Audit-Stempel ist best-effort — das Archiv selbst steht bereits. */
     }
   }
+  // #206: archiving is the one operation that takes a memory out of the active
+  // index, so it is the one that most needs a record. `diff_before` keeps the
+  // frontmatter as it was — the trash file is recoverable, but the log is what
+  // says WHEN and through which run it left.
+  await recordAudit({
+    vaultRoot: deps.vaultPath,
+    memoryId: id,
+    operation: "delete",
+    actor: "assistant",
+    actorDetail: "mcp:archive_memory",
+    diffBefore: { ...mem.fm },
+    diffAfter: null,
+    filePath: mem.filePath,
+    ...(superseded_by ? { reason: `superseded by ${superseded_by}` } : {}),
+    sessionId: deps.telemetry.runId(),
+  });
   return { id, archived_to: archivedTo, superseded_by: superseded_by ?? null };
 }
 

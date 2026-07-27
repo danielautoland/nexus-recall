@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Every write the assistant makes now leaves a record.** The vault has kept an
+  append-only audit log for a while, but it was only wired into the Mac app —
+  the MCP and REST paths, which is how your AI actually writes, went past it. So
+  the one surface that runs on its own was the one you could not review.
+  `save_memory`, `save_product_doc` and `archive_memory` now append to
+  `.bastra/audit-log.ndjson` with what changed, when, through which surface, and
+  the state before and after. Telemetry was never a substitute — it can be
+  switched off and is pruned after 90 days; this log is neither. If the log
+  cannot be written, your save still succeeds. (#206)
+
 ## [0.8.7] — 2026-07-27
 
 A patch release for one reason: two of these are paths on which data could

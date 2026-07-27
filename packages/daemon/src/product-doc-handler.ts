@@ -25,6 +25,7 @@ import {
   SUMMARY_MAX,
 } from "@bastra-recall/core";
 import type { ToolDeps } from "./tool-handlers.js";
+import { recordAudit } from "./audit-trail.js";
 
 export const SaveProductDocArgs = z.object({
   project: z.string().min(1).refine(isPathSafeComponent, {
@@ -57,7 +58,8 @@ export async function saveProductDocHandler(
   if (!areaSlug) throw new Error(`area slugifies to nothing: ${JSON.stringify(area)}`);
   const id = `doku-${project}-${areaSlug}`;
 
-  const existed = deps.vault.get(id) !== undefined;
+  const before = deps.vault.get(id);
+  const existed = before !== undefined;
   const result = await saveMemory(deps.vaultPath, {
     id,
     title,
@@ -75,6 +77,20 @@ export async function saveProductDocHandler(
   });
   // Watcher is unreliable on cloud mounts — index now so find_document sees it.
   await deps.vault.reindexFile(result.file_path);
+
+  // #206: product docs are vault writes like any other — they were the second
+  // path with no audit record at all.
+  await recordAudit({
+    vaultRoot: deps.vaultPath,
+    memoryId: result.id,
+    operation: result.created ? "create" : "update",
+    actor: "assistant",
+    actorDetail: "mcp:save_product_doc",
+    diffBefore: before ? { ...before.fm } : null,
+    diffAfter: { ...(deps.vault.get(result.id)?.fm ?? {}) },
+    filePath: result.file_path,
+    sessionId: deps.telemetry.runId(),
+  });
 
   return {
     id: result.id,

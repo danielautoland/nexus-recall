@@ -354,6 +354,14 @@ export class Telemetry {
   private readonly joinStatePath: string;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** #206: the daemon-run id, so an audit entry can be correlated with the
+   *  telemetry events of the same run. `AuditEntry.session_id` is documented
+   *  as exactly this value; it was private and therefore unreachable from the
+   *  audit trail. Read-only on purpose — nothing outside may set it. */
+  runId(): string {
+    return this.sessionId;
+  }
+
   constructor(opts: { onUsage?: UsageSink } = {}) {
     this.onUsage = opts.onUsage;
     this.enabled =

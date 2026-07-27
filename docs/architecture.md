@@ -55,6 +55,8 @@ The watcher uses `chokidar`. On paths that look like cloud-storage mounts (`Clou
 
 A memory's **id survives** the engine's lifecycle operations: demote changes score only, soft-delete moves the file to append-only `.bastra/trash/` (recoverable), and only a hard delete removes a cell. This is the substrate guarantee the pin/floor lifecycle and any citation layer build on — pinned by a CI regression test. Details: [docs/survival.md](./docs/survival.md).
 
+Every vault write through the daemon appends to `<vault>/.bastra/audit-log.ndjson` (#206) — `save_memory`, `save_product_doc` and `archive_memory`, alongside the Mac-app bridge that already used it. Each entry carries the memory id, the operation, the actor and the surface (`mcp:save_memory`, `mcp:archive_memory`, …), the frontmatter before and after, the file path, and the daemon run id, so an entry can be correlated with the telemetry of the same run. Telemetry is not a substitute: it can be switched off and is pruned after 90 days, while this log is append-only and permanent. Recording is best-effort by design (`packages/daemon/src/audit-trail.ts`) — a write that already landed is never failed because its trail could not be written. The MCP path records directly rather than through `auditedSave`, because that wrapper requires a `reason` for assistant mutations and the tool schema has no reason field; a missing reason is honest, a generated one would be noise dressed as provenance.
+
 ## Search And Recall
 
 The current index is in-memory MiniSearch BM25, not SQLite/FTS5. The searched fields are:
