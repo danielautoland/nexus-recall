@@ -33,7 +33,7 @@ What to do with hits (interpret the score — hybrid scores are rank-agreement m
 
 - **Score ≥ ~100 with `recall_when` or title match** → call `load_memory(id)` and apply the lesson **before** writing code or responding. Never ignore a `lesson` hit at this band.
 - **Score 30–100** → read the summary; load only if directly relevant.
-- **Below ~30** → noise; `recall` already drops it (default floor). Raise `min_score` to surface only high-confidence candidates.
+- **Below ~30** → noise in BM25-only mode, where `recall` drops it at the default floor. On the hybrid path (embeddings on) that floor practically never fires — the score is a rank sum, so a hit would need roughly rank 273 in *both* arms to fall under it. There, `weak_result` is the signal that nothing anchored, and `no_home` the stricter one that the fact has no home in the vault at all.
 
 Idempotent: don't reload a memory you've already loaded this turn.
 

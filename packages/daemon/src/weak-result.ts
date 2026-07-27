@@ -56,3 +56,37 @@ export function isWeakResult(hits: RecallHit[], hybridActive: boolean): boolean 
     !hits.some((h) => h.matched_recall_when === true || hitTitleMatches(h))
   );
 }
+
+/**
+ * #230 — a strict subset of `weak_result`: not just "nothing anchored", but
+ * "the fact has no home in this vault".
+ *
+ * The distinction comes from @zzallirog dogfooding, and it splits the miss in
+ * two:
+ *
+ * - **rank-1-of-WRONG** — a legitimate both-arms pair on the wrong document.
+ *   `recall("arch firewall")` returned a top hit at 158.89 built from rank 1
+ *   in BM25 and rank 4 in vector; the fact existed, in memories whose triggers
+ *   never carried a standalone `firewall` token. No score-only signal can catch
+ *   that, because the hit is not rank-1-of-nothing. Client-side problem.
+ * - **rank-1-of-NOTHING** — the top hit lives in ONE arm only. That is what
+ *   this predicate detects, and it is the shape a genuinely absent fact takes.
+ *
+ * Why the rank pair and not "flat score distribution": on real data flatness
+ * INVERTS. A genuine home spikes to the both-arms ceiling with its siblings
+ * crowding just behind, so it shows a SMALLER top1→top2 gap than a miss does.
+ * The rank pair is the honest signal; the gap is a trap.
+ *
+ * Kept separate from `weak_result` rather than folded into it: it is a
+ * higher-confidence claim, and collapsing two confidence levels into one field
+ * on the public contract would lose exactly the distinction that makes it
+ * useful. Additive and back-compatible — `weak_result` is untouched.
+ */
+export function isNoHome(hits: RecallHit[], hybridActive: boolean): boolean {
+  if (!isWeakResult(hits, hybridActive)) return false;
+  const top = hits[0];
+  // Commons-fused hits come from the BM25 path and carry no `rrf` block at all.
+  // Requiring it present is what keeps them from being read as one-armed.
+  if (!top?.rrf) return false;
+  return top.rrf.rank_bm25 === null || top.rrf.rank_vector === null;
+}

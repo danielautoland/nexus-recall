@@ -275,6 +275,11 @@ components:
           enum: [lean, full]
         min_score:
           type: number
+          description: >
+            Drop hits below this score. Meaningful in BM25-only mode, where the
+            score is a genuine BM25 quantity. On the hybrid path the score is a
+            scaled reciprocal-rank sum and this floor practically never fires —
+            use weak_result / no_home instead of tightening it.
     RecallResponse:
       type: object
       required: [query, vault_size, hits, recall_id, latency_ms]
@@ -291,6 +296,23 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RecallHit"
+        weak_result:
+          type: boolean
+          description: >
+            Hybrid path only. Present and true when no returned hit anchors
+            lexically — neither a hand-written recall_when match nor a title
+            match. The hybrid score is a rank quantity, so a top hit is high by
+            construction even for a nonsense query; this flag is what says the
+            high score is rank-1-of-nothing. Absent means "not weak" — it is
+            never sent as false, which keeps the lean payload lean. Purely
+            informational: it filters nothing.
+        no_home:
+          type: boolean
+          description: >
+            Strict subset of weak_result. Present and true when the top hit
+            additionally lives in only ONE of the two retrieval arms, which is
+            the shape a genuinely absent fact takes. Kept separate from
+            weak_result because it is a higher-confidence claim.
     RecallHit:
       type: object
       required: [id, title, type, scope, summary, score]

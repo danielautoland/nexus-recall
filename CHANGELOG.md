@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Recall can now say "this isn't in your vault at all".** There is a
+  difference between finding the wrong note and finding nothing — and until now
+  the daemon could not tell you which had happened, because on the hybrid search
+  path a top result always looks confident. The new `no_home` signal fires when
+  the best hit exists in only one of the two search arms, which is the shape an
+  absent fact takes. It is deliberately narrower than `weak_result`: a wrong-but-
+  real match still looks like a match, and pretending otherwise would make the
+  signal lie. Both are recorded locally now, so "how often does my vault come up
+  empty?" becomes a question with an answer. Found by zzallirog while
+  dogfooding. (#230)
+
 ### Fixed
 
 - **The hints your agent gets on every edit stop calling noise a strong match.**

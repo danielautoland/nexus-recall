@@ -27,7 +27,7 @@ import {
 } from "@bastra-recall/core";
 import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
-import { isWeakResult } from "./weak-result.js";
+import { isWeakResult, isNoHome } from "./weak-result.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
@@ -113,6 +113,11 @@ export interface RecallResult {
    *  Nonsens-Query einen hohen Score (rank-1-of-nothing). Reine Information,
    *  filtert nichts. Fehlt (statt `false`), wenn nicht weak — hält lean schlank. */
   weak_result?: boolean;
+  /** #230: strikte Teilmenge von `weak_result` — der Top-Hit lebt nur in EINEM
+   *  Arm, die Form eines wirklich abwesenden Facts. Getrennt gehalten, weil es
+   *  die höhere Konfidenz-Stufe ist; zusammengelegt ginge genau die
+   *  Unterscheidung verloren, die den Wert ausmacht. */
+  no_home?: boolean;
 }
 
 /**
@@ -267,6 +272,9 @@ export async function recallHandler(
   // Titel-Match). Rein informativ, filtert nichts.
   const hybridActive = deps.search.hasEmbeddings() && !embeddingDegraded;
   const weakResult = isWeakResult(hits, hybridActive);
+  // #230: the stricter claim — not just "nothing anchored" but "this fact has
+  // no home here". Strict subset of weakResult, so it can only ever narrow it.
+  const noHome = isNoHome(hits, hybridActive);
 
   // #217: would-be Salience-Reihenfolge (shadow-only, servierte Hits bleiben).
   const salienceShadow = computeSalienceShadow(
@@ -291,6 +299,7 @@ export async function recallHandler(
       dropped_below_floor: droppedBelowFloor,
       // #249: the flag has to be recorded on every path, not only returned.
       weak_result: weakResult || undefined,
+      no_home: noHome || undefined,
       bridge_expansion:
         expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
       candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
@@ -310,6 +319,7 @@ export async function recallHandler(
     latency_ms: latencyMs,
     // #230: nur setzen wenn true — Abwesenheit = nicht weak, hält lean schlank.
     ...(weakResult ? { weak_result: true } : {}),
+    ...(noHome ? { no_home: true } : {}),
     ...(full ? { stages: collector.timings } : {}),
   };
 }

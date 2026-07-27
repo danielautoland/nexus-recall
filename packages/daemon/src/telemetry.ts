@@ -93,6 +93,10 @@ export interface RecallEvent extends BaseEvent {
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
   weak_result?: boolean;
+  /** #230: stricter than weak_result — the top hit lives in one arm only, the
+   *  shape a genuinely absent fact takes. Strict subset, so no_home implies
+   *  weak_result. Recorded to make the no-home rate measurable at all. */
+  no_home?: boolean;
   /** #165: served BM25-only because the embedding circuit breaker was open
    *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
    *  stats separate degraded from normal recalls. */
@@ -195,6 +199,10 @@ export interface HookRecallEvent extends BaseEvent {
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
   weak_result?: boolean;
+  /** #230: stricter than weak_result — the top hit lives in one arm only, the
+   *  shape a genuinely absent fact takes. Strict subset, so no_home implies
+   *  weak_result. Recorded to make the no-home rate measurable at all. */
+  no_home?: boolean;
   /** #165: served BM25-only because the embedding circuit breaker was open. */
   embedding_degraded?: boolean;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
