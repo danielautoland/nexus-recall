@@ -6,8 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A memory can now say "I am the new version of that one".** Pass `replaces`
+  to `save_memory` and both memories record the link. The old one **stays in
+  your vault** — still there, still findable by its id, still opening when
+  something cites it. It becomes a previous version, not a deleted one, and
+  opening it tells you a newer version exists. That is the difference from
+  archiving, which retires a memory and takes it out of circulation. Nothing
+  about ranking changes yet: a superseded memory is found exactly as before.
+  This release lays the track — what a later version does with it (showing old
+  versions as faded, letting you search them deliberately) is built on top.
+  (#164)
+- **Saving a memory now tells you when its triggers just repeat the summary.**
+  On a real 471-note vault, 81% of notes had their first `recall_when` phrase as
+  a verbatim copy of the summary — which spends the strongest search field on
+  text that is already indexed at a lower weight, and leaves the trigger that
+  should fire carrying no distinct signal. Rewriting those into real triggers
+  moved that vault's recall@5 from 0.457 to 0.565 while making the notes
+  *smaller*. `save_quality` now points at the ones that restate, and the
+  guidance says it plainly: name the situation, not the content. Advisory only —
+  it never blocks a save. Found and measured by zzallirog. (#238)
+
 ### Fixed
 
+- **The save-time duplicate warning stops inventing numbers.** It used to decide
+  "this looks like a duplicate" from a raw search score — a number that grows
+  when a word is repeated, grows with the size of your vault, and had no fixed
+  meaning at any threshold. The result was unrelated memories presented as
+  near-duplicates at five-digit "scores", nudging the agent toward overwriting
+  the wrong note. Search now only proposes candidates; the decision runs on a
+  real content overlap between 0 and 1, computed over the fields you actually
+  wrote, and the penalty follows how similar the two memories are instead of how
+  many candidates came back. Repeating a term cannot move it, and the same pair
+  of memories scores the same on a small vault and a large one. Trigger
+  collisions now say "matches 20 of 21 memories in this scope" instead of a bare
+  count, and a count the search had to cut short is marked as a lower bound
+  rather than printed as if it were exact. (#239)
 - **A broken character no longer costs you the whole note.** The vault loader
   used to drop any memory whose frontmatter did not parse — an unknown escape
   sequence inside a quoted value, an unquoted line containing a `:` or a `·`,

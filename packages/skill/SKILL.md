@@ -84,6 +84,17 @@ After a real back-and-forth with a contributor lands (not a trivial reply): memo
 - **No stale-in-7-days artifacts**: task progress, PR numbers, "phase N done" belong in git/issues, not in memory.
 - **Declarative facts, not self-directives**: "User prefers concise replies" ✓ — "Always reply concisely" ✗. Imperative phrasing gets re-read as a directive in unrelated later contexts.
 
+### A fact that changed — supersede, don't archive
+
+When a memory is still about the same thing but the fact in it changed, save the
+new version with `replaces: <old-id>`. The old one stays in the vault and stays
+loadable — it becomes a previous version, not a deleted one, and both memories
+record the link. Use this for a corrected fact, a moved path, a decision that was
+revised.
+
+Not for a memory that is merely related — link those with `[[wikilinks]]`. And
+not for one that should go away entirely; that is `archive_memory`.
+
 ### Before saving
 
 Always `recall()` with the title/topic first — if a near-duplicate exists, update it (`overwrite=true`) instead of creating a new one.
@@ -93,7 +104,7 @@ Always `recall()` with the title/topic first — if a near-duplicate exists, upd
 - **Title** — short, specific, non-generic.
 - **Summary** — one sentence with the gist; aim ~250–300 chars, core in the first 160 (the lean-recall snippet). Hard cap 400 — auto-truncated if over, never rejected, so keep it short.
 - **Body** — lead with the rule/fact, then `**Why:**` (root cause / reason / incident) and `**How to apply:**` (when this kicks in). For lessons, capture the failure path **and** the fix.
-- **`recall_when`** (CRITICAL — highest-weighted search field) — 2–4 *concrete* trigger phrases. *"about to write a Tailwind grid"* beats *"CSS questions"*. Without good `recall_when`, the memory is dead weight.
+- **`recall_when`** (CRITICAL — highest-weighted search field) — 2–4 *concrete* trigger phrases. *"about to write a Tailwind grid"* beats *"CSS questions"*. Without good `recall_when`, the memory is dead weight. **Never paste the summary in here.** It is indexed at weight 5 while the summary is already indexed at weight 2, so a copy spends the strongest field on text that is covered anyway — measured on a real vault, rewriting summary-copies into distinct triggers raised recall@5 from 0.457 to 0.565 *and* made the notes smaller. Write the situation, not the content.
 - **Language** — author `title`, `summary` and `recall_when` in the user's primary language (settings `language.primary`); keep only genuine English tech terms (daemon, deploy, hook) as anchors — the mixed style carries cross-lingually.
 - **`salience` / `emotion`** — only when a capture rule fires (frustration 0.8, hard-won fix 0.7, "merk dir das gut" 0.9); never invent them. `recall_mode: "reflex"` only after the user explicitly confirmed a promotion — never autonomously.
 

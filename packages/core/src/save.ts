@@ -8,8 +8,13 @@ import { clampSummary, SUMMARY_MAX } from "./summary.js";
 /**
  * Input contract for save_memory.
  * Mirrors FrontmatterSchema but only the fields a caller should set —
- * id, created, updated are auto-derived; obsolete/replaces/superseded_by
+ * id, created and updated are auto-derived; `obsolete` and `superseded_by`
  * are written by separate flows, not by save.
+ *
+ * `replaces` is the exception (#164): it is how a caller declares "this
+ * memory is the new version of that one". The counterpart stamp
+ * (`superseded_by` on the predecessor) is applied by the daemon, which is the
+ * layer that knows where the predecessor lives.
  */
 export const SaveMemoryInput = z.object({
   title: z.string().min(1),
@@ -27,6 +32,17 @@ export const SaveMemoryInput = z.object({
     message: "scope must not contain path separators, '..', or a leading dot",
   }),
   recall_when: z.array(z.string().min(1)).min(1),
+  /**
+   * #164 — id of the memory this one supersedes.
+   *
+   * Deliberately NOT the same thing as `archive_memory`: the predecessor stays
+   * in the living vault and stays resolvable by its id. It is not moved to the
+   * trash, not dropped from the index, and not marked `obsolete`. Per the V1→V2
+   * architecture contract (C-059) historicity comes from the version status,
+   * never from a change of location — a predecessor that is moved away is not
+   * historical, it is gone, and old versions have to stay citable.
+   */
+  replaces: z.string().min(1).optional(),
   related: z.array(z.string()).optional(),
   /**
    * Obsidian-Aliases (#188): Substrat-Plumbing, kein Agent-Knob — der Daemon
@@ -437,6 +453,12 @@ export async function saveMemory(
     ...optional("content_hash", input.content_hash, isStr),
     ...optional("content_size", input.content_size, isNum),
     ...optional("source", input.source, isStr),
+    // #164: the forward half of the supersession edge. The backward half
+    // (`superseded_by` on the predecessor) is stamped by the daemon. Kept from
+    // the previous file when absent, so re-saving a memory does not drop the
+    // version link it already declared.
+    ...optional("replaces", input.replaces, isStr),
+    ...optional("superseded_by", undefined, isStr),
     confidence: input.confidence ?? kept(prev.confidence, isNum) ?? 1,
     // #217: `!= null` statt truthy — salience 0 ist ein gültiger Wert.
     ...(salience != null ? { salience } : {}),

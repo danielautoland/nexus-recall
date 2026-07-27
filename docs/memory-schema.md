@@ -161,10 +161,34 @@ These optional fields affect staleness and recall ranking:
 | `last_reviewed_at` | ISO date of the last manual review |
 | `stale_status` | Optional persisted status: `fresh`, `aging`, `stale`, `expired` |
 | `obsolete` | If true, the memory is filtered out of normal recall |
-| `replaces` | Memory id this one replaces |
-| `superseded_by` | Newer memory that supersedes this one |
+| `replaces` | Memory id this one is the new version of — settable via `save_memory` |
+| `superseded_by` | Newer memory that supersedes this one — stamped by the daemon, never by a caller |
 
 Staleness is computed lazily during recall. Stale and expired memories are downranked; obsolete memories are removed from normal search results.
+
+### Supersession (#164)
+
+`replaces` and `superseded_by` are the two halves of one directed edge. Passing
+`replaces: <id>` to `save_memory` writes the forward half on the new memory and
+stamps the backward half onto the predecessor.
+
+**The predecessor stays in the living vault.** It is not moved to the trash, not
+dropped from the index, and not marked `obsolete`. It keeps resolving by its id,
+so older citations keep working, and `load_memory` on it reveals that a newer
+version exists. This is deliberately *not* what `archive_memory` does — that
+retires a memory and removes it from the active index. Per the V1→V2 architecture
+contract (C-059), historicity comes from the version status, never from a change
+of location: a predecessor that gets moved away is not historical, it is gone.
+
+The edge currently carries **no ranking effect**. A superseded memory ranks
+exactly as it did before. The accessibility projection that will read this edge —
+and the Historical zone it feeds — begins as a read-only projection in V1.x, and
+its weights are an M3 decision (§7.1 of the evolution contract). This stage
+produces the data so that the projection has something to read when it arrives;
+it does not pre-empt the decision about what to do with it.
+
+Save refuses a `replaces` that points at a nonexistent memory, or at the memory
+being saved, before writing anything.
 
 ### Valence And Reflex Fields (#217)
 

@@ -21,54 +21,26 @@ import {
   truncateSummaryTo,
   SaveMemoryInput,
   stripAutoRelatedSection,
-  containsInjectedBlock,
-  type Vault,
-  type SearchIndex,
   type StageListener,
   type RecallStage,
   type RecallHit,
-  scanForInjection,
-  formatInjectionAdvisory,
 } from "@bastra-recall/core";
-import { Telemetry, fireAndForget } from "./telemetry.js";
+import { fireAndForget } from "./telemetry.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
-import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
-import { detectLanguage, type SupportedLanguage } from "./learned-recall/language.js";
+import { expandQuery } from "./learned-recall/bridges.js";
+import { tokens as words } from "./save-similarity.js";
 
-export interface ToolDeps {
-  vault: Vault;
-  search: SearchIndex;
-  telemetry: Telemetry;
-  vaultPath: string;
-  /** Read-only Bastra-Commons-Index (BM25-only), wenn `bastra commons enable`
-   *  aktiv ist. Hits tragen scope "commons" aus ihrem Frontmatter — kein
-   *  eigenes source-Feld nötig. */
-  commonsSearch?: SearchIndex | null;
-  /** works/fails-Zählung aus den Verification-Records pro Rezept-ID — die
-   *  Evidenz, die das Fusion-Ranking hebt oder senkt (verify-Loop). */
-  commonsVerifications?: Map<string, { works: number; fails: number }> | null;
-  /** Read-only, language-partitioned learned-recall bridge pool (#120), present
-   *  only when `bastra bridges enable` is active. Used to widen the recall query;
-   *  null/absent = feature off, query untouched (local-first guarantee). */
-  learnedBridges?: BridgePool | null;
-  /** Optional query-language override for the bridge pool (sharedRecall.language);
-   *  null/absent = auto-detect the query language per recall. */
-  sharedRecallLang?: SupportedLanguage | null;
-  /** #165: true while the embedding circuit breaker is open — hybrid recall
-   *  is silently served BM25-only (no embed attempt). Recall telemetry flags
-   *  those events as embedding_degraded. Absent = no breaker (embeddings off). */
-  embeddingDegraded?: () => boolean;
-  /** #231 (language-first recall): the user's primary authoring language
-   *  (settings `language.primary`), resolved once at daemon startup like
-   *  `sharedRecallLang`. When set and ≠ "en", scoreSaveQuality advises when a
-   *  save's recall_when reads as English — author triggers in the user's
-   *  language, keep English tech terms as anchors. Absent = no language signal
-   *  (the check never fires). */
-  primaryLanguage?: string;
-}
+import type { ToolDeps } from "./tool-deps.js";
+import { scoreSaveQuality, GENERIC_TRIGGER_WORDS, type SaveQualityResult } from "./save-quality.js";
+import { MEMORY_TOOL_DEFS } from "./tool-defs-memory.js";
+
+// Re-exported so the 18 existing importers keep their import path.
+export type { ToolDeps };
+export type { SaveQualityResult };
+export { MEMORY_TOOL_DEFS };
 
 // ─── Zod-Schemas ────────────────────────────────────────────────
 
@@ -197,6 +169,7 @@ function makeStageCollector(forward?: StageListener): { listener: StageListener;
 /** Score-Floor (#50 / #9): Hits darunter sind Rauschen und werden nicht
  *  zurückgegeben. Spiegelt `SCORE_FLOOR` aus hook.ts + die SKILL.md-Linie. */
 const RECALL_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
+
 
 /** Max-Länge der `summary` im lean-Modus (#50). Lang genug zum Validieren,
  *  kurz genug um Context zu sparen. `verbosity:"full"` umgeht das. */
@@ -387,6 +360,14 @@ const LEAN_FRONTMATTER_KEYS = [
   "salience",
   "emotion",
   "recall_mode",
+  // #164: the version edge. Present only on memories that actually carry it,
+  // so lean stays lean. Reading it is what makes a superseded memory readable
+  // AS a superseded memory — without it a caller loading an old version has no
+  // way to know a newer one exists. No ranking effect: per §7.1 of the V1→V2
+  // contract the accessibility projection starts read-only and its weights are
+  // an M3 decision, so this stage carries the data and nothing else.
+  "replaces",
+  "superseded_by",
 ] as const;
 
 /** Projiziert die volle Frontmatter auf die lean-Teilmenge. Unbekannte/
@@ -479,16 +460,6 @@ export async function loadMemoryHandler(
 
 // ─── Save Memory ─────────────────────────────────────────────────
 
-export interface SaveQualityResult {
-  /** 0-100 advisory score: higher means more specific, less duplicative triggers. */
-  score: number;
-  band: "low" | "medium" | "high";
-  issues: string[];
-  suggestions: string[];
-  duplicate_candidates: Array<{ id: string; score: number; title: string }>;
-  trigger_collisions: Array<{ trigger: string; count: number; examples: string[] }>;
-}
-
 export interface SaveMemoryResult {
   id: string;
   file_path: string;
@@ -503,45 +474,12 @@ export interface SaveMemoryResult {
   note?: string;
 }
 
-export const GENERIC_TRIGGER_WORDS = new Set([
-  "api",
-  "app",
-  "auth",
-  "bug",
-  "code",
-  "css",
-  "data",
-  "db",
-  "debug",
-  "design",
-  "docs",
-  "error",
-  "fix",
-  "frontend",
-  "ios",
-  "js",
-  "macos",
-  "memory",
-  "node",
-  "python",
-  "react",
-  "refactor",
-  "server",
-  "swift",
-  "test",
-  "typescript",
-  "ui",
-  "ux",
-]);
-
 // Unicode-aware: `[a-z0-9]` only matched ASCII, so a non-Latin trigger
 // ("тон письма outward") tokenised to just its one Latin word and tripped the
 // `tokens.length <= 1` "too short/generic" penalty — every Cyrillic/CJK author
 // was structurally penalised on save_quality. `\p{L}\p{N}` + the `u` flag count
 // letters in any script; toLowerCase already folds Unicode case.
-function words(text: string): string[] {
-  return text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
-}
+
 
 const ACTED_ON_STOPWORDS = new Set([
   "about",
@@ -575,189 +513,6 @@ export function distinctiveTokensForActedOn(text: string): string[] {
         .filter((token) => !GENERIC_TRIGGER_WORDS.has(token)),
     ),
   ).slice(0, 200);
-}
-
-function triggerSpecificityIssue(trigger: string): string | undefined {
-  const tokens = words(trigger);
-  if (tokens.length <= 1) return `recall_when '${trigger}' is too short/generic`;
-  if (tokens.length <= 2 && tokens.every((t) => GENERIC_TRIGGER_WORDS.has(t))) {
-    return `recall_when '${trigger}' is only generic technology words`;
-  }
-  return undefined;
-}
-
-function buildSpecificTriggerSuggestion(input: SaveMemoryInput): string {
-  const path = input.topic_path.join("/") || input.scope;
-  const summaryTokens = words(input.summary)
-    .filter((t) => !GENERIC_TRIGGER_WORDS.has(t))
-    .slice(0, 5)
-    .join(" ");
-  const anchor = summaryTokens || input.title.toLowerCase();
-  return `tighten recall_when around an action + anchor, e.g. 'about to ${input.type} in ${path}: ${anchor}'`;
-}
-
-// #159: admission rules — vault rot has a known shape. Negative capability
-// claims harden into standing refusals that outlive the problem; imperative
-// phrasing gets re-read as a directive in unrelated later contexts. Both are
-// advisory-only flags, never blocks.
-const NEGATIVE_CLAIM_RE =
-  /\b(is broken|does ?n[o']?t work|not working|no longer works|never works|funktioniert nicht( mehr)?|ist kaputt|geht nicht( mehr)?)\b/i;
-const FIX_MARKER_RE =
-  /\b(fix(ed)?|lösung|solution|workaround|abhilfe|stattdessen|instead|how to apply)\b/i;
-const IMPERATIVE_LEAD_RE =
-  /^(always|never|don'?t|do not|avoid|remember to|ensure|immer|nie(mals)?|benutze|verwende|vermeide|nutze|stelle sicher)\b/i;
-
-/**
- * @param excludeId Die EFFEKTIVE id des Saves (`input.id ?? slugify(title)`).
- *   Muss vom Caller berechnet werden: `input.id` ist auf dem dokumentierten
- *   Normalpfad `undefined` (der Agent schickt nur den Titel), und ein Filter
- *   gegen `undefined` schließt nichts aus — das Memory fand beim Overwrite
- *   sich selbst als Top-Duplikat und kollidierte mit den eigenen Triggern.
- */
-function scoreSaveQuality(
-  deps: ToolDeps,
-  input: SaveMemoryInput,
-  excludeId: string,
-): SaveQualityResult {
-  const issues: string[] = [];
-  const suggestions: string[] = [];
-  let score = 100;
-
-  const triggerIssues = input.recall_when
-    .map(triggerSpecificityIssue)
-    .filter((issue): issue is string => issue !== undefined);
-  if (triggerIssues.length > 0) {
-    issues.push(...triggerIssues);
-    suggestions.push(buildSpecificTriggerSuggestion(input));
-    score -= Math.min(55, triggerIssues.length * 25);
-  }
-
-  const genericTags = input.tags.filter((tag) => {
-    const tokens = words(tag);
-    return tokens.length === 1 && GENERIC_TRIGGER_WORDS.has(tokens[0]);
-  });
-  if (genericTags.length > 0) {
-    issues.push(`generic tags: ${genericTags.join(", ")}`);
-    suggestions.push("add at least one project/component/outcome tag so future matches are narrower");
-    score -= Math.min(24, genericTags.length * 12);
-  }
-
-  // #159: 'X is broken / doesn't work' without a fix becomes a standing
-  // refusal that keeps surfacing long after the problem was solved
-  if (
-    NEGATIVE_CLAIM_RE.test(`${input.title} ${input.summary}`) &&
-    !FIX_MARKER_RE.test(`${input.summary} ${input.body}`)
-  ) {
-    issues.push("negative capability claim without a fix — hardens into a standing refusal");
-    suggestions.push(
-      "capture the FIX (install step, config, env var) instead of the failure as a constraint — or add the fix to the body",
-    );
-    score -= 12;
-  }
-
-  // #159: imperative lead reads as a directive when recalled in unrelated
-  // contexts — declarative facts age better
-  if (IMPERATIVE_LEAD_RE.test(input.title.trim()) || IMPERATIVE_LEAD_RE.test(input.summary.trim())) {
-    issues.push("imperative phrasing — re-reads as a self-directive in unrelated later contexts");
-    suggestions.push("state it as a declarative fact: 'User prefers …' / 'X requires Y', not 'Always/Never …'");
-    score -= 8;
-  }
-
-  // #231 (language-first recall): the hook manufactures English queries on every
-  // box, so on a non-English vault the highest-weighted field (recall_when)
-  // structurally can't match English-authored triggers. If the user's primary
-  // language is set and non-English but the joined triggers read as English,
-  // nudge toward authoring in their language. Conservative by construction:
-  // detectLanguage only fires on a confident "en" (it abstains on short /
-  // code-shaped / ambiguous input and can only tell de/en apart, so e.g. a
-  // Russian primary with Russian triggers abstains and never trips this),
-  // advisory only — never a rejection. A false negative is cheaper here.
-  const primaryLang = deps.primaryLanguage;
-  if (primaryLang && primaryLang !== "en" && detectLanguage(input.recall_when.join(" ")).lang === "en") {
-    issues.push(`recall_when reads as English but your primary language is '${primaryLang}'`);
-    suggestions.push(
-      `author triggers in '${primaryLang}', keeping only genuine English tech terms (daemon, deploy, hook, …) as cross-lingual anchors`,
-    );
-    score -= 8;
-  }
-
-  // #149: a complete hook/context block quoted in memory content is
-  // conversation scaffolding, not memory — it re-enters the index via body
-  // search and (title/summary) doc2query. Advisory only: save content is never
-  // silently rewritten; the agent removes the block and re-saves.
-  const injectedTags = Array.from(
-    new Set([
-      ...containsInjectedBlock(input.title),
-      ...containsInjectedBlock(input.summary),
-      ...containsInjectedBlock(input.body),
-    ]),
-  );
-  if (injectedTags.length > 0) {
-    issues.push(`injected context blocks in content: <${injectedTags.join(">, <")}>`);
-    suggestions.push(
-      "remove quoted hook/context blocks (<recall-hints>, <session-context>, <system-reminder>, …) — they are conversation scaffolding, not memory content",
-    );
-    score -= 20;
-  }
-
-  // #147: Injection-Marker im Save-Inhalt — advisory only, nie blocken (der
-  // Flag ist billig, ein verpasster Marker nicht). Trifft vor allem Captures
-  // von Third-Party-Content (Bridge, zitierte Dokumente); rein user-eigene
-  // Memories triggern die Muster praktisch nie.
-  const injectionFindings = scanForInjection([input.title, input.summary, input.body].join("\n"));
-  const injectionAdvisory = formatInjectionAdvisory(injectionFindings);
-  if (injectionAdvisory) {
-    issues.push(injectionAdvisory);
-    suggestions.push(
-      "review the flagged spans — quoted third-party material keeps the flag as provenance; if it is your own phrasing, reword it",
-    );
-    score -= 15;
-  }
-
-  // #162: kurze, diskriminierende Felder (title, tags, recall_when) zuerst,
-  // die potentiell lange summary zuletzt — falls der QUERY_MAX_CHARS-Cap
-  // greift, fällt nur Summary-Schwanz weg, nie ein diskriminierender Term.
-  const duplicateQuery = [input.title, ...input.tags, ...input.recall_when, input.summary].join(" ");
-  const duplicateCandidates = deps.search
-    .recall(duplicateQuery, { k: 5, scope: input.scope, type: input.type, allow_private: false })
-    .filter((hit) => hit.id !== excludeId)
-    .filter((hit) => hit.score >= 20)
-    .slice(0, 3)
-    .map((hit) => ({ id: hit.id, score: hit.score, title: hit.title }));
-  if (duplicateCandidates.length > 0) {
-    issues.push(`possible duplicate: ${duplicateCandidates[0].id}`);
-    suggestions.push(`consider load_memory('${duplicateCandidates[0].id}') and overwrite/update instead of creating a near-duplicate`);
-    score -= Math.min(30, 12 + duplicateCandidates.length * 6);
-  }
-
-  const triggerCollisions = input.recall_when
-    .map((trigger) => {
-      // #108: ohne den Noise-Floor zählte das die rohe top-k-Liste — jeder
-      // Trigger meldete "matches 20 memories" (k-Cap, keine Kollisionen).
-      // Kollision = ein anderes Memory, das dieser Trigger ÜBER dem Floor
-      // hochspülen würde, exakt wie recall() selbst filtert.
-      const hits = deps.search
-        .recall(trigger, { k: 20, scope: input.scope, type: input.type, allow_private: false })
-        .filter((hit) => hit.id !== excludeId)
-        .filter((hit) => hit.score >= RECALL_FLOOR);
-      return { trigger, count: hits.length, examples: hits.slice(0, 3).map((h) => h.id) };
-    })
-    .filter((collision) => collision.count >= 3);
-  if (triggerCollisions.length > 0) {
-    issues.push(`trigger collision: ${triggerCollisions[0].trigger} already matches ${triggerCollisions[0].count} memories`);
-    suggestions.push("make high-collision triggers include a concrete action, subsystem, failure mode, or file family");
-    score -= Math.min(30, triggerCollisions.length * 12);
-  }
-
-  const clamped = Math.max(0, Math.min(100, Math.round(score)));
-  return {
-    score: clamped,
-    band: clamped >= 80 ? "high" : clamped >= 50 ? "medium" : "low",
-    issues,
-    suggestions: Array.from(new Set(suggestions)),
-    duplicate_candidates: duplicateCandidates,
-    trigger_collisions: triggerCollisions,
-  };
 }
 
 // ─── #150: anti-thrash — consecutive-failure cap on save_memory ─────────
@@ -823,6 +578,22 @@ async function saveMemoryInner(
   const finalId = parsed.data.id ?? slugify(parsed.data.title);
   const saveQuality = scoreSaveQuality(deps, parsed.data, finalId);
 
+  // #164: validate the supersession target BEFORE writing anything. A
+  // `replaces` pointing at nothing is an authoring mistake, and failing early
+  // lets the caller fix it instead of leaving a half-declared version edge.
+  const supersedes = parsed.data.replaces;
+  if (supersedes !== undefined) {
+    if (supersedes === finalId) {
+      throw new Error(`replaces: a memory cannot supersede itself (${finalId}).`);
+    }
+    if (!deps.vault.get(supersedes)) {
+      throw new Error(
+        `replaces: unknown memory '${supersedes}' — it must exist in the vault. ` +
+          `Note that an archived memory is no longer in the living vault and cannot be superseded.`,
+      );
+    }
+  }
+
   // Re-Filing (#64): Wenn die id schon indexiert ist, aber der neue Save sie
   // woanders ablegt (geänderte folder/scope-Konvention), würde saveMemory nur
   // den NEUEN Pfad auf Kollision prüfen — die alte Datei bliebe als Duplikat
@@ -878,6 +649,38 @@ async function saveMemoryInner(
   // Don't trust the watcher on cloud-storage mounts — force-index now
   // so a follow-up recall() in the same session sees the new memory.
   await deps.vault.reindexFile(result.file_path);
+
+  // #164: stamp the backward half of the version edge onto the predecessor.
+  // It stays exactly where it is — living vault, indexed, resolvable by id.
+  // This is the whole difference from archive_memory (C-059): historicity is a
+  // version status, not a change of location. The edge is what V2's Historical
+  // zone and the "broken node pointing at its successor" in the mindspace are
+  // later computed FROM, so the data has to exist from now on even though
+  // nothing reads it yet.
+  let supersedeWarning: string | undefined;
+  if (supersedes !== undefined) {
+    const target = deps.vault.get(supersedes);
+    if (target) {
+      try {
+        const raw = await readFile(target.filePath, "utf8");
+        const { data, content } = matter(raw);
+        await writeFile(
+          target.filePath,
+          matter.stringify(content, { ...(data as Record<string, unknown>), superseded_by: result.id }),
+          "utf8",
+        );
+        await deps.vault.reindexFile(target.filePath);
+      } catch (err) {
+        // The new memory is written and carries `replaces`, so the edge is
+        // half-formed rather than lost — but half-formed silently is exactly
+        // what this issue is about, so it surfaces.
+        supersedeWarning =
+          `supersede: '${result.id}' declares replaces='${supersedes}', but stamping superseded_by onto ` +
+          `${target.filePath} failed (${(err as Error).message}). The version link is one-directional until ` +
+          `that file is writable again.`;
+      }
+    }
+  }
   fireAndForget(
     deps.telemetry.logSaveMemory({
       id: result.id,
@@ -893,7 +696,8 @@ async function saveMemoryInner(
     }),
   );
 
-  return { ...result, save_quality: saveQuality, ...(refileWarning ? { warning: refileWarning } : {}) };
+  const warning = [refileWarning, supersedeWarning].filter(Boolean).join(" ");
+  return { ...result, save_quality: saveQuality, ...(warning ? { warning } : {}) };
 }
 
 // ─── archive_memory (#217 Intake-Adoption) ──────────────────────
@@ -946,448 +750,3 @@ export async function archiveMemoryHandler(
 // der HTTP-Forwarder mcp-forwarder.ts importieren das hier, damit Schema
 // und Description nicht aus dem Sync geraten.
 
-interface ToolDef {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  /** MCP tool annotations. readOnlyHint groups the read tools into the
-   *  bulk-approvable "Read-only tools" permission category in clients like
-   *  Claude Desktop — the one server-side lever against approval friction. */
-  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
-}
-
-/** Read tools: no vault mutation, safe to run unsupervised. */
-const READ_ONLY = { readOnlyHint: true, destructiveHint: false } as const;
-
-export const MEMORY_TOOL_DEFS: ToolDef[] = [
-  {
-    name: "recall",
-    annotations: READ_ONLY,
-    description:
-      "Search the memory vault. Returns top-k matching memorys " +
-      "(id, title, type, scope, summary, score). " +
-      "\n\n" +
-      "WHEN TO CALL (recall is part of acting, not a separate step):\n" +
-      "- At session start (once): query for active-project + " +
-      "user-preferences to load durable context.\n" +
-      "- Before writing/editing a file: query with a description of " +
-      "what you are about to write (e.g. 'creating React input with " +
-      "focus styles'). This catches lessons before mistakes.\n" +
-      "- Before giving a multi-step plan or recommendation: query for " +
-      "preferences that shape format/scope.\n" +
-      "- When the user's prompt touches a topic that may have a stored " +
-      "lesson, decision, preference, or project-fact.\n" +
-      "- Before save_memory: query to avoid creating a duplicate.\n" +
-      "\n" +
-      "WHAT TO DO WITH HITS:\n" +
-      "- score >= ~100 with title/recall_when match: load_memory and " +
-      "apply the lesson before acting.\n" +
-      "- score 30-100: read the summary, load if directly relevant.\n" +
-      "- score < 30: usually noise; skip unless the summary is a " +
-      "perfect topic match.\n" +
-      "Never ignore a `lesson` hit with strong recall_when match.\n" +
-      "On the hybrid (BM25 + vector) path the score is a scaled rank sum, " +
-      "not a similarity — a top hit is high by construction. When the " +
-      "response carries top-level `weak_result: true`, no returned hit has " +
-      "a recall_when or title match: the high scores are likely " +
-      "rank-1-of-nothing, so prefer not to load them.\n" +
-      "\n" +
-      "recall returns lean CANDIDATES (no bodies). This is step 1 of a " +
-      "two-step flow: call load_memory ONLY for the hits you actually " +
-      "need — do not load every hit.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description:
-            "Natural-language query OR a description of what you are " +
-            "about to do (e.g. 'creating new input component', " +
-            "'about to give a multi-option plan').",
-        },
-        k: {
-          type: "number",
-          description: "Max results (default 5, range 1-20).",
-        },
-        scope: {
-          type: "string",
-          description:
-            "Optional exact-match filter, e.g. 'carnexus', " +
-            "'user-preference', 'all-projects'.",
-        },
-        type: {
-          type: "string",
-          description:
-            "Optional exact-match filter on memory type, e.g. 'lesson', " +
-            "'preference', 'project-fact'.",
-        },
-        verbosity: {
-          type: "string",
-          enum: ["lean", "full"],
-          description:
-            "'lean' (default) returns id, title, type, scope, summary, " +
-            "score per hit. 'full' adds matched_terms, mode, hop, " +
-            "topic_path and the stages timing block — for debugging / the " +
-            "Mac-App. Leave unset to keep the context footprint small.",
-        },
-        min_score: {
-          type: "number",
-          description:
-            "Drop hits below this score (default 30). On the hybrid " +
-            "(BM25 + vector) path the score is a scaled reciprocal-rank " +
-            "sum, not a content similarity: the bands describe how much " +
-            "the two arms agree on rank (~164 = rank 1 in both arms, ~82 " +
-            "= rank 1 in one arm only), so a top hit is high by " +
-            "construction and the 30 floor practically only bites in " +
-            "BM25-only mode (no embeddings). Raise it to require stronger " +
-            "rank agreement; see the top-level `weak_result` flag for a " +
-            "no-match signal.",
-        },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "load_memory",
-    annotations: READ_ONLY,
-    description:
-      "Load the content (frontmatter + body) of a single memory by id. " +
-      "Step 2 of the recall flow — call this only for the candidates " +
-      "recall() surfaced that you actually need. Returns essential " +
-      "frontmatter + body by default; pass verbosity:'full' for the raw " +
-      "frontmatter (related_via cosines, source, …).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: {
-          type: "string",
-          description: "Memory id (the slug, no .md extension).",
-        },
-        verbosity: {
-          type: "string",
-          enum: ["lean", "full"],
-          description:
-            "'lean' (default) returns essential frontmatter + body without " +
-            "the auto-related block. 'full' returns the complete frontmatter " +
-            "and raw body — for debugging / the Mac-App.",
-        },
-      },
-      required: ["id"],
-    },
-  },
-  {
-    name: "save_memory",
-    description:
-      "Persist a new memory into the vault as a markdown file with YAML " +
-      "frontmatter. This is YOUR long-term memory — save autonomously " +
-      "when a memory-worthy moment occurs, do not wait to be asked.\n" +
-      "\n" +
-      "STRONG SIGNALS — save without confirmation, then 1-line ack:\n" +
-      "- User expresses repetition/frustration about a recurring issue " +
-      "  ('wieder', 'schon wieder', 'wie oft', emphatic caps) → lesson, " +
-      "  emotion:'frustration', salience:0.8\n" +
-      "- User states an explicit durable rule ('immer X', 'nie Y', 'bei " +
-      "  diesem Projekt nutzen wir Z') → preference / workflow\n" +
-      "- User corrects a recurring tendency in your behavior → " +
-      "  meta-working\n" +
-      "- An architectural decision is finalized after weighing options " +
-      "  → decision\n" +
-      "- User confirms a workflow ('lass uns das immer so machen') → " +
-      "  workflow\n" +
-      "- A bug got fixed after >2 iterations with non-obvious root " +
-      "  cause → lesson (capture the FAILED PATH too, not just the fix), " +
-      "  emotion:'success', salience:0.7\n" +
-      "- User marks something as important ('das ist wichtig', 'merk dir " +
-      "  das gut') → salience:0.9 on the memory you save\n" +
-      "\n" +
-      "VALENCE (#217): salience/emotion mark how emotionally charged the " +
-      "capture moment was — high salience ages slower and may rank higher. " +
-      "Set them ONLY when a capture rule above fires or the user marks " +
-      "importance; never invent them. Omit both for routine saves.\n" +
-      "\n" +
-      "ANTI-SIGNALS — do NOT save:\n" +
-      "- One-off task descriptions ('baue mir bitte X') — that's a " +
-      "  task, not a memory\n" +
-      "- Speculation, 'maybe' statements, tentative ideas\n" +
-      "- Anything derivable from code/git/CLAUDE.md\n" +
-      "- Sensitive personal data (unless a stable preference)\n" +
-      "- When unsure: default to NOT saving. False saves erode trust.\n" +
-      "\n" +
-      "ADMISSION RULES — memories that were true once quietly poison " +
-      "later behavior:\n" +
-      "- NO negative capability claims ('X tool is broken', 'Y does not " +
-      "  work') — they harden into standing refusals that outlive the " +
-      "  problem. If something failed due to setup state, capture the FIX " +
-      "  (install step, config, env var), never the failure as a constraint.\n" +
-      "- NO stale-in-7-days artifacts: task progress, PR numbers, " +
-      "  'phase N done' belong in git/issues, not in memory.\n" +
-      "- Declarative facts, not self-directives: 'User prefers concise " +
-      "  replies' ✓ — 'Always reply concisely' ✗. Imperative phrasing " +
-      "  gets re-read as a directive in unrelated later contexts.\n" +
-      "\n" +
-      "BEFORE SAVING: call recall() with the title/topic to check for " +
-      "an existing memory you should update (overwrite=true) instead " +
-      "of creating a duplicate.\n" +
-      "\n" +
-      "QUALITY BARS:\n" +
-      "- Title: short, specific, non-generic.\n" +
-      "- Summary: one sentence, aim ~250-300 chars, core gist in the first " +
-      "  160 (the lean-recall snippet). Hard cap 400 — over-long is " +
-      "  auto-truncated at a word boundary, never rejected; still keep it short.\n" +
-      "- Body: lead with the rule/fact, then **Why:** (root cause / " +
-      "  reason / incident) and **How to apply:** (when this kicks in). " +
-      "  For lessons, capture the failure path AND the fix.\n" +
-      "- recall_when (CRITICAL — highest-weighted search field): 2-4 " +
-      "  CONCRETE contexts/queries where future-you should be reminded. " +
-      "  'about to write a Tailwind grid' beats 'CSS questions'. Without " +
-      "  good recall_when, the memory is dead weight.\n" +
-      "- Language: author title, summary and recall_when in the user's " +
-      "  primary language (settings language.primary / the injected " +
-      "  <memory-language> block); keep only genuine English tech terms " +
-      "  (daemon, deploy, hook, …) as anchors — this mixed style carries " +
-      "  cross-lingually.\n" +
-      "\n" +
-      "TAXONOMY CONVENTIONS (self-learning vault structure):\n" +
-      "- The vault can teach itself new categories. A convention is a " +
-      "  memory in the reserved scope 'taxonomy' that names a cluster " +
-      "  and fixes its axes: folder, topic_path shape, tags, body shape.\n" +
-      "- BEFORE saving into a recurring cluster (people, places, tools, " +
-      "  …): recall('taxonomy convention <cluster>') — if a convention " +
-      "  exists, FOLLOW it exactly (its folder/topic_path/tags), do not " +
-      "  invent variant tags that fragment recall.\n" +
-      "- When you notice the same ad-hoc cluster for the third time " +
-      "  without a convention, establish one: save a memory with " +
-      "  scope='taxonomy', tag 'convention', body = the rule (axes + " +
-      "  folder + body shape + one example), then apply it. Use the " +
-      "  `folder` arg so members get a real home (e.g. 'memories/people').\n" +
-      "- Re-filing: overwrite=true with a new folder MOVES the memory " +
-      "  (old file goes to the vault trash) — use this to migrate " +
-      "  existing memories under a new convention.\n" +
-      "\n" +
-      "AFTER SAVING: surface a single-line ack to the user, prefixed " +
-      "with `→`: `→ saved: <title> (id: <id>)`. Nothing more.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: {
-          type: "string",
-          description: "Short, specific title (becomes the slug/id).",
-        },
-        type: {
-          type: "string",
-          enum: [
-            "lesson",
-            "preference",
-            "project-fact",
-            "meta-working",
-            "decision",
-            "workflow",
-            "reference",
-            "user-preference",
-          ],
-          description:
-            "Memory type. Use 'lesson' for fixes/gotchas, 'preference' " +
-            "for project-scoped style choices, 'user-preference' for " +
-            "the human's cross-project preferences, 'project-fact' for " +
-            "non-derivable project state, 'decision' for committed " +
-            "design decisions, 'workflow' for recurring procedures.",
-        },
-        summary: {
-          type: "string",
-          description:
-            "One sentence capturing the gist — appears in recall() hits. " +
-            "Aim ~250-300 chars; put the core in the first 160 (shown in lean " +
-            "recall). Over 400 is auto-truncated at a word boundary, never " +
-            "rejected.",
-        },
-        body: {
-          type: "string",
-          description:
-            "Full markdown body. Lead with the rule/fact, then explain " +
-            "*why* (the reason/incident) and *how to apply* (when this " +
-            "kicks in). Wikilinks like [[other-memory-id]] are supported.",
-        },
-        topic_path: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Hierarchical topic path, e.g. ['bastra-recall','search','ranking'].",
-        },
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          description: "Flat tags for filtering, at least one.",
-        },
-        scope: {
-          type: "string",
-          description:
-            "Project/area this memory belongs to, e.g. 'bastra-recall', " +
-            "'carnexus', 'user-preference', 'all-projects'. The scope " +
-            "'taxonomy' is reserved for convention memories (self-learned " +
-            "vault structure rules).",
-        },
-        folder: {
-          type: "string",
-          description:
-            "Optional target folder relative to the vault root (e.g. " +
-            "'memories/people'). Overrides the default scope/type routing — " +
-            "use it when a taxonomy convention assigns this cluster a home. " +
-            "With overwrite=true a changed folder MOVES the memory (old " +
-            "file is trashed, recoverable).",
-        },
-        recall_when: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Trigger phrases — situations where this memory should " +
-            "surface. Highest-weighted search field. Be specific: " +
-            "'about to write a Tailwind grid', not 'CSS questions'.",
-        },
-        related: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optional ids of related memories. Hinweis: `[[id]]`-Wikilinks " +
-            "im body werden automatisch ins related[] gespiegelt — du musst " +
-            "sie hier nicht doppelt aufzählen.",
-        },
-        sensitivity: {
-          type: "string",
-          enum: ["private", "team", "public"],
-          description:
-            "Wer darf das Memory sehen? Default 'team' (lokale KI-Tools). " +
-            "'private' = nur Mac-App (für externe Caller nicht sichtbar).",
-        },
-        valid_until: {
-          type: "string",
-          description:
-            "Explizites Ablaufdatum (YYYY-MM-DD). Überschreibt expires_after_days.",
-        },
-        expires_after_days: {
-          type: "number",
-          description:
-            "Tage nach 'updated', ab denen das Memory altert/expires. " +
-            "Überschreibt den Type-Default (lesson=180, decision=365, …).",
-        },
-        last_reviewed_at: {
-          type: "string",
-          description:
-            "ISO-Datum des letzten 'noch aktuell'-Checks. Resetet Staleness.",
-        },
-        affects_files: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optionale Liste von Repo-Pfaden, die diese Lesson/Decision betrifft.",
-        },
-        issues: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Optionale Liste verknüpfter Issue-IDs (z.B. '#42').",
-        },
-        source: {
-          type: "string",
-          description:
-            "Optional provenance, e.g. 'Daniel, 2026-05-01 after retro'.",
-        },
-        confidence: {
-          type: "number",
-          description:
-            "0-1, default 1. Lower if the lesson is tentative.",
-        },
-        salience: {
-          type: "number",
-          description:
-            "0-1 (#217): how emotionally charged the capture moment was. " +
-            "Set ONLY when a capture rule fires (frustration 0.8, hard-won " +
-            "fix 0.7, 'merk dir das gut' 0.9). High salience ages slower. " +
-            "Omit for routine saves. On overwrite without this field, the " +
-            "existing value is preserved.",
-        },
-        emotion: {
-          type: "string",
-          enum: ["frustration", "success", "risk", "neutral"],
-          description:
-            "Tone of the capture moment (#217): 'frustration' (recurring " +
-            "pain), 'success' (hard-won fix), 'risk' (near-miss / danger), " +
-            "'neutral'. Only alongside salience. On overwrite without this " +
-            "field, the existing value is preserved.",
-        },
-        recall_mode: {
-          type: "string",
-          enum: ["reflex", "deliberate"],
-          description:
-            "#217: 'reflex' lets this memory self-inject (budgeted) when a " +
-            "recall_when trigger hard-matches a prompt — set 'reflex' ONLY " +
-            "after the user explicitly confirmed a promotion, never " +
-            "autonomously. Absent = 'deliberate'. On overwrite without this " +
-            "field, the existing value is preserved.",
-        },
-        id: {
-          type: "string",
-          description:
-            "Optional explicit id/slug. Default: slugified title.",
-        },
-        overwrite: {
-          type: "boolean",
-          description:
-            "If true, replace an existing memory with the same id. " +
-            "Default false (errors on collision).",
-        },
-        write_origin: {
-          type: "string",
-          enum: ["user-directed", "agent-session", "capture-review"],
-          description:
-            "Provenance (#158): set 'user-directed' ONLY when the human " +
-            "explicitly asked to remember this ('merk dir das') — such " +
-            "memories are exempt from automated lifecycle passes (curator, " +
-            "consolidation). Omit otherwise: 'agent-session' is the default " +
-            "for autonomous saves. On overwrite without this field, the " +
-            "existing provenance is preserved.",
-        },
-      },
-      required: [
-        "title",
-        "type",
-        "summary",
-        "body",
-        "topic_path",
-        "tags",
-        "scope",
-        "recall_when",
-      ],
-    },
-  },
-  {
-    name: "archive_memory",
-    annotations: { readOnlyHint: false, destructiveHint: true },
-    description:
-      "Move a memory into the vault trash (recoverable — never a hard " +
-      "delete). This is the closing step of INTAKE ADOPTION: after an " +
-      "imported intake memory has been converted into a full-format memory " +
-      "(save_memory with real type/scope/recall_when and source: " +
-      "\"migrated:<label>:<original-id>\"), archive the original so the " +
-      "intake area shrinks and the vault holds ONE canonical version. " +
-      "Pass superseded_by with the new memory's id — it is stamped into " +
-      "the archived copy so the adoption stays auditable from both sides. " +
-      "Do NOT use this as a general delete: only archive intake originals " +
-      "you just adopted, or a memory the user explicitly asked to retire.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: {
-          type: "string",
-          description: "Id of the memory to archive (the intake original).",
-        },
-        superseded_by: {
-          type: "string",
-          description:
-            "Id of the full-format memory that replaces it — stamped into " +
-            "the archived copy (obsolete: true, superseded_by) for audit.",
-        },
-      },
-      required: ["id"],
-    },
-  },
-];
