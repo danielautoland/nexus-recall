@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the whole skill, and the copy that ships inside the npm package is
   regenerated on every build instead of by hand (it had drifted three edits
   behind). Prerequisite for splitting the skill. (#232)
+- **The skill got half its size back.** Its instructions had grown to the point
+  where a third of them repeated what the tool descriptions already say on
+  every turn — and every duplicated rule dilutes compliance with all the
+  others. The core is now triggers only, half as long, and the mechanics live
+  where they are read: in the tool descriptions, at the point of use. Four
+  subsystems that fire on a minority of turns — project topology, establishing
+  a convention, adopting imported memories, Commons — moved into reference
+  files the assistant opens when their moment arrives, and each gate now names
+  its own file so the pointer arrives with the signal instead of sitting in
+  context all day. (#232)
 
 ### Fixed
 

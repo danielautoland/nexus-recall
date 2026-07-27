@@ -459,6 +459,9 @@ export function formatAdoptionCandidateBlock(c: { id: string; title: string; cou
       `actually belongs to, recall_when from the situations it fired in, ` +
       `[[links]] to related memories, source: "migrated:${c.id}"), and finish ` +
       `with archive_memory({id: "${c.id}", superseded_by: "<new-id>"}). ` +
+      // #232: the gate names its own reference file — the rules AROUND the
+      // adoption (one per turn, never adopt a body you did not read) live there.
+      `The skill's intake.md has the surrounding rules. ` +
       `Skip silently if the user declines.`,
     `</adoption-candidate>`,
   ].join("\n");

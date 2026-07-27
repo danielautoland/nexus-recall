@@ -5,11 +5,13 @@ description: Persistent external brain for Claude — documents (PDFs, contracts
 
 # bastra-recall — autonomous teammate memory
 
-You have a persistent memory across sessions via the `bastra-recall` MCP server (tools: `recall`, `load_memory`, `save_memory`). Treat it as YOUR own long-term memory, not as a tool the user has to invoke.
+You have a persistent memory across sessions via the `bastra-recall` MCP server. Treat it as YOUR own long-term memory, not as a tool the user has to invoke.
 
 The single success metric: **the user does not have to think for you anymore.** Recurring mistakes don't recur. Stable preferences don't get re-stated. Project facts don't get re-discovered.
 
-**Reflex order — RECALL first.** Most of this document is about *capturing* (save signals, taxonomy, people, commons). That page-count is misleading: the highest-frequency, highest-cost failure is the opposite one — skipping recall and re-deriving what the vault already holds. So the first reflex on every turn is RECALL: before acting, before any other lookup tool, and before the save/convention machinery below. When you're unsure whether a recall is worth it, recall. The capture sections matter, but they never outrank getting the right memory in front of you first.
+**This file is triggers — WHEN to reach for the vault.** The mechanics of each call (score bands, valence params, quality bars, admission rules) live in the tool descriptions, at the point of use. Anything not covered here is covered there.
+
+**Reflex order — RECALL first.** The highest-frequency, highest-cost failure is skipping recall and re-deriving what the vault already holds. So the first reflex on every turn is RECALL: before acting, before any other lookup tool, and before the capture machinery below. When you're unsure whether a recall is worth it, recall.
 
 ---
 
@@ -20,42 +22,34 @@ Call `recall(query, k=5)` proactively in these moments:
 | Moment | Query shape |
 |---|---|
 | **Session start** (once per session) | `"<project name> preferences user-preference active context"` — preloads durable context |
-| **Before writing/editing a file** | `"writing <filetype> at <path>, contains <topics>"` — catches lessons before mistakes (e.g. CSS pitfalls, schema rules) |
-| **Before a new coding block / plan in a feature area** | `"<project> <feature/area> current state files architecture"` — surfaces which files are relevant + what's already built (see Project topology below) |
+| **Before writing/editing a file** | `"writing <filetype> at <path>, contains <topics>"` — catches lessons before mistakes |
+| **Before a new coding block / plan in a feature area** | `"<project> <feature/area> current state files architecture"` — which files matter, what's already built (→ `topology.md`) |
 | **Before a multi-step plan or recommendation** | `"giving plan/recommendation for <topic>"` — surfaces format preferences |
 | **Before asserting a number, a measurement or project history** in text meant for anyone else — a reply, release notes, a changelog entry, an issue comment, docs | the claim itself: `"<project> <what is being claimed> measured"` |
-| **User asks for retrieval / lookup** ("find...", "where is...", "how much was...", "when did...", "do I have a...", "such mal meinen...") | the prompt itself + direct nouns — ALWAYS try `recall` and `find_document` **before** any other search tool (conversation_search, web_search) |
+| **User asks for retrieval / lookup** ("find...", "where is...", "how much was...", "when did...", "do I have a...", "such mal meinen...") | the prompt itself + direct nouns — ALWAYS before any other search tool |
 | **User prompt touches a stored topic** | the prompt itself, optionally with project context |
 | **Before `save_memory`** | the title/topic — duplicate check |
 
-`recall` is **step 1 of two**: it returns lean candidates (`id, title, type, scope, summary, score`) — no bodies. Spend the `summary` + `score` to decide, then call `load_memory(id)` as **step 2 only for the candidates you actually need**. Loading every hit defeats the point and burns context. (Need the debug fields — `matched_terms`, `mode`, `hop`, `topic_path`, stage timings? Pass `verbosity: "full"`.)
+`recall` is **step 1 of two**: it returns lean candidates, no bodies. Spend the `summary` + `score` to decide, then `load_memory(id)` only for the ones you actually need — loading every hit burns context for nothing. Never ignore a `lesson` hit that matched on `recall_when` or title. Don't reload a memory you already loaded this turn. (Score bands and the `weak_result` / `no_home` signals: `recall` tool description.)
 
-What to do with hits (interpret the score — hybrid scores are rank-agreement magnitudes, not content similarity; a top-level `weak_result: true` in the response means nothing really matched):
-
-- **Score ≥ ~100 with `recall_when` or title match** → call `load_memory(id)` and apply the lesson **before** writing code or responding. Never ignore a `lesson` hit at this band.
-- **Score 30–100** → read the summary; load only if directly relevant.
-- **Below ~30** → noise in BM25-only mode, where `recall` drops it at the default floor. On the hybrid path (embeddings on) that floor practically never fires — the score is a rank sum, so a hit would need roughly rank 273 in *both* arms to fall under it. There, `weak_result` is the signal that nothing anchored, and `no_home` the stricter one that the fact has no home in the vault at all.
-
-Idempotent: don't reload a memory you've already loaded this turn.
-
-**Claims that leave the machine are the strictest case.** A number, a measurement, a date or a piece of project history that goes into a reply, release notes, a changelog, an issue comment or documentation is quoted back later — so it gets recalled first, every time, no matter how confident the recollection feels. If the vault does not answer the claim, **write that you don't know**; do not assert it from model memory and do not soften it into a hedge that reads like knowledge. The lane exists because this is the one case with no safety net: no file is edited, so nothing else fires.
+**Claims that leave the machine are the strictest case.** A number, a measurement, a date or a piece of project history that goes into a reply, release notes, a changelog, an issue comment or documentation gets quoted back later — so it gets recalled first, every time, no matter how confident the recollection feels. If the vault does not answer the claim, **write that you don't know**; do not assert it from model memory, and do not soften it into a hedge that reads like knowledge. This is the one case with no safety net: no file is edited, so nothing else fires.
 
 ### Tool priority for retrieval
 
-When the user asks about anything personal, factual, historical, or document-shaped ("find my X", "where is my Y", "how much was Z", "when did I …", "do I have a …", "such mal meinen …"), try the vault **first**. Order:
+When the user asks about anything personal, factual, historical, or document-shaped, try the vault **first**:
 
-1. **`bastra-recall:recall`** — memories, lessons, decisions, project facts, personal facts.
-2. **`bastra-recall:find_document`** — PDFs, scans, OCR'd content (documents in the vault). Same two-step discipline as recall: `find_document` returns lean candidates; call **`read_document(id)`** as step 2 only for the hits you actually need — it returns the document's full text/OCR content.
+1. **`recall`** — memories, lessons, decisions, project facts, personal facts.
+2. **`find_document`** — PDFs, scans, OCR'd content. Same two-step discipline: lean candidates first, then `read_document(id)` for the ones you need.
 3. **`conversation_search`** — chat history. Fallback only.
 4. **`web_search`** — external info. Last resort for personal queries.
 
-Skipping straight to `conversation_search` or `web_search` on a "find my …" query is the #1 failure mode this skill is meant to prevent. The vault is the canonical store; if it's there, `recall` / `find_document` will find it.
+Skipping straight to `conversation_search` or `web_search` on a "find my …" query is the #1 failure mode this skill exists to prevent. The vault is the canonical store; if it's there, `recall` / `find_document` will find it.
 
 ---
 
 ## When to SAVE — autonomous, no permission asked
 
-### STRONG signals — fire `save_memory` immediately, then 1-line ack
+### STRONG signals — fire `save_memory` immediately, then a one-line ack
 
 | Signal | German cue | Memory `type` |
 |---|---|---|
@@ -64,14 +58,14 @@ Skipping straight to `conversation_search` or `web_search` on a "find my …" qu
 | Correction of a recurring tendency | "du denkst zu kompliziert bei CSS", "halt einfacher" | `meta-working` |
 | Architectural decision finalized after weighing options | "ok, dann nehmen wir Drizzle" | `decision` |
 | Workflow confirmation | "super, lass uns das immer so machen" | `workflow` |
-| Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too, not just the fix) + `emotion: success`, `salience: 0.7` |
-| User marks something as important | "das ist wichtig", "merk dir das gut" | `salience: 0.9` on the memory being saved |
-| **Feature / coding block completion** (multi-file feature done, sub-system stabilized, refactor finalized, issue closed with code) | — | `project-fact` (see Project topology below) |
-| **Substantive exchange with a person/contributor** (Discord / dev.to / GitHub thread — not one-liners or acks) | — | split: identity → `memories/people`, content → `project-fact` |
+| Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too) + `emotion: success`, `salience: 0.7` |
+| User marks something as important | "das ist wichtig", "merk dir das gut" | `salience: 0.9` |
+| **Feature / coding block completion** (multi-file feature done, sub-system stabilized, refactor finalized, issue closed with code) | — | `project-fact` → `topology.md` |
+| **Substantive exchange with a person/contributor** (Discord / dev.to / GitHub — not one-liners) | — | identity → `taxonomy.md`, content → `project-fact` |
 
-**Valence (#217):** `salience` (0–1) + `emotion` (`frustration` | `success` | `risk` | `neutral`) record how emotionally charged the capture moment was — the same signals that already *trigger* a save now get *stored*. High salience ages slower and may rank higher. Set them ONLY when a rule above fires or the user marks importance; never invent them, omit both for routine saves.
+Set `salience`/`emotion` ONLY when a row above fires or the user marks importance — never invent them.
 
-After a real back-and-forth with a contributor lands (not a trivial reply): memorize it autonomously on **two rails**. (1) **Identity** — update the person's canonical memo: one memory per handle, `folder: memories/people`, deduped with `[[wikilinks]]` (the People convention below). (2) **Content** — save the exchange's substance + any decisions as a `project-fact` (a project-scoped fact routes to `memories/projects/<project>/` by default) that links the person via `[[handle]]`. Before propagating any code claim a contributor makes, **verify it against HEAD** — never write an unverified assertion into memory.
+After a real back-and-forth with a contributor lands, memorize it on **two rails**: identity into the person's one canonical memo (`taxonomy.md`), content and decisions as a `project-fact` that links the person via `[[handle]]`. Before propagating any code claim a contributor makes, **verify it against HEAD** — never write an unverified assertion into memory.
 
 ### ANTI-signals — do NOT save
 
@@ -81,184 +75,40 @@ After a real back-and-forth with a contributor lands (not a trivial reply): memo
 - Sensitive personal data unless it's a stable preference.
 - **When in doubt: do NOT save.** False saves erode trust faster than missed saves.
 
-### Admission rules — memories that were true once quietly poison later behavior
-
-- **No negative capability claims** ("X tool is broken", "Y does not work") — they harden into standing refusals that keep surfacing long after the problem was fixed. If something failed due to setup state, capture the **fix** (install step, config, env var), never the failure as a constraint.
-- **No stale-in-7-days artifacts**: task progress, PR numbers, "phase N done" belong in git/issues, not in memory.
-- **Declarative facts, not self-directives**: "User prefers concise replies" ✓ — "Always reply concisely" ✗. Imperative phrasing gets re-read as a directive in unrelated later contexts.
-
-### A fact that changed — supersede, don't archive
-
-When a memory is still about the same thing but the fact in it changed, save the
-new version with `replaces: <old-id>`. The old one stays in the vault and stays
-loadable — it becomes a previous version, not a deleted one, and both memories
-record the link. Use this for a corrected fact, a moved path, a decision that was
-revised.
-
-Not for a memory that is merely related — link those with `[[wikilinks]]`. And
-not for one that should go away entirely; that is `archive_memory`.
+Two failure modes that outlive their cause, both spelled out in the `save_memory` description: **negative capability claims** ("X is broken") harden into standing refusals — capture the fix instead; and **stale-in-7-days artifacts** (task progress, PR numbers, "phase N done") belong in git and issues, not in memory.
 
 ### Before saving
 
-Always `recall()` with the title/topic first — if a near-duplicate exists, update it (`overwrite=true`) instead of creating a new one.
+Always `recall()` the title/topic first. If a near-duplicate exists, update it with `overwrite=true` instead of creating a second one. If the fact itself *changed*, save the new version with `replaces: <old-id>` — the old one stays loadable as a previous version. Merely related? That's a `[[wikilink]]`, not a supersede.
 
-### Quality bars (every save)
-
-- **Title** — short, specific, non-generic.
-- **Summary** — one sentence with the gist; aim ~250–300 chars, core in the first 160 (the lean-recall snippet). Hard cap 400 — auto-truncated if over, never rejected, so keep it short.
-- **Body** — lead with the rule/fact, then `**Why:**` (root cause / reason / incident) and `**How to apply:**` (when this kicks in). For lessons, capture the failure path **and** the fix.
-- **`recall_when`** (CRITICAL — highest-weighted search field) — 2–4 *concrete* trigger phrases. *"about to write a Tailwind grid"* beats *"CSS questions"*. Without good `recall_when`, the memory is dead weight. **Never paste the summary in here.** It is indexed at weight 5 while the summary is already indexed at weight 2, so a copy spends the strongest field on text that is covered anyway — measured on a real vault, rewriting summary-copies into distinct triggers raised recall@5 from 0.457 to 0.565 *and* made the notes smaller. Write the situation, not the content.
-- **Language** — author `title`, `summary` and `recall_when` in the user's primary language (settings `language.primary`); keep only genuine English tech terms (daemon, deploy, hook) as anchors — the mixed style carries cross-lingually.
-- **`verify_cmd`** (optional, for `project-fact` only) — a short command that would prove the claim (`test -f path/to/file.ts`, `curl -s localhost:6723/health`). Facts about the world age silently into false statements; an anchor lets a later session check instead of trusting. Nothing runs it automatically — it is shown to whoever loads the memory. Skip it when the claim is not checkable by one command.
-- **`salience` / `emotion`** — only when a capture rule fires (frustration 0.8, hard-won fix 0.7, "merk dir das gut" 0.9); never invent them. `recall_mode: "reflex"` only after the user explicitly confirmed a promotion — never autonomously.
+The quality bars for every field — title, summary length, `recall_when` authoring, language, `verify_cmd` — are in the `save_memory` tool description. Follow them there.
 
 ### After saving — ack format
 
-Surface a single line, prefixed with `→`, then continue with the actual task:
+One line, prefixed with `→`, then continue with the actual task:
 
 ```
 → saved: <title> (id: <id>)
 ```
 
-Nothing more. The user can ignore, correct (*"nein, das war anders"* → update the memory), or delete.
+Nothing more. The user can ignore it, correct it, or delete it.
 
 ---
 
-## Intake adoption — imported memories earn their structure on use
+## Reference files — read on the signal, not every turn
 
-Foreign memories imported via `bastra import vault` land in an isolated intake area (`memories/imported/<label>/`, scope = the import label, tag `imported`, `topic_path` starting with `imported`). They are findable but carry only transcribed metadata — no real `recall_when`, no relations. The missing semantics get minted at the one moment they exist for free: **when the memory is actually used**.
+Four subsystems fire rarely and carry their own instructions. Each names the moment it becomes relevant; until then, ignore them.
 
-- **Adopt on touch:** when a recall hit from the intake area genuinely helps the current task, adopt it right then: `save_memory` a full-format version (real `type`, the scope it actually belongs to, `recall_when` built from the trigger that just fired, `[[links]]` to the memories it connects with, `source: "migrated:<original-id>"`), then `archive_memory({id: <original>, superseded_by: <new-id>})`. Max **one** adoption per turn — never interrupt the task for bulk work.
-- **Pre-save duplicate check:** if the near-duplicate that recall surfaces before a save is an intake memory, adopt-merge it instead of creating a parallel new memory next to an unadopted twin.
-- **Guided import (companion mode):** right after an import — or whenever the user wants to work through the intake — READ the actual bodies in tranches and adopt them together with the user. Never write adopted metadata for a body you did not read.
-- **Bulk on request:** only when the user explicitly asks, walk the whole intake queue in one sitting (same per-memory rules, user stays in the loop).
-- `<adoption-candidate>` blocks injected at session start are the curator flagging intake memories with repeated use — handle them with the same flow, with the user's ok.
+| Read | When |
+|---|---|
+| `topology.md` | A coherent piece of work just landed — or you're about to start in an area you haven't touched this session. |
+| `taxonomy.md` | A recurring cluster has no home yet, you're re-filing memories, or you're saving anything about a person. |
+| `intake.md` | A recall hit comes from `memories/imported/`, right after `bastra import vault`, or an `<adoption-candidate>` block appears. |
+| `commons.md` | A recall hit carries `scope: commons`, or the user asks about sharing, contributing or bridges. |
 
-Originals go to the vault trash (recoverable, `superseded_by`-stamped) — every adoption stays auditable from both sides. `archive_memory` is NOT a general delete: only intake originals you just adopted, or a memory the user explicitly retires.
+**Applying** an active convention needs none of them: the `<vault-taxonomy>` block injected at session start lists the vault's self-learned conventions, and they are BINDING. Follow a listed convention's `folder`/`topic_path`/`tags` exactly rather than inventing variant tags that fragment recall. Only *establishing* a new one sends you to `taxonomy.md`.
 
----
-
-## Project topology — feature state in memory
-
-Beyond lessons and decisions, the vault also serves as a **living map of what was built when, in which files, by which decisions**. Every time a coherent piece of work lands (a feature complete, a refactor finalized, a sub-system stabilized), capture it as a `project-fact` memory — so future-you knows the layout without re-reading every file. This is the OSS-side foundation for codebase indexing: the vault carries the *what + where + why*; the actual code stays in git.
-
-### When to save a topology / feature-state fact
-
-After ANY of these events:
-
-- A feature is functionally complete (PR-ready, works end-to-end).
-- A multi-file refactor is done.
-- A sub-system stabilized (e.g. „the daemon HTTP layer now owns auth + CORS + REST tools").
-- An architectural decision was applied in code (after the `decision` memory is saved, add a `project-fact` describing where it landed).
-- An issue is closed with code changes.
-
-### What to save
-
-Memory `type: project-fact`. Body should answer:
-
-- **What** — one sentence what this feature/area does.
-- **Where** — concrete file paths in `path/to/file.ts:42` format for key entry points.
-- **How it connects** — which other features/files/memories it interacts with (use `[[memory-id]]` wikilinks).
-- **Status** — when was it last touched, what's the current shape, what's deliberately not (yet) done.
-
-Title shape: `<project> — <area>: <what was just landed>` (e.g. `bastra-recall — cli: install/uninstall/doctor/update for all surfaces`).
-
-### When to recall topology
-
-Before starting a new coding block, plan, or recommendation in an area you haven't touched in this session — and before quoting which files matter for a feature:
-
-```
-recall("<project> <area> files structure current state", k=5)
-```
-
-If `project-fact` hits come back with score ≥ 50, `load_memory` them. They tell you which files matter without grepping. If no hits exist for the area yet — it's an undocumented space; once you build something there, save the new map.
-
-### Refresh, don't duplicate
-
-When you complete the **next** version of a feature you already have a topology memory for, **update** the existing one with `overwrite=true` (same id). Don't create `feature-v2`, `feature-final`. Refresh the same node so the map stays current.
-
----
-
-## Product docs — user-facing documentation (opt-in)
-
-Separate from topology: the vault can also hold **product documentation** — living, user-facing docs ("how do I use this?") per project, in `dokumentationen/<project>/`. This is OFF by default; when the user enables it (`bastra config set docs.mode suggest|auto`), the session hook injects a `<bastra-product-docs>` block with the active instructions — follow that block.
-
-The shape, in one breath: when a user-facing feature area is **completely finished**, create/update its doc via the `save_product_doc` tool — one doc per area, stable id, the body you send replaces the previous one (read the existing doc first, send the complete updated markdown). Written for the END USER: features, usage, tips, quirks — no code internals, no file paths. Developer state stays in `project-fact` memories.
-
-No injected block = the feature is off = don't write product docs on your own.
-
----
-
-## Self-learning taxonomy — let the vault grow its own structure
-
-The vault can teach itself new categories on the free axes (`folder`,
-`topic_path`, `tags`) — the closed `type` enum stays untouched. A **convention**
-is a memory in the reserved scope `taxonomy` (tag `convention`) that fixes how a
-recurring cluster is stored: its folder, topic_path shape, tags, and body shape.
-Active conventions arrive at session start in a `<vault-taxonomy>` block.
-
-### Apply (always)
-
-Before saving into a recurring cluster (people, places, tools, …): check the
-injected conventions — or `recall("taxonomy convention <cluster>")`. If one
-covers the cluster, **follow it exactly** (its `folder`/`topic_path`/`tags`).
-Never invent variant tags for a covered cluster; that fragments recall.
-
-### Establish (when a cluster recurs without a home)
-
-Establish a convention the moment a recurring cluster becomes clear — the same
-ad-hoc cluster for the third time, a `<taxonomy-drift>` suggestion from the stop
-hook, **or the conversation itself signalling a recurring domain** (the user
-scans a stack of invoices → an `accounting`/`buchhaltung` home; introduces
-several people → `people`; collects recipes, places, contracts → their own
-homes). Don't wait for the look-alike memories to pile up unfiled: when the
-context signals a recurring kind, create the home folder **proactively** and
-file new items into it from the start. To establish one:
-
-1. `save_memory` with `scope: "taxonomy"`, `type: "workflow"`, tags
-   `["convention", "<cluster-key>"]`, body = the rule (folder, topic_path
-   shape, tags, body shape, one worked example).
-2. Apply it immediately to the memory you were about to save (use the
-   `folder` arg so members get a real home, e.g. `memories/people`).
-3. Re-file existing members: `save_memory` with `overwrite: true` + the
-   convention's `folder` **moves** a memory (old file goes to the vault
-   trash, recoverable). Split collection memos into one-memory-per-entity
-   while you're at it, and link them with `[[wikilinks]]` instead of
-   restating their story.
-
-### People — one canonical memo per person, content links in by id
-
-A person has exactly **one** canonical memo: `save_memory` with `folder:
-memories/people`, `topic_path: [people, <handle>]`, `type: project-fact`, tag
-`person`. Set `id: <handle>` explicitly — the body wikilinks below resolve
-against the memory **id**, so the id must be the handle, not the slugified
-title. Pass `folder` explicitly so it routes there regardless of active scope.
-That memo holds **identity only**: handle, real name, role/relationship,
-contacts/handles, first-seen, trust signals, a high-level interaction overview.
-
-Content lives elsewhere. Technical conversations, decisions, measurements go
-under the project's scope and link back with `[[<handle>]]` (which mirrors into
-`related[]`) — they never restate who the person is.
-
-A **second** person memo is justified only when the person holds a distinct
-standing role across projects (architecture peer in one, partnership candidate
-in another): the project memo links **up** to the canonical `memories/people`
-memo via `[[<handle>]]` and carries only the project-specific relationship.
-Identity stays in the one canonical memo.
-
-Conventions are living rules: refresh with `overwrite=true`, never fork a
-`-v2`. For bulk re-filing (>5 memories at once), tell the user what you're
-about to move first.
-
----
-
-## Commons — sharing memories beyond your vault (opt-in)
-
-Bastra Commons is a separate, **opt-in, default-OFF**, PR-gated public Git repo of community-proven engineering recipes — **not** your private vault. `bastra commons enable` clones it read-only to `~/.bastra/commons`; the daemon then fuses its hits into `recall` under `scope: commons`, ranked just **below** your personal memories (on an id collision the personal hit wins). The daemon **never writes** the clone — all sharing is via reviewed PRs, never auto-egress.
-
-Your memories never leave the machine. The only things ever shared are deliberately-authored recipes, your `works`/`fails` verification records, and (when enabled, `bastra bridges enable`) **scrubbed bridges** — language-tagged `trigger_terms → expansion_terms` lists that carry **no memory id, no body, no vault content**. The scrub drops digits, paths, emails, snake_case and hashes; the PR review gate is the real privacy guarantee.
-
-Never `save_memory` into the commons and never treat a `scope: commons` recipe as your own state. Details: `docs/commons.md`.
+**Product docs** are OFF by default. When enabled, the session hook injects a `<bastra-product-docs>` block carrying its own complete instructions — follow that block. No block means the feature is off; never write product docs on your own.
 
 ---
 
@@ -267,3 +117,7 @@ Never `save_memory` into the commons and never treat a `scope: commons` recipe a
 - If you load a memory and apply it, you don't need to mention it unless asked. Just behave correctly. Silence is the best compliment to a working memory.
 - Never ask permission for a strong-signal save — that defeats the purpose.
 - Never narrate "I'm going to call recall now" — just call it.
+
+---
+
+**Meta-rule against regrowth:** new *mechanics* go into the tool description, where they are read at the point of use. Only a new *trigger* — a new moment to reach for the vault — earns a line in this file.

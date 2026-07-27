@@ -104,7 +104,7 @@ runtime assets such as the packaged Skill or statusline bundle.
 packages/
   core/       Vault parsing, search index, save logic — no I/O surface
   daemon/     MCP server, HTTP REST, hooks, `bastra` CLI
-  skill/      SKILL.md installed into ~/.claude/skills/
+  skill/      SKILL.md + its reference files, installed into ~/.claude/skills/
 distribution/
   homebrew/   Brew formula (head-only)
   Install Bastra.command   Double-click installer

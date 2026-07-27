@@ -606,6 +606,11 @@ function formatTaxonomyBlock(conventions: ConventionLean[]): string {
     `Follow the convention's folder/topic_path/tags exactly (load_memory(id) for the full rule) ` +
     `instead of inventing variant tags that fragment recall:\n` +
     lines.join("\n") +
+    // #232: the gate carries the read-hint for its own reference file. Applying
+    // a listed convention needs nothing extra; establishing a new one does, and
+    // this block is the only moment that distinction is visible.
+    `\nSaving into a recurring cluster that NO convention above covers is the ` +
+    `establish case — read the skill's taxonomy.md before inventing a home for it.` +
     `\n</vault-taxonomy>`
   );
 }
