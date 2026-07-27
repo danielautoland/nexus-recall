@@ -335,7 +335,7 @@ export function createOrbitView(deps) {
         .slice(0, MAX_PLANETS);
       if (sats.length < 2) continue;
       claimed.add(sun.id);
-      const local = spiralLocal(discR, claimed.size * 7 + seed, 0.25 + rnd(seed + claimed.size, 31) * 0.55, dwarf);
+      const local = spiralLocal(discR, claimed.size * 7 + seed, 0.25 + rnd(seed + claimed.size, 31) * 0.55, dwarf, spin);
       universe.disc.set(sun.id, { center, ring, basis, ...local, spin });
       const rings = [];
       sats.forEach((p, pi) => {
@@ -356,19 +356,37 @@ export function createOrbitView(deps) {
     const field = members.filter((n) => !claimed.has(n.id));
     field.forEach((n, i) => {
       const t = (i + 0.5) / field.length;
-      const local = spiralLocal(discR, i + seed, t, dwarf);
+      const local = spiralLocal(discR, i + seed, t, dwarf, spin);
       universe.disc.set(n.id, { center, ring, basis, ...local, spin });
     });
   }
 
-  function spiralLocal(discR, i, t, dwarf) {
+  /** #283 — the arm winding has to be mirrored with the disc's spin sign.
+   *
+   *  Real spiral galaxies have TRAILING arms: the outer tips lag behind the
+   *  rotation, they never lead it. So the winding and the rotation must move
+   *  the angle in OPPOSITE directions — same sign is "leading arms", which
+   *  reads as the galaxy turning backwards.
+   *
+   *  The winding used to be a fixed `+t * 3.6` for every disc while `spin`
+   *  (:254) is a per-cluster coin flip, so roughly half of any vault's
+   *  galaxies rendered leading arms. Forcing one spin sign would fix the
+   *  physics and break the variety — real galaxies appear both ways from our
+   *  viewpoint — so the sign stays random and the winding follows it.
+   *
+   *  `worldPos` rotates by `+spin * tSec` (counter-clockwise for spin > 0), so
+   *  trailing means the angle must DECREASE with radius there: winding = -sign(spin).
+   */
+  function spiralLocal(discR, i, t, dwarf, spin) {
     if (dwarf) {
+      // Phyllotaxis scatter, no arms — nothing to contradict the rotation.
       const angle = i * GOLDEN;
       const radius = discR * Math.sqrt(t) * (0.8 + rnd(i, 59) * 0.3);
       return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: (rnd(i, 53) - 0.5) * discR * 0.3 };
     }
+    const windingSign = spin < 0 ? 1 : -1;
     const arm = i % 2;
-    const angle = t * 3.6 + arm * Math.PI + (rnd(i, 43) - 0.5) * 0.65;
+    const angle = windingSign * t * 3.6 + arm * Math.PI + (rnd(i, 43) - 0.5) * 0.65;
     const radius = discR * (0.12 + 0.88 * t) * (0.86 + rnd(i, 47) * 0.28);
     return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, z: (rnd(i, 53) - 0.5) * discR * 0.22 };
   }

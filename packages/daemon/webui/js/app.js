@@ -1,15 +1,18 @@
-/** Bootstrap: load the graph, wire theme/search/inspector/panel, run the
- *  render loop. Theme default follows prefers-color-scheme; the toggle
- *  persists to localStorage and re-reads the --map-* palette so the canvas
- *  recolors with the chrome. */
+/** Bootstrap: load the graph, wire the managers together, hand off to the
+ *  render loop. This file owns only what more than one manager needs — the
+ *  view/structure state, the selection, and the view switch. Everything with
+ *  a boundary of its own lives in `managers/` or `boot/`. */
 
-import { fetchGraph, fetchAnnotations, postAnnotation, fetchSemanticSearch, fetchNode, clusterHues, clusterColor, nodeRadius } from "./graph-data.js";
+import { fetchGraph, fetchAnnotations, postAnnotation, fetchSemanticSearch, clusterHues } from "./graph-data.js";
 import { createSimulation } from "./simulation.js";
 import { createRenderer } from "./renderer.js";
 import { createInteractions } from "./interactions.js";
 import { createInspector } from "./inspector.js";
 import { createSearch } from "./search.js";
 import { createMinimap } from "./minimap.js";
+import { applyStoredTheme, createTheme } from "./boot/theme.js";
+import { createRenderLoop } from "./boot/render-loop.js";
+import { createLiveNodes } from "./live-nodes.js";
 import { createRingView } from "./managers/ring-view.js";
 import { createSemanticView } from "./managers/semantic-view.js";
 import { createOrbitView } from "./managers/orbit-view.js";
@@ -23,14 +26,13 @@ import { createBoltDemo } from "./managers/bolt-demo.js";
 import { createViewControls } from "./managers/view-controls.js";
 import { createWeather } from "./managers/weather.js";
 import { createWeatherChip } from "./managers/weather-chip.js";
+import { createDrillSwitcher } from "./managers/drill-switcher.js";
+import { createContextMenu } from "./managers/context-menu.js";
 
 const $ = (sel) => document.querySelector(sel);
 
-// ── theme ────────────────────────────────────────────────────────
-const THEME_KEY = "bastra-vault-map-theme";
 const root = document.documentElement;
-const stored = localStorage.getItem(THEME_KEY);
-root.dataset.theme = stored ?? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+applyStoredTheme(root);
 
 async function main() {
   const canvas = $("#map");
@@ -72,23 +74,15 @@ async function main() {
     }, 400);
   }
 
-  const themeSL = () => {
-    const s = getComputedStyle(root);
-    return [s.getPropertyValue("--map-node-sat").trim(), s.getPropertyValue("--map-node-light").trim()];
-  };
-  let [sat, light] = themeSL();
-  const colorOf = (n) =>
-    n.kind === "ghost"
-      ? getComputedStyle(root).getPropertyValue("--map-ghost").trim()
-      : clusterColor(hues, n.cluster, sat, light);
-
-  $("#theme-toggle").addEventListener("click", () => {
-    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
-    localStorage.setItem(THEME_KEY, root.dataset.theme);
-    renderer.refreshTheme();
-    [sat, light] = themeSL();
-    panels.renderLegend(); // legend dots follow the theme's ink
+  const theme = createTheme({
+    root,
+    toggle: $("#theme-toggle"),
+    renderer,
+    getHues: () => hues,
+    onChange: () => panels.renderLegend(), // legend dots follow the theme's ink
   });
+  const { colorOf } = theme;
+  const getSatLight = () => theme.satLight();
 
   // ── vault care (annotations worked off in an AI session) ──────
   const careMap = new Map(); // node id → entries
@@ -141,7 +135,7 @@ async function main() {
     graph,
     getInteractions: () => interactions,
     getHues: () => hues,
-    getSatLight: () => [sat, light],
+    getSatLight,
     getStructureMode: () => structureMode,
     startTransition: (from, to) => {
       viewTransition = { t0: performance.now(), ms: 950, from, to, noFit: true };
@@ -149,7 +143,7 @@ async function main() {
     onDrillChange: (state) => {
       drillScope = state; // legend + signals focus on the drilled area
       panels.clearClusterFilter(); // its match belongs to the previous scope
-      renderDrillSwitcher(state);
+      drillSwitcher.render(state);
       panels.renderLegend();
       panels.renderSignals();
     },
@@ -171,59 +165,11 @@ async function main() {
     renderer,
     getInteractions: () => interactions,
     getHues: () => hues,
-    getSatLight: () => [sat, light],
+    getSatLight,
     getWeather: () => weather.get(),
   });
 
-  // ── drill switcher (sidebar): appears for instance-mode areas like
-  // PROJECTS. Revealed AFTER the wheel's fan-out settles, with a short
-  // attention pulse that pulls the eye over — "there's more to switch here".
-  let lastDrillState = null;
-  let drillRevealTimer = 0;
-  function renderDrillSwitcher(state) {
-    const sec = $("#drill-section");
-    const wasHidden = sec.hidden;
-    clearTimeout(drillRevealTimer);
-    lastDrillState = state && state.mode === "instance" ? state : null;
-    if (!lastDrillState) {
-      sec.hidden = true;
-      sec.classList.remove("attention");
-      return;
-    }
-    $("#drill-title").textContent = lastDrillState.area;
-    $("#drill-active").textContent = lastDrillState.active;
-    const ul = $("#drill-list");
-    ul.innerHTML = "";
-    for (const inst of lastDrillState.instances) {
-      const li = document.createElement("li");
-      if (inst.key === lastDrillState.active) li.className = "active";
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = inst.key;
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = inst.count;
-      li.append(name, count);
-      li.addEventListener("click", () => ringView.switchInstance(inst.key));
-      ul.append(li);
-    }
-    if (wasHidden) {
-      drillRevealTimer = setTimeout(() => {
-        sec.hidden = false;
-        sec.classList.add("attention");
-        setTimeout(() => sec.classList.remove("attention"), 2600);
-      }, 1000);
-    }
-  }
-  function stepInstance(dir) {
-    if (!lastDrillState) return;
-    const list = lastDrillState.instances;
-    const idx = list.findIndex((i) => i.key === lastDrillState.active);
-    const next = list[(idx + dir + list.length) % list.length];
-    ringView.switchInstance(next.key);
-  }
-  $("#drill-prev").addEventListener("click", () => stepInstance(-1));
-  $("#drill-next").addEventListener("click", () => stepInstance(1));
+  const drillSwitcher = createDrillSwitcher({ ringView });
 
   let viewLoading = false; // semantic layout fetch in flight — don't re-enter
   async function switchView(v) {
@@ -281,9 +227,7 @@ async function main() {
       sim.regroup(loadAnchors());
       for (let i = 0; i < 220 && sim.tick(); i++);
       to = new Map(sim.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
-      userTouched = false; // allow the settled layout to claim the camera
-      warmupFrames = 25; // the boot-warmup snap-fit must never fire again
-      wasBusy = true;
+      loop.claimCameraForNewLayout(); // settled layout may take the camera; no boot snap-fit
     } else if (v === "orbit") {
       to = orbitView.enter();
     } else {
@@ -346,68 +290,7 @@ async function main() {
     document.body.classList.remove("inspector-open"),
   );
 
-  /** Live-Lane (#216/#217): Memory öffnen, auch wenn es erst NACH dem
-   *  Seiten-Load geboren wurde — dann existiert noch kein Sim-Node und der
-   *  Inspector bekommt den frisch gefetchten Node direkt.
-   *
-   *  `hint` ist der Live-Update-Eintrag, der den Klick ausgelöst hat. Er trägt
-   *  das `cluster`-Feld, das der Node-Endpoint NICHT liefert und das
-   *  adoptLiveNode für den Galaxie-Anker braucht — ohne ihn landete der Knoten
-   *  mittig statt in seiner Galaxie. Mit ihm wird ein noch nicht im Graph
-   *  vorhandenes Memory erst adoptiert und dann normal angeflogen; vorher
-   *  öffnete in diesem Zweig nur der Inspector und die Kamera blieb stehen. */
-  async function openMemoryById(id, hint) {
-    let n = sim.byId.get(id);
-    if (!n && hint?.cluster) {
-      adoptLiveNode({ ...hint, id });
-      n = sim.byId.get(id);
-    }
-    if (n) {
-      select(n);
-      return;
-    }
-    try {
-      const full = await fetchNode(id);
-      document.body.classList.add("inspector-open");
-      inspector.show({ kind: "memory", ...full });
-    } catch {
-      // noch nicht indexiert — der nächste Klick nach dem Reload trifft
-    }
-  }
-
-  /** Live-Lane (#217): Newborn als ECHTEN Sim-Node adoptieren, sobald die
-   *  Supernova erscheint — klickbar, hoverbar, glüht mit Valenz, und bleibt
-   *  nach dem Verglühen an Ort und Stelle (kein Reload nötig). */
-  function adoptLiveNode(u) {
-    if (sim.byId.has(u.id)) return;
-    const anchor = sim.centers.get(u.cluster);
-    const node = {
-      id: u.id,
-      title: u.title,
-      type: u.type,
-      scope: u.scope ?? u.cluster,
-      cluster: u.cluster,
-      baseCluster: u.cluster,
-      group: "other",
-      sub: "general",
-      tags: [],
-      summary: u.summary,
-      updated: new Date().toISOString().slice(0, 10),
-      degree: 0,
-      kind: u.type === "doc" ? "doc" : "memory",
-      ...(typeof u.salience === "number" ? { salience: u.salience } : {}),
-      ...(u.emotion ? { emotion: u.emotion } : {}),
-      x: (anchor?.x ?? innerWidth / 2) + (Math.random() - 0.5) * 40,
-      y: (anchor?.y ?? innerHeight / 2) + (Math.random() - 0.5) * 40,
-      vx: 0,
-      vy: 0,
-      idx: sim.nodes.length,
-    };
-    node.cr = nodeRadius(node) + 3.5;
-    sim.nodes.push(node);
-    sim.byId.set(u.id, node);
-    sim.reheat?.();
-  }
+  const { adoptLiveNode, openMemoryById } = createLiveNodes({ sim, inspector, select });
 
   /** Screen areas covered by UI — fits/flights center in the free rectangle. */
   function mapInsets() {
@@ -491,40 +374,13 @@ async function main() {
     else if (ringView.isDrilled()) ringView.drillOut(); // Esc backs out of the area
   });
 
-  // ── right-click menu (vendored ctxmenu.js) ─────────────────────
-  function nearestCluster(wx, wy) {
-    let best = null;
-    let bestD = Infinity;
-    for (const [key, c] of sim.centers) {
-      const d = Math.hypot(c.x - wx, c.y - wy) - Math.sqrt(c.count) * 14;
-      if (d < bestD) {
-        bestD = d;
-        best = key;
-      }
-    }
-    return best;
-  }
-
-  canvas.addEventListener("contextmenu", (ev) => {
-    ev.preventDefault();
-    const node = renderer.pick(ev.clientX, ev.clientY);
-    const w = renderer.toWorld(ev.clientX, ev.clientY);
-    const cluster = node?.cluster ?? nearestCluster(w.x, w.y);
-    const items = [];
-    if (node) {
-      items.push(
-        { text: node.title.length > 34 ? `${node.title.slice(0, 33)}…` : node.title, isHeading: true },
-        { text: "Zoom to connections", action: () => select(node) },
-        { text: "Open in inspector", action: () => { renderer.setFocus(node); inspector.show(node); } },
-        { isDivider: true },
-      );
-    }
-    if (cluster) items.push({ text: `Fit cloud “${cluster}”`, action: () => interactions.flyToCluster(cluster) });
-    items.push({
-      text: "Fit everything",
-      action: () => interactions.flyToBounds(sim.nodes, { padding: 90, maxScale: 1.6 }),
-    });
-    window.ctxmenu.show(items, ev);
+  createContextMenu({
+    canvas,
+    sim,
+    renderer,
+    inspector,
+    getInteractions: () => interactions,
+    select,
   });
 
   // ── search: instant title match + the daemon's semantic recall.
@@ -585,7 +441,7 @@ async function main() {
     graph,
     getInteractions: () => interactions,
     getHues: () => hues,
-    getSatLight: () => [sat, light],
+    getSatLight,
     getDrillScope: () => drillScope,
     activeGrouping,
     visibleNodes,
@@ -624,7 +480,7 @@ async function main() {
     } else if (currentView === "clouds") {
       // clouds reorganize themselves through the physics — animated by nature
       sim.regroup(loadAnchors());
-      wasBusy = true;
+      loop.markBusy();
     }
   }
   // ── view controls: semantic + mindspace mode switches (own manager) ──
@@ -657,59 +513,42 @@ async function main() {
     interactions.flyTo(x, y, s, ms),
   );
 
-  // ── render loop ────────────────────────────────────────────────
-  addEventListener("resize", () => renderer.resize());
-  let userTouched = false;
-  canvas.addEventListener("pointerdown", () => (userTouched = true));
-  canvas.addEventListener("wheel", () => (userTouched = true), { passive: true });
-  let warmupFrames = 0;
-  let wasBusy = true;
-  function frame(now) {
-    if (viewTransition) {
-      // nodes fly between views; physics pauses while they travel
-      const t = Math.min((now - viewTransition.t0) / viewTransition.ms, 1);
-      const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-      for (const n of sim.nodes) {
-        const from = viewTransition.from.get(n.id);
-        const to = viewTransition.to.get(n.id);
-        if (from && to) {
-          n.x = from.x + (to.x - from.x) * e;
-          n.y = from.y + (to.y - from.y) * e;
-        }
-      }
-      if (t >= 1) {
-        const { done, noFit } = viewTransition;
-        viewTransition = null;
-        if (!noFit) interactions.fitAll();
-        done?.();
-      }
-    }
-    // fan-out crossfade: the non-drilled areas dissolve/reappear in place
-    ringView.tick(now);
-    // orbit view: rotation + depth projection, paused during view flights
-    if (!viewTransition && currentView === "orbit") orbitView.tick(now);
-    if (!viewTransition && currentView === "semantic") semanticView.tick(now);
-    // clouds physics pauses while any fly/fan-out animation is running
-    if (!viewTransition && !ringView.isAnimating() && currentView === "clouds") {
-      const busy = sim.tick();
-      if (busy && warmupFrames++ === 24 && !userTouched) interactions.fitAll();
-      if (!busy && wasBusy && !userTouched) interactions.fitAll(); // settled → final framing
-      wasBusy = busy;
-      // safety distance between clouds — evading clouds glide away, animated;
-      // persist the arrangement once everything has come to rest
-      if (sim.separateClouds(interactions.draggedCluster())) saveAnchorsSoon();
-    }
-    interactions.step(now);
-    renderer.draw(now);
-    minimap.draw();
-    requestAnimationFrame(frame);
-  }
-  interactions.fitAll();
-  requestAnimationFrame(frame);
+  // ── render loop (boot/render-loop.js owns the frame + camera warmup) ──
+  const loop = createRenderLoop({
+    canvas,
+    sim,
+    renderer,
+    minimap,
+    ringView,
+    orbitView,
+    semanticView,
+    getInteractions: () => interactions,
+    getView: () => currentView,
+    getTransition: () => viewTransition,
+    setTransition: (t) => (viewTransition = t),
+    saveAnchorsSoon,
+  });
+  loop.start();
   // Mindspace (the universe) is the home view — first visit lands there;
   // afterwards the last-used view wins as before
   const savedView = localStorage.getItem(VIEW_KEY) ?? "orbit";
   if (savedView === "ring" || savedView === "semantic" || savedView === "orbit") void switchView(savedView);
+
+  // ── choreography/demo runner (opt-in via ?demo=1) ──────────────
+  // A self-running show for filming the map on a phone. It drives the real
+  // functions above — no fork, no fake canvas. The normal app is completely
+  // untouched unless the flag is set. Scene timeline lives in js/demo.js.
+  const demoFlag = new URLSearchParams(location.search).get("demo");
+  if (demoFlag !== null && demoFlag !== "0") {
+    const drive = {
+      switchView, getView: () => currentView, select, openMemoryById,
+      recenterOrbit, sim, renderer, interactions, orbitView, boltDemo,
+    };
+    window.__vault = drive; // also handy for hand-tuning the show from the console
+    import("./demo.js")
+      .then((m) => m.runDemo(drive))
+      .catch((err) => console.error("[demo] load failed", err));
+  }
 
   setTimeout(() => $("#hint").classList.add("fade"), 6000);
 }

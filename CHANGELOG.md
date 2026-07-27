@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Half the galaxies were turning the wrong way.** Real spiral galaxies trail
+  their arms — the outer tips lag behind the rotation, they never lead it. The
+  map wound every disc the same direction while picking each galaxy's spin
+  direction at random, so on any vault roughly half the galaxies rendered
+  leading arms and read as spinning backwards. The winding now mirrors the spin
+  sign, so both handednesses still occur across a universe and both are
+  physically right. (#283)
 - **The save-time duplicate warning stops inventing numbers.** It used to decide
   "this looks like a duplicate" from a raw search score — a number that grows
   when a word is repeated, grows with the size of your vault, and had no fixed
