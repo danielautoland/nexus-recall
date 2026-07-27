@@ -52,6 +52,11 @@ export interface ParsedArgs {
   // kickstart. The new code goes live on the next daemon boot. Used by the
   // SessionStart auto-update path so a running session is never disrupted.
   staged: boolean;
+  // `update --force` (#268): install even though the preflight found locally
+  // modified files. They are copied aside either way — forcing means "update
+  // anyway", never "throw my work away". Ignored on the unattended --staged
+  // path, which may never proceed past a finding.
+  force: boolean;
   // `install --ollama` → "auto" (provision without asking); `--no-ollama`
   // → "skip"; null → ask ONCE at the end of a successful install (TTY only,
   // never with --yes/--dry-run; non-TTY prints the `bastra embeddings on` hint).

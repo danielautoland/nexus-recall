@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cmdInstall } from "./commands.js";
 import { findExecutable, run } from "./exec.js";
+import { VERSION } from "./helpers.js";
+import { buildManifest, formatPreflight, preflight, writeManifest } from "./update-preflight.js";
+import { clearBlockedUpdate, recordBlockedUpdate } from "../update-blocked.js";
 import type { ParsedArgs } from "./types.js";
 
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";
@@ -83,6 +86,61 @@ function hasGitAncestor(start: string): boolean {
   return false;
 }
 
+/**
+ * Package root of the installation this CLI runs from: `cliPath` points at
+ * <root>/dist/cli/update.js, so the root is two levels above the cli dir.
+ * Exported so the preflight wiring can be pinned without a real install.
+ */
+export function packageRootFromCliPath(cliPath: string): string {
+  return resolve(dirname(cliPath), "..", "..");
+}
+
+/**
+ * #268 — may the locally-modified-files preflight run for this install mode?
+ *
+ * Only where the update REPLACES the same directory. `npm install -g` does: the
+ * package root stays put, so a hash baseline taken before an update is still
+ * comparable after it, and a local patch really would be destroyed without a
+ * word (the #253 case).
+ *
+ * Homebrew does not, and this is not a detail. `brew upgrade` builds a new keg
+ * under Cellar/bastra-recall/<version>/libexec and re-points the symlinks; the
+ * old keg is untouched until `brew cleanup` removes it. Two consequences:
+ *
+ *  1. A locally modified file in the current keg is abandoned, never
+ *     overwritten — there is no in-place replacement to guard.
+ *  2. `packageRootFromCliPath()` returns that version-pinned keg path, so a
+ *     manifest written from it can never match the root the NEXT version runs
+ *     from. Every later preflight would take the `manifest.root !== opts.root`
+ *     branch and skip the check, silently, forever — while printing "no install
+ *     manifest yet … (a baseline is written after this update)" on the first
+ *     run, which for brew is never true.
+ *
+ * There is no version-independent anchor to fall back on either:
+ * /opt/homebrew/opt/bastra-recall is a symlink whose target is a completely
+ * different file set after every upgrade, so a baseline taken through it would
+ * report every file as modified. A check that can only ever skip itself is
+ * worse than none, so brew says so out loud instead (see cmdUpdate).
+ */
+export function hasInPlacePreflight(mode: InstallSource): boolean {
+  return mode === "npm-global";
+}
+
+/**
+ * Version of what is on disk right now. After the swap the running process
+ * still reports the VERSION it was built with, and a baseline labelled with the
+ * version it just replaced would send the NEXT update's backups into the wrong
+ * directory. Falls back to VERSION when package.json is unreadable.
+ */
+function installedVersion(root: string): string {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : VERSION;
+  } catch {
+    return VERSION;
+  }
+}
+
 function launchAgentPresent(uid: string): boolean {
   const r = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${LAUNCH_AGENT_LABEL}`], { stdio: "pipe", timeout: 15_000 });
   return r.status === 0;
@@ -96,10 +154,28 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   process.stdout.write(`→ install mode: ${mode.detail}\n`);
   process.stdout.write(`  cli path: ${mode.cliPath}\n\n`);
 
+  // #268 + #226 — the preflight guards the step that replaces an installation
+  // IN PLACE, and only npm-global does that (see hasInPlacePreflight below).
+  // A source checkout is git-managed (every local change is already tracked and
+  // nothing here overwrites it), and the "unknown" branch installs nothing at
+  // all — guarding those would mean a dirty tree could veto a re-registration
+  // that never touched a single package file.
+  const packageRoot = packageRootFromCliPath(mode.cliPath);
+  const preflightSupported = hasInPlacePreflight(mode.mode);
+  const runsInstaller = mode.mode === "brew" || mode.mode === "npm-global";
+
   if (args.dryRun) {
     process.stdout.write("(dry-run — describing what would happen, writing nothing)\n\n");
     process.stdout.write(`→ install source: ${mode.mode}\n`);
     process.stdout.write(`  update command: ${mode.updateCommand}\n\n`);
+    if (preflightSupported) {
+      process.stdout.write("  would: 0) preflight: back up locally modified files, then refuse or proceed\n");
+    } else if (mode.mode === "brew") {
+      process.stdout.write(
+        "  would: 0) skip the preflight — Homebrew installs each version into its own\n" +
+        "            Cellar directory, so there is no in-place file to modify or back up\n",
+      );
+    }
     process.stdout.write("  would: 1) run the update command above\n");
     process.stdout.write("         2) re-register every surface (idempotent)\n");
     process.stdout.write(
@@ -108,6 +184,46 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
         : "         3) restart the daemon\n",
     );
     return 0;
+  }
+
+  // Runs ONCE, in front of both install branches — two guards that can each veto
+  // the same action is how auto-updates die (see update-preflight.ts).
+  if (preflightSupported) {
+    process.stdout.write(
+      `→ preflight: locally modified files${mode.mode === "npm-global" ? " + npm provenance (#226)" : ""}\n`,
+    );
+    const verdict = await preflight({
+      root: packageRoot,
+      // --staged is the detached SessionStart path: it cannot ask, so a finding
+      // ends it rather than being silently overridden.
+      unattended: args.staged === true,
+      force: args.force === true,
+      // brew and source carry no registry attestation — only npm publishes one.
+      checkProvenance: mode.mode === "npm-global",
+    });
+    const rendered = formatPreflight(verdict);
+    // Printed on the way through as well, not only on refusal: a backup nobody
+    // was told about is a backup nobody restores from.
+    process.stdout.write(rendered ? `${rendered}\n\n` : "  ✓ nothing local to protect\n\n");
+    if (!verdict.ok) {
+      // #268 — on the staged path this stdout goes to /dev/null (detached,
+      // stdio:"ignore") while the SessionStart hook already announced the
+      // update as happening. Leave the verdict on disk so the next session
+      // reports the refusal instead of repeating that claim. Only unattended:
+      // an interactive refusal is being read right now, and recording it would
+      // pause the automatic path over a decision the user already saw.
+      if (args.staged) await recordBlockedUpdate(verdict, installedVersion(packageRoot));
+      process.stdout.write("  Nothing was installed — the current version is untouched.\n");
+      return 1;
+    }
+  } else if (mode.mode === "brew") {
+    // Honest note instead of a check that can only ever skip itself.
+    process.stdout.write("→ preflight: not applicable to a Homebrew install\n");
+    process.stdout.write("  Homebrew never replaces this directory: 'brew upgrade' builds a new keg under\n");
+    process.stdout.write("  Cellar/bastra-recall/<version>/ and re-points the symlinks, so a locally modified\n");
+    process.stdout.write("  file here is left behind with the old keg rather than overwritten.\n");
+    process.stdout.write("  No baseline is recorded either — the path it would be taken from is version-pinned\n");
+    process.stdout.write("  and gone from the next version's point of view. Keep local patches outside the keg.\n\n");
   }
 
   // 1. Update the binary itself
@@ -158,6 +274,39 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     process.stdout.write("⚠ install mode unknown — install manually from:\n");
     process.stdout.write(`    ${mode.updateCommand}\n\n`);
   }
+
+  // 1b. Baseline for the NEXT update (#268). Without this write the dirty check
+  //     above can never say more than "unknown" — this is the step that starts
+  //     the chain, so it runs even if the re-registration below fails: the files
+  //     on disk are already the new ones. Same scope as the check it feeds:
+  //     writing one from a Homebrew keg would pin it to a path the next version
+  //     no longer runs from, and every later preflight would skip on
+  //     `manifest.root !== opts.root` while claiming a baseline had been taken.
+  if (preflightSupported) {
+    try {
+      const manifest = await buildManifest(packageRoot, installedVersion(packageRoot));
+      if (manifest.files.length === 0) {
+        // The install root we hashed from is empty — an npm prefix that moved,
+        // a partially written install. An empty manifest would read as "clean"
+        // on every future update, which is strictly worse than no manifest: that
+        // at least reports itself as an unknown.
+        process.stdout.write(`  ⚠ no baseline written — ${packageRoot} is empty now (install root moved?)\n\n`);
+      } else {
+        await writeManifest(manifest);
+        process.stdout.write(`  ✓ baseline recorded (${manifest.files.length} files) — the next update can tell local changes apart\n\n`);
+      }
+    } catch (e) {
+      // A baseline that cannot be written must never fail an update that already
+      // succeeded; the next preflight just reports "could not check".
+      process.stdout.write(`  ⚠ baseline not written (${(e as Error).message}) — the next update reports 'unknown' instead\n\n`);
+    }
+  }
+
+  // 1c. An installer that ran is the one event that resolves a held-back
+  //     automatic update (#268), whatever the recorded reason was. Drop the
+  //     record so the next SessionStart stops reporting a block that no longer
+  //     stands, and the unattended path is allowed to stage again.
+  if (runsInstaller) await clearBlockedUpdate();
 
   // 2. Re-register every surface (idempotent — refreshes skill content if SKILL.md changed)
   process.stdout.write("→ re-registering with every supported surface (idempotent)\n\n");

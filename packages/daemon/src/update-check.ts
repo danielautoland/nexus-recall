@@ -21,6 +21,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { effectiveUpdateMode } from "./settings.js";
+import { readBlockedUpdate } from "./update-blocked.js";
 
 export const GITHUB_RELEASES_LATEST_URL =
   "https://api.github.com/repos/n0mad-ai/bastra-recall/releases/latest";
@@ -307,7 +308,12 @@ export function startBackgroundCheck(
     // Desktop hat keine Hook-Fläche, also wendet der Daemon das staged
     // Update selbst an (gleicher Tages-Throttle wie der SessionStart-Pfad,
     // beide teilen den Marker — kein Doppel-Stage am selben Tag).
-    if (mode === "auto" && state?.hasUpdate && !(await stagedToday())) {
+    //
+    // #268: a recorded refusal stops it here too. The preflight verdict does not
+    // change on its own, so re-spawning would only reproduce it — and it would
+    // burn the shared throttle the SessionStart path relies on. `bastra update`
+    // clears the record; until then this stays a report, not a retry loop.
+    if (mode === "auto" && state?.hasUpdate && !(await stagedToday()) && !(await readBlockedUpdate())) {
       await markStagedToday();
       console.error(
         `[bastra-recall] update ${state.latest} available (mode=auto) — staging in background (#81)`,

@@ -7,6 +7,16 @@ import type { InstallOpts } from "./types.js";
 
 export const VERSION = "0.8.7";
 export const SERVER_KEY = "bastra-recall";
+
+/**
+ * The CLI and the daemon each carry their own version constant (VERSION here,
+ * DAEMON_VERSION in index.ts) and nothing ever compared them (#225). They drift
+ * for a mundane reason: upgrading the CLI does not touch the daemon that is
+ * already running — the forwarder only spawns a new one when the AI client
+ * restarts. Panel and doctor both name the pair, so the wording lives here
+ * rather than being written twice.
+ */
+export const VERSION_DRIFT_HINT = "restart your AI client to reload the daemon";
 const DAEMON_HEALTH_URL = "http://127.0.0.1:6723/health";
 
 export interface McpServerBlock {
@@ -208,6 +218,13 @@ export function decideFirstRunVaultAction(i: {
 export interface DaemonProbe {
   ok: boolean;
   detail: string;
+  /**
+   * The RUNNING daemon's build (#225). /health has always carried it; nothing
+   * read it, so a stale daemon could answer for a newer CLI unnoticed. Stays
+   * optional: a daemon predating the field is indistinguishable from one that
+   * simply isn't there, and neither is worth a separate state.
+   */
+  version?: string;
   // From /health when reachable — lets `bastra status` show the live embedding
   // mode (the user-visible #79 fix; the daemon's own stderr is /dev/null'd when
   // the forwarder spawns it).
@@ -230,6 +247,7 @@ export function probeDaemon(): Promise<DaemonProbe> {
             resolve_({
               ok: true,
               detail: `vault_size=${data.vault_size}`,
+              version: typeof data.version === "string" ? data.version : undefined,
               semanticRecall: data.semantic_recall,
               embeddingMode: data.embedding_mode,
               embeddingSource: data.embedding_source,

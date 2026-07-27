@@ -1,13 +1,23 @@
 /**
  * `bastra` (no args) — compact status panel.
  *
- * Shows version + update status, the configured update mode, daemon health and
- * vault size. Read-only, single shot, no TUI: this is the OSS "control surface"
- * — flags and status. Browsing/editing memories lives in the Pro Mac app.
+ * Shows the CLI/daemon version pair + update status, the configured update
+ * mode, daemon health, vault size and — only when it is actionable — the
+ * semantic-recall offer. Read-only, single shot, no TUI: this is the OSS
+ * "control surface" — flags and status. Browsing/editing memories lives in the
+ * Pro Mac app.
  */
 import { request as httpRequest } from "node:http";
-import { VERSION } from "./helpers.js";
-import { getUpdateMode, getDocsMode, getDocsLanguage, getApiToken } from "../settings.js";
+import { VERSION, VERSION_DRIFT_HINT } from "./helpers.js";
+import { probeOllama } from "./ollama.js";
+import {
+  getUpdateMode,
+  getDocsMode,
+  getDocsLanguage,
+  getApiToken,
+  resolveEmbeddingChoice,
+  type EmbeddingProviderName,
+} from "../settings.js";
 import { envFirst } from "../env.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -21,8 +31,12 @@ interface HealthResponse {
   ok: boolean;
   version?: string;
   vault_size?: number;
+  semantic_recall?: "on" | "off" | "degraded";
   update_available?: HealthUpdate | null;
 }
+
+/** A rendered box row: label column, value column. */
+export type PanelRow = [label: string, value: string];
 
 function daemonPort(): string {
   return envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? "6723";
@@ -67,6 +81,63 @@ function probeCount(port: string): Promise<number | null> {
   );
 }
 
+/**
+ * The version block (#225). The previous single row was `health?.version ??
+ * VERSION` — a construction that can never be right for a drifted pair: it
+ * printed the daemon's build under a bare "version" label, so an outdated CLI
+ * looked current (and the update hint went on to claim "you have <that>").
+ *
+ * Matching pair → one compact row. Drifted → two rows, both builds named, plus
+ * the drift marker and how to end it. Deliberately NOT modelled: a reachable
+ * daemon too old to report `version` at all — /health has carried the field
+ * since before the update check that consumes it, so it collapses into the
+ * "no daemon version to compare" branch instead of earning its own state.
+ */
+export function formatVersionRows(i: {
+  cliVersion: string;
+  /** The running daemon's build, or null when there is nothing to compare. */
+  daemonVersion: string | null;
+  /** Newer release the daemon knows about, or null. */
+  updateLatest: string | null;
+}): PanelRow[] {
+  if (i.daemonVersion === null) {
+    return [["version", `cli ${i.cliVersion}  (daemon offline — can't check)`]];
+  }
+  const status = i.updateLatest ? `↑ ${i.updateLatest} available` : "✓ up to date";
+  if (i.daemonVersion === i.cliVersion) {
+    return [["version", `${i.cliVersion}  ${status}`]];
+  }
+  return [
+    ["version", `cli ${i.cliVersion}  ⚠ version drift — ${VERSION_DRIFT_HINT}`],
+    ["", `daemon ${i.daemonVersion}  ${status}`],
+  ];
+}
+
+/**
+ * The semantic-recall discovery line (#224). probeOllama() only ever ran once
+ * Ollama was ALREADY configured, so a user with a running local Ollama and
+ * provider=none had no way to learn that semantic recall was one command away.
+ *
+ * One row, and only when acting on it is actually possible — an unreachable
+ * Ollama produces no row rather than a nag. Suppressed while the running daemon
+ * reports semantic recall on/degraded: its environment (LaunchAgent plist) can
+ * carry a provider this shell never sees, and "off" next to a semantic daemon
+ * would contradict itself.
+ *
+ * Reduced scope by design: the map banner and the one-time prompt are not part
+ * of this.
+ */
+export function semanticRecallRow(i: {
+  effectiveProvider: EmbeddingProviderName;
+  daemonSemanticRecall: "on" | "off" | "degraded" | undefined;
+  ollamaReachable: boolean;
+}): PanelRow | null {
+  if (i.effectiveProvider !== "none") return null;
+  if (i.daemonSemanticRecall === "on" || i.daemonSemanticRecall === "degraded") return null;
+  if (!i.ollamaReachable) return null;
+  return ["semantic", "off — local Ollama detected, enable: bastra embeddings on"];
+}
+
 function renderBox(title: string, rows: Array<[string, string]>): string {
   const labelWidth = Math.max(...rows.map(([l]) => l.length));
   const lines = rows.map(([l, v]) => `  ${l.padEnd(labelWidth)}  ${v}`);
@@ -79,24 +150,32 @@ function renderBox(title: string, rows: Array<[string, string]>): string {
 export async function cmdPanel(_args: ParsedArgs): Promise<number> {
   const port = daemonPort();
   // Fresh count (reconciles index vs. disk) + health + modes, in parallel.
-  const [health, freshCount, mode, docsMode, docsLanguage, apiToken] = await Promise.all([
-    probeHealth(port),
-    probeCount(port),
-    getUpdateMode(),
-    getDocsMode(),
-    getDocsLanguage(),
-    getApiToken(),
-  ]);
+  // The Ollama probe rides along unconditionally instead of waiting for the
+  // provider lookup: sequencing the two would add its latency to the panel,
+  // while here it stays inside the 4 s /vault/count probe it runs beside. With
+  // no ollama binary on PATH it returns without touching the network at all.
+  const [health, freshCount, mode, docsMode, docsLanguage, apiToken, embedding, ollama] =
+    await Promise.all([
+      probeHealth(port),
+      probeCount(port),
+      getUpdateMode(),
+      getDocsMode(),
+      getDocsLanguage(),
+      getApiToken(),
+      resolveEmbeddingChoice(),
+      probeOllama(),
+    ]);
 
-  const liveVersion = health?.version ?? VERSION;
-  let versionStatus: string;
-  if (health?.update_available) {
-    versionStatus = `↑ ${health.update_available.latest} available`;
-  } else if (health) {
-    versionStatus = "✓ up to date";
-  } else {
-    versionStatus = "(daemon offline — can't check)";
-  }
+  const versionRows = formatVersionRows({
+    cliVersion: VERSION,
+    daemonVersion: health?.version ?? null,
+    updateLatest: health?.update_available?.latest ?? null,
+  });
+  const recallRow = semanticRecallRow({
+    effectiveProvider: embedding.provider,
+    daemonSemanticRecall: health?.semantic_recall,
+    ollamaReachable: ollama.ok,
+  });
 
   const daemonRow = health
     ? `✓ running (port ${port})`
@@ -106,10 +185,11 @@ export async function cmdPanel(_args: ParsedArgs): Promise<number> {
   const vaultRow = count != null ? `${count} memories` : "—";
 
   const box = renderBox("bastra-recall", [
-    ["version", `${liveVersion}  ${versionStatus}`],
+    ...versionRows,
     ["update", `mode: ${mode}`],
     ["daemon", daemonRow],
     ["vault", vaultRow],
+    ...(recallRow ? [recallRow] : []),
     ["docs", docsMode === "off" ? "off" : `${docsMode} (${docsLanguage})`],
     ["api token", apiToken ? "set (browser/REST enabled)" : "not set (loopback only)"],
   ]);

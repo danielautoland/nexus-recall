@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **An update no longer replaces your local changes without saying so.** If you
+  patched something in the installed package — as happened here for days while a
+  locale fix waited to be merged — `bastra update` used to overwrite it silently,
+  and the automatic update did it unattended. It now takes a fingerprint of the
+  installation, notices what you changed, **copies those files aside before
+  anything is replaced**, and asks before continuing. The automatic update
+  refuses outright and leaves a note the next session shows you, rather than
+  deciding for you. Reapplying your changes afterwards is a separate step, still
+  to come. (#268)
+- **Updates check where the package came from.** Every release is published
+  through a protected workflow that signs it. Before installing, that signature
+  is now verified. Deliberately narrow: only a genuinely bad signature blocks —
+  an unreachable registry, an offline machine or an npm too old for the check
+  are reported and let through, because a verifier that cannot run must not
+  become the reason nobody can update. (#226)
+- **The status panel shows both versions when they drift apart.** CLI and daemon
+  can be on different versions after a partial update; until now one of them was
+  quietly displayed as if it were both. `bastra doctor` says so too. (#225)
+- **A dormant Ollama gets mentioned instead of ignored.** If semantic recall is
+  off but a local Ollama is running, the panel now tells you it could be turned
+  on. (#224)
+
+### Fixed
+
+- **The file-size hint stops scolding throwaway files.** A sandbox or lab
+  directory is where oversized files are the point; the hint now stays quiet
+  there and keeps working everywhere else. (#280)
+
+### Added
+
 - **A memory can carry a command that proves it.** Notes that state facts about
   the world — "the daemon listens on 6723", "that file exists" — go stale
   quietly, and then keep being recalled as if they were still true. You can now

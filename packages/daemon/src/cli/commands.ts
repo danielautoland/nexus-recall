@@ -1,6 +1,8 @@
 import { ADAPTERS, resolveTargets } from "./registry.js";
 import {
   VERSION,
+  VERSION_DRIFT_HINT,
+  probeDaemon,
   formatStatus,
   resolveVault,
   decideFirstRunVaultAction,
@@ -128,6 +130,10 @@ Options:
   --lines <n>                Cap the number of lines printed (logs only, default 200)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --no-stop-hook             Skip the Stop save-eval hook (registered by default)
+  --force                    With update: install even though locally modified files
+                             were found (they are backed up to
+                             ~/.bastra/update-backups/<version>/ either way).
+                             Never applies to the unattended auto-update.
   --help, -h                 Show this help
   --version, -v              Show version
 
@@ -162,6 +168,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     // silent file-relay — no chat noise). Opt out with --no-stop-hook.
     withStopHook: true,
     staged: false,
+    force: false,
     ollama: null,
     origin: null,
     extension: false,
@@ -186,6 +193,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--with-stop-hook") result.withStopHook = true; // kept for compat — now the default
     else if (a === "--no-stop-hook") result.withStopHook = false;
     else if (a === "--staged") result.staged = true;
+    else if (a === "--force") result.force = true;
     else if (a === "--exclude") {
       const v = argv[++i];
       if (v) result.exclude.push(v);
@@ -464,6 +472,35 @@ export async function cmdDoctor(args: ParsedArgs): Promise<number> {
   // actionable ⚠), never as a failure: BM25-only recall is degraded, not
   // broken, so it never flips doctor's exit code (#79).
   await printEmbeddingDoctorNote();
+  await printVersionPairNote();
 
   return hadBroken ? 1 : 0;
+}
+
+/**
+ * The CLI/daemon version pair (#225) — the second global, non-surface check.
+ * Nothing compared the two constants, so an upgraded CLI talking to the daemon
+ * from the previous install went unnoticed, and the update hint reported the
+ * daemon's build as "you have <x>". A NOTE like the embedding block, never a
+ * failure: a drifted pair still answers every call, it just isn't the build the
+ * user installed.
+ */
+async function printVersionPairNote(): Promise<void> {
+  try {
+    const probe = await probeDaemon();
+    process.stdout.write("→ version\n");
+    if (!probe.ok || !probe.version) {
+      process.stdout.write(`  · cli ${VERSION} (no running daemon to compare against)\n\n`);
+      return;
+    }
+    if (probe.version === VERSION) {
+      process.stdout.write(`  ${formatStatus("ok")}: cli and daemon both ${VERSION}\n\n`);
+      return;
+    }
+    process.stdout.write(
+      `  ⚠ version drift: cli ${VERSION}, daemon ${probe.version} — ${VERSION_DRIFT_HINT}\n\n`,
+    );
+  } catch {
+    /* a diagnostics NOTE must never break doctor */
+  }
 }

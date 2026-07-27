@@ -97,7 +97,12 @@ export interface CliSettings {
   // 800). Gesetzt vom Onboarding-Interview (conventions_size) oder `bastra
   // config set size.guide N`. Der PreToolUse-Hook (file-size-check) liest
   // beide deterministisch; env gewinnt: BASTRA_SIZE_GUIDE/_CRITICAL.
-  size?: { guide?: number; critical?: number };
+  // exemptPaths (#280): Pfad-Fragmente, für die der Check GAR nicht feuert —
+  // case-insensitive Substring-Match auf dem Schreibpfad, kein Glob. Ergänzt
+  // die eingebauten Wegwerf-Kontexte (sandbox/lab/prototype/scratch/
+  // experiments, siehe file-size-check.ts) für projekteigene Sandbox-Ordner.
+  // Nur hier gepflegt, nicht über `bastra config set` (Skalar-only).
+  size?: { guide?: number; critical?: number; exemptPaths?: string[] };
   // User-Sprache (#231, Language-first recall): primary = 2-stelliger ISO-639-1-
   // Code (lowercase, z.B. "de"). Beim Onboarding aus der identity-Antwort
   // abgeleitet (persistLanguageSetting) oder via `bastra config set
@@ -290,12 +295,21 @@ export async function readSettings(path: string = settingsFilePath()): Promise<C
     }
     if (reflex.enabled !== undefined || reflex.maxPerTurn !== undefined) settings.reflex = reflex;
   }
-  const sizeData = (data as { size?: { guide?: unknown; critical?: unknown } }).size;
+  const sizeData = (data as { size?: { guide?: unknown; critical?: unknown; exemptPaths?: unknown } }).size;
   if (sizeData !== undefined) {
-    const size: { guide?: number; critical?: number } = {};
+    const size: { guide?: number; critical?: number; exemptPaths?: string[] } = {};
     if (typeof sizeData.guide === "number" && Number.isFinite(sizeData.guide)) size.guide = sizeData.guide;
     if (typeof sizeData.critical === "number" && Number.isFinite(sizeData.critical)) size.critical = sizeData.critical;
-    if (size.guide !== undefined || size.critical !== undefined) settings.size = size;
+    // Parsed here so a `bastra config set size.guide N` round-trip does not
+    // silently drop a hand-written exemption list (#280) — parseSettings
+    // rebuilds the object, unknown keys never survive a write.
+    if (Array.isArray(sizeData.exemptPaths)) {
+      const paths = sizeData.exemptPaths
+        .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+        .map((p) => p.trim());
+      if (paths.length > 0) size.exemptPaths = paths;
+    }
+    if (size.guide !== undefined || size.critical !== undefined || size.exemptPaths !== undefined) settings.size = size;
   }
   const langData = (data as { language?: { primary?: unknown } }).language;
   if (langData !== undefined) {

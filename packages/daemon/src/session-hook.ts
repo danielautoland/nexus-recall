@@ -32,6 +32,7 @@ import { effectiveUpdateMode, getDocsLanguage, getDocsMode, getPrimaryLanguage }
 import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
+import { formatBlockedUpdate, readBlockedUpdate } from "./update-blocked.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
@@ -297,6 +298,12 @@ async function main(): Promise<void> {
   //   · "notify" → just suggest `bastra update`.
   //   · "off"    → never reached (detection is disabled, so update_available
   //                is null).
+  //
+  // #268: the staged run can REFUSE (locally modified files, a failed
+  // attestation), and it is detached with stdio:"ignore" — so the announcement
+  // below would be the only thing the user ever hears about an update that
+  // never happened. A refusal is therefore recorded on disk and read back here
+  // BEFORE anything is announced or spawned again.
   let updateBlock = "";
   if (responses.some((r) => r.resp !== null)) {
     const remainingMs = Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
@@ -307,8 +314,31 @@ async function main(): Promise<void> {
         const u = health.update_available;
         const mode = await effectiveUpdateMode();
         const isSessionStart = payload.source === "startup" || payload.source === "resume";
-        if (mode === "auto" && isSessionStart && !(await stagedToday())) {
+        const blocked = await readBlockedUpdate();
+        if (blocked) {
+          // Correcting the record outranks everything else: while this stands,
+          // claiming an update is being applied is exactly the false statement
+          // the file exists to prevent. No re-spawn either — the recorded reason
+          // is deterministic, so an unattended retry can only reproduce it.
+          // `bastra update` is what clears the record (see cli/update.ts).
+          updateBlock =
+            `\n<bastra-update>\n` +
+            `A new bastra-recall version is available: ${u.current} → ${u.latest}.\n` +
+            `${formatBlockedUpdate(blocked)}\n` +
+            `Release notes: ${u.html_url}\n` +
+            `Tell the user the automatic update was held back for the reason above, and suggest ` +
+            `they run \`bastra update\` to review and confirm it.\n` +
+            `</bastra-update>`;
+        } else if (mode === "auto" && isSessionStart && !(await stagedToday())) {
           spawnStagedUpdate();
+          // The day throttle is spent even if the staged run ends up refusing,
+          // and that is deliberate: the refusal reasons persist (the same dirty
+          // files, the same failed signature), so releasing the throttle would
+          // re-spawn an identical refusal at EVERY session start instead of
+          // once a day — more detached processes, never a different outcome.
+          // What was missing was never a retry, it was a report — and that is
+          // the record read above, which then suppresses further attempts
+          // entirely until an update really runs.
           await markStagedToday();
           updateBlock =
             `\n<bastra-update>\n` +

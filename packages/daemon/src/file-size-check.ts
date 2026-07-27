@@ -28,22 +28,90 @@ const CODE_EXTS = new Set([
 /** Generated blobs / bundles are none of the convention's business. */
 const MAX_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Throwaway contexts the convention does not apply to (#280).
+ *
+ * Reported case: `webui/mindspace-lab-anims.js` sits at ~1299 lines, so every
+ * single edit to it got "over the 800-line ceiling — do NOT grow this file
+ * further". Arithmetically correct, wrong advice: it is an animation sandbox
+ * that gets deleted, not a module anyone will maintain. The only escape was
+ * the all-or-nothing BASTRA_SIZE_CHECK=off, which also silences the check for
+ * the real files edited in the same session.
+ *
+ * Segments are matched WHOLE, so `collaboration/` or `labels/` keep the
+ * convention. The basename rule is delimiter-bounded for the same reason —
+ * `collab-view.ts` and `foo-labels.ts` must not slip through.
+ *
+ * They are also matched only BELOW the project anchor (the hook's `cwd`):
+ * meant are project-internal throwaway directories. A checkout that merely
+ * lives under `~/labs/myapp` or `~/scratch/myapp` would otherwise exempt every
+ * file it contains — a silent, un-overridable off switch for the whole project.
+ */
+const SANDBOX_SEGMENT = /^(sandbox(es)?|labs?|prototypes?|scratch|experiments?)$/;
+
+/** Deliberately WITHOUT `prototype`: as a directory it means throwaway, as a
+ *  file-name token it is usually production code about `Object.prototype`
+ *  (`prototype-utils.ts`), and exempting that silently would be the one way
+ *  this change could hurt. */
+const SANDBOX_BASENAME = /(^|[-_.])(sandbox|lab|scratch|experiments?)([-_.]|$)/;
+
+/**
+ * True when a path sits in a throwaway context and the size convention should
+ * not fire at all. Full exemption, not a raised ceiling: a bigger number would
+ * only postpone the same wrong advice, and the agent would still have to argue
+ * with a block it cannot act on. Sandbox code has no future readers, which is
+ * the entire cost the convention is protecting against.
+ *
+ * `exemptPaths` comes from cli-settings `size.exemptPaths` (see
+ * readSizeSettings) and is matched as a plain case-insensitive substring of
+ * the normalized path — no glob engine on purpose, the hook has a 250 ms
+ * budget and "webui/mindspace" is the shape users actually write.
+ *
+ * `cwd` is the project anchor the hook already passes to its skip gate; the
+ * directory-segment rule only looks below it (see SANDBOX_SEGMENT).
+ */
+export function isSizeExemptPath(filePath: string, exemptPaths: string[] = [], cwd?: string): boolean {
+  const norm = filePath.replace(/\\/g, "/").toLowerCase();
+  for (const raw of exemptPaths) {
+    const needle = raw.replace(/\\/g, "/").trim().toLowerCase();
+    if (needle.length > 0 && norm.includes(needle)) return true;
+  }
+  const segments = norm.split("/");
+  if (SANDBOX_BASENAME.test(segments[segments.length - 1] ?? "")) return true;
+  return dirSegmentsBelow(norm, cwd).some((seg) => SANDBOX_SEGMENT.test(seg));
+}
+
+/** Directory segments of an already normalized (lowercase, forward-slash) path
+ *  that lie strictly below the project anchor. Without an anchor — or for a
+ *  file outside it — every directory segment is used: there is nothing to tell
+ *  a project directory from one of its ancestors. */
+function dirSegmentsBelow(norm: string, cwd?: string): string[] {
+  const anchor = (cwd ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const below = anchor.length > 0 && norm.startsWith(`${anchor}/`) ? norm.slice(anchor.length + 1) : norm;
+  return below.split("/").slice(0, -1);
+}
+
 export interface SizeThresholds {
   guide: number;
   critical: number;
 }
 
-/** Convention thresholds for a path, or null when the file type is exempt
- *  (docs, configs, lockfiles, generated code — anything non-code).
+/** Convention thresholds for a path, or null when the path is exempt — by file
+ *  type (docs, configs, lockfiles, generated code — anything non-code) or by
+ *  throwaway context (#280, see isSizeExemptPath).
  *  Guide value resolves env > cli-settings (size.guide — written by the
  *  onboarding interview / `bastra config set size.guide N`) > built-in 500.
- *  `settings` is the pre-read settings size block (see readSizeSettings). */
+ *  `settings` is the pre-read settings size block (see readSizeSettings),
+ *  `cwd` the project anchor for the throwaway-directory rule. */
 export function thresholdsFor(
   filePath: string,
-  settings: { guide?: number; critical?: number } = {},
+  settings: { guide?: number; critical?: number; exemptPaths?: string[] } = {},
+  cwd?: string,
 ): SizeThresholds | null {
   const ext = extname(filePath).toLowerCase();
   if (!CODE_EXTS.has(ext)) return null;
+  // Before the test-file branch: a sandbox test file is just as throwaway.
+  if (isSizeExemptPath(filePath, settings.exemptPaths, cwd)) return null;
   const base = basename(filePath).toLowerCase();
   const isTest = /\.(test|spec)\./.test(base) || filePath.includes("__tests__");
   if (isTest) return { guide: 700, critical: 1000 }; // test files keep the fixed convention
@@ -66,14 +134,20 @@ function envNum(name: string, fallback: number): number {
  *  Budget und braucht exakt zwei Zahlen. Fehler → leeres Objekt. */
 export async function readSizeSettings(
   settingsPath: string = join(homedir(), ".bastra", "cli-settings.json"),
-): Promise<{ guide?: number; critical?: number }> {
+): Promise<{ guide?: number; critical?: number; exemptPaths?: string[] }> {
   try {
     const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as {
-      size?: { guide?: unknown; critical?: unknown };
+      size?: { guide?: unknown; critical?: unknown; exemptPaths?: unknown };
     };
+    // Non-strings and blanks are dropped rather than rejected: a broken entry
+    // must not take the two numbers down with it (#280).
+    const exemptPaths = Array.isArray(parsed.size?.exemptPaths)
+      ? parsed.size.exemptPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+      : [];
     return {
       ...(typeof parsed.size?.guide === "number" ? { guide: parsed.size.guide } : {}),
       ...(typeof parsed.size?.critical === "number" ? { critical: parsed.size.critical } : {}),
+      ...(exemptPaths.length > 0 ? { exemptPaths } : {}),
     };
   } catch {
     return {};
@@ -95,9 +169,13 @@ export function formatSizeNote(filePath: string, lines: number, t: SizeThreshold
 
 /** Measure + format in one step — the hook's entry point. Never throws:
  *  a new/unreadable file simply has nothing to warn about. */
-export async function fileSizeNote(filePath: string, settingsPath?: string): Promise<string | null> {
+export async function fileSizeNote(
+  filePath: string,
+  settingsPath?: string,
+  cwd?: string,
+): Promise<string | null> {
   if ((process.env.BASTRA_SIZE_CHECK ?? "").toLowerCase() === "off") return null;
-  const t = thresholdsFor(filePath, await readSizeSettings(settingsPath));
+  const t = thresholdsFor(filePath, await readSizeSettings(settingsPath), cwd);
   if (!t) return null;
   try {
     const raw = await readFile(filePath, "utf8");

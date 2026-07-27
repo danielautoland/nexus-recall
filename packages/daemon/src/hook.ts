@@ -162,7 +162,9 @@ async function main(): Promise<void> {
   //     Daemon nötig; läuft deshalb VOR dem Recall-Call und wird in JEDEM
   //     Emit-Pfad mitgesendet (auch bei no-hits/suppressed/daemon-down).
   const { fileSizeNote } = await import("./file-size-check.js");
-  const sizeNote = await fileSizeNote(filePath).catch(() => null);
+  // Same anchor the skip gate gets: the throwaway-directory rule must only see
+  // directories INSIDE the project, never the ancestors it happens to live under.
+  const sizeNote = await fileSizeNote(filePath, undefined, payload.cwd).catch(() => null);
 
   // 4) Now (and only now) load the expensive core utils — see #28.
   const { detectTopics, detectProject, extractContentExcerpt } = await import(
