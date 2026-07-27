@@ -311,6 +311,17 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
             "spends the strongest signal on text that is indexed anyway. " +
             "Name the situation, not the content.",
         },
+        verify_cmd: {
+          type: "string",
+          description:
+            "Optional anchor command that could PROVE this memory's claim — " +
+            "'test -f packages/daemon/src/reflex.ts', 'curl -s localhost:6723/health'. " +
+            "Worth adding on a project-fact that asserts a state of the world, because " +
+            "those age silently into false statements that keep being recalled as true. " +
+            "Nothing ever runs it automatically: it is stored and shown to whoever loads " +
+            "the memory, who decides under their own permission rules. Leave it out unless " +
+            "the claim is genuinely checkable by one short command.",
+        },
         replaces: {
           type: "string",
           description:

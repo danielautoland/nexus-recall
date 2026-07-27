@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A memory can carry a command that proves it.** Notes that state facts about
+  the world — "the daemon listens on 6723", "that file exists" — go stale
+  quietly, and then keep being recalled as if they were still true. You can now
+  attach a short command to such a memory (`verify_cmd`), and whoever loads it
+  later sees it with a note: check this before relying on the claim. **Nothing
+  runs it automatically** — not the daemon, not the background pass, nothing.
+  It is shown, and the session decides under its own permission rules, because
+  the command lives in your vault and is yours to judge. Turning a failed check
+  into an actual staleness signal is a later step that needs its own security
+  round. Shape borrowed from zzallirog's ida-box. (#235)
+
+### Added
+
 - **Recall can now say "this isn't in your vault at all".** There is a
   difference between finding the wrong note and finding nothing — and until now
   the daemon could not tell you which had happened, because on the hybrid search

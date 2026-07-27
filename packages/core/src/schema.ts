@@ -197,6 +197,21 @@ export const FrontmatterSchema = z.object({
   affects_files: z.array(z.string()).default([]),
   status: z.string().optional(),
   issues: z.array(z.string()).default([]),
+  /**
+   * #235 — optional anchor command that can PROVE this memory's claim
+   * (`test -f packages/daemon/src/reflex.ts`, `curl -s localhost:6723/health`).
+   *
+   * project-facts assert states of the world, and exactly those age silently
+   * into false statements that keep getting recalled as true. Calendar
+   * staleness and usage windows are both blind to content truth; an anchor is
+   * not.
+   *
+   * Stage 1 is DISPLAY-ONLY. Nothing in the daemon, the curator or any hook
+   * ever executes this string. It is shown to the agent, which decides under
+   * the session's own permission rules — same as any other command a human
+   * might read out of a note.
+   */
+  verify_cmd: z.string().min(1).optional(),
   obsolete: z.boolean().optional(),
   replaces: z.string().optional(),
   superseded_by: z.string().optional(),

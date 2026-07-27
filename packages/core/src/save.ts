@@ -43,6 +43,9 @@ export const SaveMemoryInput = z.object({
    * historical, it is gone, and old versions have to stay citable.
    */
   replaces: z.string().min(1).optional(),
+  /** #235: optional anchor command that can prove this memory's claim.
+   *  Stored and displayed only — nothing here ever runs it. */
+  verify_cmd: z.string().min(1).optional(),
   related: z.array(z.string()).optional(),
   /**
    * Obsidian-Aliases (#188): Substrat-Plumbing, kein Agent-Knob — der Daemon
@@ -458,6 +461,7 @@ export async function saveMemory(
     // the previous file when absent, so re-saving a memory does not drop the
     // version link it already declared.
     ...optional("replaces", input.replaces, isStr),
+    ...optional("verify_cmd", input.verify_cmd, isStr),
     ...optional("superseded_by", undefined, isStr),
     confidence: input.confidence ?? kept(prev.confidence, isNum) ?? 1,
     // #217: `!= null` statt truthy — salience 0 ist ein gültiger Wert.

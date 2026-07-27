@@ -166,6 +166,33 @@ These optional fields affect staleness and recall ranking:
 
 Staleness is computed lazily during recall. Stale and expired memories are downranked; obsolete memories are removed from normal search results.
 
+### Verification anchor (#235)
+
+`verify_cmd` is an optional command that could prove what a memory claims —
+`test -f packages/daemon/src/reflex.ts`, `curl -s localhost:6723/health`. It
+exists because `project-fact` memories assert states of the world, and exactly
+those age silently into false statements that keep being recalled as true.
+Calendar staleness and the curator's usage windows are both blind to content
+truth; an anchor is not.
+
+**Nothing executes it.** Not the daemon, not the curator, not a hook. It is
+stored, and `load_memory` shows it alongside a hint. Whoever loads the memory
+decides, under their own permission rules. That is what keeps this stage free of
+new attack surface.
+
+Two properties of the wording are deliberate, because the field carries a
+command: the hint states that the command comes out of vault *content* rather
+than from bastra, so it is data to be judged and not an instruction to follow;
+and it defers explicitly to the session's permission rules. The import path
+cannot introduce an anchor — `mapFile` builds memories from a fixed field list,
+so a foreign vault's frontmatter never reaches the field. What remains is a file
+placed into the vault by hand, which is the same trust boundary as the memory
+body itself.
+
+A failed anchor as a *staleness signal*, three-verdict discipline
+(confirmed / refuted / unverifiable) and drift-binding to a source block are
+stage 2 and need their own security round.
+
 ### Supersession (#164)
 
 `replaces` and `superseded_by` are the two halves of one directed edge. Passing
