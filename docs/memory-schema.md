@@ -123,6 +123,10 @@ recall_when:
 
 The current matching stack is BM25 with prefix/fuzzy search, optionally fused with vector search through Reciprocal Rank Fusion. It is not SQLite/FTS5.
 
+**Keep phrases short — the reflex lane matches token-AND.** For ordinary recall the phrases are scored, so a long one still contributes. For the reflex lane (`recall_mode: reflex`, see below) they are *matched*: `phraseMatchesContext` (`packages/daemon/src/reflex.ts:71`) requires **every** content token of the phrase — everything ≥ 3 characters that is not a stopword — to be present in the prompt. No prefix, no fuzzy. A sentence-length `recall_when` entry is therefore a dead reflex trigger: the prompt would have to contain all of its words. Three to six content words is the working range.
+
+The stopword list that softens this (`PHRASE_STOPWORDS`, `reflex.ts:40`) covers **German and English only**. In another language the function words are not recognised as function words, which cuts both ways: a phrase of common words has no stopwords removed, so it becomes a scatter trigger that fires whenever those everyday words happen to co-occur. Authoring reflex triggers in a third language means leaning on distinctive terms — names, identifiers, domain nouns — rather than on phrasing.
+
 ## Relationships
 
 `related` is a manual list of memory ids. The save path also extracts `[[memory-id]]` wikilinks from the body and mirrors them into `related`, excluding links in the auto-related section.

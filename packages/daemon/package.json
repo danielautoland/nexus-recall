@@ -32,13 +32,12 @@
   "files": [
     "dist",
     "webui",
-    "skill/SKILL.md",
-    "skill/cursor-rules.mdc",
+    "skill",
     "README.md"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc && chmod +x dist/index.js dist/mcp-forwarder.js dist/bridge.js dist/hook.js dist/session-hook.js dist/prompt-hook.js dist/todo-hook.js dist/bash-pre-hook.js dist/bash-fail-hook.js dist/stop-hook.js dist/cli.js",
+    "build": "npm run prepare:package-assets && tsc && chmod +x dist/index.js dist/mcp-forwarder.js dist/bridge.js dist/hook.js dist/session-hook.js dist/prompt-hook.js dist/todo-hook.js dist/bash-pre-hook.js dist/bash-fail-hook.js dist/stop-hook.js dist/cli.js",
     "prepare:package-assets": "node scripts/prepare-package-assets.mjs",
     "prepack": "npm run prepare:package-assets",
     "start": "node dist/index.js",

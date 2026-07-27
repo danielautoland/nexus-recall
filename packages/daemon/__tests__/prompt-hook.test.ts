@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  detectAssertion,
   detectRetrieval,
   effectiveScoreFloor,
   extractPrompt,
@@ -84,6 +85,77 @@ test("detectRetrieval — non-retrieval prompts skip", () => {
   for (const c of cases) {
     assert.equal(detectRetrieval(c), false, `expected NO retrieval match for: ${c}`);
   }
+});
+
+// ─── assertion lane (#252) ───────────────────────────────────────────────────
+
+test("detectAssertion — outbound writing requests match", () => {
+  const cases = [
+    "draft a reply to zzallirog's field report",
+    "write the release notes for v0.9",
+    "schreib mir bitte die Release Notes",
+    "verfasse einen Kommentar zu #257",
+    "antworte auf den Discord-Thread",
+    "compose an announcement for the blog",
+    "entwirf die PR description",
+    "beantworte die Mail",
+  ];
+  for (const c of cases) {
+    assert.equal(detectAssertion(c), true, `expected assertion match for: ${c}`);
+  }
+});
+
+test("detectAssertion — project-state questions match", () => {
+  const cases = [
+    "what's the state of our recall@pool measurement?",
+    "how good are the eval numbers right now",
+    "wie ist der Stand beim v0.9 Milestone",
+    "wie viele Tests haben wir",
+  ];
+  for (const c of cases) {
+    assert.equal(detectAssertion(c), true, `expected assertion match for: ${c}`);
+  }
+});
+
+test("detectAssertion — a bare composing verb is not a trigger", () => {
+  // The lane that fires on every declarative prompt is the noise #252 warns
+  // about: two signals required, never the verb alone.
+  const cases = [
+    "write a helper that parses the frontmatter",
+    "schreib die Funktion neu",
+    "draft the migration in typescript",
+    "fix the failing test",
+    "was hältst du davon",
+    "refactor curator.ts",
+    "",
+  ];
+  for (const c of cases) {
+    assert.equal(detectAssertion(c), false, `expected NO assertion match for: ${c}`);
+  }
+});
+
+test("detectAssertion — retrieval wins the classification", () => {
+  // "how much …" is both; the hook checks retrieval first, so the lookup
+  // instruction is what the agent sees.
+  const prompt = "how much did the release cost";
+  assert.equal(detectRetrieval(prompt), true);
+});
+
+test("effectiveScoreFloor — assertion recalls at the retrieval floor, not the generic one", () => {
+  assert.equal(effectiveScoreFloor("assertion"), effectiveScoreFloor("retrieval"));
+  assert.notEqual(effectiveScoreFloor("assertion"), effectiveScoreFloor("generic"));
+});
+
+test("formatHintBlock — assertion mode forbids asserting from memory and names the alternative", () => {
+  const hits: RecallHit[] = [
+    { id: "pool-measurement", title: "P", type: "project-fact", scope: "p", summary: "96 of 103", score: 120 },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", "assertion");
+  assert.match(block, /makes a CLAIM/);
+  assert.match(block, /Do NOT assert numbers/);
+  assert.match(block, /do not know instead of guessing/);
+  assert.match(block, /pool-measurement/);
+  assert.doesNotMatch(block, /LOOKUP \/ retrieval query/);
 });
 
 test("extractPrompt — prefers payload.prompt", () => {

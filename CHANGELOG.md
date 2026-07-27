@@ -29,12 +29,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **A dormant Ollama gets mentioned instead of ignored.** If semantic recall is
   off but a local Ollama is running, the panel now tells you it could be turned
   on. (#224)
+- **Recall now also fires before a claim, not just before an edit.** The hook
+  that reaches the assistant was bound to file edits — but writing a sentence
+  edits nothing, so a draft reply, a changelog entry or an answer about "what
+  we measured" came straight out of model memory while the vault held the
+  number. That happened twice in one week here, once publicly. Asking for
+  outbound text or for the project's measured state now recalls first, and the
+  assistant is told to write that it doesn't know rather than guess when the
+  vault has no answer. Deliberately narrow: two signals are needed, so "write
+  a helper" still fires nothing. (#252)
+- **The skill installs as a directory.** Both install paths — `bastra install`
+  and `packages/skill/install.sh` — carried exactly one file, so any reference
+  file next to `SKILL.md` would have been a dangling pointer. They now carry
+  the whole skill, and the copy that ships inside the npm package is
+  regenerated on every build instead of by hand (it had drifted three edits
+  behind). Prerequisite for splitting the skill. (#232)
 
 ### Fixed
 
 - **The file-size hint stops scolding throwaway files.** A sandbox or lab
   directory is where oversized files are the point; the hint now stays quiet
   there and keeps working everywhere else. (#280)
+- **Three things the code did but the docs never said.** From a field report on
+  a mixed Russian/English vault: the bridge layer is latin-alphabet only, so a
+  non-latin vault gets ordinary recall but no vocabulary expansion; reflex
+  `recall_when` phrases must match *every* content word, which makes a
+  sentence-length trigger a dead one, and the stopword list that softens that
+  is German and English only; and the event log lives at `~/.bastra/logs/`,
+  not inside the vault. Docs only — nothing behaved differently. (#257)
 
 ### Added
 

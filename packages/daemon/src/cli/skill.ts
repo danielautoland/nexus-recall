@@ -1,11 +1,11 @@
-import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { SERVER_KEY, fileExists, getServersBlock, readJsonConfig } from "./helpers.js";
 import {
   CLAUDE_CODE_CONFIG,
   CLAUDE_DESKTOP_CONFIG,
-  SKILL_SOURCE_PATH,
+  SKILL_SOURCE_DIR,
   SKILL_TARGET_DIR,
-  SKILL_TARGET_FILE,
 } from "./paths.js";
 
 export type SkillStepStatus =
@@ -17,21 +17,61 @@ export type SkillStepStatus =
   | "would-remove"
   | "error";
 
-export async function copySkill(opts: { dryRun: boolean }): Promise<{ status: SkillStepStatus; detail: string }> {
-  if (!(await fileExists(SKILL_SOURCE_PATH))) {
-    return { status: "error", detail: `skill source missing: ${SKILL_SOURCE_PATH}` };
+/**
+ * The skill payload: every markdown file directly in the skill source dir —
+ * SKILL.md plus the reference files it points at (#232). Everything else that
+ * lives next to it (install scripts, the Cursor rules) is deliberately not part
+ * of the skill and must not land in ~/.claude/skills/.
+ */
+async function skillPayload(sourceDir: string): Promise<string[]> {
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  return entries.filter((e) => e.isFile() && e.name.endsWith(".md")).map((e) => e.name).sort();
+}
+
+/**
+ * Install the skill directory (#232). Copies each payload file that is missing
+ * or differs; an up-to-date target reports `already-installed` without writing.
+ * Files already in the target that the source no longer has are left alone —
+ * only SKILL.md is ever loaded, so a leftover reference file is inert, and
+ * deleting under the user's skill dir is not this step's business.
+ * `io` is injectable for tests only (real paths live under HOME).
+ */
+export async function copySkill(
+  opts: { dryRun: boolean },
+  io: { sourceDir?: string; targetDir?: string } = {},
+): Promise<{ status: SkillStepStatus; detail: string }> {
+  const sourceDir = io.sourceDir ?? SKILL_SOURCE_DIR;
+  const targetDir = io.targetDir ?? SKILL_TARGET_DIR;
+  const sourceFile = join(sourceDir, "SKILL.md");
+  if (!(await fileExists(sourceFile))) {
+    return { status: "error", detail: `skill source missing: ${sourceFile}` };
   }
-  if (await fileExists(SKILL_TARGET_FILE)) {
-    const src = await readFile(SKILL_SOURCE_PATH, "utf8");
-    const dst = await readFile(SKILL_TARGET_FILE, "utf8");
-    if (src === dst) return { status: "already-installed", detail: `skill already at ${SKILL_TARGET_FILE}` };
+  const payload = await skillPayload(sourceDir);
+  const outdated: string[] = [];
+  for (const name of payload) {
+    const target = join(targetDir, name);
+    if (!(await fileExists(target))) {
+      outdated.push(name);
+      continue;
+    }
+    const [src, dst] = await Promise.all([
+      readFile(join(sourceDir, name), "utf8"),
+      readFile(target, "utf8"),
+    ]);
+    if (src !== dst) outdated.push(name);
+  }
+  const scope = `${payload.length} file${payload.length === 1 ? "" : "s"}`;
+  if (outdated.length === 0) {
+    return { status: "already-installed", detail: `skill already at ${targetDir} (${scope})` };
   }
   if (opts.dryRun) {
-    return { status: "would-install", detail: `would copy SKILL.md → ${SKILL_TARGET_FILE}` };
+    return { status: "would-install", detail: `would copy ${outdated.join(", ")} → ${targetDir}` };
   }
-  await mkdir(SKILL_TARGET_DIR, { recursive: true });
-  await copyFile(SKILL_SOURCE_PATH, SKILL_TARGET_FILE);
-  return { status: "installed", detail: `skill installed at ${SKILL_TARGET_FILE}` };
+  await mkdir(targetDir, { recursive: true });
+  for (const name of outdated) {
+    await copyFile(join(sourceDir, name), join(targetDir, name));
+  }
+  return { status: "installed", detail: `skill installed at ${targetDir} (${outdated.join(", ")})` };
 }
 
 // ─── post-uninstall skill sweep (#181) ───────────────────────────────────────

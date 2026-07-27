@@ -133,7 +133,7 @@ interface ReflexResponse {
   recall_id: string | null;
 }
 
-export type DetectedMode = "retrieval" | "none" | "generic";
+export type DetectedMode = "retrieval" | "assertion" | "none" | "generic";
 
 // DE + EN retrieval triggers — match the spec in Issue #33.
 const RETRIEVAL_DE = /^\s*(such|finde|wo (ist|sind)|wann (war|hatte)|wieviel|wie viel|was hab(e ich)?|was war)/i;
@@ -143,6 +143,50 @@ export function detectRetrieval(prompt: string): boolean {
   const trimmed = prompt.trim();
   if (trimmed.length === 0) return false;
   return RETRIEVAL_DE.test(trimmed) || RETRIEVAL_EN.test(trimmed);
+}
+
+// ─── assertion lane (#252) ───────────────────────────────────────────────────
+//
+// The PreToolUse lane is bound to a tool, so it reaches an agent that EDITS.
+// Writing a sentence touches nothing: a draft reply, a changelog entry, an
+// issue comment or an answer about project state makes factual claims and
+// fires no hook — the claim comes out of model memory while the vault holds
+// the measured answer. A finished sentence is not lexically distinguishable
+// from an opinion, so the request is classified instead of the output: "draft
+// a reply", "write the release notes", "what's the state of X" are all
+// recognisable in the PROMPT, before the text exists.
+//
+// Deliberately narrow — two signals are required, never a bare verb, because
+// a lane that fires on every declarative prompt is the noise that made the
+// passive channel fail. Misses claims that only arise mid-draft; that is the
+// known gap, tracked in #252 as the case for an outbound verification pass.
+
+/** Composing an artefact for someone else. */
+const COMPOSE_VERB =
+  /\b(draft|write|compose|announce|reply|respond|publish|schreib\w*|verfass\w*|formulier\w*|entwirf|entwerfe|antworte\w*|beantworte|ver(ö|oe)ffentlich\w*)\b/i;
+
+/** …that leaves this machine. `#123` counts: naming an issue is outward. */
+const OUTWARD_ARTIFACT =
+  /(\B#\d+\b|\b(release[- ]?notes?|release-?notizen|changelog|(ä|ae)nderungsprotokoll|announcement|ank(ü|ue)ndigung|blog\w*|newsletter|readme|docs?|documentation|dokumentation|issue|pr|pull[- ]?requests?|comment|kommentar|reply|antwort|thread|discord|mail|e-?mail|posting|tweet|beitrag)\b)/i;
+
+/** Asking for a state… */
+const STATE_QUESTION =
+  /\b(what'?s|what is|how (far|many|much|good)|status|state|wie (ist|weit|viele?|gut)|stand|wo stehen wir)\b/i;
+
+/** …that this project has actually measured or recorded. */
+const PROJECT_STATE_NOUN =
+  /\b(measured?|measurement|benchmark|eval|recall@\w*|numbers?|metrics?|coverage|latency|ceiling|zahlen|gemessen|messung|kennzahl\w*|milestone|roadmap|release|version|tests?)\b/i;
+
+/**
+ * #252: does the prompt ask for an ASSERTION — outbound text, or a claim about
+ * this project's measured state? Both end in sentences someone else reads, and
+ * neither edits a file, so no other lane fires for them.
+ */
+export function detectAssertion(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length === 0) return false;
+  if (COMPOSE_VERB.test(trimmed) && OUTWARD_ARTIFACT.test(trimmed)) return true;
+  return STATE_QUESTION.test(trimmed) && PROJECT_STATE_NOUN.test(trimmed);
 }
 
 // #151: trivial-prompt gate. Bare acks, one-worders and slash-command
@@ -245,6 +289,9 @@ async function main(): Promise<void> {
   let detectedMode: DetectedMode;
   if (isRetrieval) {
     detectedMode = "retrieval";
+  } else if (detectAssertion(prompt)) {
+    // #252 — recalls where the default retrieval-only mode used to stay silent.
+    detectedMode = "assertion";
   } else if (HOOK_MODE === "all") {
     detectedMode = "generic";
   } else {
@@ -267,7 +314,7 @@ async function main(): Promise<void> {
   ).catch(() => null);
 
   // For "generic" mode we only show top-tier hits, so request fewer (k=3).
-  const k = detectedMode === "retrieval" ? 5 : 3;
+  const k = detectedMode === "generic" ? 3 : 5;
   const effectiveFloor = effectiveScoreFloor(detectedMode);
 
   let resp: RecallResponse | null = null;
@@ -431,6 +478,17 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
     sections.push(
       `The user prompt looks like a LOOKUP / retrieval query. ` +
         `Use bastra-recall:recall (and find_document if pdf-likely) BEFORE conversation_search / web_search. ` +
+        `Pre-recalled candidates for this prompt:`,
+    );
+  } else if (mode === "assertion") {
+    // #252: the failure mode is asserting a measured number from model memory
+    // while the vault holds it. Naming the alternative — say you don't know —
+    // matters as much as the candidates; a hint block alone invites a guess.
+    sections.push(
+      `The prompt asks for text that makes a CLAIM — outbound writing, or a statement about this project's measured state. ` +
+        `Do NOT assert numbers, measurements, dates or project history from model memory. ` +
+        `Check the candidates below (and recall again with the specific claim if none fits); ` +
+        `if the vault does not answer it, write that you do not know instead of guessing. ` +
         `Pre-recalled candidates for this prompt:`,
     );
   } else {

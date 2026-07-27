@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install bastra-recall skill into ~/.claude/skills/bastra-recall/
-# rerun after every change to SKILL.md to refresh the local copy.
+# rerun after every change to the skill files to refresh the local copy.
 #
 # Migration: removes any pre-existing ~/.claude/skills/nexus-recall/ so the
 # old skill doesn't shadow the new one in the Claude Code skill loader.
@@ -17,7 +17,10 @@ if [ -d "${legacy}" ]; then
 fi
 
 mkdir -p "${dst}"
-cp "${src}/SKILL.md" "${dst}/SKILL.md"
+# The skill is a directory, not a file (#232): SKILL.md plus the reference
+# files it points at. The install scripts and cursor-rules.mdc next to them are
+# not part of the skill and stay out of ~/.claude/skills/.
+cp "${src}"/*.md "${dst}/"
 
-echo "✓ bastra-recall skill installed at ${dst}/SKILL.md"
+echo "✓ bastra-recall skill installed at ${dst}/"
 echo "  Restart Claude Code so the skill loader picks up the new file."

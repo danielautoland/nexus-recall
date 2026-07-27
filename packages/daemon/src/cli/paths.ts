@@ -36,6 +36,10 @@ export const SKILL_SOURCE_PATH = firstExisting([
   resolve(PACKAGE_ROOT, "skill", "SKILL.md"),
   resolve(PACKAGE_ROOT, "..", "skill", "SKILL.md"),
 ]);
+/** The skill ships as a directory, not a single file (#232): SKILL.md plus the
+ *  reference files it points at. Anchored on the resolved SKILL.md so source
+ *  and npm-package layouts stay in step. */
+export const SKILL_SOURCE_DIR = dirname(SKILL_SOURCE_PATH);
 export const SKILL_TARGET_DIR = resolve(homedir(), ".claude/skills/bastra-recall");
 export const SKILL_TARGET_FILE = resolve(SKILL_TARGET_DIR, "SKILL.md");
 

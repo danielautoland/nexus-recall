@@ -23,6 +23,7 @@ Call `recall(query, k=5)` proactively in these moments:
 | **Before writing/editing a file** | `"writing <filetype> at <path>, contains <topics>"` — catches lessons before mistakes (e.g. CSS pitfalls, schema rules) |
 | **Before a new coding block / plan in a feature area** | `"<project> <feature/area> current state files architecture"` — surfaces which files are relevant + what's already built (see Project topology below) |
 | **Before a multi-step plan or recommendation** | `"giving plan/recommendation for <topic>"` — surfaces format preferences |
+| **Before asserting a number, a measurement or project history** in text meant for anyone else — a reply, release notes, a changelog entry, an issue comment, docs | the claim itself: `"<project> <what is being claimed> measured"` |
 | **User asks for retrieval / lookup** ("find...", "where is...", "how much was...", "when did...", "do I have a...", "such mal meinen...") | the prompt itself + direct nouns — ALWAYS try `recall` and `find_document` **before** any other search tool (conversation_search, web_search) |
 | **User prompt touches a stored topic** | the prompt itself, optionally with project context |
 | **Before `save_memory`** | the title/topic — duplicate check |
@@ -36,6 +37,8 @@ What to do with hits (interpret the score — hybrid scores are rank-agreement m
 - **Below ~30** → noise in BM25-only mode, where `recall` drops it at the default floor. On the hybrid path (embeddings on) that floor practically never fires — the score is a rank sum, so a hit would need roughly rank 273 in *both* arms to fall under it. There, `weak_result` is the signal that nothing anchored, and `no_home` the stricter one that the fact has no home in the vault at all.
 
 Idempotent: don't reload a memory you've already loaded this turn.
+
+**Claims that leave the machine are the strictest case.** A number, a measurement, a date or a piece of project history that goes into a reply, release notes, a changelog, an issue comment or documentation is quoted back later — so it gets recalled first, every time, no matter how confident the recollection feels. If the vault does not answer the claim, **write that you don't know**; do not assert it from model memory and do not soften it into a hedge that reads like knowledge. The lane exists because this is the one case with no safety net: no file is edited, so nothing else fires.
 
 ### Tool priority for retrieval
 

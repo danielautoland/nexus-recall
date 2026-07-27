@@ -115,6 +115,18 @@ contract (`bridges.ts:7`): **a bridge carries only term lists and a language —
 never a memory id, body, or any vault content.** Language-partitioned: a bridge
 fires only for a query detected as its language.
 
+**Scope: the bridge layer is latin-alphabet only, by design.** Detection knows
+two languages (`SUPPORTED_LANGUAGES = ["de", "en"]`,
+`learned-recall/language.ts:20`) and `distinctiveTerms` tokenizes on
+`/[^a-zäöüß0-9]+/i` (`learned-recall/bridges.ts:66`), so a query in Cyrillic,
+Greek, CJK or any other non-latin script yields no trigger and no expansion
+terms — nothing to mint from, nothing to fire. A mixed-language vault gets
+bridges for its latin-query half and none for the rest. This affects **only**
+vocabulary expansion: BM25 and `recall_when` index and match those queries
+normally, so recall itself works — it just doesn't get the widening. Extending
+the set means a stopword list per new language plus a tokenizer that keeps its
+alphabet (#231).
+
 Bridges are minted **locally and offline**, never on the recall hot path:
 telemetry event log → `reconstructReaches` → `mintBridge` (query distinctive
 terms = trigger; the resolved memory's distinctive terms not in the query =

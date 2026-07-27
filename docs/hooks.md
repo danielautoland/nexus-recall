@@ -122,6 +122,22 @@ Non-retrieval prompts emit `{}` by default. Set `BASTRA_PROMPT_HOOK_MODE=all`
 to also recall on generic prompts (only score ≥ 100 hits surface — much
 higher noise gate).
 
+**Assertion lane (#252):** the `PreToolUse` lane is bound to a tool, so it
+reaches an agent that *edits*; writing a sentence touches nothing. A prompt
+asking for outbound text ("draft a reply", "write the release notes") or for
+a claim about measured project state ("what's the state of X") is classified
+as `assertion` and recalls at the retrieval floor — where the default
+retrieval-only mode used to stay silent. The request is classified, not the
+output: a finished sentence is not lexically distinguishable from an opinion,
+and the intent is visible in the prompt before the text exists. Two signals
+are required (a composing verb *and* an outward artefact; a state question
+*and* a project-state noun), so a bare "write a helper" never fires. The hint
+block instructs the agent not to assert numbers from model memory and to say
+it does not know when the vault has no answer. Claims that only arise
+mid-draft are still missed — that is the open half of #252. Backoff applies
+normally (unlike explicit retrieval, an assertion prompt is not the user
+asking for memory).
+
 **Reflex lane (#217):** independent of the retrieval gate, every non-trivial
 prompt is POSTed to `/hook/reflex` (parallel to the recall call, same
 250 ms budget). The daemon hard-matches the prompt against the
@@ -133,6 +149,19 @@ lookup block. Reflex hits bypass the #161 backoff (user-wired = never
 noise) but respect the per-session dedup (max 1×/4h per memory).
 Kill switch: `BASTRA_REFLEX=off` or `reflex.enabled: false` in
 `cli-settings.json`. Every firing is traced as a `hook_reflex` event.
+
+Token-AND means the phrase's *whole* content survives the match, so
+sentence-length `recall_when` entries never fire; the stopword list that
+trims function words is German + English only. Authoring guidance:
+[docs/memory-schema.md](./memory-schema.md#recall-fields).
+
+**Where the events land:** hook and daemon telemetry — `hook_reflex`,
+`prompt_hook_call`, the reach records the bridge layer mints from — are
+written to `BASTRA_LOG_PATH` (default `~/.bastra/logs/events-YYYY-MM-DD.jsonl`),
+**not** into the vault's `.bastra/` directory. That one holds vault-bound
+state (the audit log, usage sidecar, curator state); the event log sits
+outside the vault so it never syncs with it. Read it with `bastra logs`
+rather than by hand.
 
 Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, …).
 
