@@ -408,7 +408,14 @@ test("A10 (Weg C): a genuinely failed save leaves everything untouched", async (
   // A real saveMemory failure — a non-empty directory occupies the successor's
   // write target so temp+rename cannot land. Weg C trashes nothing regardless,
   // so the pre-A10 twin is trivially safe; the test also asserts the import
-  // reports the save failure rather than swallowing it.
+  // reports the failure rather than swallowing it.
+  //
+  // #245 moved WHERE this is caught: a directory on the target path makes the
+  // ownership read fail with EISDIR, and ownership is now fail-closed, so the
+  // import refuses at the Pass-0 gate instead of trying the save and failing.
+  // Both are correct outcomes and both are visible in skipped[] — the
+  // assertion below accepts either cause, but keeps the guarantee that matters
+  // sharp: nothing imported, nothing overwritten, the legacy node alive.
   const { importVault, IMPORT_ROOT } = await import("../src/import-vault.js");
   const root = await mkdtemp(join(tmpdir(), "bastra-import-savefail-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -429,10 +436,10 @@ test("A10 (Weg C): a genuinely failed save leaves everything untouched", async (
 
   const res = await importVault(target, src, { label: "demo" });
 
-  assert.equal(res.imported, 0, "the successor save must fail");
+  assert.equal(res.imported, 0, "the successor save must not land");
   assert.ok(
-    res.skipped.some((s) => /save failed/.test(s.reason)),
-    `expected a save failure, got ${JSON.stringify(res.skipped)}`,
+    res.skipped.some((s) => /save failed|ownership/.test(s.reason)),
+    `expected a visible save failure or ownership refusal, got ${JSON.stringify(res.skipped)}`,
   );
   assert.deepEqual(res.migrated, [], "no successor written → nothing migrated");
 

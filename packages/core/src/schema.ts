@@ -1,5 +1,23 @@
 import { z } from "zod";
 import { truncateSummaryTo, SUMMARY_MAX } from "./summary.js";
+import { rescueFrontmatter, repairRequired } from "./frontmatter-rescue.js";
+
+/** Fields `repairRequired` guarantees (#222). A validation error on one of
+ *  these after the repair means something the loader cannot reason about, so
+ *  it still throws rather than pretend. Everything else is optional and may be
+ *  dropped to keep the node alive. */
+const REQUIRED_FRONTMATTER_FIELDS = new Set([
+  "id",
+  "title",
+  "type",
+  "summary",
+  "topic_path",
+  "tags",
+  "scope",
+  "recall_when",
+  "created",
+  "updated",
+]);
 
 /**
  * YAML 1.1 parses bare `2026-05-01` as a JS Date.
@@ -239,11 +257,24 @@ export const FrontmatterSchema = z.object({
 });
 export type Frontmatter = z.infer<typeof FrontmatterSchema>;
 
+/** One field the loader had to repair to keep the node alive (#222). */
+export interface DamagedField {
+  field: string;
+  reason: string;
+}
+
 export interface Memory {
   fm: Frontmatter;
   body: string;
   filePath: string;
   mtime: number;
+  /** #222: present ONLY when the loader degraded something. A healthy memory
+   *  carries no marker at all, so `damaged` is a truthful signal and not a
+   *  field every consumer has to ignore. Never written back to disk — the file
+   *  stays exactly as the user wrote it; this is an in-memory annotation that
+   *  the vault report and vault care surface so the damage is visible instead
+   *  of living in a `console.warn` nobody sees. */
+  damaged?: DamagedField[];
 }
 
 /**
@@ -269,24 +300,50 @@ export function parseMemoryWith(
   filePath: string,
   mtime: number,
 ): Memory {
-  const { data, content } = matter(raw);
+  // #222: when the block as a whole is not valid YAML, rescue it entry by
+  // entry instead of losing the node. A healthy file takes the same path it
+  // always did and comes back with an empty `damaged` list.
+  const rescued = rescueFrontmatter(matter, raw);
+  if (!rescued) throw new NotAMemoryFile(filePath);
+  const { data, content, damaged } = rescued;
   // Pre-check: if there's no recognizable memory `type:` field, throw a
   // NotAMemoryFile so the caller can silently skip it. Lets the vault scan
-  // recursively through an Obsidian vault and only pick up memorys.
-  if (
-    !data ||
-    typeof data !== "object" ||
-    !("type" in data) ||
-    !MEMORY_TYPES.has(String((data as Record<string, unknown>).type))
-  ) {
+  // recursively through an Obsidian vault and only pick up memorys. This stays
+  // strict on purpose — `type` is what says "this file is a memory at all",
+  // and a guessed one would drag plain notes into the index.
+  if (!("type" in data) || !MEMORY_TYPES.has(String(data.type))) {
     throw new NotAMemoryFile(filePath);
   }
+  repairRequired(data, filePath, mtime, content, damaged, isPathSafeComponent);
   const parsed = FrontmatterSchema.safeParse(data);
   if (!parsed.success) {
-    const where = parsed.error.issues
-      .map((i) => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
-    throw new Error(`invalid frontmatter in ${filePath}: ${where}`);
+    // Everything required is present and structurally sound by now, so a
+    // failure here is an OPTIONAL field the repair does not cover (a malformed
+    // `related_via` entry, an out-of-range `salience`). Drop those fields and
+    // keep the node — the same trade the rest of this path makes.
+    const dropped = new Set<string>();
+    for (const issue of parsed.error.issues) {
+      const field = String(issue.path[0] ?? "");
+      if (!field || REQUIRED_FRONTMATTER_FIELDS.has(field)) {
+        const where = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+        throw new Error(`invalid frontmatter in ${filePath}: ${where}`);
+      }
+      dropped.add(field);
+    }
+    for (const field of dropped) {
+      delete data[field];
+      damaged.push({ field, reason: "optional field did not validate — dropped so the memory still loads" });
+    }
+    const retry = FrontmatterSchema.safeParse(data);
+    if (!retry.success) {
+      const where = retry.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+      throw new Error(`invalid frontmatter in ${filePath}: ${where}`);
+    }
+    return { fm: retry.data, body: content, filePath, mtime, damaged };
   }
-  return { fm: parsed.data, body: content, filePath, mtime };
+  // A healthy memory carries NO marker — `damaged` stays absent so consumers
+  // can treat its presence as the signal it is.
+  return damaged.length > 0
+    ? { fm: parsed.data, body: content, filePath, mtime, damaged }
+    : { fm: parsed.data, body: content, filePath, mtime };
 }

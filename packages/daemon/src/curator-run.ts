@@ -57,7 +57,15 @@ const CONSOLIDATION_MIN_CLUSTER = 3;
 const CONSOLIDATION_MIN_AGE_DAYS = 30;
 
 interface VaultLike {
-  list(): Array<{ fm: Record<string, unknown>; body?: string }>;
+  list(): Array<{
+    fm: Record<string, unknown>;
+    body?: string;
+    /** #222 — set by the loader when it had to repair a field to keep the
+     *  memory in the index. Optional here so the test doubles in this file's
+     *  suite stay minimal. */
+    damaged?: Array<{ field: string; reason: string }>;
+    filePath?: string;
+  }>;
   get(id: string): { fm: Record<string, unknown> } | undefined;
   size(): number;
 }
@@ -232,6 +240,28 @@ function collectFlaggedCaptures(vault: VaultLike): Array<{ id: string; title?: s
       ? (m.fm.injection_flags as unknown[]).filter((f): f is string => typeof f === "string")
       : [];
     if (id && flags.length > 0) out.push({ id, title: str(m.fm.title), flags });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * #222: memories the loader repaired to keep them in the index. `Memory.damaged`
+ * is set at parse time and never written back to disk, so this report section
+ * is the only surface where the degradation is visible — the alternative was a
+ * `console.warn` on a daemon stderr nobody reads, which is how 28 dropped files
+ * went unnoticed in the first place.
+ */
+function collectDamagedFrontmatter(
+  vault: VaultLike,
+  vaultRoot: string,
+): Array<{ id: string; title?: string; path: string; fields: Array<{ field: string; reason: string }> }> {
+  const out: Array<{ id: string; title?: string; path: string; fields: Array<{ field: string; reason: string }> }> = [];
+  for (const m of vault.list()) {
+    const id = str(m.fm.id);
+    if (!id || !m.damaged || m.damaged.length === 0) continue;
+    const full = m.filePath ?? "";
+    const rel = full.startsWith(vaultRoot) ? full.slice(vaultRoot.length).replace(/^[/\\]/, "") : full;
+    out.push({ id, title: str(m.fm.title), path: rel, fields: m.damaged });
   }
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -548,6 +578,7 @@ async function runCuratorPassInner(
     ...collectConflictsAndDangling(deps.vault, new Set((await listSkills()).map((s) => s.id))),
     emptyFiles: await collectEmptyFiles(deps.vaultRoot),
     flagged: collectFlaggedCaptures(deps.vault),
+    damaged: collectDamagedFrontmatter(deps.vault, deps.vaultRoot),
     ...(mode !== "acting" ? { pendingReview: true } : {}),
   };
   const reportWritten = await writeVaultHealthReport(deps.vaultRoot, data);

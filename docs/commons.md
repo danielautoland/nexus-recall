@@ -5,9 +5,17 @@ community-proven engineering recipes — **never your private vault**. Reading i
 one-way and read-only; every contribution goes through a human-reviewed PR. There is
 **no auto-egress**: nothing leaves your machine without an explicit, reviewed PR.
 
-Default repo: `https://github.com/n0mad-ai/bastra-commons` (override with
-`BASTRA_COMMONS_REPO`). Default clone path: `~/.bastra/commons` (override with
-`BASTRA_COMMONS_PATH`).
+Default repo: `https://github.com/n0mad-ai/bastra-commons`. Default clone path:
+`~/.bastra/commons` (override with `BASTRA_COMMONS_PATH`).
+
+`BASTRA_COMMONS_REPO` points the clone and the contribution PR at a different
+repo. It is **allowlisted** (#260): only `github.com/n0mad-ai/…` is accepted by
+default, and anything else — a different host, a different owner, a local path,
+an unparseable value — is refused before the clone and before the push, because
+the contribution path opens a PR against exactly this target and would ship your
+verification records there. To use another target on purpose, set
+`BASTRA_ALLOW_REMOTE_COMMONS=1`; every clone and every submission then prints the
+overridden target on one line, each time.
 
 ## How it plugs into recall
 

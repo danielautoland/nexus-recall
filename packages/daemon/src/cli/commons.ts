@@ -18,6 +18,73 @@ import { getCommonsEnabled, setCommonsEnabled } from "../settings.js";
 
 export const COMMONS_REPO_URL = process.env.BASTRA_COMMONS_REPO ?? "https://github.com/n0mad-ai/bastra-commons.git";
 
+/** #260 — the only host/owner the commons paths talk to without an explicit
+ *  opt-in. `BASTRA_COMMONS_REPO` is free-form env and feeds both `git clone`
+ *  and `gh pr create --repo`; the clone is read-only, but the PR path is
+ *  EGRESS — a redirected repo would receive verification records and scrubbed
+ *  bridges. Same posture as `assertLocalOrOptIn` for Ollama: default target,
+ *  or an opt-in that says the operator meant it. */
+const COMMONS_ALLOWED_HOST = "github.com";
+const COMMONS_ALLOWED_OWNER = "n0mad-ai";
+const COMMONS_OPT_IN_ENV = "BASTRA_ALLOW_REMOTE_COMMONS";
+
+/** `owner/repo` for a git remote URL, or null if it is not a recognizable
+ *  remote. Handles the three forms git accepts for GitHub: https, `ssh://`,
+ *  and the scp-like `git@host:owner/repo`. Replaces an inline
+ *  `.replace(/^https:\/\/github\.com\//)` that produced a garbage `--repo`
+ *  argument for the ssh forms instead of admitting it could not parse them. */
+export function commonsRepoSlug(rawUrl: string): string | null {
+  const parsed = parseRemote(rawUrl);
+  return parsed ? `${parsed.owner}/${parsed.repo}` : null;
+}
+
+function parseRemote(rawUrl: string): { host: string; owner: string; repo: string } | null {
+  const url = rawUrl.trim();
+  if (!url) return null;
+  // scp-like: git@github.com:owner/repo(.git)
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(url);
+  if (scp && !url.includes("://")) return { host: scp[1].toLowerCase(), owner: scp[2], repo: scp[3] };
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/^(https?|ssh|git):$/.test(parsedUrl.protocol)) return null; // file:, and anything local, is not a remote
+  const segments = parsedUrl.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) return null;
+  return { host: parsedUrl.hostname.toLowerCase(), owner: segments[0], repo: segments[1].replace(/\.git$/, "") };
+}
+
+/** Null when this target may be used; otherwise the reason to print and abort.
+ *  Fail-closed on purpose: git would happily clone a path or an odd URL, so an
+ *  unrecognized shape must not fall through the way the Ollama guard does. */
+export function commonsRepoRefusal(rawUrl: string): string | null {
+  if (process.env[COMMONS_OPT_IN_ENV] === "1") return null;
+  const parsed = parseRemote(rawUrl);
+  if (
+    parsed &&
+    parsed.host === COMMONS_ALLOWED_HOST &&
+    parsed.owner.toLowerCase() === COMMONS_ALLOWED_OWNER
+  )
+    return null;
+  const shown = parsed ? `${parsed.host}/${parsed.owner}/${parsed.repo}` : rawUrl || "(empty)";
+  return (
+    `refusing commons target "${shown}" — expected ${COMMONS_ALLOWED_HOST}/${COMMONS_ALLOWED_OWNER}/…\n` +
+    `  The contribution path (\`bastra commons verify\`) opens a PR against this repo, so a redirected\n` +
+    `  target would receive your verification records. Set ${COMMONS_OPT_IN_ENV}=1 to use it on purpose.`
+  );
+}
+
+/** Print the one-line warning that an override is in effect (#260). Called at
+ *  each egress point so the operator sees the target they redirected to, every
+ *  time, not just when they set the variable. */
+function noteCommonsOverride(action: string): void {
+  if (process.env[COMMONS_OPT_IN_ENV] !== "1") return;
+  if (COMMONS_REPO_URL === "https://github.com/n0mad-ai/bastra-commons.git") return;
+  process.stdout.write(`! commons target overridden (${COMMONS_OPT_IN_ENV}=1): ${action} → ${COMMONS_REPO_URL}\n`);
+}
+
 export function commonsPath(): string {
   return process.env.BASTRA_COMMONS_PATH ?? join(homedir(), ".bastra", "commons");
 }
@@ -170,6 +237,17 @@ async function cmdVerify(recipeId: string | null, result: string | null, note: s
     process.stdout.write(`→ submit manually: open a PR adding ${recordPath}\n`);
     return 0;
   }
+  // #260: the gate sits BEFORE the push, not just before `gh pr create` — the
+  // push already ships the record to whatever origin the clone carries. The
+  // record itself stays on disk either way, so refusing here costs nothing but
+  // the automatic submission.
+  const refusal = commonsRepoRefusal(COMMONS_REPO_URL);
+  if (refusal) {
+    process.stderr.write(`✗ ${refusal}\n`);
+    process.stdout.write(`→ record kept at ${recordPath} — submit manually if you meant to\n`);
+    return 1;
+  }
+  noteCommonsOverride("verification PR");
   const branch = `verify/${recipeId}-${verifier}-${result}`;
   const steps: [string[], string][] = [
     [["-C", root, "checkout", "-B", branch], "branch"],
@@ -185,8 +263,9 @@ async function cmdVerify(recipeId: string | null, result: string | null, note: s
       return 0;
     }
   }
-  if (gh) {
-    const pr = spawnSync(gh, ["pr", "create", "--repo", COMMONS_REPO_URL.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, ""), "--head", branch, "--title", `verify: ${recipeId} → ${result}`, "--body", `Verification record from \`bastra commons verify\`:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\``], { stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+  const repoSlug = commonsRepoSlug(COMMONS_REPO_URL);
+  if (gh && repoSlug) {
+    const pr = spawnSync(gh, ["pr", "create", "--repo", repoSlug, "--head", branch, "--title", `verify: ${recipeId} → ${result}`, "--body", `Verification record from \`bastra commons verify\`:\n\n\`\`\`json\n${JSON.stringify(record, null, 2)}\n\`\`\``], { stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
     if (pr.status === 0) process.stdout.write(`✓ verification PR opened: ${String(pr.stdout).trim()}\n`);
     else process.stdout.write(`→ branch '${branch}' pushed — open the PR manually (gh pr create failed)\n`);
   } else {
@@ -225,6 +304,12 @@ async function cloneOrPull(): Promise<number> {
       return 1;
     }
   } else {
+    const refusal = commonsRepoRefusal(COMMONS_REPO_URL);
+    if (refusal) {
+      process.stderr.write(`✗ ${refusal}\n`);
+      return 1;
+    }
+    noteCommonsOverride("clone");
     process.stdout.write(`→ cloning ${COMMONS_REPO_URL} → ${path}\n`);
     const r = run(git, ["clone", "--depth", "1", COMMONS_REPO_URL, path], { timeoutMs: 300_000, showProgress: true, env: { GIT_TERMINAL_PROMPT: "0" } });
     if (!r.ok) {

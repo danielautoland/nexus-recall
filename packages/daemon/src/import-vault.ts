@@ -61,6 +61,21 @@ const DEFAULT_EXCLUDED_DIRS = new Set(["_archive", "archive"]);
  *  colliding id is foreign and must never be overwritten (#240). */
 const KNOWN_ADAPTERS = new Set(["claude-code-memory", "markdown"]);
 
+/** Who owns the node currently sitting on a candidate id.
+ *  `unverifiable` is the #245 P1 addition: the node EXISTS but could not be
+ *  read, so the answer is unknown — and unknown must behave like foreign at
+ *  the write site, not like free. */
+type Ownership = "free" | "mine" | "foreign" | "unverifiable";
+
+/** Result of minting an id: either a usable one, or a reason to skip the file
+ *  visibly. The import never forces a write onto an id it could not clear. */
+type Allocation = { id: string; skip?: undefined } | { id?: undefined; skip: string };
+
+/** Deterministic hash-suffix candidates tried after the readable id is taken
+ *  by a foreign node. Exhausting them is astronomically unlikely — and if it
+ *  happens, the file is skipped rather than written onto a stranger (#245 P2). */
+const HASH_CANDIDATES = 8;
+
 export interface ImportVaultSkip {
   path: string;
   reason: string;
@@ -186,33 +201,54 @@ export async function importVault(
   // batch-allocated id could still land on a stranger. Ownership is read back
   // from the `source` stamp: files carry "<adapter>:<label>:<relKey>", the
   // synthetic index carries "index:<label>".
-  const ownership = async (id: string, myKey: string, isIndex: boolean): Promise<"free" | "mine" | "foreign"> => {
-    let data: Record<string, unknown>;
+  const ownership = async (id: string, myKey: string, isIndex: boolean): Promise<Ownership> => {
+    let raw: string;
     try {
-      data = safeParse(await readFile(join(vaultRoot, folder, `${id}.md`), "utf8")).data;
-    } catch {
-      return "free"; // no node on this id
+      raw = await readFile(join(vaultRoot, folder, `${id}.md`), "utf8");
+    } catch (err) {
+      // #245 P1: fail CLOSED. Only a confirmed ENOENT means "no node here".
+      // Any other failure — EACCES/EIO/ETIMEDOUT are all reachable on the
+      // cloud mounts this project explicitly supports — leaves ownership
+      // UNKNOWN, and an unknown owner must never be overwritten.
+      return (err as NodeJS.ErrnoException)?.code === "ENOENT" ? "free" : "unverifiable";
     }
+    const data = safeParse(raw).data;
     const src = typeof data.source === "string" ? data.source : "";
     if (isIndex) return src === `index:${label}` ? "mine" : "foreign";
     const parts = src.split(":");
     if (parts[1] === label && KNOWN_ADAPTERS.has(parts[0])) {
-      // stamped with a relKey → strict match; a pre-stamp import (no relKey,
-      // same label+adapter) is treated as mine — backfilled on overwrite.
-      return parts.length >= 3 ? (parts.slice(2).join(":") === myKey ? "mine" : "foreign") : "mine";
+      // #245 P1: a stamp WITHOUT a relKey predates the provenance stamp, so
+      // its source path is unknowable — it may belong to a source file that
+      // was since renamed or removed. Treating it as this file's predecessor
+      // was an overwrite on a guess, and it hit every existing user on the
+      // first reimport after the update. Unknown provenance is FOREIGN: the
+      // import lands beside it as a visible duplicate (Weg C) instead of
+      // replacing content it cannot prove it produced.
+      return parts.length >= 3 && parts.slice(2).join(":") === myKey ? "mine" : "foreign";
     }
     return "foreign"; // hand-authored, the index role, or a different label
   };
   /** Batch-unique id that never resolves onto a FOREIGN on-disk node: on
    *  foreign collision, fall back to a path-stable hash suffix (same across
-   *  runs because `seed` is stable). The guard bounds the (practically
-   *  impossible) hash-collision-with-a-stranger case. */
-  const allocateOwnedId = async (base: string, seed: string, isIndex = false): Promise<string> => {
+   *  runs because `seed` is stable).
+   *
+   *  #245 P2: the loop used to mint a candidate on its last pass and return it
+   *  WITHOUT checking it — an exhausted allocator handed back an id that could
+   *  belong to a stranger. Every candidate is now checked before it is handed
+   *  out, and running out is a SKIP, never a forced write. Same for an
+   *  unverifiable target: refusing beats guessing, because the write path is
+   *  temp+rename with no trash. */
+  const allocateOwnedId = async (base: string, seed: string, isIndex = false): Promise<Allocation> => {
     let id = uniqueId(base, used);
-    for (let guard = 0; guard < 8 && (await ownership(id, seed, isIndex)) === "foreign"; guard++) {
+    for (let guard = 0; ; guard++) {
+      const owner = await ownership(id, seed, isIndex);
+      if (owner === "free" || owner === "mine") return { id };
+      if (owner === "unverifiable")
+        return { skip: `ownership of ${folder}/${id}.md is unverifiable (node exists but is unreadable) — refusing to overwrite` };
+      if (guard >= HASH_CANDIDATES) break;
       id = uniqueId(`${base}-${pathHash(guard === 0 ? seed : `${seed}#${guard}`)}`, used);
     }
-    return id;
+    return { skip: `no free id: "${base}" and all ${HASH_CANDIDATES} hash candidates are owned by foreign nodes` };
   };
 
   // #240/A10 Pass 0: mint every final id from the SOURCE PATHS first, before
@@ -236,7 +272,15 @@ export async function importVault(
     const relDir = relative(sourceDir, filePath).split(sep).slice(0, -1).join(sep);
     const fileBase = basename(filePath, extname(filePath));
     const relSegments = relDir ? relDir.split(sep).filter(Boolean) : [];
-    const id = await allocateOwnedId(slugify([label, ...relSegments, fileBase].join("-")), relKey);
+    const alloc = await allocateOwnedId(slugify([label, ...relSegments, fileBase].join("-")), relKey);
+    if (alloc.skip !== undefined) {
+      // #245: no id could be cleared for this file. Skipping is VISIBLE — the
+      // caller surfaces skipped[] — where the old behaviour was a silent
+      // overwrite of somebody else's node.
+      skipped.push({ path: filePath, reason: alloc.skip });
+      continue;
+    }
+    const id = alloc.id;
     idByPath.set(filePath, id);
     // Keyed by the LINK form, not the raw basename: a body writes `[[two]]`
     // while the file is `Two.md`, so both sides have to pass through the same
@@ -308,6 +352,23 @@ export async function importVault(
       skipped.push({ path: filePath, reason: mapped.reason });
       continue;
     }
+    if (!dryRun) {
+      // #245 P1 (TOCTOU): the id was cleared back in Pass 0, and Pass C runs
+      // much later — long enough for another writer to land a node on it. Ask
+      // again immediately before the write. This narrows the window to
+      // check→rename; closing it entirely needs an ownership-aware commit in
+      // saveMemory (O_EXCL / compare-and-swap), which #245 defers to its own
+      // step. There is no deterministic test for this branch from the public
+      // API, so it is guarded by review and this comment, not by a green test.
+      const owner = await ownership(mapped.input.id as string, relKey, false);
+      if (owner !== "free" && owner !== "mine") {
+        skipped.push({
+          path: filePath,
+          reason: `ownership of ${folder}/${mapped.input.id}.md changed after the id was minted (${owner}) — refusing to overwrite`,
+        });
+        continue;
+      }
+    }
     if (mapped.input.source?.startsWith("claude-code-memory")) byAdapter.claudeCode++;
     else byAdapter.generic++;
     if (!dryRun) {
@@ -352,28 +413,37 @@ export async function importVault(
       // Role-scoped ownership: the synthetic index may only overwrite a node
       // that is itself `source: index:<label>` — never a foreign node that
       // happens to sit on the `-index`/`-index-2` fallback id (#240 P1-b).
-      const id = await allocateOwnedId(slugify(`${label}-index`), `index:${label}`, true);
+      const indexSeed = `index:${label}`;
+      const alloc = await allocateOwnedId(slugify(`${label}-index`), indexSeed, true);
       const sectionCount = [...bySection.keys()].filter((s) => s.length > 0).length;
-      try {
-        await saveMemory(vaultRoot, {
-          id,
-          title: `${label} — Index`,
-          type: "reference",
-          summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
-          body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
-          topic_path: ["imported", label],
-          tags: [...new Set(["imported", label, "index"])],
-          scope: label,
-          recall_when: [`${label} index`, `${label} übersicht`],
-          folder,
-          write_origin: "user-directed",
-          overwrite,
-          source: `index:${label}`,
-        });
-        ids.push(id);
-        indexNode = id;
-      } catch {
-        /* index node is best-effort — never fail the import over it */
+      // #245 P2: if no id could be cleared, the index is simply not written.
+      // It is navigation, not content — the notes themselves already imported,
+      // and no foreign node is worth a nav star.
+      const indexOwner =
+        alloc.id === undefined ? "foreign" : await ownership(alloc.id, indexSeed, true); // #245 P1: TOCTOU re-check
+      if (alloc.id !== undefined && (indexOwner === "free" || indexOwner === "mine")) {
+        const id = alloc.id;
+        try {
+          await saveMemory(vaultRoot, {
+            id,
+            title: `${label} — Index`,
+            type: "reference",
+            summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
+            body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
+            topic_path: ["imported", label],
+            tags: [...new Set(["imported", label, "index"])],
+            scope: label,
+            recall_when: [`${label} index`, `${label} übersicht`],
+            folder,
+            write_origin: "user-directed",
+            overwrite,
+            source: `index:${label}`,
+          });
+          ids.push(id);
+          indexNode = id;
+        } catch {
+          /* index node is best-effort — never fail the import over it */
+        }
       }
     }
   }

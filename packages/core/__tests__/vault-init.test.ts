@@ -71,11 +71,14 @@ test("vault.init order is deterministic (sorted by path)", async () => {
   }
 });
 
-test("vault.init survives a malformed file (warn + skip, others load)", async () => {
+test("vault.init repairs a malformed file instead of dropping it (#222), and still ignores plain notes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "bastra-vault-malformed-"));
   try {
     await writeFile(path.join(dir, "good.md"), memoryMd("good", "Good"));
-    // Frontmatter mit type aber sonst kaputt (required fields fehlen)
+    // Frontmatter with a type but nothing else. This used to land in
+    // skipped[] and vanish from the index — the silent loss #222 is about.
+    // It now loads with a `damaged` marker, because a note the user can still
+    // see in Obsidian must not be invisible to recall.
     await writeFile(
       path.join(dir, "broken.md"),
       `---
@@ -83,17 +86,30 @@ type: lesson
 id: broken
 ---
 
-no title, no summary, no topic_path → schema-fail.
+no title, no summary, no topic_path → repaired, not dropped.
 `,
     );
-    // Plain Obsidian note ohne memory `type:` → silent skip (kein Eintrag in skipped[])
+    // Plain Obsidian note without a memory `type:` → silent skip, unchanged:
+    // structural strictness is what keeps the vault scan from swallowing
+    // ordinary notes, and #222 does not touch it.
     await writeFile(path.join(dir, "note.md"), "# Plain note\n\nNot a memory.\n");
 
     const vault = new Vault(dir);
     const r = await vault.init();
-    assert.equal(r.loaded, 1);
-    assert.equal(r.skipped.length, 1);
-    assert.match(r.skipped[0].path, /broken\.md$/);
+    assert.equal(r.loaded, 2, "both the healthy and the repaired memory must be in the index");
+    assert.equal(r.skipped.length, 0, "a repairable file is no longer a skip");
+
+    const repaired = vault.get("broken");
+    assert.ok(repaired, "the repaired memory must be retrievable by its id");
+    assert.ok(repaired!.damaged && repaired!.damaged.length > 0, "the repair must be flagged, not silent");
+    assert.ok(
+      repaired!.damaged!.some((d) => d.field === "title"),
+      `expected the missing title to be named, got ${JSON.stringify(repaired!.damaged)}`,
+    );
+
+    const healthy = vault.get("good");
+    assert.ok(healthy);
+    assert.equal(healthy!.damaged, undefined, "a healthy memory must carry no marker");
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }

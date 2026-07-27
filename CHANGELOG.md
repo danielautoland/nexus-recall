@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A broken character no longer costs you the whole note.** The vault loader
+  used to drop any memory whose frontmatter did not parse — an unknown escape
+  sequence inside a quoted value, an unquoted line containing a `:` or a `·`,
+  a missing required key — and the only trace was a warning on a daemon stderr
+  nobody reads. On one contributor's vault that was 28 notes, invisible in
+  Obsidian's file list and absent from every recall. The loader now rescues the
+  frontmatter one entry at a time, fills what is missing from what it can know
+  (the filename, the body, the file's own timestamp), and keeps the note in the
+  index. Nothing is rewritten on disk: the repairs live in memory and are listed
+  in the vault report under "Damaged frontmatter", so the damage is something
+  you can see and fix rather than something that quietly happened. Structural
+  strictness is unchanged — a file without a recognizable `type:` is still an
+  ordinary note, not a memory. Reported by zzallirog. (#222)
+- **The folder import stops guessing about who owns a node.** Four paths could
+  still overwrite a stranger through `saveMemory(overwrite:true)` — which is
+  temp+rename with no trash, so the loss is final. A prior import with no
+  recorded source path now counts as foreign rather than as its own predecessor
+  (this one hit every existing user on the first reimport after updating); a
+  read error while checking ownership is refused instead of read as "nothing
+  there", which matters on the cloud mounts this project supports; ownership is
+  re-checked immediately before each write; and an exhausted id allocator skips
+  the file rather than handing back an id it never verified. Every refusal is
+  visible in the import's `skipped` list. Follow-up to #240, found by an
+  adversarial counter-audit. (#245)
+- **`bastra skills add` says what it actually did.** It reported that a ghost
+  now renders as a skill while minting a fresh empty node beside the untouched
+  ghost — because in an imported vault the name you know (`uncertainty-check`)
+  and the id your notes link (`memory-uncertainty-check`) are different strings.
+  The command now resolves the name against the ghosts that really exist, tells
+  you which id it took, refuses when the name matches more than one, and admits
+  when it adopted nothing at all. The help text no longer claims the link slug
+  and the node id are always the same. Reported by zzallirog. (#223)
 - **`bastra bridges harvest` no longer dies on a model it never pulled.**
   The far-slice reranker fired its default Ollama chat model blind and 404'd
   at the first case on any machine without it. Harvest now probes `/api/tags`
@@ -15,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   other chat model — and when nothing fits it says which model to pull instead
   of erroring mid-run. `BASTRA_RERANK_MODEL` still overrides. Reported by
   zzallirog.
+
+### Security
+
+- **The Commons target is allowlisted.** `BASTRA_COMMONS_REPO` fed both the
+  clone and the contribution PR with no check on where it pointed, and the
+  contribution path is egress — a redirected repo would receive your
+  verification records. Only `github.com/n0mad-ai/…` is accepted now; anything
+  else is refused before the clone and before the push, and it fails closed, so
+  a local path or an unparseable value is refused rather than passed through to
+  git. `BASTRA_ALLOW_REMOTE_COMMONS=1` opts in on purpose and prints the
+  overridden target every time. Flagged by zzallirog during a security read.
+  (#260)
 
 ## [0.8.6] — 2026-07-22
 

@@ -68,6 +68,10 @@ export interface VaultHealthData {
   emptyFiles?: string[];
   /** #147: captures whose content carried prompt-injection markers. */
   flagged?: Array<{ id: string; title?: string; flags: string[] }>;
+  /** #222: memories the loader had to repair to keep them in the index. The
+   *  file on disk is untouched — this is the only place the degradation is
+   *  visible, because the daemon's stderr is not somewhere a user looks. */
+  damaged?: Array<{ id: string; title?: string; path: string; fields: Array<{ field: string; reason: string }> }>;
   /** True on review-only passes (dry-run / first-ever run): the stale list
    *  shows what WOULD be demoted — nothing has acted yet. */
   pendingReview?: boolean;
@@ -180,6 +184,24 @@ export function renderVaultHealthReport(data: VaultHealthData): string {
     L.push("");
     for (const f of data.flagged) {
       L.push(`- [[${f.id}]]${f.title ? ` — ${f.title}` : ""} · flags: ${f.flags.join(", ")}`);
+    }
+  }
+  L.push("");
+  L.push("<!-- bastra-report:damaged -->");
+  L.push("## Damaged frontmatter (loaded anyway)");
+  L.push("");
+  if (!data.damaged || data.damaged.length === 0) {
+    L.push("None. Every memory's frontmatter parsed and validated cleanly.");
+  } else {
+    L.push(
+      "These memories carry frontmatter the loader could not read as written, so it repaired the broken fields **in memory only** to keep them in the index (#222). The files on disk are untouched — nothing was rewritten. Fix the field in your editor and the repair disappears on the next load.",
+    );
+    L.push("");
+    for (const d of data.damaged) {
+      L.push(`- [[${d.id}]]${d.title ? ` — ${d.title}` : ""} · \`${d.path}\``);
+      for (const f of d.fields) {
+        L.push(`  - \`${f.field}\`: ${f.reason}`);
+      }
     }
   }
   L.push("");
