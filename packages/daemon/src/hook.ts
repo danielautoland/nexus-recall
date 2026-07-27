@@ -88,6 +88,10 @@ interface RecallResponse {
   vault_size: number;
   latency_ms: number;
   recall_id: string;
+  /** #249: no returned hit lexically anchors — the top score is rank-1-of-
+   *  nothing. Absent means "not weak", so the flag is only ever present when
+   *  it has something to say. */
+  weak_result?: boolean;
 }
 
 type HookStatus =
@@ -314,11 +318,11 @@ async function main(): Promise<void> {
     } else {
       emitEmpty();
     }
-    const block = formatHintBlock(requiredHits, optionalHits, project);
+    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true);
     suppressedTokensEst = Math.ceil(block.length / 4);
     recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
-    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project);
+    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true);
     const block = sizeNote ? `${sizeNote}\n${hintsBlock}` : hintsBlock;
     hintTokensEst = Math.ceil(block.length / 4);
     hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
@@ -384,17 +388,27 @@ function formatHintLine(h: RecallHit): string {
   return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-function formatHintBlock(required: RecallHit[], optional: RecallHit[], project: string | null): string {
+function formatHintBlock(required: RecallHit[], optional: RecallHit[], project: string | null, weak = false): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const head = `<recall-hints surface="claude-code"${projAttr}>`;
   const tail = `</recall-hints>`;
   const sections: string[] = [];
 
   if (required.length > 0) {
+    // #249: on the hybrid path a top score is high BY CONSTRUCTION — a list
+    // always has a first element. Calling that "strong" when nothing lexically
+    // anchored is the defect this issue is about: the daemon knows, and used to
+    // keep it to itself. Annotated rather than omitted, so the agent still sees
+    // that a lookup happened and came up empty instead of silently getting less.
     sections.push(
-      `Strong matches (score ≥${MUST_LOAD_SCORE}) for what you're about to do — ` +
-        `load_memory(id) the ones that bear on this edit. ` +
-        `Hints, not obligations: load only what fits, don't batch-load the list.`,
+      weak
+        ? `Ranked matches for what you're about to do — but NONE of them anchors ` +
+          `lexically (no trigger phrase, no title term matched). On the hybrid path a ` +
+          `high score is rank-1-of-nothing, so treat these as "probably not relevant" ` +
+          `unless one obviously fits. Do not load them just because they are listed.`
+        : `Strong matches (score ≥${MUST_LOAD_SCORE}) for what you're about to do — ` +
+          `load_memory(id) the ones that bear on this edit. ` +
+          `Hints, not obligations: load only what fits, don't batch-load the list.`,
     );
     for (const h of required) sections.push(formatHintLine(h));
   }

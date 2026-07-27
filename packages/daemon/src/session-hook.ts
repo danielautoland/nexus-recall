@@ -63,7 +63,9 @@ interface RecallResponse {
   hits: RecallHit[];
   vault_size: number;
   latency_ms: number;
-  recall_id: string;
+  recall_id: string;  /** #249: no returned hit lexically anchors — the top score is rank-1-of-
+   *  nothing. Absent means "not weak". */
+  weak_result?: boolean;
 }
 
 interface UpdateAvailable {
@@ -402,7 +404,12 @@ async function main(): Promise<void> {
       }),
     );
   } else {
-    injected = pinnedHead + formatBlock(top, project, payload.source ?? null) + extras;
+    // #249: three scope-filtered recalls feed this block. Weak only when EVERY
+    // answered one is weak — a single lexically anchored scope means there is
+    // real signal here, and framing the whole block as noise would hide it.
+    const answered = responses.filter((r) => r.resp !== null);
+    const allWeak = answered.length > 0 && answered.every((r) => r.resp!.weak_result === true);
+    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak) + extras;
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
@@ -437,7 +444,7 @@ function emitEmpty(): void {
   process.stdout.write("{}");
 }
 
-function formatBlock(hits: RecallHit[], project: string | null, source: string | null): string {
+function formatBlock(hits: RecallHit[], project: string | null, source: string | null, weak = false): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const srcAttr = source ? ` source="${escapeAttr(source)}"` : "";
   const head = `<session-context surface="claude-code"${projAttr}${srcAttr}>`;
@@ -448,11 +455,14 @@ function formatBlock(hits: RecallHit[], project: string | null, source: string |
   const sections: string[] = [];
 
   if (required.length > 0) {
+    // #249: see hook.ts — the honesty flag decides how this block is framed.
     sections.push(
-      `Strong matches (score ≥${MUST_LOAD_SCORE}) for ${project ?? "this"} session — ` +
-        `load_memory(id) the ones relevant to what the user actually asks for. ` +
-        `These are hints, not obligations: load only what fits, don't batch-load the list, ` +
-        `and if the user requested a specific number or scope, honor that over this list.`,
+      weak
+        ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
+        : `Strong matches (score ≥${MUST_LOAD_SCORE}) for ${project ?? "this"} session — ` +
+          `load_memory(id) the ones relevant to what the user actually asks for. ` +
+          `These are hints, not obligations: load only what fits, don't batch-load the list, ` +
+          `and if the user requested a specific number or scope, honor that over this list.`,
     );
     for (const h of required) sections.push(formatHintLine(h));
   }

@@ -89,6 +89,10 @@ export interface RecallEvent extends BaseEvent {
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall,
    *  so the far slice is observable for offline harvesting. Lean {id, score} only. */
   candidate_pool?: { id: string; score: number }[];
+  /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
+   *  Recorded, not just returned: without it a stats run reports zero weak
+   *  recalls on every vault, which reads as health and is actually silence. */
+  weak_result?: boolean;
   /** #165: served BM25-only because the embedding circuit breaker was open
    *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
    *  stats separate degraded from normal recalls. */
@@ -187,6 +191,10 @@ export interface HookRecallEvent extends BaseEvent {
   bridge_expansion?: BridgeExpansion;
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */
   candidate_pool?: { id: string; score: number }[];
+  /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
+   *  Recorded, not just returned: without it a stats run reports zero weak
+   *  recalls on every vault, which reads as health and is actually silence. */
+  weak_result?: boolean;
   /** #165: served BM25-only because the embedding circuit breaker was open. */
   embedding_degraded?: boolean;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode). */

@@ -78,6 +78,7 @@ import {
 } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
+import { isWeakResult } from "./weak-result.js";
 import {
   FindDocumentArgs,
   ReadDocumentArgs,
@@ -1061,6 +1062,10 @@ function handleHookRecall(
             hits,
             (id) => vault.get(id)?.fm as Record<string, unknown> | undefined,
           ),
+          // #249: recorded, not just returned. Without this the flag reads
+          // zero in every stats run — not because recall is healthy, but
+          // because nothing ever wrote it down.
+          weak_result: isWeakResult(hits, search.hasEmbeddings() && !embeddingDegradedAtRecall) || undefined,
         }),
       );
 
@@ -1069,11 +1074,18 @@ function handleHookRecall(
       // Telemetry above already logged the full hits. #148: the hook scope
       // filter needs the one extra bit `matched_recall_when` (kept here only,
       // not in the shared toLeanHit — MCP recall stays the documented lean shape).
+      // #249: the honesty flag has to reach THIS path above all. /hook/recall
+      // writes <recall-hints> into the agent's context on every Bash and Edit,
+      // and without the flag the formatters label pure noise as "Strong
+      // matches" — the daemon computed the contradicting signal and simply did
+      // not send it. Same computation as the MCP path, from the same module.
+      const weakResult = isWeakResult(hits, search.hasEmbeddings() && !embeddingDegradedAtRecall);
       const payload = {
         hits: hits.map((h) => ({ ...toLeanHit(h), matched_recall_when: h.matched_recall_when ?? false })),
         vault_size: vault.size(),
         latency_ms: totalLatencyMs,
         recall_id: recallId,
+        ...(weakResult ? { weak_result: true } : {}),
       };
       if (wantsSse) {
         writeSseEvent(res, "done", payload);

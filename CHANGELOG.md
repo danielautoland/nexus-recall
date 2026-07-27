@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hints your agent gets on every edit stop calling noise a strong match.**
+  When you edit a file, bastra injects a few memories it thinks are relevant.
+  The daemon already knew when none of them actually matched — on the hybrid
+  search path a top score is high by construction, because a list always has a
+  first element — but it only told the MCP path, never the hook path. So every
+  `rm -rf` and every file edit got the same handful of unrelated memories under
+  the heading "Strong matches". They are now labelled for what they are: ranked,
+  but nothing anchored, treat as probably-not-relevant. The flag is also written
+  to the local telemetry now — over 3,126 real recalls in a week it had read
+  zero, which looked like health and was actually silence. (#249)
+
 ### Added
 
 - **Every write the assistant makes now leaves a record.** The vault has kept an

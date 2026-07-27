@@ -113,7 +113,9 @@ interface RecallResponse {
   hits: RecallHit[];
   vault_size: number;
   latency_ms: number;
-  recall_id: string;
+  recall_id: string;  /** #249: no returned hit lexically anchors — the top score is rank-1-of-
+   *  nothing. Absent means "not weak". */
+  weak_result?: boolean;
 }
 
 /** #217 Reflex-Lane: lean hit vom /hook/reflex-Endpoint. */
@@ -336,7 +338,7 @@ async function main(): Promise<void> {
     const decision = decideBackoff(entry, consumedForEmit, hasRequired);
     backoffStreak = decision.streak;
     suppressed = detectedMode === "retrieval" ? false : decision.suppress;
-    const block = formatHintBlock(recallHits, project, detectedMode);
+    const block = formatHintBlock(recallHits, project, detectedMode, resp?.weak_result === true);
     if (suppressed) {
       // Suppressed drops only the recall block (#161); reflex still emits.
       suppressedTokensEst = Math.ceil(block.length / 4);
@@ -416,7 +418,7 @@ function formatHintLine(h: RecallHit): string {
   return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-export function formatHintBlock(hits: RecallHit[], project: string | null, mode: DetectedMode): string {
+export function formatHintBlock(hits: RecallHit[], project: string | null, mode: DetectedMode, weak = false): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const head = `<recall-hints surface="claude-code" trigger="prompt-lookup"${projAttr}>`;
   const tail = `</recall-hints>`;
@@ -440,10 +442,14 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
 
   if (required.length > 0) {
     sections.push("");
+    // #249: a top score is high by construction on the hybrid path — calling it
+    // "strong" when nothing lexically anchored presents noise as signal.
     sections.push(
-      `Strong matches (score >=${MUST_LOAD_SCORE}) for this prompt — ` +
-        `load_memory(id) the relevant ones before responding ` +
-        `(hints, not obligations; honor an explicit count or scope from the user):`,
+      weak
+        ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
+        : `Strong matches (score >=${MUST_LOAD_SCORE}) for this prompt — ` +
+          `load_memory(id) the relevant ones before responding ` +
+          `(hints, not obligations; honor an explicit count or scope from the user):`,
     );
     for (const h of required) sections.push(formatHintLine(h));
   }

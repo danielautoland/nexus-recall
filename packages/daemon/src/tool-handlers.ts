@@ -27,6 +27,7 @@ import {
 } from "@bastra-recall/core";
 import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
+import { isWeakResult } from "./weak-result.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
@@ -196,23 +197,6 @@ export function toLeanHit(hit: RecallHit): Pick<RecallHit, "id" | "title" | "typ
   };
 }
 
-/** #230: Hat ein lexikalischer BM25-Treffer (`matched_terms`) im TITEL des Hits
- *  gematcht? `matched_terms` sagt nur, DASS ein Query-Term irgendwo im Dokument
- *  traf, nicht in welchem Feld — deshalb hier tolerant gegen den Titel-String
- *  geprüft (exaktes Token oder Präfix in beide Richtungen, um Stemming
- *  abzufangen). Tolerant by design: im Zweifel gilt der Hit als Titel-Match,
- *  damit `weak_result` konservativ bleibt und nicht fälschlich feuert. */
-function hitTitleMatches(hit: RecallHit): boolean {
-  if (!hit.matched_terms || hit.matched_terms.length === 0) return false;
-  const titleTokens = hit.title
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean);
-  return hit.matched_terms.some((term) => {
-    const t = term.toLowerCase();
-    return titleTokens.some((tok) => tok === t || tok.startsWith(t) || t.startsWith(tok));
-  });
-}
 
 export async function recallHandler(
   deps: ToolDeps,
@@ -282,8 +266,7 @@ export async function recallHandler(
   // UND KEIN zurückgegebener Hit lexikalisch anknüpft (weder recall_when- noch
   // Titel-Match). Rein informativ, filtert nichts.
   const hybridActive = deps.search.hasEmbeddings() && !embeddingDegraded;
-  const weakResult =
-    hybridActive && hits.length > 0 && !hits.some((h) => h.matched_recall_when === true || hitTitleMatches(h));
+  const weakResult = isWeakResult(hits, hybridActive);
 
   // #217: would-be Salience-Reihenfolge (shadow-only, servierte Hits bleiben).
   const salienceShadow = computeSalienceShadow(
@@ -306,6 +289,8 @@ export async function recallHandler(
       latency_ms: latencyMs,
       recall_stages: collector.timings,
       dropped_below_floor: droppedBelowFloor,
+      // #249: the flag has to be recorded on every path, not only returned.
+      weak_result: weakResult || undefined,
       bridge_expansion:
         expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
       candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
