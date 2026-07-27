@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.7] — 2026-07-27
+
+A patch release for one reason: two of these are paths on which data could
+disappear without anyone being told. Those do not wait for a feature release.
+
 ### Added
 
 - **A memory can now say "I am the new version of that one".** Pass `replaces`
