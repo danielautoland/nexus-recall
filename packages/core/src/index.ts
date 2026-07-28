@@ -35,9 +35,12 @@ export {
   stripCodeSpans,
   AUTO_RELATED_START,
   AUTO_RELATED_END,
+  MemoryWriteConflictError,
+  MEMORY_WRITE_CONFLICT,
 } from "./save.js";
 export type {
   SaveMemoryResult,
+  SaveMemoryCommitOptions,
   DeleteMemoryResult,
   MemoryTarget,
   MemoryTargetInput,

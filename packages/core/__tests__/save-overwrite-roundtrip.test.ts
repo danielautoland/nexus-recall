@@ -156,20 +156,17 @@ test("a fresh save is unaffected — created is stamped, defaults apply", async 
   assert.equal(fm.confidence, 1);
 });
 
-test("the write is atomic and leaves no temp file behind", async (t) => {
+test("a sequential overwrite is atomic and leaves no commit artifacts behind", async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), "bastra-save-roundtrip-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = await seed(dir);
 
-  // Overlapping writers must not publish a torn file — a fixed temp name per
-  // process would let two writes interleave and rename the mix into place.
-  await Promise.all([
-    saveMemory(dir, minimalRefresh({ body: "A".repeat(5000) })),
-    saveMemory(dir, minimalRefresh({ body: "B" })),
-  ]);
+  await saveMemory(dir, minimalRefresh({ body: "A".repeat(5000) }));
 
   const raw = await readFile(file, "utf8");
   assert.doesNotThrow(() => matter(raw), "published file must always parse");
-  const leftovers = (await readdir(path.dirname(file))).filter((f) => f.endsWith(".tmp"));
-  assert.deepEqual(leftovers, [], "no temp files may survive");
+  const leftovers = (await readdir(path.dirname(file))).filter(
+    (f) => f.endsWith(".tmp") || f.endsWith(".bastra-write.lock"),
+  );
+  assert.deepEqual(leftovers, [], "no temp or commit-lock files may survive");
 });

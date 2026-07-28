@@ -39,6 +39,7 @@ import {
   saveMemory,
   type AuditActor,
   type AuditOperation,
+  type SaveMemoryCommitOptions,
   type SaveMemoryInput,
   type SaveMemoryResult,
 } from "@bastra-recall/core";
@@ -105,6 +106,9 @@ export interface SaveMemoryWithAuditTrailInput {
   actor: AuditActor;
   actorDetail: string;
   sessionId: string;
+  /** #285: compare-and-swap precondition, forwarded to the commit unchanged.
+   *  Auditing a write must not weaken the guarantee the caller asked for. */
+  commit?: SaveMemoryCommitOptions;
 }
 
 /**
@@ -129,7 +133,7 @@ export async function saveMemoryWithAuditTrail(
 ): Promise<SaveMemoryResult> {
   const target = resolveMemoryTarget(args.vaultRoot, args.input);
   const diffBefore = await readFrontmatter(target.filePath);
-  const result = await saveMemory(args.vaultRoot, args.input);
+  const result = await saveMemory(args.vaultRoot, args.input, args.commit);
   const diffAfter = await readFrontmatter(result.file_path);
   await recordAudit({
     vaultRoot: args.vaultRoot,

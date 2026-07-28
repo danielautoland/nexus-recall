@@ -427,3 +427,5 @@ The current Zod schema rejects files that have a recognized memory `type` but in
 Files without a recognized `type` are treated as ordinary notes and skipped, not as schema failures.
 
 The save path rejects duplicate ids at the destination path unless `overwrite: true` is passed. It does not require `scope` to come from a registry.
+
+`overwrite: true` permits an update; it does not give a stale writer permission to replace a newer file. `saveMemory` compares the target again under an exclusive per-path commit claim. Concurrent or stale saves fail with `MemoryWriteConflictError` (`code: "BASTRA_WRITE_CONFLICT"`) and must retry from the current file. Callers that inspect provenance or ownership before saving pass the approved raw file as `expectedTarget` (`null` for a confirmed-absent target), extending the same comparison back to that inspection. See [Architecture: Write commit contract](./architecture.md#write-commit-contract).

@@ -1,4 +1,13 @@
-import { writeFile, readFile, access, mkdir, unlink, rename } from "node:fs/promises";
+import {
+  writeFile,
+  readFile,
+  access,
+  mkdir,
+  unlink,
+  rename,
+  open,
+  link,
+} from "node:fs/promises";
 import { join, dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
@@ -146,6 +155,32 @@ export interface SaveMemoryResult {
   summary_note?: string;
 }
 
+/**
+ * Optional compare-and-swap precondition for callers that inspect ownership
+ * before saving. `null` means "the target was absent"; a string is the exact
+ * target content the caller approved. Omitting the option keeps the ordinary
+ * save API unchanged.
+ */
+export interface SaveMemoryCommitOptions {
+  expectedTarget?: string | null;
+}
+
+export const MEMORY_WRITE_CONFLICT = "BASTRA_WRITE_CONFLICT";
+
+/** A concurrent writer changed or claimed the target before this save committed. */
+export class MemoryWriteConflictError extends Error {
+  readonly code = MEMORY_WRITE_CONFLICT;
+  readonly id: string;
+  readonly file_path: string;
+
+  constructor(id: string, filePath: string, detail: string) {
+    super(`memory write conflict for ${id}: ${detail}. Retry from the current file.`);
+    this.name = "MemoryWriteConflictError";
+    this.id = id;
+    this.file_path = filePath;
+  }
+}
+
 const SLUG_MAX_LEN = 80;
 
 /**
@@ -289,6 +324,24 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
+ * Read a commit snapshot without treating I/O failures as "missing".
+ * `access()`-style probes collapse EACCES/EIO and ENOENT; a writer must fail
+ * closed because only ENOENT proves that an id is free.
+ */
+async function readTarget(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function writeConflict(id: string, filePath: string, detail: string): MemoryWriteConflictError {
+  return new MemoryWriteConflictError(id, filePath, detail);
+}
+
+/**
  * Subfolder routing inside the vault.
  *
  * Top-level layout (three siblings):
@@ -362,9 +415,17 @@ export function resolveMemoryTarget(
 export async function saveMemory(
   vaultRoot: string,
   input: SaveMemoryInput,
+  commit: SaveMemoryCommitOptions = {},
 ): Promise<SaveMemoryResult> {
   const { id, filePath } = resolveMemoryTarget(vaultRoot, input);
-  const exists = await fileExists(filePath);
+  const observedTarget = await readTarget(filePath);
+  const exists = observedTarget !== null;
+  if (
+    commit.expectedTarget !== undefined &&
+    commit.expectedTarget !== observedTarget
+  ) {
+    throw writeConflict(id, filePath, "target changed after the caller inspected it");
+  }
   if (exists && !input.overwrite) {
     throw new Error(
       `memory already exists: ${id}. Pass overwrite=true to replace it, ` +
@@ -389,10 +450,10 @@ export async function saveMemory(
   let prev: Record<string, unknown> = {};
   if (exists) {
     try {
-      const existingRaw = await readFile(filePath, "utf8");
-      prev = (matter(existingRaw).data as Record<string, unknown> | undefined) ?? {};
+      prev = (matter(observedTarget).data as Record<string, unknown> | undefined) ?? {};
     } catch {
-      // korrupt/parallel gelöscht → nichts zu erhalten
+      // Corrupt frontmatter is replaced only after the raw file itself was
+      // captured above; the commit comparison still protects that preimage.
     }
   }
   /** Übernimmt den Bestandswert nur, wenn er den erwarteten Typ hat. */
@@ -521,12 +582,49 @@ export async function saveMemory(
   // überlappenden Schreibern desselben Prozesses (#240/B3) und veröffentlicht
   // per rename das Mischprodukt.
   const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
+  const commitLock = `${filePath}.bastra-write.lock`;
   await writeFile(tmp, content, "utf8");
+  let lockAcquired = false;
   try {
-    await rename(tmp, filePath);
-  } catch (err) {
+    try {
+      const handle = await open(commitLock, "wx", 0o600);
+      lockAcquired = true;
+      await handle.close();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+        throw writeConflict(id, filePath, "another save is committing this target");
+      }
+      throw err;
+    }
+
+    // #285: compare the exact bytes seen before the candidate was built with
+    // the bytes at commit time. The O_EXCL lock serializes every saveMemory
+    // writer, including writers in another process; the comparison catches a
+    // write that landed before this writer acquired the claim.
+    const commitTarget = await readTarget(filePath);
+    if (commitTarget !== observedTarget) {
+      throw writeConflict(id, filePath, "target changed while the save was being prepared");
+    }
+
+    if (commitTarget === null) {
+      // rename() replaces an existing destination. A hard link publishes the
+      // completed temp inode atomically but fails with EEXIST if any writer
+      // creates the target after the comparison.
+      try {
+        await link(tmp, filePath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+          throw writeConflict(id, filePath, "target was created during commit");
+        }
+        throw err;
+      }
+      await unlink(tmp);
+    } else {
+      await rename(tmp, filePath);
+    }
+  } finally {
     await unlink(tmp).catch(() => {});
-    throw err;
+    if (lockAcquired) await unlink(commitLock).catch(() => {});
   }
   return {
     id,
