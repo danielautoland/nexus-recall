@@ -1,22 +1,22 @@
 # bastra-recall — Homebrew formula
 #
-# Lives in https://github.com/n0mad-ai/homebrew-tap (tap repo, separate).
-# Copy this file there as Formula/bastra-recall.rb and adjust the `url`
-# / `sha256` once a release tarball is published.
+# THIS FILE IS THE SOURCE OF TRUTH. The live copy lives in
+# https://github.com/n0mad-ai/homebrew-tap as Formula/bastra-recall.rb —
+# copy this file there on every release and set `url` / `sha256` to the new
+# tag's tarball. The two drifted apart once (the tap sat on v0.7.6 and was
+# missing six of the seven hook shims); keep them in lockstep.
 #
 # Install via:
 #   brew tap n0mad-ai/tap
+#   brew trust n0mad-ai/tap   # current brew refuses untrusted third-party taps
 #   brew install bastra-recall
 #   bastra install all
-#
-# This formula is the head-only build for now. For tagged releases, add a
-# `url + sha256` block above the `head` line.
 
 class BastraRecall < Formula
   desc "Persistent teammate memory for AI assistants (Claude, ChatGPT, Cursor)"
   homepage "https://github.com/n0mad-ai/bastra-recall"
-  url "https://github.com/n0mad-ai/bastra-recall/archive/refs/tags/v0.6.5-beta.1.tar.gz"
-  sha256 "6d04723aa25c3569b0a9e79421d094bfb52f5c527e55049feb08615f85662a9c"
+  url "https://github.com/n0mad-ai/bastra-recall/archive/refs/tags/v0.8.8.tar.gz"
+  sha256 "PLACEHOLDER_SET_AFTER_TAG"
   license "MIT"
   head "https://github.com/n0mad-ai/bastra-recall.git", branch: "main"
 
@@ -24,12 +24,21 @@ class BastraRecall < Formula
 
   def install
     system "npm", "install"
+    # Root build (--workspaces): daemon imports need core/statusline dist,
+    # which the release tarball does not contain (bastra-recall#184). The
+    # build also syncs packages/skill/*.md into packages/daemon/skill/, which
+    # is where the CLI reads the skill payload from (#232).
     system "npm", "run", "build"
+    # Runtime deps + workspace symlinks must ship with the install — without
+    # node_modules the ESM resolver cannot find @bastra-recall/core from the
+    # daemon dist (bastra-recall#184, second half). Prune dev deps first.
     system "npm", "prune", "--omit=dev"
 
     libexec.install "packages", "node_modules", "package.json", "package-lock.json"
 
-    # CLI + daemon binaries -> bin shims
+    # CLI + daemon binaries -> bin shims. All seven hooks belong here: the
+    # hook binaries are what `bastra install claude-code` registers, so a
+    # missing shim silently costs the user that reflex lane.
     bin.install_symlink libexec/"packages/daemon/dist/cli.js" => "bastra"
     bin.install_symlink libexec/"packages/daemon/dist/index.js" => "bastra-recall"
     bin.install_symlink libexec/"packages/daemon/dist/mcp-forwarder.js" => "bastra-recall-mcp"

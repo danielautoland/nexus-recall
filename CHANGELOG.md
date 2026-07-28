@@ -4,7 +4,7 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.8] — 2026-07-28
 
 ### Added
 
@@ -994,6 +994,8 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.8.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.8
+[0.8.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.7
 [0.8.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.6
 [0.8.5]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.5
 [0.8.4]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.4
