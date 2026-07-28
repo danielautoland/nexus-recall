@@ -14,12 +14,14 @@
  * interview is done or explicitly skipped.
  */
 import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { saveMemory, type SaveMemoryInput } from "@bastra-recall/core";
+import type { SaveMemoryInput } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled, setSizeGuide, setPrimaryLanguage } from "./settings.js";
 import { detectLanguage } from "./learned-recall/language.js";
+import { saveMemoryWithAuditTrail } from "./audit-trail.js";
 
 export const ONBOARD_MARKER = ".onboarding-done";
 /** Below this vault size a vault counts as fresh (an interview writes ~8). */
@@ -316,6 +318,35 @@ export function buildOnboardingMemories(persona: Persona, answers: Record<string
   return out;
 }
 
+export type OnboardingSurface = "ui:onboarding" | "cli:onboard";
+
+/**
+ * Save one interview as one user-authored audit run, regardless of surface.
+ *
+ * `user` describes who supplied the answers, not which process wrote the
+ * files. One UUID groups the whole interview; `surface` preserves whether it
+ * came through the UI or CLI. A real memory-write failure stops onboarding,
+ * while `recordAudit` absorbs an audit-only failure after the write lands.
+ */
+export async function saveOnboardingMemories(
+  vaultPath: string,
+  memories: SaveMemoryInput[],
+  surface: OnboardingSurface,
+): Promise<void> {
+  // Keep this outside the loop: per-memory UUIDs would destroy batch
+  // reconstruction even though every individual audit entry looked valid.
+  const runId = randomUUID();
+  for (const memory of memories) {
+    await saveMemoryWithAuditTrail({
+      vaultRoot: vaultPath,
+      input: memory,
+      actor: "user",
+      actorDetail: surface,
+      sessionId: runId,
+    });
+  }
+}
+
 /**
  * Konventions-Antworten in die cli-settings spiegeln, damit deterministische
  * Checks sie nutzen: der Dateigrößen-Richtwert (conventions_size) speist den
@@ -500,9 +531,9 @@ export async function handleUiOnboarding(
     }
   }
   const memories = buildOnboardingMemories(persona, answers);
-  for (const m of memories) {
-    await saveMemory(vaultPath, m);
-  }
+  // Keep the completion marker after this call: a real write failure must
+  // leave onboarding retryable instead of recording a partial interview as done.
+  await saveOnboardingMemories(vaultPath, memories, "ui:onboarding");
   await persistConventionSettings(answers, settingsPath);
   await persistLanguageSetting(answers, settingsPath);
   await markOnboardingDone(vaultPath, "map");

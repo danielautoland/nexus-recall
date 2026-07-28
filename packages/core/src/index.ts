@@ -26,6 +26,7 @@ export type { BanterMode, BanterLang } from "./recall-banter.js";
 
 export {
   saveMemory,
+  resolveMemoryTarget,
   deleteMemoryFile,
   slugify,
   SaveMemoryInput,
@@ -35,7 +36,12 @@ export {
   AUTO_RELATED_START,
   AUTO_RELATED_END,
 } from "./save.js";
-export type { SaveMemoryResult, DeleteMemoryResult } from "./save.js";
+export type {
+  SaveMemoryResult,
+  DeleteMemoryResult,
+  MemoryTarget,
+  MemoryTargetInput,
+} from "./save.js";
 
 export {
   MemoryTypeEnum,

@@ -31,7 +31,17 @@
  * That is a deliberate trade: this log is for reconstructing what happened,
  * not a transaction gate.
  */
-import { AuditLog, type AuditActor, type AuditOperation } from "@bastra-recall/core";
+import { readFile } from "node:fs/promises";
+import matter from "gray-matter";
+import {
+  AuditLog,
+  resolveMemoryTarget,
+  saveMemory,
+  type AuditActor,
+  type AuditOperation,
+  type SaveMemoryInput,
+  type SaveMemoryResult,
+} from "@bastra-recall/core";
 
 /** One AuditLog per vault — it caches reads, and re-creating it per write
  *  would throw that cache away on every save. */
@@ -86,6 +96,65 @@ export async function recordAudit(input: AuditTrailInput): Promise<void> {
     console.error(
       `[bastra-recall] audit: could not record ${input.operation} of ${input.memoryId}: ${(err as Error).message}`,
     );
+  }
+}
+
+export interface SaveMemoryWithAuditTrailInput {
+  vaultRoot: string;
+  input: SaveMemoryInput;
+  actor: AuditActor;
+  actorDetail: string;
+  sessionId: string;
+}
+
+/**
+ * Audit a direct daemon `saveMemory` caller without requiring a live Vault
+ * instance. Imports and onboarding both write before the watcher/index exists;
+ * this wrapper snapshots the exact target path around the write, then delegates
+ * to the same best-effort `recordAudit` seam as MCP writes.
+ *
+ * Failure boundary for auditors:
+ * - target resolution and `saveMemory` are the mutation path; their errors
+ *   propagate to the caller;
+ * - frontmatter reads are evidence only, so missing/unreadable data becomes
+ *   `null` instead of changing the write outcome;
+ * - `recordAudit` runs after the committed write and never throws, so an audit
+ *   append failure cannot roll back or misreport a successful save.
+ *
+ * `sessionId` is caller-owned deliberately: batch callers allocate it once per
+ * invocation and reuse it across every memory in that run.
+ */
+export async function saveMemoryWithAuditTrail(
+  args: SaveMemoryWithAuditTrailInput,
+): Promise<SaveMemoryResult> {
+  const target = resolveMemoryTarget(args.vaultRoot, args.input);
+  const diffBefore = await readFrontmatter(target.filePath);
+  const result = await saveMemory(args.vaultRoot, args.input);
+  const diffAfter = await readFrontmatter(result.file_path);
+  await recordAudit({
+    vaultRoot: args.vaultRoot,
+    memoryId: result.id,
+    operation: result.created ? "create" : "update",
+    actor: args.actor,
+    actorDetail: args.actorDetail,
+    diffBefore,
+    diffAfter,
+    filePath: result.file_path,
+    sessionId: args.sessionId,
+  });
+  return result;
+}
+
+async function readFrontmatter(
+  filePath: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    return matter(raw).data as Record<string, unknown>;
+  } catch {
+    // Audit evidence is optional. The authoritative save path decides whether
+    // the mutation succeeded; an unreadable snapshot must not override it.
+    return null;
   }
 }
 

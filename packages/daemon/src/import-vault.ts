@@ -20,12 +20,14 @@
  * delete-/re-importable atomically (one folder, one scope, one source tag).
  */
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { saveMemory, slugify, extractWikilinks } from "@bastra-recall/core";
+import { slugify, extractWikilinks } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
+import { saveMemoryWithAuditTrail } from "./audit-trail.js";
 import { linkKey, pathHash, safeSlug, uniqueId } from "./import/identity.js";
 import { harvestIndex, looksLikeIndexHub } from "./import/index-harvest.js";
 import { looksLikeClaudeCode, mapFile, safeParse } from "./import/adapters.js";
@@ -174,6 +176,10 @@ export async function importVault(
   const overwrite = options.overwrite ?? true;
   const dryRun = options.dryRun ?? false;
   const folder = `${IMPORT_ROOT}/${label}`;
+  // Correlation key, not an event id: allocate once before the write passes
+  // and reuse it for every content node and the synthetic index. A later
+  // import invocation must receive a different UUID.
+  const runId = randomUUID();
 
   const files = await listSourceMarkdown(
     sourceDir,
@@ -373,8 +379,17 @@ export async function importVault(
     else byAdapter.generic++;
     if (!dryRun) {
       try {
-        await saveMemory(vaultRoot, mapped.input);
+        await saveMemoryWithAuditTrail({
+          vaultRoot,
+          input: mapped.input,
+          actor: "import",
+          actorDetail: "import:vault",
+          sessionId: runId,
+        });
       } catch (err) {
+        // `recordAudit` absorbs audit-only failures. Reaching this catch means
+        // target resolution or the memory write itself failed, so `skipped`
+        // remains an honest list of content that did not land.
         skipped.push({ path: filePath, reason: `save failed: ${(err as Error).message}` });
         continue;
       }
@@ -424,25 +439,33 @@ export async function importVault(
       if (alloc.id !== undefined && (indexOwner === "free" || indexOwner === "mine")) {
         const id = alloc.id;
         try {
-          await saveMemory(vaultRoot, {
-            id,
-            title: `${label} — Index`,
-            type: "reference",
-            summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
-            body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
-            topic_path: ["imported", label],
-            tags: [...new Set(["imported", label, "index"])],
-            scope: label,
-            recall_when: [`${label} index`, `${label} übersicht`],
-            folder,
-            write_origin: "user-directed",
-            overwrite,
-            source: `index:${label}`,
+          await saveMemoryWithAuditTrail({
+            vaultRoot,
+            input: {
+              id,
+              title: `${label} — Index`,
+              type: "reference",
+              summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
+              body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
+              topic_path: ["imported", label],
+              tags: [...new Set(["imported", label, "index"])],
+              scope: label,
+              recall_when: [`${label} index`, `${label} übersicht`],
+              folder,
+              write_origin: "user-directed",
+              overwrite,
+              source: `index:${label}`,
+            },
+            actor: "import",
+            actorDetail: "import:vault",
+            sessionId: runId,
           });
           ids.push(id);
           indexNode = id;
         } catch {
-          /* index node is best-effort — never fail the import over it */
+          // Audit-only failures were already absorbed by `recordAudit`.
+          // A routing/write failure here still cannot fail the imported notes:
+          // the synthetic index is navigation and remains best-effort.
         }
       }
     }
