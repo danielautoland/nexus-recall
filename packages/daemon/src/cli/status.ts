@@ -3,6 +3,7 @@ import { ADAPTERS } from "./registry.js";
 import { probeOllama } from "./ollama.js";
 import { getEmbeddingProvider, getApiToken, getUiEnabled, type EmbeddingProviderName } from "../settings.js";
 import { mapUrl } from "./map-cmd.js";
+import { listDaemonProcesses, formatExtraDaemons } from "./daemon-processes.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -44,6 +45,14 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     if (!options.quiet && !options.json) {
       printLine(`${"daemon".padEnd(15)} ${formatStatus("error")}: ${daemonInfo.detail}`);
     }
+  }
+
+  // A daemon on another port is invisible to /health — it answers on an
+  // address nobody probes. Only reported, never stopped: a second one is
+  // sometimes deliberate (a measurement harness, a second vault).
+  const extra = formatExtraDaemons(await listDaemonProcesses());
+  if (extra !== null && !options.quiet && !options.json) {
+    printLine(`${"daemons".padEnd(15)} ${formatStatus("warn")}: ${extra}`);
   }
 
   // Semantic recall — daemon-level + global, so one line (not per adapter).

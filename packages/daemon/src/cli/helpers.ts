@@ -284,6 +284,7 @@ export function formatStatus(status: string): string {
     case "broken": return "✗ broken";
     case "not-implemented": return "… not implemented yet";
     case "error": return "✗ error";
+    case "warn": return "! note";
     default: return status;
   }
 }
