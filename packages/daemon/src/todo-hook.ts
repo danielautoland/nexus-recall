@@ -36,7 +36,8 @@ import {
   wasEmitConsumed,
 } from "./session-state.js";
 
-const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 250, "NEXUS_HOOK_TIMEOUT_MS");
+// 600ms — same recall path, same reasoning as hook.ts.
+const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.2.0";
 const SCORE_FLOOR = 50;

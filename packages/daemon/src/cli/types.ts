@@ -77,6 +77,9 @@ export interface ParsedArgs {
   since: string | null;
   source: string | null;
   lines: string | null;
+  // `logs --stats` (#279 slice): aggregate the same files per trigger lane
+  // instead of printing them line by line.
+  stats: boolean;
   // All positional tokens, in order — for sub-commands like
   // `config set update.mode auto` that need more than command+surface.
   positional: string[];

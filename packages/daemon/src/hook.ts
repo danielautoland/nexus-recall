@@ -51,7 +51,15 @@ import {
   type SessionState,
 } from "./session-state.js";
 
-const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 250, "NEXUS_HOOK_TIMEOUT_MS");
+// 600ms, not the original 250. Measured over 30 days of real use
+// (`bastra logs --stats`): 12,966 PreToolUse calls, median 60ms, p90 225ms,
+// p99 257ms — and 806 timeouts, 6.2% of all calls. The budget was sitting
+// just under the p99, so one edit in sixteen silently lost its injection on
+// the channel #244 measured as the effective one. A cache-miss recall costs
+// ~190ms on a warm machine with ~600 memories; a bigger vault or a slower box
+// needs more. The ceiling only costs anything when the daemon is actually
+// slow — the median case is unaffected.
+const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.3.0";
 const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30); // mirror SKILL.md: <30 is noise

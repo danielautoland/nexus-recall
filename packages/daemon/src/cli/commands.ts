@@ -128,6 +128,8 @@ Options:
   --since <duration>         How far back to read: 30s, 10min, 2h, 1d (logs only, default 5min)
   --source <daemon|hook|all> Which log source to read (logs only, default all)
   --lines <n>                Cap the number of lines printed (logs only, default 200)
+  --stats                    Aggregate per trigger lane instead of printing lines
+                             (logs only; --since defaults to 7d)
   --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
   --no-stop-hook             Skip the Stop save-eval hook (registered by default)
   --force                    With update: install even though locally modified files
@@ -177,6 +179,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     since: null,
     source: null,
     lines: null,
+    stats: false,
     positional: [],
   };
 
@@ -202,6 +205,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       if (v) result.exclude.push(v);
     }
     else if (a === "--follow" || a === "-f") result.follow = true;
+    else if (a === "--stats") result.stats = true;
     else if (a === "--since") {
       result.since = argv[++i] ?? null;
     } else if (a.startsWith("--since=")) {

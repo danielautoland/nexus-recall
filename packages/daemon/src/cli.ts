@@ -31,6 +31,7 @@ import { cmdOnboard } from "./cli/onboard-cmd.js";
 import { cmdSkills } from "./cli/skills-cmd.js";
 import { cmdFeedback } from "./cli/feedback-cmd.js";
 import { cmdLogs, parseSince } from "./cli/logs.js";
+import { cmdLogStats } from "./cli/log-stats.js";
 import { cmdCompletion } from "./cli/completion.js";
 import { cmdRules } from "./cli/rules-cmd.js";
 import { cmdPanel } from "./cli/panel.js";
@@ -83,6 +84,12 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
       if (!Number.isFinite(lines) || lines <= 0) {
         process.stderr.write(`error: --lines must be a positive number (got '${args.lines}')\n`);
         return 2;
+      }
+      // --stats reads the same files, but aggregated instead of line by line.
+      // Default window is wider: a per-lane rate needs days, not five minutes.
+      if (args.stats) {
+        const statsSince = args.since === null ? 7 * 86_400_000 : sinceMs;
+        return cmdLogStats({ sinceMs: statsSince });
       }
       return cmdLogs({ follow: args.follow, sinceMs, source, lines: Math.floor(lines) });
     }

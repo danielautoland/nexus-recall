@@ -77,7 +77,11 @@ function resetStatuslineFeed(ccSessionId: string | null): void {
   }
 }
 
-const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 250, "NEXUS_HOOK_TIMEOUT_MS");
+// 600ms — same reasoning as hook.ts. The lanes that actually recall sat at
+// the old 250ms ceiling: retrieval median 222ms, the first assertion call
+// 259ms and thus a timeout. The `none` lane's 4ms median hid this in any
+// average, because it never recalls at all.
+const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
 const HOOK_VERSION = "0.2.0";
 const SCORE_FLOOR = 50; // higher than PreToolUse: prompts rarely match recall_when exactly

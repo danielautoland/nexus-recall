@@ -6,7 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.8] — 2026-07-28
 
+### Fixed
+
+- **The hooks were losing one recall in sixteen, silently.** The budget that
+  cuts a hook off if the daemon is slow sat at 250 ms — just under what a real
+  recall costs. Measured over 30 days of actual use: 12,966 calls before an
+  edit, median 60 ms, but a 90th percentile of 225 ms and 806 timeouts. Every
+  one of those was an edit that should have been warned about a stored
+  decision and wasn't, with nothing in the interface to show it. The ceiling is
+  now 600 ms, which the same measurement puts at 65 % headroom. It costs
+  nothing when the daemon is quick — a timeout is a ceiling, not a wait. (#252)
+
 ### Added
+
+- **`bastra logs --stats` — the hook lanes, read out.** The event log already
+  recorded which trigger fired, whether the daemon answered in time and whether
+  anything came back; it just took a grep and a hand-written script to see it.
+  One command now aggregates it per lane: how often each fired, how often it
+  surfaced something, and where the latency sits against the budget. It found
+  the timeout loss above on its first run — an average over all events had
+  hidden it, because the lane that never recalls is fast and drags the mean
+  down. (#279, first slice)
 
 - **An update no longer replaces your local changes without saying so.** If you
   patched something in the installed package — as happened here for days while a
