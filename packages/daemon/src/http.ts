@@ -61,9 +61,17 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { buildGraph, buildSemanticLayout, type SemanticLayout } from "@bastra-recall/core";
-import type { Vault, SearchIndex, RecallStage, StageListener, EmbeddingRuntimeHealth } from "@bastra-recall/core";
+import type {
+  Vault,
+  SearchIndex,
+  RecallHit,
+  RecallStage,
+  StageListener,
+  EmbeddingRuntimeHealth,
+} from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
+import { envBool } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { handleHookReflex } from "./reflex.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
@@ -913,6 +921,32 @@ function handleHookAct(req: IncomingMessage, res: ServerResponse, telemetry: Tel
 
 // ─── /hook/recall handler ────────────────────────────────────────
 
+const CONTENT_RECALL_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+export function mergeHookRecallHits(
+  first: RecallHit[],
+  second: RecallHit[],
+  limit: number,
+): RecallHit[] {
+  const byId = new Map<string, RecallHit>();
+  for (const hit of [...first, ...second]) {
+    const previous = byId.get(hit.id);
+    if (!previous) {
+      byId.set(hit.id, hit);
+      continue;
+    }
+    const winner = hit.score > previous.score ? hit : previous;
+    byId.set(hit.id, {
+      ...winner,
+      matched_terms: [...new Set([...previous.matched_terms, ...hit.matched_terms])],
+      matched_recall_when: previous.matched_recall_when || hit.matched_recall_when,
+    });
+  }
+  return [...byId.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 function handleHookRecall(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1004,7 +1038,7 @@ function handleHookRecall(
       });
       // #121: capture the deeper candidate pool (incl. below-floor) for the far slice.
       let candidatePool: { id: string; score: number }[] = [];
-      const onCandidatePool = (pool: { id: string; score: number }[]): void => {
+      const onQueryCandidatePool = (pool: { id: string; score: number }[]): void => {
         candidatePool = pool.map((h) => ({ id: h.id, score: h.score }));
       };
       const tRecall0 = Date.now();
@@ -1012,9 +1046,83 @@ function handleHookRecall(
       // beschreibt, der tatsächlich serviert wird (siehe recallHandler).
       const embeddingDegradedAtRecall =
         search.hasEmbeddings() && (embeddingDegraded?.() ?? false);
-      const hits = search.hasEmbeddings()
-        ? await search.recallHybrid(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool })
-        : search.recall(expansion.query, { k, scope, type, expand_hops, onStage, onCandidatePool });
+      let hits = search.hasEmbeddings()
+        ? await search.recallHybrid(expansion.query, {
+            k,
+            scope,
+            type,
+            expand_hops,
+            onStage,
+            onCandidatePool: onQueryCandidatePool,
+          })
+        : search.recall(expansion.query, {
+            k,
+            scope,
+            type,
+            expand_hops,
+            onStage,
+            onCandidatePool: onQueryCandidatePool,
+          });
+
+      const contentQuery = typeof body.tool_input_excerpt === "string"
+        ? body.tool_input_excerpt.trim().slice(0, 4096)
+        : "";
+      let contentRecall:
+        | {
+            hit_count: number;
+            added_count: number;
+            rescored_count: number;
+            latency_ms: number;
+            failed?: boolean;
+          }
+        | undefined;
+      if (
+        envBool("BASTRA_HOOK_CONTENT_RECALL", false)
+        && CONTENT_RECALL_TOOLS.has(hookToolName ?? "")
+        && contentQuery
+        && contentQuery !== query
+      ) {
+        const contentRecallStarted = Date.now();
+        try {
+          const contentHits = search.hasEmbeddings()
+            ? await search.recallHybrid(contentQuery, {
+                k,
+                scope,
+                type,
+                expand_hops,
+              })
+            : search.recall(contentQuery, {
+                k,
+                scope,
+                type,
+                expand_hops,
+              });
+          const queryHitsById = new Map(hits.map((hit) => [hit.id, hit]));
+          const contentHitsById = new Map(contentHits.map((hit) => [hit.id, hit]));
+          const mergedHits = mergeHookRecallHits(hits, contentHits, k);
+          contentRecall = {
+            hit_count: contentHits.length,
+            added_count: mergedHits.filter((hit) => !queryHitsById.has(hit.id)).length,
+            rescored_count: mergedHits.filter((hit) => {
+              const queryHit = queryHitsById.get(hit.id);
+              const contentHit = contentHitsById.get(hit.id);
+              return queryHit !== undefined
+                && contentHit !== undefined
+                && contentHit.score > queryHit.score;
+            }).length,
+            latency_ms: Date.now() - contentRecallStarted,
+          };
+          hits = mergedHits;
+        } catch {
+          contentRecall = {
+            hit_count: 0,
+            added_count: 0,
+            rescored_count: 0,
+            latency_ms: Date.now() - contentRecallStarted,
+            failed: true,
+          };
+        }
+      }
       const recallLatencyMs = Date.now() - tRecall0;
       const totalLatencyMs = Date.now() - t0;
       const recallId = telemetry.newRecallId();
@@ -1055,6 +1163,7 @@ function handleHookRecall(
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+          content_recall: contentRecall,
           // #165: pre-recall festgehalten, siehe oben / recallHandler.
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,
           // #217: would-be Salience-Reihenfolge (shadow-only).

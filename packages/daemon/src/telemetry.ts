@@ -195,6 +195,15 @@ export interface HookRecallEvent extends BaseEvent {
   bridge_expansion?: BridgeExpansion;
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */
   candidate_pool?: { id: string; score: number }[];
+  /** #282: opt-in second recall over tool_input_excerpt. The excerpt itself is
+   *  intentionally not logged; only the arm's yield and cost are observable. */
+  content_recall?: {
+    hit_count: number;
+    added_count: number;
+    rescored_count: number;
+    latency_ms: number;
+    failed?: boolean;
+  };
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
