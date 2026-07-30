@@ -15,9 +15,11 @@ import {
   readdir,
   rm,
   writeFile,
+  utimes,
 } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
@@ -290,4 +292,67 @@ test("the same preimage is claimed exactly once across Node processes", async (t
   const raw = await readFile(seeded.file_path, "utf8");
   assert.ok(raw.includes("process A") || raw.includes("process B"));
   assert.deepEqual(await artifacts(seeded.file_path), []);
+});
+
+// ── reclaiming a claim whose owner died ──────────────────────────────
+//
+// `finally` does not run on SIGKILL, OOM or power loss. Without a way back,
+// one such death makes the id permanently unwritable — the failure the claim
+// was meant to prevent, in a form no retry can clear.
+
+test("a claim from a dead process on this host is reclaimed", async (t) => {
+  const vault = await harness(t);
+  const seeded = await saveMemory(vault, input("original"));
+  const lock = `${seeded.file_path}.bastra-write.lock`;
+  // A pid this process can prove is gone: spawn a child, wait for its exit.
+  const dead = await new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    child.on("exit", () => resolve(child.pid as number));
+  });
+  await writeFile(
+    lock,
+    JSON.stringify({ pid: dead, host: os.hostname(), ts: Date.now() }),
+    "utf8",
+  );
+
+  const result = await saveMemory(vault, input("after reclaim"));
+
+  assert.equal(result.created, false);
+  assert.match(await readFile(seeded.file_path, "utf8"), /after reclaim/);
+  assert.deepEqual(await artifacts(seeded.file_path), []);
+});
+
+test("a claim older than the stale window is reclaimed whatever it says", async (t) => {
+  const vault = await harness(t);
+  const seeded = await saveMemory(vault, input("original"));
+  const lock = `${seeded.file_path}.bastra-write.lock`;
+  await writeFile(lock, "not json, from another machine", "utf8");
+  // Age it past the window without waiting for it.
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lock, old, old);
+
+  const result = await saveMemory(vault, input("after reclaim"));
+
+  assert.match(await readFile(seeded.file_path, "utf8"), /after reclaim/);
+  assert.deepEqual(await artifacts(seeded.file_path), []);
+});
+
+test("a fresh claim from an unknown host is left alone", async (t) => {
+  const vault = await harness(t);
+  const seeded = await saveMemory(vault, input("original"));
+  const expected = await readFile(seeded.file_path, "utf8");
+  const lock = `${seeded.file_path}.bastra-write.lock`;
+  const claim = JSON.stringify({
+    pid: process.pid,
+    host: "some-other-machine",
+    ts: Date.now(),
+  });
+  await writeFile(lock, claim, "utf8");
+
+  await assert.rejects(saveMemory(vault, input("must lose")), (err) => {
+    assert.equal((err as { code?: string }).code, MEMORY_WRITE_CONFLICT);
+    return true;
+  });
+  assert.equal(await readFile(seeded.file_path, "utf8"), expected);
+  assert.equal(await readFile(lock, "utf8"), claim);
 });

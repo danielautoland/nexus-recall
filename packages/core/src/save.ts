@@ -7,7 +7,9 @@ import {
   rename,
   open,
   link,
+  stat,
 } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join, dirname, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
@@ -337,6 +339,104 @@ async function readTarget(path: string): Promise<string | null> {
   }
 }
 
+/**
+ * How long a commit claim may sit untouched before a later writer may take it.
+ * The commit it guards is a read plus a link/rename — milliseconds. The margin
+ * is for a stalled cloud mount, not for a slow write.
+ */
+const COMMIT_CLAIM_STALE_MS = 30_000;
+
+/**
+ * A claim names its owner so a later writer can tell "someone is committing"
+ * from "someone died mid-commit". Without this the claim outlives the process
+ * that took it — `finally` does not run on SIGKILL, OOM or power loss — and the
+ * id stays unwritable forever.
+ */
+interface CommitClaim {
+  pid: number;
+  host: string;
+  ts: number;
+}
+
+/**
+ * May this writer take a claim it found already present?
+ *
+ * Two independent reasons, and age is the primary one: a PID is only meaningful
+ * on the machine that wrote it, and this vault is expected on shared cloud
+ * mounts where a foreign PID may be alive and completely unrelated. The owner
+ * check is the fast path for the common case (same host, process gone), never
+ * the only one — an unparseable or foreign claim still ages out.
+ */
+async function claimIsAbandoned(lockPath: string): Promise<boolean> {
+  let raw: string;
+  let ageMs: number;
+  try {
+    const [content, info] = await Promise.all([
+      readFile(lockPath, "utf8"),
+      stat(lockPath),
+    ]);
+    raw = content;
+    ageMs = Date.now() - info.mtimeMs;
+  } catch (err) {
+    // Gone between EEXIST and here — another writer already cleared it, so this
+    // one is free to retry. Anything else stays a conflict: unknown is not free.
+    return (err as NodeJS.ErrnoException)?.code === "ENOENT";
+  }
+
+  if (ageMs > COMMIT_CLAIM_STALE_MS) return true;
+
+  let claim: CommitClaim;
+  try {
+    claim = JSON.parse(raw) as CommitClaim;
+  } catch {
+    return false; // unreadable owner + still fresh → treat as live
+  }
+  if (claim.host !== hostname() || typeof claim.pid !== "number") return false;
+  try {
+    process.kill(claim.pid, 0);
+    return false; // owner is alive and working
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === "ESRCH";
+  }
+}
+
+/**
+ * Take the commit claim, reclaiming it once if the previous owner provably
+ * died. A single retry is deliberate: two writers racing to reclaim the same
+ * dead claim means one wins and the other reports a conflict, which is the
+ * documented outcome for contention and costs no data — the compare-and-swap
+ * below still has to agree before anything is published.
+ */
+async function acquireCommitClaim(
+  lockPath: string,
+  id: string,
+  filePath: string,
+): Promise<void> {
+  const body = JSON.stringify({
+    pid: process.pid,
+    host: hostname(),
+    ts: Date.now(),
+  } satisfies CommitClaim);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(body, "utf8");
+      } finally {
+        await handle.close();
+      }
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
+      if (attempt === 0 && (await claimIsAbandoned(lockPath))) {
+        await unlink(lockPath).catch(() => {});
+        continue;
+      }
+      throw writeConflict(id, filePath, "another save is committing this target");
+    }
+  }
+}
+
 function writeConflict(id: string, filePath: string, detail: string): MemoryWriteConflictError {
   return new MemoryWriteConflictError(id, filePath, detail);
 }
@@ -586,16 +686,8 @@ export async function saveMemory(
   await writeFile(tmp, content, "utf8");
   let lockAcquired = false;
   try {
-    try {
-      const handle = await open(commitLock, "wx", 0o600);
-      lockAcquired = true;
-      await handle.close();
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-        throw writeConflict(id, filePath, "another save is committing this target");
-      }
-      throw err;
-    }
+    await acquireCommitClaim(commitLock, id, filePath);
+    lockAcquired = true;
 
     // #285: compare the exact bytes seen before the candidate was built with
     // the bytes at commit time. The O_EXCL lock serializes every saveMemory

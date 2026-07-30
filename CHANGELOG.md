@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that raw preimage as `expectedTarget`, so the proof and the write are one
   compare-and-swap operation; import does this for both notes and its synthetic
   index. A losing writer gets the stable `BASTRA_WRITE_CONFLICT` error and can
-  retry from the current file instead of silently replacing it.
+  retry from the current file instead of silently replacing it. A claim whose
+  owner died mid-commit is reclaimed rather than blocking the id forever: it
+  records the writing process and machine, and a later writer takes it once the
+  owner is provably gone or the claim has aged past its window.
 
 - **The hooks were losing one recall in sixteen, silently.** The budget that
   cuts a hook off if the daemon is slow sat at 250 ms — just under what a real
