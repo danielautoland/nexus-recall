@@ -14,13 +14,16 @@ updates:
       # newer-major type bumps that outrun the supported runtime.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
-      # TypeScript 7 is the Go port: `require("typescript")` exports only
-      # `version` and `versionMajorMinor`, the whole compiler API moved behind
-      # `typescript/unstable/*`. tools/anno-symbols-gen-ts.mjs calls
-      # ts.createSourceFile / ts.ScriptTarget and dies at runtime — which no
-      # type check catches. Proposed twice (#204, merged then reverted in
-      # 078c2fb; #278), red both times. Lift this ignore only together with a
-      # port of that tool onto the unstable AST API.
+      # TypeScript 7.0 (the Go port) ships WITHOUT a programmatic API — by
+      # design, not by accident: `require("typescript")` exports only `version`
+      # and `versionMajorMinor`. Microsoft's own guidance is to keep tools that
+      # embed the compiler on TypeScript 6.0 until 7.1 ships the new stable API;
+      # typescript-eslint, ts-morph, Vue, Svelte and Astro sit out for the same
+      # reason. tools/anno-symbols-gen-ts.mjs calls ts.createSourceFile /
+      # ts.ScriptTarget and dies at runtime, which no type check catches —
+      # proposed twice (#204, merged then reverted in 078c2fb; #278), red both
+      # times. Revisit when 7.1 is out, not before: the `unstable/*` exports in
+      # 7.0 are explicitly not that API and would mean porting twice.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
