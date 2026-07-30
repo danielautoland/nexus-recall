@@ -7,13 +7,9 @@
  *
  * Each test here is the repro for one point of that issue.
  *
- * NOT covered here, deliberately: P1c (TOCTOU between the Pass-0 ownership
- * check and the Pass-C save). The window only exists while `importVault` runs
- * and there is no injection point in the public API, so an integration test
- * for it would be green without proving anything. The re-check is implemented
- * and commented at the two save sites in `import-vault.ts`; a real test needs
- * the ownership-aware commit strategy in the writer (O_EXCL / compare-and-swap)
- * that #245 itself defers to its own step.
+ * #285 closes P1c: the final ownership read is passed as saveMemory's exact
+ * expectedTarget preimage. Deterministic commit-race coverage lives in core's
+ * save-concurrency.test.ts, at the writer boundary where the race exists.
  *
  * Runner: `tsx --test __tests__/import-overwrite-guard.test.ts`
  */

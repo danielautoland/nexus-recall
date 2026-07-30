@@ -63,11 +63,13 @@ const DEFAULT_EXCLUDED_DIRS = new Set(["_archive", "archive"]);
  *  colliding id is foreign and must never be overwritten (#240). */
 const KNOWN_ADAPTERS = new Set(["claude-code-memory", "markdown"]);
 
-/** Who owns the node currently sitting on a candidate id.
- *  `unverifiable` is the #245 P1 addition: the node EXISTS but could not be
- *  read, so the answer is unknown — and unknown must behave like foreign at
- *  the write site, not like free. */
-type Ownership = "free" | "mine" | "foreign" | "unverifiable";
+/** Who owns the node currently sitting on a candidate id, together with the
+ * exact preimage the commit must still see. `unverifiable` means the node
+ * exists but could not be read, so unknown behaves like foreign. */
+type OwnershipCheck =
+  | { owner: "free"; target: null }
+  | { owner: "mine" | "foreign"; target: string }
+  | { owner: "unverifiable" };
 
 /** Result of minting an id: either a usable one, or a reason to skip the file
  *  visibly. The import never forces a write onto an id it could not clear. */
@@ -207,7 +209,11 @@ export async function importVault(
   // batch-allocated id could still land on a stranger. Ownership is read back
   // from the `source` stamp: files carry "<adapter>:<label>:<relKey>", the
   // synthetic index carries "index:<label>".
-  const ownership = async (id: string, myKey: string, isIndex: boolean): Promise<Ownership> => {
+  const ownership = async (
+    id: string,
+    myKey: string,
+    isIndex: boolean,
+  ): Promise<OwnershipCheck> => {
     let raw: string;
     try {
       raw = await readFile(join(vaultRoot, folder, `${id}.md`), "utf8");
@@ -216,11 +222,18 @@ export async function importVault(
       // Any other failure — EACCES/EIO/ETIMEDOUT are all reachable on the
       // cloud mounts this project explicitly supports — leaves ownership
       // UNKNOWN, and an unknown owner must never be overwritten.
-      return (err as NodeJS.ErrnoException)?.code === "ENOENT" ? "free" : "unverifiable";
+      return (err as NodeJS.ErrnoException)?.code === "ENOENT"
+        ? { owner: "free", target: null }
+        : { owner: "unverifiable" };
     }
     const data = safeParse(raw).data;
     const src = typeof data.source === "string" ? data.source : "";
-    if (isIndex) return src === `index:${label}` ? "mine" : "foreign";
+    if (isIndex) {
+      return {
+        owner: src === `index:${label}` ? "mine" : "foreign",
+        target: raw,
+      };
+    }
     const parts = src.split(":");
     if (parts[1] === label && KNOWN_ADAPTERS.has(parts[0])) {
       // #245 P1: a stamp WITHOUT a relKey predates the provenance stamp, so
@@ -230,9 +243,15 @@ export async function importVault(
       // first reimport after the update. Unknown provenance is FOREIGN: the
       // import lands beside it as a visible duplicate (Weg C) instead of
       // replacing content it cannot prove it produced.
-      return parts.length >= 3 && parts.slice(2).join(":") === myKey ? "mine" : "foreign";
+      return {
+        owner:
+          parts.length >= 3 && parts.slice(2).join(":") === myKey
+            ? "mine"
+            : "foreign",
+        target: raw,
+      };
     }
-    return "foreign"; // hand-authored, the index role, or a different label
+    return { owner: "foreign", target: raw }; // hand-authored, index role, or another label
   };
   /** Batch-unique id that never resolves onto a FOREIGN on-disk node: on
    *  foreign collision, fall back to a path-stable hash suffix (same across
@@ -247,9 +266,9 @@ export async function importVault(
   const allocateOwnedId = async (base: string, seed: string, isIndex = false): Promise<Allocation> => {
     let id = uniqueId(base, used);
     for (let guard = 0; ; guard++) {
-      const owner = await ownership(id, seed, isIndex);
-      if (owner === "free" || owner === "mine") return { id };
-      if (owner === "unverifiable")
+      const check = await ownership(id, seed, isIndex);
+      if (check.owner === "free" || check.owner === "mine") return { id };
+      if (check.owner === "unverifiable")
         return { skip: `ownership of ${folder}/${id}.md is unverifiable (node exists but is unreadable) — refusing to overwrite` };
       if (guard >= HASH_CANDIDATES) break;
       id = uniqueId(`${base}-${pathHash(guard === 0 ? seed : `${seed}#${guard}`)}`, used);
@@ -358,22 +377,21 @@ export async function importVault(
       skipped.push({ path: filePath, reason: mapped.reason });
       continue;
     }
+    let expectedTarget: string | null = null;
     if (!dryRun) {
       // #245 P1 (TOCTOU): the id was cleared back in Pass 0, and Pass C runs
-      // much later — long enough for another writer to land a node on it. Ask
-      // again immediately before the write. This narrows the window to
-      // check→rename; closing it entirely needs an ownership-aware commit in
-      // saveMemory (O_EXCL / compare-and-swap), which #245 defers to its own
-      // step. There is no deterministic test for this branch from the public
-      // API, so it is guarded by review and this comment, not by a green test.
-      const owner = await ownership(mapped.input.id as string, relKey, false);
-      if (owner !== "free" && owner !== "mine") {
+      // much later — long enough for another writer to land a node on it.
+      // #285 closes the remaining check→commit window: pass the exact raw
+      // preimage into saveMemory's ownership-aware commit.
+      const check = await ownership(mapped.input.id as string, relKey, false);
+      if (check.owner !== "free" && check.owner !== "mine") {
         skipped.push({
           path: filePath,
-          reason: `ownership of ${folder}/${mapped.input.id}.md changed after the id was minted (${owner}) — refusing to overwrite`,
+          reason: `ownership of ${folder}/${mapped.input.id}.md changed after the id was minted (${check.owner}) — refusing to overwrite`,
         });
         continue;
       }
+      expectedTarget = check.target;
     }
     if (mapped.input.source?.startsWith("claude-code-memory")) byAdapter.claudeCode++;
     else byAdapter.generic++;
@@ -385,6 +403,7 @@ export async function importVault(
           actor: "import",
           actorDetail: "import:vault",
           sessionId: runId,
+          commit: { expectedTarget },
         });
       } catch (err) {
         // `recordAudit` absorbs audit-only failures. Reaching this catch means
@@ -434,9 +453,14 @@ export async function importVault(
       // #245 P2: if no id could be cleared, the index is simply not written.
       // It is navigation, not content — the notes themselves already imported,
       // and no foreign node is worth a nav star.
-      const indexOwner =
-        alloc.id === undefined ? "foreign" : await ownership(alloc.id, indexSeed, true); // #245 P1: TOCTOU re-check
-      if (alloc.id !== undefined && (indexOwner === "free" || indexOwner === "mine")) {
+      const indexCheck =
+        alloc.id === undefined
+          ? ({ owner: "foreign", target: "" } as const)
+          : await ownership(alloc.id, indexSeed, true); // #245 P1: TOCTOU re-check
+      if (
+        alloc.id !== undefined &&
+        (indexCheck.owner === "free" || indexCheck.owner === "mine")
+      ) {
         const id = alloc.id;
         try {
           await saveMemoryWithAuditTrail({
@@ -459,6 +483,7 @@ export async function importVault(
             actor: "import",
             actorDetail: "import:vault",
             sessionId: runId,
+            commit: { expectedTarget: indexCheck.target },
           });
           ids.push(id);
           indexNode = id;

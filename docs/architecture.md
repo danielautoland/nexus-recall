@@ -51,6 +51,50 @@ Current write routing from `saveMemory`:
 
 The scanner is recursive, so older flat vaults and hand-organized Obsidian folders continue to work.
 
+### Write commit contract
+
+`saveMemory` builds a complete temporary file and commits per destination path. The destination path—not only the memory id—is the concurrency boundary, so the same id in two explicitly different folders does not block.
+
+Every commit has these invariants:
+
+1. The target is read before the candidate is built. Only `ENOENT` means free; permission, device, and cloud-mount read failures abort the save.
+2. The writer acquires `<target>.bastra-write.lock` with exclusive-create semantics. A second `saveMemory` writer, including one in another process, receives `MemoryWriteConflictError` with code `BASTRA_WRITE_CONFLICT`.
+3. Under that claim, the writer re-reads the target and compares the exact bytes with the first read. A change aborts the commit.
+4. A create hard-links the completed temporary inode into the free destination, so it cannot replace a target that appeared late. An overwrite renames the complete temporary file atomically.
+5. Normal success and handled conflicts remove the writer's temporary and lock files. A process killed while it owns the claim can leave the lock behind; the destination is still either the complete old file or the complete committed file, never a partial write. Verify that no writer is active before removing such a stale lock.
+
+The optional third argument joins a caller-side ownership decision to that commit:
+
+```ts
+await saveMemory(vaultRoot, input, {
+  // null means "I proved the destination was absent";
+  // a string is the exact raw file content I approved.
+  expectedTarget,
+});
+```
+
+Omitting `expectedTarget` preserves the ordinary save API. Passing it makes the call compare-and-swap: if the destination no longer matches, the writer reports a conflict before publishing. `importVault` passes the raw target returned by its final provenance check, closing the previous ownership-check → rename window (#245, #285).
+
+The per-path claim is the cooperation boundary: every project write path that calls `saveMemory` participates, across Node processes. A program that edits the markdown file directly does not acquire this claim. Creates still cannot clobber such an external late writer because their final publication is no-replace; portable Node filesystem APIs do not provide an atomic content-CAS replacement for the overwrite case.
+
+The regression matrix covers:
+
+| Case | Required result |
+|---|---|
+| two creates, same free path and expected `null` | exactly one commit; one conflict |
+| two overwrites, same path and preimage | exactly one patch; one conflict |
+| two overlapping ordinary overwrites, no caller precondition | exactly one commit while their commit intervals overlap |
+| target appears after caller proved it free | newcomer preserved; conflict |
+| target bytes change after caller approved them | changed file preserved; conflict |
+| commit claim already held | target and existing claim untouched; conflict |
+| writers in separate Node processes | exactly one commit for one preimage |
+| sequential overwrites | both succeed; ordinary update behavior unchanged |
+| different ids in one folder | both commit independently |
+| same id in different folders | both commit independently |
+| target inspection fails with non-`ENOENT` | fail closed before temp/lock creation |
+| success or handled conflict | no owned temp/lock artifact remains |
+| winning overwrite is a patch | omitted frontmatter, including sensitivity, survives |
+
 The watcher uses `chokidar`. On paths that look like cloud-storage mounts (`CloudStorage`, `Dropbox`, `iCloud`), it switches to polling because native file events are unreliable there. Write paths call `vault.reindexFile(...)` after known writes so a save and a recall in the same turn stay consistent.
 
 A memory's **id survives** the engine's lifecycle operations: demote changes score only, soft-delete moves the file to append-only `.bastra/trash/` (recoverable), and only a hard delete removes a cell. This is the substrate guarantee the pin/floor lifecycle and any citation layer build on — pinned by a CI regression test. Details: [docs/survival.md](./docs/survival.md).
