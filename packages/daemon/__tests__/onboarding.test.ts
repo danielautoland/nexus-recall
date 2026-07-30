@@ -16,6 +16,7 @@ import { createServer, request } from "node:http";
 import {
   questionsFor,
   buildOnboardingMemories,
+  saveOnboardingMemories,
   isOnboardingNeeded,
   isOnboardingDone,
   markOnboardingDone,
@@ -56,6 +57,34 @@ test("buildOnboardingMemories: usage-profile always, one memory per answer, all 
     assert.ok((m.recall_when?.length ?? 0) >= 2, `${m.id} needs concrete triggers`);
   }
   assert.match(memories[1].summary, /German, informal/);
+});
+
+test("saveOnboardingMemories: CLI answers share one user-authored audit run", async () => {
+  const vaultDir = await mkdtemp(join(tmpdir(), "bastra-onboard-cli-vault-"));
+  try {
+    const memories = buildOnboardingMemories("developer", {
+      identity: "Sam · English · terse",
+      stack: "TypeScript and Node",
+    });
+    await saveOnboardingMemories(vaultDir, memories, "cli:onboard");
+
+    const raw = await readFile(join(vaultDir, ".bastra", "audit-log.ndjson"), "utf8");
+    const entries = raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as {
+        actor: string;
+        actor_detail?: string;
+        session_id?: string;
+      });
+    assert.equal(entries.length, memories.length);
+    assert.ok(entries.every((entry) => entry.actor === "user"));
+    assert.ok(entries.every((entry) => entry.actor_detail === "cli:onboard"));
+    assert.equal(new Set(entries.map((entry) => entry.session_id)).size, 1);
+    assert.ok(entries[0].session_id);
+  } finally {
+    await rm(vaultDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
 });
 
 test("marker: fresh vault needs onboarding, done or big vault does not", async () => {
@@ -123,6 +152,27 @@ test("GET/POST /ui/onboarding: gated on ui.enabled, saves user-directed memories
     );
     assert.match(profile, /write_origin: user-directed/);
     assert.equal(await isOnboardingDone(vaultDir), true);
+
+    const auditRaw = await readFile(join(vaultDir, ".bastra", "audit-log.ndjson"), "utf8");
+    const audit = auditRaw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as {
+        actor: string;
+        actor_detail?: string;
+        operation: string;
+        session_id?: string;
+      });
+    assert.equal(audit.length, 3, "every onboarding memory needs one audit entry");
+    assert.ok(audit.every((entry) => entry.actor === "user"));
+    assert.ok(audit.every((entry) => entry.actor_detail === "ui:onboarding"));
+    assert.ok(audit.every((entry) => entry.operation === "create"));
+    assert.equal(
+      new Set(audit.map((entry) => entry.session_id)).size,
+      1,
+      "one onboarding submission is one reconstructable audit run",
+    );
+    assert.ok(audit[0].session_id);
 
     const again = await call("GET");
     assert.equal(again.json.needed, false, "marker stops the auto-open");

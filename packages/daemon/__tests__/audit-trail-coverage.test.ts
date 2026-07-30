@@ -18,13 +18,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 import { Telemetry } from "../src/telemetry.js";
 import { saveMemoryHandler, archiveMemoryHandler, type ToolDeps } from "../src/tool-handlers.js";
 import { resetAuditLogCache } from "../src/audit-trail.js";
+import { importVault } from "../src/import-vault.js";
 
 interface AuditLine {
   memory_id: string;
@@ -187,5 +188,68 @@ test("#206: a failing audit never costs the user their write", async () => {
     assert.ok(deps.vault.get(res.id), "and the memory must really be in the vault");
   } finally {
     await cleanup();
+  }
+});
+
+test("#287: one folder import is reconstructable as one audit run", async () => {
+  resetAuditLogCache();
+  const vaultPath = await mkdtemp(join(tmpdir(), "bastra-audit-import-vault-"));
+  const sourcePath = await mkdtemp(join(tmpdir(), "bastra-audit-import-source-"));
+  try {
+    await writeFile(join(sourcePath, "one.md"), "# One\n\nFirst imported note.\n", "utf8");
+    await writeFile(join(sourcePath, "two.md"), "# Two\n\nSecond imported note.\n", "utf8");
+
+    const first = await importVault(vaultPath, sourcePath, { label: "audit-batch" });
+    const firstEntries = await auditEntries(vaultPath);
+    assert.equal(firstEntries.length, first.ids.length, "every successful import write needs one entry");
+    assert.ok(firstEntries.length >= 2);
+    assert.deepEqual(
+      new Set(firstEntries.map((e) => e.memory_id)),
+      new Set(first.ids),
+      "the trail must name every node the import reported",
+    );
+    assert.ok(firstEntries.every((e) => e.actor === "import"));
+    assert.ok(firstEntries.every((e) => e.actor_detail === "import:vault"));
+    assert.ok(firstEntries.every((e) => e.operation === "create"));
+    assert.equal(
+      new Set(firstEntries.map((e) => e.session_id)).size,
+      1,
+      "all nodes from one invocation need one shared run id",
+    );
+    const firstRun = firstEntries[0].session_id;
+    assert.ok(firstRun);
+
+    await importVault(vaultPath, sourcePath, { label: "audit-batch" });
+    const allEntries = await auditEntries(vaultPath);
+    const secondEntries = allEntries.slice(firstEntries.length);
+    assert.equal(secondEntries.length, firstEntries.length);
+    assert.ok(secondEntries.every((e) => e.operation === "update"));
+    assert.ok(secondEntries.every((e) => e.diff_before !== null));
+    assert.equal(new Set(secondEntries.map((e) => e.session_id)).size, 1);
+    assert.notEqual(secondEntries[0].session_id, firstRun, "a later import is a different run");
+  } finally {
+    resetAuditLogCache();
+    await rm(vaultPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    await rm(sourcePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test("#287: an unavailable audit log never aborts a folder import", async () => {
+  resetAuditLogCache();
+  const vaultPath = await mkdtemp(join(tmpdir(), "bastra-audit-import-fail-vault-"));
+  const sourcePath = await mkdtemp(join(tmpdir(), "bastra-audit-import-fail-source-"));
+  try {
+    await writeFile(join(sourcePath, "one.md"), "# One\n\nImported despite the broken trail.\n", "utf8");
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(vaultPath, ".bastra", "audit-log.ndjson"), { recursive: true });
+
+    const result = await importVault(vaultPath, sourcePath, { label: "audit-failure" });
+    assert.equal(result.imported, 1);
+    assert.equal(result.skipped.length, 0, "audit failure is not an import failure");
+    assert.ok(result.ids.includes("audit-failure-one"));
+  } finally {
+    resetAuditLogCache();
+    await rm(vaultPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    await rm(sourcePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

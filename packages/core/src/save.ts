@@ -323,6 +323,38 @@ function subfolderFor(scope: string, type: string): string {
   return `memories/projects/${scope}`;
 }
 
+export type MemoryTargetInput = Pick<
+  SaveMemoryInput,
+  "title" | "type" | "scope" | "id" | "folder"
+>;
+
+export interface MemoryTarget {
+  id: string;
+  filePath: string;
+}
+
+/**
+ * Resolve the exact file `saveMemory` will write.
+ *
+ * Callers that need a pre-write snapshot (for example the daemon audit trail)
+ * must use the same routing and containment check as the writer instead of
+ * duplicating `subfolderFor`. This is a routing primitive, not a second save
+ * API: a path escape is a write failure and must throw rather than being
+ * downgraded to "audit unavailable".
+ */
+export function resolveMemoryTarget(
+  vaultRoot: string,
+  input: MemoryTargetInput,
+): MemoryTarget {
+  const id = input.id ?? slugify(input.title);
+  const subdir = input.folder ?? subfolderFor(input.scope, input.type);
+  const filePath = join(vaultRoot, subdir, `${id}.md`);
+  if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
+    throw new Error(`refusing to write outside the vault: ${filePath}`);
+  }
+  return { id, filePath };
+}
+
 /**
  * Build the .md content for a new memory and write it into the vault.
  * The vault watcher will pick it up and index it automatically.
@@ -331,18 +363,7 @@ export async function saveMemory(
   vaultRoot: string,
   input: SaveMemoryInput,
 ): Promise<SaveMemoryResult> {
-  const id = input.id ?? slugify(input.title);
-  // Konventions-getriebener Ziel-Ordner gewinnt über das scope/type-Routing —
-  // so kann der Vault neue Strukturen lernen (z.B. memories/people/).
-  const subdir = input.folder ?? subfolderFor(input.scope, input.type);
-  const dir = join(vaultRoot, subdir);
-  const filePath = join(dir, `${id}.md`);
-  // Belt-and-suspenders against path escape: id/scope are schema-validated as
-  // path-safe, but every join of caller input into a path re-checks here —
-  // callers that bypass SaveMemoryInput.parse() are covered too.
-  if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
-    throw new Error(`refusing to write outside the vault: ${filePath}`);
-  }
+  const { id, filePath } = resolveMemoryTarget(vaultRoot, input);
   const exists = await fileExists(filePath);
   if (exists && !input.overwrite) {
     throw new Error(

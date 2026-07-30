@@ -6,12 +6,12 @@
  * done` is what an AI session runs after finishing the interview itself.
  */
 import { createInterface } from "node:readline/promises";
-import { saveMemory } from "@bastra-recall/core";
 import {
   PERSONAS,
   PERSONA_LABELS,
   questionsFor,
   buildOnboardingMemories,
+  saveOnboardingMemories,
   persistConventionSettings,
   persistLanguageSetting,
   markOnboardingDone,
@@ -74,9 +74,9 @@ export async function cmdOnboard(args: ParsedArgs): Promise<number> {
     }
 
     const memories = buildOnboardingMemories(persona, answers);
-    for (const m of memories) {
-      await saveMemory(vault.path, m);
-    }
+    // Keep the completion marker after this call: a real write failure must
+    // leave onboarding retryable instead of recording a partial interview as done.
+    await saveOnboardingMemories(vault.path, memories, "cli:onboard");
     await persistConventionSettings(answers);
     await persistLanguageSetting(answers);
     await markOnboardingDone(vault.path, "cli");
