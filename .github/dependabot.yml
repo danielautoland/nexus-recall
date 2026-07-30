@@ -14,6 +14,15 @@ updates:
       # newer-major type bumps that outrun the supported runtime.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript 7 is the Go port: `require("typescript")` exports only
+      # `version` and `versionMajorMinor`, the whole compiler API moved behind
+      # `typescript/unstable/*`. tools/anno-symbols-gen-ts.mjs calls
+      # ts.createSourceFile / ts.ScriptTarget and dies at runtime — which no
+      # type check catches. Proposed twice (#204, merged then reverted in
+      # 078c2fb; #278), red both times. Lift this ignore only together with a
+      # port of that tool onto the unstable AST API.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
