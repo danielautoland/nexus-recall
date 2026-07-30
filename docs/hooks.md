@@ -108,6 +108,19 @@ memories can't contain, pulling English documents up and starving non-English
 construction, so the signal survives. Kill switch `BASTRA_HOOK_QUERY=english`
 restores the old action-verb template (`writing tsx involving react, …`).
 
+**Content-axis experiment (#282).** Set `BASTRA_HOOK_CONTENT_RECALL=1` on the
+daemon to run a second recall over the pending edit excerpt and max-score-fuse
+it with the file-axis results. The arm is restricted to `Write`, `Edit`,
+`MultiEdit`, and `NotebookEdit`; other `/hook/recall` callers are unchanged.
+It is off by default: better retrieval does not prove that the agent will
+follow the recalled memory. A failed content recall falls back to the unchanged
+file-axis response. Each attempted arm adds only
+`content_recall: { hit_count, added_count, rescored_count, latency_ms, failed? }`
+to the `hook_recall` telemetry event. `added_count` counts content-only hits
+that survived into the served top-k; `rescored_count` counts shared hits whose
+content score replaced a lower file-axis score. The edit excerpt itself is not
+logged.
+
 ### `bastra-recall-prompt-hook` (#33)
 
 Detects retrieval prompts via DE + EN regex (e.g. `^such|finde|wo (ist|sind)`
@@ -325,6 +338,7 @@ new MCP tool):
 | `BASTRA_HTTP_PORT`            | `6723`           | Daemon port on `127.0.0.1`                                    |
 | `BASTRA_HOOK_TIMEOUT_MS`      | `250` / `500` / `1000` | Wall-clock budget for the hook (incl. network round-trip) |
 | `BASTRA_HOOK_QUERY`           | `neutral`        | `english` restores the old action-verb recall query (#231)    |
+| `BASTRA_HOOK_CONTENT_RECALL`  | `off`            | `1` runs the opt-in edit-content recall arm (#282)             |
 | `BASTRA_PROMPT_HOOK_MODE`     | `retrieval-only` | `retrieval-only` or `all` — only the prompt-hook reads this   |
 | `BASTRA_TELEMETRY`            | `on`             | `off` to disable JSONL telemetry writes                       |
 | `BASTRA_LOG_PATH`             | `~/.bastra/logs` | Telemetry log directory                                       |

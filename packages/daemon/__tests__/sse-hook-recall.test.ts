@@ -19,8 +19,8 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
-import { Vault, SearchIndex } from "@bastra-recall/core";
-import { startHttpServer } from "../src/http.js";
+import { Vault, SearchIndex, type RecallHit } from "@bastra-recall/core";
+import { mergeHookRecallHits, startHttpServer } from "../src/http.js";
 import { Telemetry } from "../src/telemetry.js";
 
 function memoryMarkdown(id: string, title: string): string {
@@ -91,7 +91,12 @@ function httpPost(
   });
 }
 
-async function makeDaemon(): Promise<{ port: number; close: () => Promise<void>; dir: string }> {
+async function makeDaemon(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+  dir: string;
+  search: SearchIndex;
+}> {
   const dir = await mkdtemp(join(tmpdir(), "bastra-sse-test-"));
   await writeFile(join(dir, "alpha.md"), memoryMarkdown("alpha", "alpha bravo"), "utf8");
   await writeFile(join(dir, "charlie.md"), memoryMarkdown("charlie", "charlie delta"), "utf8");
@@ -120,6 +125,7 @@ async function makeDaemon(): Promise<{ port: number; close: () => Promise<void>;
       await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
     dir,
+    search,
   };
 }
 
@@ -135,6 +141,111 @@ test("hook/recall: without Accept header returns JSON", async () => {
     assert.equal(typeof parsed.recall_id, "string");
     assert.equal(typeof parsed.latency_ms, "number");
   } finally {
+    await d.close();
+  }
+});
+
+test("hook/recall: content-axis recall is opt-in and additive", async () => {
+  const d = await makeDaemon();
+  const previous = process.env.BASTRA_HOOK_CONTENT_RECALL;
+  try {
+    delete process.env.BASTRA_HOOK_CONTENT_RECALL;
+    const off = await httpPost(d.port, "/hook/recall", {
+      query: "alpha",
+      tool_input_excerpt: "charlie delta",
+      tool_name: "Edit",
+      k: 2,
+    });
+    assert.equal(off.status, 200);
+    assert.deepEqual(
+      JSON.parse(off.body).hits.map((hit: { id: string }) => hit.id),
+      ["alpha"],
+      "the file-axis result is unchanged while the experiment is off",
+    );
+
+    process.env.BASTRA_HOOK_CONTENT_RECALL = "1";
+    const on = await httpPost(d.port, "/hook/recall", {
+      query: "alpha",
+      tool_input_excerpt: "charlie delta",
+      tool_name: "Edit",
+      k: 2,
+    });
+    assert.equal(on.status, 200);
+    assert.deepEqual(
+      new Set(JSON.parse(on.body).hits.map((hit: { id: string }) => hit.id)),
+      new Set(["alpha", "charlie"]),
+      "content-only hits join the existing file-axis result",
+    );
+
+    const bash = await httpPost(d.port, "/hook/recall", {
+      query: "alpha",
+      tool_input_excerpt: "charlie delta",
+      tool_name: "Bash",
+      k: 2,
+    });
+    assert.deepEqual(
+      JSON.parse(bash.body).hits.map((hit: { id: string }) => hit.id),
+      ["alpha"],
+      "the edit experiment does not widen other hook surfaces",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.BASTRA_HOOK_CONTENT_RECALL;
+    else process.env.BASTRA_HOOK_CONTENT_RECALL = previous;
+    await d.close();
+  }
+});
+
+test("hook/recall: fusion keeps max score and combines lexical evidence", () => {
+  const fileHit: RecallHit = {
+    id: "same",
+    title: "same",
+    type: "reference",
+    scope: "test",
+    summary: "same",
+    topic_path: [],
+    score: 12,
+    matched_terms: ["file"],
+    matched_recall_when: false,
+  };
+  const contentHit: RecallHit = {
+    ...fileHit,
+    score: 11,
+    matched_terms: ["content"],
+    matched_recall_when: true,
+  };
+  const merged = mergeHookRecallHits([fileHit], [contentHit], 1);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].score, 12);
+  assert.deepEqual(merged[0].matched_terms, ["file", "content"]);
+  assert.equal(merged[0].matched_recall_when, true);
+});
+
+test("hook/recall: content-axis failure preserves the file-axis response", async () => {
+  const d = await makeDaemon();
+  const previous = process.env.BASTRA_HOOK_CONTENT_RECALL;
+  const recall = d.search.recall.bind(d.search);
+  let calls = 0;
+  d.search.recall = ((...args: Parameters<SearchIndex["recall"]>) => {
+    calls++;
+    if (calls === 2) throw new Error("content recall failed");
+    return recall(...args);
+  }) as SearchIndex["recall"];
+  try {
+    process.env.BASTRA_HOOK_CONTENT_RECALL = "1";
+    const result = await httpPost(d.port, "/hook/recall", {
+      query: "alpha",
+      tool_input_excerpt: "charlie delta",
+      tool_name: "Edit",
+      k: 2,
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(
+      JSON.parse(result.body).hits.map((hit: { id: string }) => hit.id),
+      ["alpha"],
+    );
+  } finally {
+    if (previous === undefined) delete process.env.BASTRA_HOOK_CONTENT_RECALL;
+    else process.env.BASTRA_HOOK_CONTENT_RECALL = previous;
     await d.close();
   }
 });

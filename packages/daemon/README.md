@@ -102,6 +102,7 @@ npm run backfill:related   # populate related_via on legacy memories
 | `BASTRA_FORWARDER_SPAWN` | no | `1` | when `0`, the MCP forwarder will not auto-spawn the daemon |
 | `BASTRA_HOOK_TIMEOUT_MS` | no | `500` | per-hook wall-clock budget before fail-silent |
 | `BASTRA_HOOK_MAX_SHOW` | no | `1` | how often the same memory may appear in `<recall-hints>` per session (4h window); a `load_memory` of that id resets the counter |
+| `BASTRA_HOOK_CONTENT_RECALL` | no | `off` | set to `1` to run the opt-in edit-content recall arm (#282) |
 | `BASTRA_DOCUMENT_WRITE` | no | unset | set to `1` to expose document write tools |
 | `BASTRA_LOG_PATH` | no | `~/.bastra/logs` | telemetry JSONL output directory (out-of-vault on purpose) |
 | `BASTRA_TELEMETRY` | no | `on` | set to `off` to disable telemetry writes entirely |
