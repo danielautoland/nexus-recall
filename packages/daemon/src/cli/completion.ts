@@ -29,6 +29,7 @@ export const COMMANDS = [
   "onboard",
   "skills",
   "rules",
+  "patches",
   "feedback",
   "completion",
   "help",

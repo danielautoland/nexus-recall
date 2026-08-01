@@ -34,6 +34,7 @@ import { cmdLogs, parseSince } from "./cli/logs.js";
 import { cmdLogStats } from "./cli/log-stats.js";
 import { cmdCompletion } from "./cli/completion.js";
 import { cmdRules } from "./cli/rules-cmd.js";
+import { cmdPatches } from "./cli/patches-cmd.js";
 import { cmdPanel } from "./cli/panel.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
@@ -68,6 +69,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "skills": return cmdSkills(args);
     case "feedback": return cmdFeedback(args);
     case "rules": return cmdRules(args);
+    case "patches": return cmdPatches(args);
     case "completion": return cmdCompletion(args.surface);
     case "logs": {
       const sinceMs = args.since === null ? 5 * 60_000 : parseSince(args.since);

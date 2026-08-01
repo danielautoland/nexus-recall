@@ -4,6 +4,7 @@ import { probeOllama } from "./ollama.js";
 import { getEmbeddingProvider, getApiToken, getUiEnabled, type EmbeddingProviderName } from "../settings.js";
 import { mapUrl } from "./map-cmd.js";
 import { listDaemonProcesses, formatExtraDaemons } from "./daemon-processes.js";
+import { patchesSummaryLine } from "./patches-cmd.js";
 
 interface StatusOptions {
   json?: boolean;
@@ -16,6 +17,8 @@ interface StatusResult {
   apiToken: { set: boolean };
   vaultMap: { enabled: boolean; url: string };
   surfaces: Record<string, { status: string; message: string }>;
+  /** #269 — only present when a patch series is registered. */
+  localPatches?: string;
 }
 
 function printLine(message: string) {
@@ -77,6 +80,17 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     printLine(
       `${"api token".padEnd(15)} ${tokenSet ? "✓ set (browser/REST enabled)" : "· not set (loopback only)"}`,
     );
+  }
+
+  // Local patch series (#269). Only reported when there is one — a user without
+  // patches should not learn the feature exists from a permanent "0" line. Never
+  // flips the exit code: a registered patch is a normal state, not a fault.
+  const patchLine = patchesSummaryLine();
+  if (patchLine) {
+    statusResult.localPatches = patchLine;
+    if (!options.quiet && !options.json) {
+      printLine(`${"local patches".padEnd(15)} · ${patchLine}`);
+    }
   }
 
   // Vault map (#207) — the discovery line: where the map lives, or how to

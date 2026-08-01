@@ -33,6 +33,7 @@ import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
 import { formatBlockedUpdate, readBlockedUpdate } from "./update-blocked.js";
+import { pendingPatchNotice } from "./patch-registry.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
@@ -362,6 +363,28 @@ async function main(): Promise<void> {
     }
   }
 
+  // #269 — local patches the last update could not put back. Read from the
+  // record the update path wrote, never probed here: this hook runs inside a
+  // hard latency budget and `git apply --check` per patch is a process spawn per
+  // patch. Unconditional (not gated on the daemon answering) because the finding
+  // is about files on disk, and a silent reverted patch is exactly the failure
+  // #268/#269 exist to make impossible.
+  let patchBlock = "";
+  try {
+    const notice = pendingPatchNotice();
+    if (notice) {
+      patchBlock =
+        `\n<local-patches>\n` +
+        `${notice}\n` +
+        `Tell the user this plainly at the start of the session — a local fix that silently ` +
+        `stopped being applied is the case this surface exists for. Do not attempt to reapply ` +
+        `or edit the patches yourself; report and let them decide.\n` +
+        `</local-patches>`;
+    }
+  } catch {
+    // Same posture as every other block here: a notice is never worth a failed hook.
+  }
+
   // #48 Redesign: still abgelegte Stop-Hook-Vorschläge der LETZTEN Session
   // einsammeln (consume-once, max 7 Tage alt) — der Agent sieht sie als
   // additionalContext, der Chat bleibt sauber.
@@ -413,7 +436,7 @@ async function main(): Promise<void> {
     // Language hint is best-effort — never block session start.
   }
 
-  const extras = taxonomyBlock + languageBlock + careBlock + importBlock + onboardingBlock + updateBlock + pendingBlock + dokuBlock;
+  const extras = taxonomyBlock + languageBlock + careBlock + importBlock + onboardingBlock + updateBlock + patchBlock + pendingBlock + dokuBlock;
   // #141/#142: der Pinned-Block steht VOR den score-gated Hints — die
   // garantierten Einträge zuerst, die relevanz-gerankte Liste dahinter.
   const pinnedHead = pinnedBlock === "" ? "" : pinnedBlock + "\n";

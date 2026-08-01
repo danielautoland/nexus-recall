@@ -6,6 +6,7 @@ import { cmdInstall } from "./commands.js";
 import { findExecutable, run } from "./exec.js";
 import { VERSION } from "./helpers.js";
 import { buildManifest, formatPreflight, preflight, writeManifest } from "./update-preflight.js";
+import { activePatches, applySeries, formatApplyOutcome, writeLastRun } from "../patch-registry.js";
 import { clearBlockedUpdate, recordBlockedUpdate } from "../update-blocked.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -170,6 +171,13 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     process.stdout.write(`  update command: ${mode.updateCommand}\n\n`);
     if (preflightSupported) {
       process.stdout.write("  would: 0) preflight: back up locally modified files, then refuse or proceed\n");
+      const pending = activePatches();
+      if (pending.length > 0) {
+        process.stdout.write(
+          `  would: 1a) reapply ${pending.length} registered local patch${pending.length === 1 ? "" : "es"} ` +
+            `(#269) — 'bastra patches status' shows what each would do\n`,
+        );
+      }
     } else if (mode.mode === "brew") {
       process.stdout.write(
         "  would: 0) skip the preflight — Homebrew installs each version into its own\n" +
@@ -273,6 +281,45 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
   } else {
     process.stdout.write("⚠ install mode unknown — install manually from:\n");
     process.stdout.write(`    ${mode.updateCommand}\n\n`);
+  }
+
+  // 1a. Reapply the registered local patch series (#269) onto what the
+  //     installer just wrote. This is the repair half of #268: that one detects
+  //     and backs up, this one puts the user's own fixes back.
+  //
+  //     Order matters twice over. It runs AFTER the install, because there is
+  //     nothing to patch until the new files are on disk. And it runs BEFORE the
+  //     baseline below, because the baseline defines what the next update calls
+  //     "unmodified" — taking it before the patches go on would report every
+  //     registered patch as a local modification on the next run, which is
+  //     exactly the noise #268 exists to avoid. The patched tree is the tree
+  //     bastra produced; what the user changes after that is what is dirty.
+  //
+  //     Scoped to the same install modes as the preflight, for the same reason:
+  //     a Homebrew upgrade builds a new keg and abandons the old one, so there
+  //     is no in-place tree whose patches would have been lost.
+  if (preflightSupported && !args.dryRun) {
+    const series = activePatches();
+    if (series.length > 0) {
+      process.stdout.write(`→ reapplying ${series.length} local patch${series.length === 1 ? "" : "es"} (#269)\n`);
+      try {
+        const outcome = applySeries(packageRoot);
+        writeLastRun(outcome);
+        process.stdout.write(formatApplyOutcome(outcome));
+        if (outcome.setAside.length > 0) {
+          process.stdout.write(
+            `  Patches set aside stay registered — 'bastra patches status' shows them,\n` +
+              `  and the pre-update backup above still holds your files.\n`,
+          );
+        }
+        process.stdout.write("\n");
+      } catch (e) {
+        // A patch step that throws must never fail an update whose install
+        // already succeeded — the new version is on disk and working, only the
+        // local additions are missing. Say so and continue.
+        process.stdout.write(`  ⚠ patch reapply failed (${(e as Error).message}) — the update itself stands\n\n`);
+      }
+    }
   }
 
   // 1b. Baseline for the NEXT update (#268). Without this write the dirty check

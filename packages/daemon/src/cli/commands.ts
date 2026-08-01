@@ -40,6 +40,13 @@ Commands:
                              removed once no surface references it anymore)
   update                     brew upgrade (if brew-installed) + re-register +
                              daemon restart. Use this after pulling new code.
+  patches <list|add <file>|remove <id>|status>
+                             Local patches that survive an update: an ordered
+                             series reapplied onto the fresh install. One that
+                             upstream has absorbed is retired, one that no
+                             longer applies is set aside and reported — never
+                             forced. 'status' probes them against what is
+                             installed right now.
   embeddings <on|off|status> Semantic recall (multilingual vector search):
                              'on' sets up Ollama + the embeddinggemma model
                              (~620 MB) and persists the choice; 'off' returns
