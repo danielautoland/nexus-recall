@@ -21,7 +21,7 @@
  * uses the new path.
  */
 import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { FORWARDER_SCRIPT_PATH } from "./paths.js";
 import { VERSION, fileExists } from "./helpers.js";
@@ -208,17 +208,61 @@ export interface ForwarderPathCheck {
 }
 
 /**
- * Doctor's forwarder-path line (#180). A registration inside the npx cache
- * still works today but breaks silently when npm evicts the cache entry —
- * flag it with the fix-it hint before that happens.
+ * The version a registration is pinned to, read from the path itself, or null
+ * when the path is not inside `~/.bastra/runtime/<version>/`.
+ *
+ * The directory name is the authority here, not `runtime-source.json`. The
+ * marker records what a copy CLAIMED at write time; what the surfaces actually
+ * execute is whatever sits at the registered path. When the two disagree the
+ * path wins, because the path is what runs.
  */
-export function checkForwarderRegistration(fwd: string, exists: boolean, surface: string): ForwarderPathCheck {
+export function pinnedRuntimeVersion(fwd: string, home: string = homedir()): string | null {
+  const base = join(home, ".bastra", "runtime") + sep;
+  const norm = fwd.split(/[\\/]+/).join(sep);
+  if (!norm.startsWith(base)) return null;
+  const rest = norm.slice(base.length);
+  const version = rest.split(sep)[0];
+  return version && version.length > 0 ? version : null;
+}
+
+/**
+ * Doctor's forwarder-path line (#180, stale-pin case added after the 0.7.9→0.8.8
+ * finding).
+ *
+ * Two failure shapes, and the second one is the quiet one:
+ *
+ *  - a registration inside the npx cache still works today but breaks silently
+ *    when npm evicts the cache entry;
+ *  - a registration pinned to `~/.bastra/runtime/<old-version>/` keeps working
+ *    forever and never breaks — it just runs code from a version that was
+ *    replaced. Everything reports success: the installer, `bastra version`, the
+ *    surfaces. Only the pinned path still says what is actually executing.
+ *
+ * The second one is how an update can be "installed" and simultaneously not in
+ * effect, which is exactly what a version-pinning scheme must never hide.
+ */
+export function checkForwarderRegistration(
+  fwd: string,
+  exists: boolean,
+  surface: string,
+  runningVersion: string = VERSION,
+  home: string = homedir(),
+): ForwarderPathCheck {
   if (!exists) {
     return { detail: `${fwd} (MISSING — re-run 'bastra install ${surface}')`, broken: true };
   }
   if (isEphemeralInstallPath(fwd)) {
     return {
       detail: `${fwd} (EPHEMERAL npx cache — breaks when npm evicts it; re-run 'bastra install ${surface}' to pin ~/.bastra/runtime)`,
+      broken: true,
+    };
+  }
+  const pinned = pinnedRuntimeVersion(fwd, home);
+  if (pinned && pinned !== runningVersion) {
+    return {
+      detail:
+        `${fwd} (STALE PIN — this surface runs ${pinned}, but ${runningVersion} is installed; ` +
+        `the update is on disk and not in effect. Fix: 'bastra install ${surface}')`,
       broken: true,
     };
   }

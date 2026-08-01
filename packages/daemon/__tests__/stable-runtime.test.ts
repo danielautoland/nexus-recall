@@ -20,6 +20,7 @@ import {
   ensureStableForwarder,
   isEphemeralInstallPath,
   mapBinToStableRuntime,
+  pinnedRuntimeVersion,
   removeRuntimeBase,
   resolveNodeModulesRoot,
   stableRuntimeTarget,
@@ -335,6 +336,44 @@ test("checkForwarderRegistration: missing path → broken with re-install hint",
   assert.equal(c.broken, true);
   assert.match(c.detail, /MISSING/);
   assert.match(c.detail, /re-run 'bastra install cursor'/);
+});
+
+// ─── stale runtime pin ───────────────────────────────────────────────────────
+// The 0.7.9 → 0.8.8 finding: everything reports success while the surfaces keep
+// executing the replaced version. Nothing is missing and nothing is ephemeral,
+// so both existing checks pass — the pinned path is the only place the truth is
+// still written down.
+
+test("pinnedRuntimeVersion reads the version out of a runtime path", () => {
+  const home = "/Users/x";
+  const fwd = join(home, ".bastra", "runtime", "0.7.9", "node_modules", "@bastra-recall", "daemon", "dist", "mcp-forwarder.js");
+  assert.equal(pinnedRuntimeVersion(fwd, home), "0.7.9");
+});
+
+test("pinnedRuntimeVersion returns null outside the runtime dir", () => {
+  const home = "/Users/x";
+  assert.equal(pinnedRuntimeVersion("/opt/homebrew/lib/node_modules/@bastra-recall/daemon/dist/mcp-forwarder.js", home), null);
+  // A path that merely mentions the directory name elsewhere must not match.
+  assert.equal(pinnedRuntimeVersion("/tmp/.bastra/runtime/0.7.9/x.js", home), null);
+});
+
+test("checkForwarderRegistration: pin older than the running version → broken", () => {
+  const home = "/Users/x";
+  const fwd = join(home, ".bastra", "runtime", "0.7.9", "node_modules", "@bastra-recall", "daemon", "dist", "mcp-forwarder.js");
+  const c = checkForwarderRegistration(fwd, true, "claude-code", "0.8.8", home);
+  assert.equal(c.broken, true);
+  assert.match(c.detail, /STALE PIN/);
+  assert.match(c.detail, /runs 0\.7\.9/);
+  assert.match(c.detail, /0\.8\.8 is installed/);
+  assert.match(c.detail, /bastra install claude-code/);
+});
+
+test("checkForwarderRegistration: pin matching the running version is healthy", () => {
+  const home = "/Users/x";
+  const fwd = join(home, ".bastra", "runtime", "0.8.8", "node_modules", "@bastra-recall", "daemon", "dist", "mcp-forwarder.js");
+  const c = checkForwarderRegistration(fwd, true, "claude-code", "0.8.8", home);
+  assert.equal(c.broken, false);
+  assert.match(c.detail, /\(exists\)$/);
 });
 
 test("checkForwarderRegistration: existing npx-cache path → broken with re-install hint (#180)", () => {

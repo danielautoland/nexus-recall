@@ -7,6 +7,7 @@ import { findExecutable, run } from "./exec.js";
 import { VERSION } from "./helpers.js";
 import { buildManifest, formatPreflight, preflight, writeManifest } from "./update-preflight.js";
 import { activePatches, applySeries, formatApplyOutcome, writeLastRun } from "../patch-registry.js";
+import { isEphemeralInstallPath } from "./stable-runtime.js";
 import { clearBlockedUpdate, recordBlockedUpdate } from "../update-blocked.js";
 import type { ParsedArgs } from "./types.js";
 
@@ -94,6 +95,42 @@ function hasGitAncestor(start: string): boolean {
  */
 export function packageRootFromCliPath(cliPath: string): string {
   return resolve(dirname(cliPath), "..", "..");
+}
+
+/**
+ * Hand the re-registration to the binary the installer just put in place.
+ *
+ * Returns its exit code, or `null` when no installed binary could be found —
+ * the caller then falls back to registering inline and says so, because that
+ * path is the one that produces a stale pin.
+ *
+ * The lookup deliberately does NOT use `findExecutable("bastra")`: inside an
+ * npx run the cache's own bin directory sits on PATH, so a name lookup can
+ * resolve straight back to the old process this hand-off exists to escape.
+ * `npm prefix -g` names the global root regardless of what PATH currently
+ * prefers.
+ */
+function reRegisterViaInstalledBinary(args: ParsedArgs): number | null {
+  const npmBin = findExecutable("npm");
+  if (!npmBin) return null;
+  const prefix = spawnSync(npmBin, ["prefix", "-g"], { encoding: "utf8", timeout: 30_000 });
+  const root = `${prefix.stdout ?? ""}`.trim();
+  if (prefix.status !== 0 || !root) return null;
+
+  // `bastra` is the current name; `bastra-recall` is what pre-0.8 shipped, and
+  // an update FROM such a version is exactly the case being handled here.
+  const candidates = [resolve(root, "bin", "bastra"), resolve(root, "bin", "bastra-recall")];
+  const bin = candidates.find((p) => existsSync(p));
+  if (!bin) return null;
+
+  process.stdout.write(`  → handing the re-registration to ${bin}\n`);
+  process.stdout.write("    (this process runs from the npx cache and would pin its own old version)\n\n");
+  const installArgs = ["install", "all", "--no-ollama", "--no-stop-hook"];
+  if (args.yes || args.staged) installArgs.push("--yes");
+  if (args.vaultPath) installArgs.push("--vault", args.vaultPath);
+  const r = spawnSync(bin, installArgs, { stdio: "inherit", timeout: 300_000 });
+  if (r.error || r.status === null) return null;
+  return r.status;
 }
 
 /**
@@ -377,7 +414,34 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     // / the wizard, never a background re-register. (Daniel, 2026-07-07)
     withStopHook: false,
   };
-  const installRC = await cmdInstall(installArgs);
+  // A process that runs from the npx cache must NOT do the re-registration
+  // itself, and this is the bug the 0.7.9→0.8.8 run surfaced.
+  //
+  // `ensureStableForwarder` pins `~/.bastra/runtime/<version>/`, and the version
+  // it uses is `VERSION` — a constant compiled into the RUNNING process. After
+  // the installer above, the new code is on disk, but this process is still the
+  // old one. So it re-pins its own old version, finds the marker from last time,
+  // reports `reused`, and every surface keeps executing the version that was
+  // just replaced. Nothing fails: the installer succeeded, `bastra version`
+  // reports the new number, and the update is simply not in effect.
+  //
+  // A permanent install has no such split — its path is the same before and
+  // after, so `action: "native"` registers it directly. Only the ephemeral case
+  // needs the hand-off, so only the ephemeral case pays for a second process.
+  let installRC: number | null = null;
+  if (runsInstaller && isEphemeralInstallPath(mode.cliPath) && !args.dryRun) {
+    installRC = reRegisterViaInstalledBinary(args);
+    if (installRC === null) {
+      // Could not find the freshly installed binary — fall through and register
+      // inline. That reproduces the stale pin, so say it instead of letting the
+      // run look clean.
+      process.stdout.write(
+        "  ⚠ could not locate the newly installed 'bastra' — registering from this (old) process.\n" +
+          "    The surfaces may stay pinned to the previous version; run 'bastra doctor' afterwards.\n\n",
+      );
+    }
+  }
+  if (installRC === null) installRC = await cmdInstall(installArgs);
   if (installRC !== 0) {
     process.stdout.write("✗ re-register failed — fix the surface errors above, then re-run\n");
     return installRC;
