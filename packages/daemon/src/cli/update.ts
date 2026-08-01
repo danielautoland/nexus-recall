@@ -117,8 +117,11 @@ function reRegisterViaInstalledBinary(args: ParsedArgs): number | null {
   const root = `${prefix.stdout ?? ""}`.trim();
   if (prefix.status !== 0 || !root) return null;
 
-  // `bastra` is the current name; `bastra-recall` is what pre-0.8 shipped, and
-  // an update FROM such a version is exactly the case being handled here.
+  // `bastra` is the bin the daemon package has always declared — v0.7.9 already
+  // shipped it under that name. `bastra-recall` is checked only as a second
+  // guess: it is the name of the npm WRAPPER package (`npx bastra-recall`) and
+  // has been seen in a Homebrew prefix, so a global root may carry it. Never
+  // assumed to exist; the list is ordered by what is actually declared.
   const candidates = [resolve(root, "bin", "bastra"), resolve(root, "bin", "bastra-recall")];
   const bin = candidates.find((p) => existsSync(p));
   if (!bin) return null;
