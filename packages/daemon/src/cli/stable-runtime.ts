@@ -226,8 +226,7 @@ export function pinnedRuntimeVersion(fwd: string, home: string = homedir()): str
 }
 
 /**
- * Doctor's forwarder-path line (#180, stale-pin case added after the 0.7.9→0.8.8
- * finding).
+ * Doctor's forwarder-path line (#180; the stale-pin case is #304).
  *
  * Two failure shapes, and the second one is the quiet one:
  *

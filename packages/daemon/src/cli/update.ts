@@ -417,8 +417,8 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     // / the wizard, never a background re-register. (Daniel, 2026-07-07)
     withStopHook: false,
   };
-  // A process that runs from the npx cache must NOT do the re-registration
-  // itself, and this is the bug the 0.7.9→0.8.8 run surfaced.
+  // #304 — a process that runs from the npx cache must NOT do the
+  // re-registration itself. This is the bug the 0.7.9→0.8.8 run surfaced.
   //
   // `ensureStableForwarder` pins `~/.bastra/runtime/<version>/`, and the version
   // it uses is `VERSION` — a constant compiled into the RUNNING process. After
