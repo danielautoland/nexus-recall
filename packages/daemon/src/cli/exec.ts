@@ -8,7 +8,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { delimiter as PATH_DELIMITER, isAbsolute, join } from "node:path";
 
 export interface RunResult {
   ok: boolean;
@@ -47,8 +47,23 @@ export function run(bin: string, args: string[], opts: { timeoutMs: number; show
  */
 export function findExecutable(name: string): string | null {
   const me = process.getuid?.() ?? -1;
-  const pathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
-  const dirs = [...pathDirs, "/opt/homebrew/bin", "/usr/local/bin"];
+  const isWin = process.platform === "win32";
+  // PATH is ';'-separated on Windows, ':' elsewhere. Splitting on a fixed ':'
+  // left the whole Windows PATH as one unsplit entry, so nothing resolved and
+  // detection reported every tool "not installed" even when it was on PATH.
+  const pathDirs = (process.env.PATH ?? "").split(PATH_DELIMITER).filter(Boolean);
+  // The Homebrew fallbacks matter only where a GUI/hook-spawned process inherits
+  // a stripped PATH (#79) — a POSIX concern; skip them on Windows.
+  const dirs = isWin ? pathDirs : [...pathDirs, "/opt/homebrew/bin", "/usr/local/bin"];
+  // On Windows an executable is found by extension (PATHEXT), not an X_OK bit;
+  // try each configured extension unless the caller already gave one.
+  const winExts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const nameHasExt = /\.[^\\/.]+$/.test(name);
+  const candidates =
+    isWin && !nameHasExt ? winExts.map((ext) => name + ext) : [name];
   const seen = new Set<string>();
   for (const dir of dirs) {
     if (seen.has(dir)) continue;
@@ -56,19 +71,30 @@ export function findExecutable(name: string): string | null {
     // Never resolve against CWD: a relative PATH entry (".", "x/bin") would make
     // join() return a relative path and spawn an attacker's ./ollama. Absolute only.
     if (!isAbsolute(dir)) continue;
-    const full = join(dir, name);
     try {
       // A world-writable dir — or a group-writable one not owned by root/us —
       // lets an attacker swap the binary; skip it (mirrors the repo's temp-file
-      // hardening, commit 3af0cc8).
+      // hardening, commit 3af0cc8). POSIX-mode bits are meaningless on Windows
+      // (statSync reports a synthetic mode), so the ownership gate is Unix-only.
       const dirSt = statSync(dir);
-      if (dirSt.mode & 0o002) continue;
-      if (dirSt.mode & 0o020 && dirSt.uid !== 0 && dirSt.uid !== me) continue;
-      accessSync(full, constants.X_OK);
-      if (statSync(full).mode & 0o002) continue; // reject world-writable binary
-      return full;
+      if (!isWin) {
+        if (dirSt.mode & 0o002) continue;
+        if (dirSt.mode & 0o020 && dirSt.uid !== 0 && dirSt.uid !== me) continue;
+      }
+      for (const candidate of candidates) {
+        const full = join(dir, candidate);
+        try {
+          // F_OK (existence) on Windows — the OS decides executability by
+          // extension; X_OK for the real permission bit on POSIX.
+          accessSync(full, isWin ? constants.F_OK : constants.X_OK);
+          if (!isWin && statSync(full).mode & 0o002) continue; // reject world-writable binary
+          return full;
+        } catch {
+          /* not this extension — try next */
+        }
+      }
     } catch {
-      /* not here — try next */
+      /* dir not here — try next */
     }
   }
   return null;

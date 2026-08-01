@@ -1,4 +1,4 @@
-import { CLAUDE_DESKTOP_CONFIG, SKILL_TARGET_FILE } from "../paths.js";
+import { CLAUDE_DESKTOP_CONFIG, CLAUDE_DESKTOP_DIR, SKILL_TARGET_FILE } from "../paths.js";
 import {
   SERVER_KEY,
   atomicWriteJson,
@@ -13,8 +13,6 @@ import {
 } from "../helpers.js";
 import { copySkill } from "../skill.js";
 import { checkForwarderRegistration, ensureStableForwarder } from "../stable-runtime.js";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult } from "../types.js";
 
 /**
@@ -136,10 +134,9 @@ async function claudeDesktopDoctor(): Promise<DoctorResult> {
   const configPath = CLAUDE_DESKTOP_CONFIG;
   const details: Record<string, string> = {};
 
-  // 1. Claude Desktop installed?
-  const appSupport = resolve(homedir(), "Library/Application Support/Claude");
-  details["claude-desktop-app"] = (await fileExists(appSupport))
-    ? "installed (~/Library/Application Support/Claude exists)"
+  // 1. Claude Desktop installed? (config dir is platform-specific — see paths.ts)
+  details["claude-desktop-app"] = (await fileExists(CLAUDE_DESKTOP_DIR))
+    ? `installed (${CLAUDE_DESKTOP_DIR} exists)`
     : "not detected";
 
   // 2. Config + registration
