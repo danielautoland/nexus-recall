@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   addPatch,
@@ -318,6 +319,116 @@ test("pendingPatchNotice stays silent after a clean run", () => {
     addPatch(writePatchFile(s.root, "p.patch", diffFor("src/a.txt", ["old"], ["new"])), s.home);
     writeLastRun(applySeries(s.root, { home: s.home, skipSmoke: true }), s.home);
     assert.equal(pendingPatchNotice(s.home), null, "nothing set aside, nothing to say");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/**
+ * A source checkout, which is the shape the two roots diverge in: the CLI runs
+ * from `<repo>/packages/daemon`, and a `git format-patch` off the same checkout
+ * addresses `packages/core/...` from `<repo>`.
+ */
+function sourceCheckout(): { home: string; repo: string; installRoot: string; cleanup: () => void } {
+  const base = mkdtempSync(join(tmpdir(), "bastra-patch-src-"));
+  const home = join(base, "home");
+  const repo = join(base, "repo");
+  const installRoot = join(repo, "packages", "daemon");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(repo, "packages", "core", "src"), { recursive: true });
+  mkdirSync(installRoot, { recursive: true });
+  writeFileSync(join(installRoot, "package.json"), '{ "name": "@bastra-recall/daemon" }\n', "utf8");
+  writeFileSync(join(repo, "packages", "core", "src", "a.txt"), "old\n", "utf8");
+  const g = (...args: string[]) => {
+    const r = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+    assert.equal(r.status, 0, `git ${args.join(" ")} failed: ${r.stderr}`);
+    return r.stdout;
+  };
+  g("init", "-q", "-b", "main");
+  g("config", "user.email", "test@example.invalid");
+  g("config", "user.name", "test");
+  g("add", "-A");
+  g("commit", "-qm", "initial");
+  return { home, repo, installRoot, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+function gitIn(repo: string, ...args: string[]): { status: number | null; stdout: string } {
+  const r = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  return { status: r.status, stdout: r.stdout ?? "" };
+}
+
+test("a source install addresses patches from the repo root, not the package root", () => {
+  const s = sourceCheckout();
+  try {
+    const target = join(s.repo, "packages", "core", "src", "a.txt");
+    addPatch(
+      writePatchFile(s.home, "p.patch", diffFor("packages/core/src/a.txt", ["old"], ["new"])),
+      s.home,
+    );
+
+    // The install root is the daemon package; the patch names a path outside it.
+    // `git apply` run from there does not fail on such a path — it SKIPS it and
+    // exits 0 — so the verdict has to come from the repo root or it is fiction.
+    assert.equal(statusAll(s.installRoot, s.home)[0].state, "clean");
+
+    const out = applySeries(s.installRoot, { home: s.home, skipSmoke: true });
+    assert.equal(out.applied.length, 1, "the patch applies");
+    assert.equal(out.setAside.length, 0);
+    // The claim under test is about the tree, not the report: "applied" has to
+    // mean the file changed.
+    assert.equal(readFileSync(target, "utf8"), "new\n", "reported applied, so the file must have changed");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a patch git skips is never counted as applied", () => {
+  const s = sourceCheckout();
+  try {
+    // Nothing outside the repo is addressable, and git says so by skipping.
+    addPatch(writePatchFile(s.home, "p.patch", diffFor("../outside.txt", ["old"], ["new"])), s.home);
+    const out = applySeries(s.installRoot, { home: s.home, skipSmoke: true });
+    assert.equal(out.applied.length, 0, "a skip is not an apply — the fix would be silently missing");
+    assert.equal(out.retired.length, 0, "and it is not upstream either");
+    assert.equal(out.setAside.length, 1);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a 3-way that cannot merge leaves the tree and the index exactly as they were", () => {
+  const s = sourceCheckout();
+  try {
+    const rel = "packages/core/src/a.txt";
+    const target = join(s.repo, rel);
+
+    // A patch git can attempt a real 3-way with: it carries the blob ids of the
+    // pre-image, so `--3way` has something to merge from.
+    writeFileSync(target, "local fix\n", "utf8");
+    gitIn(s.repo, "commit", "-qam", "local fix");
+    const patch = gitIn(s.repo, "format-patch", "-1", "--stdout").stdout;
+    gitIn(s.repo, "reset", "-q", "--hard", "HEAD~1");
+
+    // Upstream rewrote the same region, so neither direction is clean and the
+    // merge has a genuine conflict to fail on.
+    writeFileSync(target, "upstream rewrote this line entirely\n", "utf8");
+    gitIn(s.repo, "commit", "-qam", "upstream");
+
+    const before = readFileSync(target, "utf8");
+    const indexBefore = gitIn(s.repo, "status", "--porcelain").stdout;
+
+    const { entry } = addPatch(writePatchFile(s.home, "p.patch", patch), s.home);
+    const out = applySeries(s.installRoot, { home: s.home, skipSmoke: true });
+
+    assert.equal(out.setAside.length, 1, "a patch that cannot merge is set aside");
+    assert.equal(out.setAside[0].entry.id, entry.id);
+    assert.equal(out.applied.length, 0);
+    // `git apply --3way` writes conflict markers and stages them BEFORE it
+    // reports failure, so "it returned non-zero" is not evidence the file
+    // survived. The promise is that the file is untouched; check the file.
+    assert.equal(readFileSync(target, "utf8"), before, "the file must be byte-identical");
+    assert.ok(!readFileSync(target, "utf8").includes("<<<<<<<"), "no conflict markers may be left behind");
+    assert.equal(gitIn(s.repo, "status", "--porcelain").stdout, indexBefore, "the index must be untouched");
   } finally {
     s.cleanup();
   }

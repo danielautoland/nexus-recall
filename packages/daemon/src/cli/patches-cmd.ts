@@ -18,6 +18,7 @@ import {
   patchesDir,
   readIndex,
   removePatch,
+  resolveRoots,
   statusAll,
   type PatchState,
 } from "../patch-registry.js";
@@ -126,7 +127,12 @@ export async function cmdPatches(args: ParsedArgs): Promise<number> {
       out("No patches registered — nothing to check.\n");
       return 0;
     }
-    out(`Installation: ${root}\n\n`);
+    // Both roots when they differ, because which directory the patches are
+    // addressed from is the first thing to check when every verdict looks wrong.
+    const roots = resolveRoots(root);
+    out(`Installation: ${roots.boot}\n`);
+    if (roots.apply !== roots.boot) out(`Patches apply from: ${roots.apply}\n`);
+    out(`\n`);
     let conflicts = 0;
     for (const s of statusAll(root)) {
       out(`  ${STATE_LABEL[s.state]}  ${s.entry.id}\n      ${s.entry.subject}\n`);
