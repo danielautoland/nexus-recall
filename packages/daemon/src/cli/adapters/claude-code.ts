@@ -39,6 +39,13 @@ interface HookDef {
   note: string;
 }
 
+// Held separately from the list below because a run that does NOT register the
+// Stop hook still needs its definition — to refresh an already-registered one
+// (see planHookEntries).
+const STOP_HOOK_DEF: HookDef = {
+  event: "Stop", bin: STOP_HOOK_BIN, timeout: 3, note: "bastra-recall Stop hook (optional autonomous save-eval, #35)",
+};
+
 // Single source of truth for the reflex layer. The Stop hook is ON by default
 // since the #48 redesign made it SILENT: suggestions go to
 // ~/.bastra/pending-suggestions.json (read by the next SessionStart as
@@ -53,9 +60,7 @@ function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
     { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)" },
     { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash post hook (act-signal #144 + lesson recall on fail #37)" },
   ];
-  if (opts.includeStop) {
-    defs.push({ event: "Stop", bin: STOP_HOOK_BIN, timeout: 3, note: "bastra-recall Stop hook (optional autonomous save-eval, #35)" });
-  }
+  if (opts.includeStop) defs.push(STOP_HOOK_DEF);
   return defs;
 }
 
@@ -124,6 +129,58 @@ function registeredHookBins(hooks: Record<string, unknown>): Set<string> {
 
 type HookStepStatus = "installed" | "already-installed" | "would-install" | "removed" | "not-present" | "would-remove" | "error";
 
+export interface HookPlan {
+  before: Record<HookEventName, unknown[]>;
+  after: Record<HookEventName, unknown[]>;
+  stopPreserved: boolean;
+}
+
+/**
+ * Pure per-event planner — exported for tests (the real settings.json lives
+ * under HOME). Returns the entry arrays as they are (`before`) and as they
+ * should be (`after`); every foreign entry passes through untouched.
+ */
+export function planHookEntries(
+  action: "install" | "uninstall",
+  hooks: Record<string, unknown>,
+  opts: { includeStop: boolean; mapBin?: (bin: string) => string },
+): HookPlan {
+  // Register the stable-runtime copy of each bin when active (#180) — hooks
+  // pointing into the npx cache break on eviction just like the forwarder.
+  // On non-npx installs mapBin is the identity (byte-identical no-op).
+  const withBin = (def: HookDef): HookDef =>
+    opts.mapBin ? { ...def, bin: opts.mapBin(def.bin) } : def;
+  const defs = hookDefinitions({ includeStop: opts.includeStop }).map(withBin);
+  const stopDef = withBin(STOP_HOOK_DEF);
+
+  // Per event: keep all foreign entries, append our (possibly re-built) entries.
+  const before: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
+  const after: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
+  let stopPreserved = false;
+  for (const ev of HOOK_EVENTS) {
+    const cur = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
+    before[ev] = cur;
+    // On install without --with-stop-hook, preserve a previously opted-in Stop
+    // hook instead of stripping it: re-running install / `bastra update` must
+    // not silently remove a hook the user enabled earlier (#48). What survives
+    // is the opt-in DECISION, not the path it was written with: keeping the
+    // entry verbatim left it pointing at the previous
+    // ~/.bastra/runtime/<version>, which the same update then prunes — the #304
+    // failure mode, on the one hook that never got re-registered. So our entry
+    // is re-built from the current def, in place; foreign ones stay verbatim.
+    if (action === "install" && !opts.includeStop && ev === "Stop") {
+      stopPreserved = cur.some((m) => isOurHookEntry(m));
+      after[ev] = cur.map((m) => (isOurHookEntry(m) ? buildHookEntry(stopDef) : m));
+    } else {
+      after[ev] = cur.filter((m) => !isOurHookEntry(m));
+    }
+  }
+  if (action === "install") {
+    for (const def of defs) after[def.event].push(buildHookEntry(def));
+  }
+  return { before, after, stopPreserved };
+}
+
 async function patchClaudeCodeHooks(
   action: "install" | "uninstall",
   opts: { dryRun: boolean; includeStop?: boolean; mapBin?: (bin: string) => string },
@@ -141,11 +198,6 @@ async function patchClaudeCodeHooks(
     }
   }
 
-  // Register the stable-runtime copy of each bin when active (#180) — hooks
-  // pointing into the npx cache break on eviction just like the forwarder.
-  const mapBin = opts.mapBin;
-  const defs = mapBin ? sourceDefs.map((def) => ({ ...def, bin: mapBin(def.bin) })) : sourceDefs;
-
   const read = await readJsonConfig(CLAUDE_CODE_SETTINGS);
   if ("error" in read) return { status: "error", detail: read.error };
 
@@ -154,30 +206,14 @@ async function patchClaudeCodeHooks(
     ? data.hooks as Record<string, unknown>
     : {};
 
-  // Per event: keep all foreign entries, append our (possibly re-built) entries.
-  const before: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
-  const after: Record<HookEventName, unknown[]> = {} as Record<HookEventName, unknown[]>;
-  let stopPreserved = false;
-  for (const ev of HOOK_EVENTS) {
-    const cur = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
-    before[ev] = cur;
-    // On install without --with-stop-hook, preserve a previously opted-in Stop
-    // hook instead of stripping it: re-running install / `bastra update` must
-    // not silently remove a hook the user enabled earlier (#48).
-    if (action === "install" && !includeStop && ev === "Stop") {
-      after[ev] = cur;
-      stopPreserved = cur.some((m) => isOurHookEntry(m));
-    } else {
-      after[ev] = cur.filter((m) => !isOurHookEntry(m));
-    }
-  }
-  if (action === "install") {
-    for (const def of defs) after[def.event].push(buildHookEntry(def));
-  }
+  const { before, after, stopPreserved } = planHookEntries(action, hooks, {
+    includeStop,
+    mapBin: opts.mapBin,
+  });
   const installNote = includeStop
     ? ""
     : stopPreserved
-      ? " (existing Stop hook kept)"
+      ? " (existing Stop hook kept at current path)"
       : " (Stop hook optional/off)";
 
   const currentMatches = HOOK_EVENTS.every(
@@ -186,13 +222,13 @@ async function patchClaudeCodeHooks(
 
   if (currentMatches) {
     return action === "install"
-      ? { status: "already-installed", detail: `${defs.length} hooks already registered with matching paths${installNote}` }
+      ? { status: "already-installed", detail: `${sourceDefs.length} hooks already registered with matching paths${installNote}` }
       : { status: "not-present", detail: "no bastra-recall hooks present" };
   }
 
   if (opts.dryRun) {
     return action === "install"
-      ? { status: "would-install", detail: `would (re)register ${defs.length} hooks across ${HOOK_EVENTS.length} events${installNote}` }
+      ? { status: "would-install", detail: `would (re)register ${sourceDefs.length} hooks across ${HOOK_EVENTS.length} events${installNote}` }
       : { status: "would-remove", detail: "would strip bastra-recall hook entries" };
   }
 
@@ -208,7 +244,7 @@ async function patchClaudeCodeHooks(
   return action === "install"
     ? {
         status: "installed",
-        detail: `${defs.length} hooks registered (SessionStart, UserPromptSubmit, PreToolUse×3, PostToolUse${includeStop ? ", Stop" : stopPreserved ? "; Stop kept" : "; Stop optional/off"})`,
+        detail: `${sourceDefs.length} hooks registered (SessionStart, UserPromptSubmit, PreToolUse×3, PostToolUse${includeStop ? ", Stop" : stopPreserved ? "; Stop kept at current path" : "; Stop optional/off"})`,
         backupPath: backupPath ?? undefined,
       }
     : { status: "removed", detail: "bastra-recall hook entries removed", backupPath: backupPath ?? undefined };
