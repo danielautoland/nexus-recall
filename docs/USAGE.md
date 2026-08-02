@@ -81,6 +81,23 @@ Every adapter write is **idempotent** (re-runs are no-ops), **atomic** (tmp file
 
 Memories age: titles go stale, duplicates creep in, ghosts point at notes you never wrote. bastra-recall turns tending the vault into a two-step loop instead of a chore. From any node's inspector on the vault map you flag a memory — *delete*, *edit*, *write* (for ghosts), or *note* — and the flags land as checkbox lines in an open `vault-care.md` at the vault root. Your **next AI session sees the open flags automatically** (session hook) and offers to work the list off with you: one guided cleanup pass, your call on every item. No hidden state, no separate app — a markdown checklist any editor can open.
 
+### Local patches — a fix of your own that survives an update
+
+If you run a local fix — a patch you wrote, or one from a PR that has not landed yet — an update would normally overwrite it. `bastra patches` keeps an ordered series of `git format-patch` files under `~/.bastra/patches/` and reapplies them after every successful update.
+
+```bash
+bastra patches add my-fix.patch    # register a patch (ordered in steps of ten)
+bastra patches status              # what each patch would do against this install
+bastra patches list                # the series, in apply order (the default)
+bastra patches remove <id>         # drop one — ids come from `list`
+```
+
+An id is the ordering prefix plus a slug of the patch's `Subject:` line, e.g. `010-cyrillic-slugify`. The steps of ten leave room to slot a patch between two existing ones by hand without renumbering the series.
+
+Three outcomes per patch, and the third is the point: a patch that **applies cleanly** is reapplied; one that upstream has **absorbed verbatim** is auto-retired out of the series; and one that **no longer applies** is *set aside, never forced* — the file stays exactly as the updater produced it, and the next session tells you which patch is waiting. A forced apply would produce a file nobody wrote and nobody reviewed, which is worse than a reverted fix.
+
+After the series, the patched CLI is actually started. If it does not boot, every patch from that run is reversed and the install is left as the updater produced it. `bastra patches status` prints the directory patches are addressed from when it differs from the install root — on a source checkout those are two different roots, and that line is the first thing to check when every verdict looks wrong.
+
 ### Onboarding — five minutes to a warm start
 
 A fresh vault offers to seed itself. Pick what your memory will mainly hold — code & projects, company & decisions, life & knowledge, or a mix — and answer a handful of persona-aware questions; every answer becomes a profile memory your AI recalls from day one. Three surfaces, one interview: the vault map auto-opens it on a fresh vault, `bastra onboard` runs it in the terminal, and your AI session offers it conversationally — the most adaptive of the three, it follows up where an answer is thin. Skippable everywhere, never asked twice.
@@ -247,6 +264,23 @@ Jeder Adapter-Write ist **idempotent** (Re-Runs sind No-Ops), **atomar** (Tmp-Fi
 ### Vault-Pflege — jetzt markieren, später aufräumen
 
 Memories altern: Titel veralten, Dubletten schleichen sich ein, Ghosts zeigen auf nie geschriebene Notizen. bastra-recall macht aus der Vault-Pflege einen Zwei-Schritt-Loop statt einer lästigen Pflicht. Aus dem Inspector jeder Node auf der Vault-Map markierst du ein Memory — *delete*, *edit*, *write* (für Ghosts) oder *note* — und die Flags landen als Checkbox-Zeilen in einer offenen `vault-care.md` im Vault-Root. Deine **nächste AI-Session sieht die offenen Flags automatisch** (Session-Hook) und bietet an, die Liste gemeinsam abzuarbeiten: ein geführter Aufräum-Durchgang, jede Entscheidung bleibt bei dir. Kein versteckter State, keine Extra-App — eine Markdown-Checkliste, die jeder Editor öffnen kann.
+
+### Lokale Patches — ein eigener Fix, der ein Update übersteht
+
+Wenn du einen lokalen Fix fährst — selbst geschrieben oder aus einem PR, der noch nicht gelandet ist —, würde ein Update ihn normalerweise überschreiben. `bastra patches` hält eine geordnete Serie von `git format-patch`-Dateien unter `~/.bastra/patches/` und spielt sie nach jedem erfolgreichen Update wieder ein.
+
+```bash
+bastra patches add my-fix.patch    # Patch registrieren (in Zehnerschritten geordnet)
+bastra patches status              # was jeder Patch gegen diese Installation täte
+bastra patches list                # die Serie in Anwendungsreihenfolge (Default)
+bastra patches remove <id>         # einen entfernen — die ids liefert `list`
+```
+
+Eine id besteht aus dem Ordnungspräfix und einem Slug der `Subject:`-Zeile des Patches, z. B. `010-cyrillic-slugify`. Die Zehnerschritte lassen Platz, einen Patch von Hand zwischen zwei bestehende zu schieben, ohne die Serie neu zu nummerieren.
+
+Drei Ausgänge pro Patch, und der dritte ist der Punkt: Ein Patch, der **sauber greift**, wird wieder eingespielt; einer, den Upstream **wortgleich übernommen** hat, fliegt automatisch aus der Serie; und einer, der **nicht mehr passt**, wird *beiseitegelegt, nie erzwungen* — die Datei bleibt exakt so, wie das Update sie erzeugt hat, und die nächste Session sagt dir, welcher Patch wartet. Ein erzwungenes Anwenden erzeugte eine Datei, die niemand geschrieben und niemand geprüft hat — schlimmer als ein zurückgenommener Fix.
+
+Nach der Serie wird die gepatchte CLI tatsächlich gestartet. Bootet sie nicht, wird jeder Patch dieses Laufs zurückgenommen und die Installation bleibt so, wie das Update sie hinterlassen hat. `bastra patches status` nennt das Verzeichnis, aus dem Patches adressiert werden, sobald es vom Install-Root abweicht — bei einem Source-Checkout sind das zwei verschiedene Wurzeln, und diese Zeile ist das Erste, was man prüft, wenn alle Urteile falsch aussehen.
 
 ### Onboarding — in fünf Minuten zum Warmstart
 
