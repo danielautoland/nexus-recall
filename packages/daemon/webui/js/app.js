@@ -290,7 +290,61 @@ async function main() {
     document.body.classList.remove("inspector-open"),
   );
 
-  const { adoptLiveNode, openMemoryById } = createLiveNodes({ sim, inspector, select });
+  /** #307 — a category can come into EXISTENCE live, not just gain members.
+   *
+   *  Everything that groups the map is derived once, from the graph fetched at
+   *  load: the cluster/group lists (and with them the hues and the legend),
+   *  the cloud anchors in the simulation, the galaxies in the universe. A
+   *  memory from an area that did not exist back then therefore arrived as a
+   *  loose point and only found its cloud after a manual reload. That is
+   *  exactly the onboarding case on a fresh vault, where the profile memories
+   *  are what CREATES the user area — the one moment a category is born.
+   *
+   *  Cluster keys are APPENDED, never re-sorted: a cluster's hue is its index
+   *  in this list, so a newborn category must not repaint the whole map.
+   *  Counts are recounted from the live nodes, so the legend never shows a
+   *  freshly created area as empty. */
+  function registerLiveGrouping(node) {
+    const touch = (list, key, keyOf) => {
+      if (!key) return false;
+      let count = 0;
+      for (const n of sim.nodes) if (keyOf(n) === key) count += 1;
+      const hit = list.find((c) => c.key === key);
+      if (hit) {
+        hit.count = count;
+        return false;
+      }
+      list.push({ key, count });
+      return true;
+    };
+    // both axes, regardless of the active structure mode — the other one must
+    // not be missing its key when the user switches over
+    const freshCluster = touch(graph.clusters, node.baseCluster, (n) => n.baseCluster ?? n.cluster);
+    const freshGroup = touch(graph.groups, node.group, (n) => n.group);
+    if (!freshCluster && !freshGroup && sim.centers.has(node.cluster)) return;
+    hues = clusterHues(activeGrouping());
+    renderer.setHues(hues);
+    panels.renderLegend();
+    // Only the view that is ON SCREEN has to grow the new grouping right now;
+    // every other one derives it when entered (switchView regroups the clouds,
+    // ringView.enter recomputes the wheel). Doing it anyway would overwrite
+    // the ring's own cluster centers behind its back.
+    if (currentView === "clouds") {
+      // the same path the structure switch uses — the new cloud arrives
+      // through the physics (animated) instead of snapping into place
+      sim.regroup(loadAnchors());
+      loop.markBusy();
+    }
+    orbitView.invalidate(); // the universe gains the galaxy the burst needs
+  }
+
+  const { adoptLiveNode, openMemoryById } = createLiveNodes({
+    sim,
+    inspector,
+    select,
+    getStructureMode: () => structureMode,
+    onAdopt: registerLiveGrouping,
+  });
 
   /** Screen areas covered by UI — fits/flights center in the free rectangle. */
   function mapInsets() {

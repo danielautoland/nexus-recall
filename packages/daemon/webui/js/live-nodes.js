@@ -11,23 +11,39 @@ import { fetchNode, nodeRadius } from "./graph-data.js";
  * @param {object} deps.sim
  * @param {object} deps.inspector
  * @param {(node: object, fly?: boolean) => void} deps.select
+ * @param {() => string} [deps.getStructureMode] active structure mode ("clusters" | "blocks")
+ * @param {(node: object) => void} [deps.onAdopt] the newborn's grouping reached the map (#307)
  */
-export function createLiveNodes({ sim, inspector, select }) {
+export function createLiveNodes({ sim, inspector, select, getStructureMode = () => "clusters", onAdopt = null }) {
   /** Adopt a newborn as a REAL sim node the moment its supernova appears —
    *  clickable, hoverable, glowing with its valence, and it stays put after
    *  the burst fades (no reload needed). */
   function adoptLiveNode(u) {
     if (sim.byId.has(u.id)) return;
-    const anchor = sim.centers.get(u.cluster);
+    // #307: file the newborn exactly where a reloaded graph would put it.
+    // The live entry now carries the whole grouping coordinate (cluster +
+    // group + sub, see live-updates.ts); it used to carry the cluster alone,
+    // so every adopted memory was hardcoded into the "other" building block
+    // and the "general" sub-area — visible in blocks structure, in the ring's
+    // meta band and in the galaxy's sub-rings. The fallbacks stay for entries
+    // from an older daemon.
+    const group = u.group ?? "other";
+    const baseCluster = u.cluster;
+    // The DISPLAYED cluster follows the active structure mode, same as
+    // applyStructure() does for every other node — otherwise a memory adopted
+    // while the ring/semantic view is open (both open in "blocks") would be
+    // the one node keyed by its fine cluster among group keys.
+    const cluster = getStructureMode() === "blocks" ? group : baseCluster;
+    const anchor = sim.centers.get(cluster);
     const node = {
       id: u.id,
       title: u.title,
       type: u.type,
-      scope: u.scope ?? u.cluster,
-      cluster: u.cluster,
-      baseCluster: u.cluster,
-      group: "other",
-      sub: "general",
+      scope: u.scope ?? baseCluster,
+      cluster,
+      baseCluster,
+      group,
+      sub: u.sub ?? "general",
       tags: [],
       summary: u.summary,
       updated: new Date().toISOString().slice(0, 10),
@@ -44,6 +60,12 @@ export function createLiveNodes({ sim, inspector, select }) {
     node.cr = nodeRadius(node) + 3.5;
     sim.nodes.push(node);
     sim.byId.set(u.id, node);
+    // #307: the grouping layers (cluster/group lists, colors, cloud anchors,
+    // galaxies) are derived ONCE from the loaded graph. A newborn may belong
+    // to a category that did not exist then — on a fresh vault the onboarding
+    // memories are what creates the user area in the first place — so hand
+    // the node over and let the owner of those layers extend them.
+    onAdopt?.(node);
     sim.reheat?.();
   }
 

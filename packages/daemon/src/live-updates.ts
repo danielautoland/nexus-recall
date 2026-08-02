@@ -32,7 +32,7 @@
  *   - read    — load_memory touched it. Weakest; never masks a hotter kind.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { clusterKeyFor, type Memory, type Vault } from "@bastra-recall/core";
+import { clusterKeyFor, groupKeyFor, subKeyFor, type Memory, type Vault } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 import { envInt } from "./env.js";
@@ -47,6 +47,18 @@ export interface LiveUpdate {
   type: string;
   scope: string;
   cluster: string;
+  /**
+   * #307: the FULL grouping coordinate, not just the cluster.
+   *
+   * The map fetches the graph projection (buildGraph) once at load, and every
+   * node in it carries cluster + group + sub. A live entry used to carry the
+   * cluster alone, so a memory adopted from the live path was filed under the
+   * fallbacks "other"/"general" — wrong building block, wrong sub-area, and no
+   * way for the client to place a grouping that did not exist yet. Same
+   * derivation as buildGraph, so a live node and a reloaded node agree.
+   */
+  group: string;
+  sub: string;
   summary: string;
   at: number; // ms epoch when the entry finalized
   seq: number; // monotone delivery cursor (#234); assigned on finalize
@@ -133,6 +145,8 @@ export function createLiveUpdates(
     type: m.fm.type,
     scope: m.fm.scope,
     cluster: clusterKeyFor(m, vault.root),
+    group: groupKeyFor(m, vault.root),
+    sub: subKeyFor(m, vault.root),
     summary: m.fm.summary,
     at: Date.now(),
     seq: 0, // assigned on finalize
@@ -208,6 +222,8 @@ export function createLiveUpdates(
         type: prior?.type ?? "memory",
         scope: prior?.scope ?? "",
         cluster: prior?.cluster ?? "",
+        group: prior?.group ?? "",
+        sub: prior?.sub ?? "",
         summary: prior?.summary ?? "",
         at: Date.now(),
         seq: 0,

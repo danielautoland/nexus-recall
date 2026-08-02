@@ -675,6 +675,18 @@ export function createOrbitView(deps) {
     apply(performance.now() / 1000);
   }
 
+  /** #307: the cached universe knows only the clusters that existed when it
+   *  was built, and `spawnBurst` looks its galaxy up by cluster key — a
+   *  memory from a category born after the page load found none, so its
+   *  supernova fired at a random point in the volume and the node was never
+   *  placed in a disc: a loose dot until a reload. Rebuilding here (rather
+   *  than nulling the cache) keeps every consumer non-null; positions are NOT
+   *  applied, so this is a no-op for whatever view is currently on screen —
+   *  the orbit view picks the new galaxy up on its next tick. */
+  function invalidate() {
+    if (universe) build();
+  }
+
   function setMode(m) {
     mode = m === "galaxy" ? "galaxy" : "universe";
     localStorage.setItem(MODE_KEY, mode);
@@ -693,6 +705,7 @@ export function createOrbitView(deps) {
   return {
     enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts, pickBurst,
     relayout,
+    invalidate,
     setMode,
     setDistanceMode,
     setDrift,

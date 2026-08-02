@@ -18,8 +18,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request } from "node:http";
-import { Vault } from "@bastra-recall/core";
+import { Vault, buildGraph } from "@bastra-recall/core";
 import { createLiveUpdates, type LiveUpdate } from "../src/live-updates.js";
+// #307 pins BOTH halves of the live path, so the map modules the entry ends up
+// in are exercised for real instead of being restated in the test.
+import { createSimulation } from "../webui/js/simulation.js";
+import { createLiveNodes } from "../webui/js/live-nodes.js";
 
 const DEBOUNCE = 150; // injected quiet window
 const AFTER = 340; // wait comfortably past one window before asserting
@@ -365,6 +369,96 @@ test("live updates: a memory that never goes quiet still finalizes at the max-wa
     assert.ok(r.json.updates.length >= 1, "the cap delivers despite the steady stream");
     assert.equal(r.json.updates[0].id, "busy-one");
     assert.ok(r.json.updates[0].count > 1, "the held-back events count as ×N");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("live updates: an area born after page load arrives WITH its grouping (#307)", async () => {
+  // The onboarding interview on a fresh vault writes the user area into
+  // existence — the profile memories are what CREATES it. The map derives every
+  // grouping layer (cluster/group lists and their colors, cloud anchors,
+  // galaxies) from the graph it fetched once at load, so a newborn from an area
+  // that did not exist then arrived as a loose point and only found its cloud
+  // after a manual browser reload.
+  //
+  // Both halves of that boundary are pinned here, against the real modules:
+  // the live entry has to carry the FULL grouping coordinate (cluster + group +
+  // sub, not the cluster alone), and adopting it has to announce that a
+  // grouping came into existence so the map can grow one.
+  const h = await harness();
+  const { vault, memDir, call } = h;
+  const anyGlobal = globalThis as unknown as { innerWidth: number; innerHeight: number };
+  anyGlobal.innerWidth = 1200;
+  anyGlobal.innerHeight = 800;
+
+  try {
+    await h.enableUi();
+    // the vault the page loaded: one project area, no user area
+    await writeFile(join(memDir, "task.md"), memoryMarkdown("task", "A task"));
+    await vault.reindexFile(join(memDir, "task.md"));
+    await delay(AFTER);
+    const base = await call(0);
+
+    const graph = buildGraph(vault);
+    assert.ok(!graph.clusters.some((c) => c.key === "user"), "no user cluster at load time");
+    assert.ok(!graph.groups.some((g) => g.key === "self"), "no self block at load time");
+    for (const n of graph.nodes) (n as { baseCluster?: string }).baseCluster = n.cluster;
+
+    // the interview writes the first profile memory — a brand new area
+    const userDir = join(vault.root, "memories", "user");
+    await mkdir(userDir, { recursive: true });
+    await writeFile(join(userDir, "profile-work.md"), memoryMarkdown("profile-work", "How I work"));
+    await vault.reindexFile(join(userDir, "profile-work.md"));
+    await delay(AFTER);
+
+    const born = (await call(base.json.seq)).json.updates.find((u) => u.id === "profile-work");
+    assert.ok(born, "the newborn is delivered");
+    assert.equal(born.kind, "add");
+    assert.equal(born.cluster, "user");
+    assert.equal(born.group, "self", "the building block travels with the entry");
+    assert.equal(born.sub, "general", "so does the sub-area");
+
+    // ── client half: the map adopts a memory from a cluster it never heard of
+    const sim = createSimulation(graph, 1200, 800, null);
+    assert.ok(sim.centers.has("live-test"), "the loaded cluster has a cloud anchor");
+    assert.ok(!sim.centers.has("user"), "the new one cannot, it did not exist yet");
+
+    const adopted: Array<{ cluster: string; group: string; sub: string; baseCluster: string }> = [];
+    const { adoptLiveNode } = createLiveNodes({
+      sim,
+      inspector: { show: () => {} },
+      select: () => {},
+      getStructureMode: () => "clusters",
+      // what app.js wires in: grow the grouping layers around the newborn
+      onAdopt: (node: { cluster: string; group: string; sub: string; baseCluster: string }) => {
+        adopted.push(node);
+        sim.regroup(null);
+      },
+    });
+    adoptLiveNode(born);
+
+    assert.equal(adopted.length, 1, "adopting announces the newborn's grouping");
+    assert.equal(adopted[0].group, "self", "filed in its real block, not the 'other' fallback");
+    assert.equal(adopted[0].sub, "general");
+    assert.equal(adopted[0].baseCluster, "user");
+    assert.ok(sim.centers.has("user"), "the cloud comes into existence live");
+    assert.equal(sim.centers.get("user").count, 1, "with the newborn as its member");
+    assert.ok(sim.centers.has("live-test"), "and the existing clouds survive it");
+
+    // in blocks structure the DISPLAYED cluster is the building block — the
+    // adopted node must join the same layer as everyone else, not sit beside it
+    const blockSim = createSimulation(graph, 1200, 800, null);
+    const blocks = createLiveNodes({
+      sim: blockSim,
+      inspector: { show: () => {} },
+      select: () => {},
+      getStructureMode: () => "blocks",
+      onAdopt: () => blockSim.regroup(null),
+    });
+    blocks.adoptLiveNode(born);
+    assert.equal(blockSim.byId.get("profile-work").cluster, "self");
+    assert.equal(blockSim.byId.get("profile-work").baseCluster, "user", "the fine layer is kept");
   } finally {
     await h.cleanup();
   }
