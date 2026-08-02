@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/prom
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { request as httpRequest } from "node:http";
+import { Vault } from "@bastra-recall/core";
 import { FORWARDER_SCRIPT_PATH, CLAUDE_DESKTOP_CONFIG, CLAUDE_CODE_CONFIG } from "./paths.js";
 import type { InstallOpts } from "./types.js";
 
@@ -188,6 +189,37 @@ export async function createVaultAt(path: string): Promise<{ path: string } | { 
     return { path };
   } catch (e) {
     return { error: (e as Error).message };
+  }
+}
+
+export interface VaultPresence {
+  /** The directory is there — whatever it holds. */
+  exists: boolean;
+  /** Memories the daemon would index; plain notes and the README don't count. */
+  memoryCount: number;
+}
+
+/**
+ * Read-only probe of a vault directory (#318).
+ *
+ * The guided setup offered "Create ~/BastraVault (recommended)" over a folder
+ * already holding someone's memories. "Create" is a claim about the folder,
+ * and it was made without looking — at the one moment where the truth is a
+ * single directory listing away, and where a reinstall is most likely to be
+ * pointing at an existing vault.
+ *
+ * Counts through Vault.init() rather than a private scanner: the number shown
+ * has to be the number the daemon indexes, not a second opinion that drifts
+ * from it. init() only reads — watching is a separate call. Best-effort: an
+ * absent or unreadable directory reports zero rather than failing a setup step.
+ */
+export async function probeVaultPresence(path: string): Promise<VaultPresence> {
+  if (!(await fileExists(path))) return { exists: false, memoryCount: 0 };
+  try {
+    const { loaded } = await new Vault(path).init();
+    return { exists: true, memoryCount: loaded };
+  } catch {
+    return { exists: true, memoryCount: 0 };
   }
 }
 

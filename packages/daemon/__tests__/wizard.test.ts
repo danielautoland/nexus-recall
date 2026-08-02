@@ -1,25 +1,29 @@
 /**
  * Tests for the guided-install wizard's pure parts: the gate that decides
  * wizard vs. classic path, the surface-choice builder (detection →
- * preselection), and the custom-vault path expansion. The interactive clack
+ * preselection), the custom-vault path expansion, and the default-vault
+ * option's wording over an existing vault (#318). The interactive clack
  * flow itself is exercised by the expect-based smoke, not here (no TTY on CI).
  *
  * Run: npx tsx --test packages/daemon/__tests__/wizard.test.ts
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
   shouldRunWizard,
   buildSurfaceChoices,
+  defaultVaultOption,
   detectSurfaces,
   expandUserPath,
   decideWizardSemantic,
+  memoryCountPhrase,
 } from "../src/cli/wizard.js";
 import { cmdInstall } from "../src/cli/commands.js";
+import { createVaultAt, probeVaultPresence } from "../src/cli/helpers.js";
 import type { ParsedArgs } from "../src/cli/types.js";
 
 // ─── gate ────────────────────────────────────────────────────────────────────
@@ -131,4 +135,106 @@ test("expandUserPath: tilde, relative, and absolute inputs", () => {
   assert.equal(expandUserPath("  ~/Vault  ", "/Users/x"), "/Users/x/Vault");
   assert.equal(expandUserPath("/abs/path", "/Users/x"), "/abs/path");
   assert.equal(expandUserPath("rel/path", "/Users/x"), resolve("rel/path"));
+});
+
+// ─── existing vault at the default location (#318) ───────────────────────────
+// "Create ~/BastraVault" was offered over a folder holding 74 memories. The
+// prompt has to look before it makes a claim about the folder.
+
+function memoryMarkdown(id: string): string {
+  return [
+    "---",
+    `id: ${id}`,
+    `title: ${id}`,
+    "type: lesson",
+    `summary: summary for ${id}`,
+    "topic_path:",
+    "  - test",
+    "tags:",
+    "  - test",
+    "scope: all-projects",
+    "recall_when:",
+    "  - writing a test",
+    "---",
+    "",
+    `Body for ${id}.`,
+    "",
+  ].join("\n");
+}
+
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-wizard-vault-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+}
+
+test("default vault option: absent or empty folder is really created — 'Create' stays", () => {
+  assert.deepEqual(defaultVaultOption({ exists: false, memoryCount: 0 }, "~/BastraVault"), {
+    label: "Create ~/BastraVault",
+    hint: "recommended",
+  });
+  assert.deepEqual(defaultVaultOption({ exists: true, memoryCount: 0 }, "~/BastraVault"), {
+    label: "Create ~/BastraVault",
+    hint: "recommended",
+  });
+});
+
+test("default vault option: memories already there → 'Use', with the count", () => {
+  // clack renders `label (hint)`, so this reads as the issue asked for it:
+  //   Use ~/BastraVault (74 memories already there)
+  assert.deepEqual(defaultVaultOption({ exists: true, memoryCount: 74 }, "~/BastraVault"), {
+    label: "Use ~/BastraVault",
+    hint: "74 memories already there",
+  });
+});
+
+test("default vault option: never says 'Create' about a folder that holds memories", () => {
+  const opt = defaultVaultOption({ exists: true, memoryCount: 1 }, "~/BastraVault");
+  assert.ok(!opt.label.startsWith("Create"), `still offers to create it: ${opt.label}`);
+  assert.equal(opt.hint, "1 memory already there");
+});
+
+test("memoryCountPhrase: singular is not '1 memories'", () => {
+  assert.equal(memoryCountPhrase(0), "0 memories");
+  assert.equal(memoryCountPhrase(1), "1 memory");
+  assert.equal(memoryCountPhrase(74), "74 memories");
+});
+
+test("probeVaultPresence: a missing folder is absent and empty", async () => {
+  await withTempDir(async (dir) => {
+    assert.deepEqual(await probeVaultPresence(join(dir, "no-such-vault")), { exists: false, memoryCount: 0 });
+  });
+});
+
+test("probeVaultPresence: a freshly created vault exists but holds no memories", async () => {
+  await withTempDir(async (dir) => {
+    const vault = join(dir, "BastraVault");
+    await createVaultAt(vault);
+    // The README createVaultAt writes carries no `type:` — it must not count as
+    // a memory, or a first install would offer "Use … (1 memory already there)".
+    assert.deepEqual(await probeVaultPresence(vault), { exists: true, memoryCount: 0 });
+    assert.equal(defaultVaultOption(await probeVaultPresence(vault), "~/BastraVault").label, "Create ~/BastraVault");
+  });
+});
+
+test("probeVaultPresence: counts what the daemon indexes — memories, not plain notes", async () => {
+  await withTempDir(async (dir) => {
+    const vault = join(dir, "BastraVault");
+    await createVaultAt(vault);
+    await writeFile(join(vault, "a.md"), memoryMarkdown("alpha"), "utf8");
+    await mkdir(join(vault, "lessons"), { recursive: true });
+    await writeFile(join(vault, "lessons", "b.md"), memoryMarkdown("beta"), "utf8");
+    // A plain Obsidian note living in the same folder, and an import-review file
+    // — the shapes the #318 report had next to its 74 memories.
+    await writeFile(join(vault, "import-review.md"), "# Import review\n\n- candidate\n", "utf8");
+
+    const presence = await probeVaultPresence(vault);
+    assert.deepEqual(presence, { exists: true, memoryCount: 2 });
+    const opt = defaultVaultOption(presence, "~/BastraVault");
+    assert.equal(opt.label, "Use ~/BastraVault");
+    assert.equal(opt.hint, "2 memories already there");
+  });
 });

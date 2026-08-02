@@ -5,7 +5,9 @@
  * default or pick a folder), AI clients (multiselect, detected ones
  * preselected), stop-hook (claude-code, default on), semantic recall (enable /
  * keyword-only), generation text model (hardware-tiered), Bastra Commons +
- * shared bridges (opt-in, default off), auto-update mode, product-doc capture.
+ * shared bridges (opt-in, default off), auto-update mode, product-doc capture,
+ * and — only when this runs from an npx cache — the `bastra` command itself
+ * (#317), which npx otherwise leaves off the PATH entirely.
  * Built on @clack/prompts; every prompt is cancellable (Ctrl-C → clean exit,
  * nothing written).
  *
@@ -25,9 +27,20 @@ import {
   resolveVault,
   defaultVaultPath,
   createVaultAt,
+  probeVaultPresence,
   DEFAULT_VAULT_DISPLAY,
   probeDaemon,
+  type VaultPresence,
 } from "./helpers.js";
+import { FORWARDER_SCRIPT_PATH } from "./paths.js";
+import { findExecutable } from "./exec.js";
+import {
+  CLI_DECLINED_NOTE,
+  CLI_PACKAGE,
+  decideCliOnPath,
+  formatGlobalInstallOutcome,
+  installCliGlobally,
+} from "./cli-on-path.js";
 import { RECALL_OFF_NOTE } from "./embeddings-cmd.js";
 import { enableSemanticRecall, enableGenerationModel, probeOllama, ollamaModelPresent } from "./ollama.js";
 import { detectHardware, recommendTextModel } from "./hardware.js";
@@ -105,6 +118,36 @@ export function buildSurfaceChoices(present: Record<string, boolean>): {
   return { options, initialValues: detected.length > 0 ? detected : options.map((o) => o.value) };
 }
 
+/** "74 memories" / "1 memory" — used by the prompt and the log line. */
+export function memoryCountPhrase(n: number): string {
+  return `${n} ${n === 1 ? "memory" : "memories"}`;
+}
+
+export interface VaultOption {
+  label: string;
+  hint?: string;
+}
+
+/**
+ * Wording of the default-vault option (#318) — pure, exported for tests.
+ *
+ * "Create ~/BastraVault" told the user the folder does not exist yet, and it
+ * said so over a vault holding 74 memories. Someone reinstalling, or trying
+ * again after a failed attempt, had no way to tell from this prompt that they
+ * were pointing at an existing vault. Same choice either way — name what is
+ * there instead. An empty or absent folder really is created, so "Create"
+ * stays right for that case.
+ */
+export function defaultVaultOption(
+  presence: VaultPresence,
+  display: string = DEFAULT_VAULT_DISPLAY,
+): VaultOption {
+  if (!presence.exists || presence.memoryCount === 0) {
+    return { label: `Create ${display}`, hint: "recommended" };
+  }
+  return { label: `Use ${display}`, hint: `${memoryCountPhrase(presence.memoryCount)} already there` };
+}
+
 /** `~`/relative → absolute, for the custom-vault text input. Exported for tests. */
 export function expandUserPath(input: string, home: string = homedir()): string {
   const trimmed = input.trim();
@@ -146,15 +189,21 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   // from an existing registration. Only a truly unconfigured machine is asked.
   let vaultPath: string | null = null;
   let vaultNeedsCreate = false;
+  // What is already at the chosen folder (#318) — decides the prompt's wording
+  // and, later, whether "Vault created" is a true sentence.
+  let vaultPresence: VaultPresence = { exists: false, memoryCount: 0 };
   const preResolved = await resolveVault({ dryRun: false, vaultPath: args.vaultPath });
   if ("path" in preResolved) {
     vaultPath = preResolved.path;
     p.log.info(`Memory vault: ${vaultPath} (already configured)`);
   } else {
+    // Look before offering to create it (#318): an existing vault gets named,
+    // never re-offered as a fresh folder.
+    vaultPresence = await probeVaultPresence(defaultVaultPath());
     const where = await p.select({
       message: "Where should your memories live? (plain markdown files you can read and back up)",
       options: [
-        { value: "default", label: `Create ${DEFAULT_VAULT_DISPLAY}`, hint: "recommended" },
+        { value: "default", ...defaultVaultOption(vaultPresence) },
         { value: "custom", label: "Pick a custom folder…" },
       ],
       initialValue: "default",
@@ -174,6 +223,11 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
       // CWD-relative surprise must be visible before anything acts on it
       // (Ctrl-C on the next question still aborts with nothing written).
       p.log.info(`Vault folder: ${vaultPath}`);
+      // A typed path deserves the same honesty as the default one (#318).
+      vaultPresence = await probeVaultPresence(vaultPath);
+      if (vaultPresence.memoryCount > 0) {
+        p.log.info(`${memoryCountPhrase(vaultPresence.memoryCount)} already there — they stay, nothing is overwritten.`);
+      }
     }
     vaultNeedsCreate = true;
   }
@@ -372,6 +426,34 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     uiOn = ans === "on";
   }
 
+  // ── 10. the `bastra` command itself (#317) ─────────────────────────────────
+  // Under npx there is no CLI on PATH when this finishes, and every next step
+  // the docs name is a `bastra …` command. Asked here, executed at the very
+  // end — and only on an explicit yes: installing globally without being told
+  // to is not this installer's call. Same input as ensureStableForwarder, so
+  // the two can never disagree about what an npx run is.
+  const cliVerdict = decideCliOnPath({
+    cliPath: FORWARDER_SCRIPT_PATH,
+    resolvedBastra: findExecutable("bastra"),
+  });
+  let installCli = false;
+  if (cliVerdict === "offer") {
+    const ans = await p.select({
+      message: "Install the 'bastra' command? (this run came from the npx cache — nothing is on your PATH yet)",
+      options: [
+        {
+          value: "on",
+          label: `Yes — npm install -g ${CLI_PACKAGE}@${VERSION}`,
+          hint: "recommended: doctor, map, import and onboard are all 'bastra …' commands",
+        },
+        { value: "off", label: "No", hint: `run them with: npx ${CLI_PACKAGE} <command>` },
+      ],
+      initialValue: "on",
+    });
+    if (bailed(ans)) { p.cancel(CANCEL_MSG); return 1; }
+    installCli = ans === "on";
+  }
+
   // ── execute ───────────────────────────────────────────────────────────────
   if (vaultNeedsCreate) {
     const created = await createVaultAt(vaultPath!);
@@ -380,7 +462,14 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
       p.outro("Setup failed — nothing else was changed.");
       return 1;
     }
-    p.log.success(`Vault created: ${created.path}`);
+    // createVaultAt is idempotent, so this line also runs over a vault that was
+    // already there — and "created" would then repeat the exact claim #318 is
+    // about, one step later. Report what actually happened.
+    p.log.success(
+      vaultPresence.memoryCount > 0
+        ? `Vault: ${created.path} (${memoryCountPhrase(vaultPresence.memoryCount)} already there — nothing overwritten)`
+        : `Vault created: ${created.path}`,
+    );
   }
 
   const surfaces = chosen as string[];
@@ -490,6 +579,21 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   if (uiOn) {
     await setUiEnabled(true);
     p.log.success("Vault map: http://127.0.0.1:6723/ui (read per request — no restart needed)");
+  }
+
+  // The CLI itself (#317) — last, because its absence is the one thing the user
+  // would otherwise discover only after the setup declared success. Runs solely
+  // on the explicit yes above; declining still ends with a usable invocation,
+  // and so does a failed npm install.
+  if (cliVerdict === "offer") {
+    if (installCli) {
+      p.log.step(`Installing the 'bastra' command — npm install -g ${CLI_PACKAGE}@${VERSION}…`);
+      const line = formatGlobalInstallOutcome(installCliGlobally());
+      if (line.level === "success") p.log.success(line.text);
+      else p.log.warn(line.text);
+    } else {
+      p.log.info(CLI_DECLINED_NOTE);
+    }
   }
 
   p.outro(`Done. Restart ${restart} to pick up the memory tool.`);

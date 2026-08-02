@@ -14,6 +14,9 @@ import {
 import { installSemanticRecallStep, printEmbeddingDoctorNote } from "./embeddings-cmd.js";
 import { sweepSharedSkill } from "./skill.js";
 import { removeRuntimeBase } from "./stable-runtime.js";
+import { CLI_DECLINED_NOTE, decideCliOnPath } from "./cli-on-path.js";
+import { FORWARDER_SCRIPT_PATH } from "./paths.js";
+import { findExecutable } from "./exec.js";
 import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { cmdInstallExtension } from "./extension-install.js";
 import { confirm, isInteractive } from "./prompt.js";
@@ -372,6 +375,18 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
   // Prompts only on a TTY without --yes and only when no provider is effective;
   // an Ollama failure never fails the install: surface registration is the job.
   await installSemanticRecallStep({ dryRun: args.dryRun, yes: args.yes, ollama: args.ollama });
+
+  // #317 — `npx bastra-recall install all` registers everything correctly and
+  // still leaves no `bastra` on PATH, because npx installs nothing. This path
+  // is the scripted one, so it must not prompt (the wizard offers the global
+  // install); saying it out loud is what keeps the next documented step from
+  // failing with 'command not found' and no explanation.
+  if (
+    !args.dryRun &&
+    decideCliOnPath({ cliPath: FORWARDER_SCRIPT_PATH, resolvedBastra: findExecutable("bastra") }) === "offer"
+  ) {
+    process.stdout.write(`→ ${CLI_DECLINED_NOTE}\n\n`);
+  }
   return 0;
 }
 
