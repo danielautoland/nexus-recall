@@ -39,11 +39,12 @@ For project-level docs (vision, install, REST API, roadmap), see the [top-level 
 
 ## Install + register
 
-See the [top-level README](../../README.md). Three paths, in order of friction:
+See the [top-level README](../../README.md). Paths, in order of friction:
 
-1. **`Install Bastra.command` doubleclick** — installs Homebrew + tap + binary + runs `bastra install all`.
-2. **`bastra install all`** — single CLI call that registers MCP + Skill + the default quiet Hooks across Claude Code, Claude Desktop, Cursor. On a first run with no vault configured, an interactive install offers to create `~/BastraVault` for you (non-interactive/`--yes`/`--dry-run` runs keep the deterministic error).
-3. **Fully manual JSON snippets** — fallback.
+1. **`curl -fsSL https://bastra.io/install | bash`** — installs Homebrew + tap + binary + runs the guided setup. The recommended non-developer path.
+2. **`Install Bastra.command` doubleclick** — same steps, but a browser download is quarantined and mode 644, so it needs right-click → Open (#320).
+3. **`bastra install all`** — single CLI call that registers MCP + Skill + the default quiet Hooks across Claude Code, Claude Desktop, Cursor. On a first run with no vault configured, an interactive install offers to create `~/BastraVault` for you (non-interactive/`--yes`/`--dry-run` runs keep the deterministic error).
+4. **Fully manual JSON snippets** — fallback.
 
 All paths end with the daemon reachable on `http://127.0.0.1:6723` and the client configs patched.
 Use `bastra doctor --fix` to repair stale paths, missing required hooks, or a

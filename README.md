@@ -119,15 +119,17 @@ The `recall_when` field is the bridge between save and recall: when saving, the 
 
 ### Install
 
-#### A) One double-click — easiest, for non-coders
+#### A) One command — easiest, for non-coders
 
-1. Download **Install Bastra.command** from the [latest GitHub release](https://github.com/n0mad-ai/bastra-recall/releases/latest).
-2. Double-click it in Finder.
-3. Done. Restart Claude Code / Claude Desktop / Cursor.
+```bash
+curl -fsSL https://bastra.io/install | bash
+```
 
-The script installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and hands over to the guided setup — no terminal knowledge required. Leaving is one double-click too: **Uninstall Bastra.command** unregisters every client and stops the daemon, never deleting a memory.
+Paste it into Terminal, press Return, answer the setup questions. It installs Homebrew if it's missing, adds the bastra tap, installs `bastra-recall`, and hands over to the guided setup — no terminal knowledge beyond pasting one line. Then restart Claude Code / Claude Desktop / Cursor. To read the script before running it, open [bastra.io/install](https://bastra.io/install); it is the same file as [`distribution/install.sh`](./distribution/install.sh).
 
-#### B) One command — for developers
+**Alternative — double-click.** Download **Install Bastra.command** from the [latest GitHub release](https://github.com/n0mad-ai/bastra-recall/releases/latest), then **right-click → Open** and confirm the dialog. A plain double-click does *not* work: macOS quarantines every browser download, so Gatekeeper blocks it. If macOS then refuses with a permissions error, the download also lost its executable bit — `chmod +x ~/Downloads/Install*.command` restores it. The same applies to **Uninstall Bastra.command**, which unregisters every client and stops the daemon, never deleting a memory.
+
+#### B) npm or from source — for developers
 
 ```bash
 npx bastra-recall install           # zero-install: guided setup with selection lists
@@ -298,15 +300,17 @@ Das `recall_when`-Feld ist die Brücke zwischen Save und Recall: beim Speichern 
 
 ### Installation
 
-#### A) Ein Doppelklick — am einfachsten, für Nicht-Coder
+#### A) Ein Befehl — am einfachsten, für Nicht-Coder
 
-1. Lade **Install Bastra.command** aus dem [aktuellen GitHub-Release](https://github.com/n0mad-ai/bastra-recall/releases/latest).
-2. Doppelklick im Finder.
-3. Fertig. Claude Code / Claude Desktop / Cursor neu starten.
+```bash
+curl -fsSL https://bastra.io/install | bash
+```
 
-Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und startet das geführte Setup — kein Terminal-Wissen nötig. Der Weg hinaus ist genauso kurz: **Uninstall Bastra.command** meldet Bastra bei allen Clients ab und stoppt den Daemon — ohne je eine Memory zu löschen.
+Ins Terminal einfügen, Return drücken, die Setup-Fragen beantworten. Das Skript installiert bei Bedarf Homebrew, fügt den bastra-Tap hinzu, installiert `bastra-recall` und startet das geführte Setup — mehr Terminal-Wissen als „eine Zeile einfügen“ braucht es nicht. Danach Claude Code / Claude Desktop / Cursor neu starten. Wer das Skript vorher lesen will, öffnet [bastra.io/install](https://bastra.io/install) — dieselbe Datei wie [`distribution/install.sh`](./distribution/install.sh).
 
-#### B) Ein Befehl — für Entwickler
+**Alternative — Doppelklick.** **Install Bastra.command** aus dem [aktuellen GitHub-Release](https://github.com/n0mad-ai/bastra-recall/releases/latest) laden, dann **Rechtsklick → Öffnen** und den Dialog bestätigen. Ein normaler Doppelklick funktioniert *nicht*: macOS setzt jeden Browser-Download unter Quarantäne, Gatekeeper blockt ihn. Kommt danach eine Fehlermeldung wegen fehlender Rechte, hat der Download auch das Ausführbar-Bit verloren — `chmod +x ~/Downloads/Install*.command` setzt es zurück. Dasselbe gilt für **Uninstall Bastra.command**, das Bastra bei allen Clients abmeldet und den Daemon stoppt — ohne je eine Memory zu löschen.
+
+#### B) npm oder Quellcode — für Entwickler
 
 ```bash
 npx bastra-recall install           # ohne Installation: geführtes Setup mit Auswahllisten

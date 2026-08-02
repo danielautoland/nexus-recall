@@ -107,6 +107,7 @@ packages/
   skill/      SKILL.md + its reference files, installed into ~/.claude/skills/
 distribution/
   homebrew/   Brew formula (head-only)
+  install.sh               curl installer, mirrored to bastra.io/install
   Install Bastra.command   Double-click installer
   Uninstall Bastra.command Double-click uninstaller (never touches the vault)
 scripts/      One-off telemetry / eval / backfill scripts
