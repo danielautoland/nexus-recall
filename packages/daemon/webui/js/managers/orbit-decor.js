@@ -187,7 +187,11 @@ export function createOrbitDecor(env) {
     // galactic mode: faint orbit guides + the black hole core. The "hole"
     // is punched with the label-halo ink (≈ background in both themes), the
     // event horizon rings carry the accent — dark core, bright rim.
-    if (mode === "galaxy" && hole) {
+    // `hole` is only ever set by the galactic modes (galaxy, galaxy-lab), so
+    // testing it alone is identical in behaviour for universe and adds the
+    // lab mode's Sgr A* without a second condition. orbitRings is empty in
+    // galaxy-lab — nothing orbits the core as its own galaxy there.
+    if (hole) {
       const origin = { px: 0, py: 0, pz: 0 };
       ctx.strokeStyle = theme.bandBorder;
       ctx.globalAlpha = 0.09 * fadeIn;

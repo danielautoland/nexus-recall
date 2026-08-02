@@ -154,58 +154,95 @@
         <ul id="drill-list"></ul>
       </section>
 
-      <section class="panel-section" id="filters-section">
-        <h2 class="section-title">Filters</h2>
-        <div class="filter-label" id="structure-label">Structure</div>
-        <div id="structure-switch" class="seg">
-          <button data-structure="clusters" class="active">clusters</button>
-          <button data-structure="blocks">blocks</button>
-        </div>
-        <div class="filter-label" id="semantic-mode-label" hidden>Structure</div>
-        <div id="semantic-mode-switch" class="seg" hidden>
-          <button data-smode="2d">flat</button>
-          <button data-smode="3d">depth</button>
-        </div>
-        <div class="filter-label" id="mindspace-mode-label" hidden>Mindspace</div>
-        <div id="mindspace-mode-switch" class="seg" hidden>
-          <button data-mmode="universe">universe</button>
-          <button data-mmode="galaxy">galactic</button>
-        </div>
-        <div id="mindspace-galaxy-opts" hidden>
-          <div class="filter-label" style="margin-top: 10px;">Distance</div>
-          <div id="mindspace-distance-switch" class="seg">
-            <button data-mdist="woven">woven</button>
-            <button data-mdist="balanced">balanced</button>
+      <!-- Two buttons instead of stacked control blocks: View and Activity used
+           to run down the rail and ate most of its height. Their panels now open
+           SIDEWAYS to the left, out over the canvas, so they cost no rail height
+           at all and stay clear of the topbar. -->
+      <section class="panel-section" id="opts-section">
+        <h2 class="section-title">Filters &amp; Options</h2>
+        <div id="opts-buttons">
+          <div class="opt-slot">
+            <button id="view-opts-btn" class="opt-btn" aria-expanded="false" aria-haspopup="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/>
+              </svg>
+              View
+            </button>
+            <div id="view-opts-pop" class="opt-pop" hidden>
+              <div class="opt-pop-head">view options</div>
+              <div class="filter-label" id="structure-label">Structure</div>
+              <div id="structure-switch" class="seg">
+                <button data-structure="clusters" class="active">clusters</button>
+                <button data-structure="blocks">blocks</button>
+              </div>
+              <div class="filter-label" id="semantic-mode-label" hidden>Structure</div>
+              <div id="semantic-mode-switch" class="seg" hidden>
+                <button data-smode="2d">flat</button>
+                <button data-smode="3d">depth</button>
+              </div>
+              <div class="filter-label" id="mindspace-mode-label" hidden>Mindspace</div>
+              <div id="mindspace-mode-switch" class="seg" hidden>
+                <button data-mmode="universe">universe</button>
+                <button data-mmode="galaxy">galactic</button>
+              </div>
+              <div class="filter-label" id="mindspace-lab-label" hidden>Mindspace · Test</div>
+              <div id="mindspace-lab-switch" class="seg" hidden>
+                <button data-mmode="universe-lab">universe ✦</button>
+                <button data-mmode="galaxy-lab">milky way ✦</button>
+              </div>
+              <div id="mindspace-galaxy-opts" hidden>
+                <div class="filter-label">Distance</div>
+                <div id="mindspace-distance-switch" class="seg">
+                  <button data-mdist="woven">woven</button>
+                  <button data-mdist="balanced">balanced</button>
+                </div>
+                <div class="filter-label">Orbital drift</div>
+                <div id="mindspace-drift-switch" class="seg">
+                  <button data-mdrift="on">on</button>
+                  <button data-mdrift="off">off</button>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="filter-label" style="margin-top: 10px;">Orbital drift</div>
-          <div id="mindspace-drift-switch" class="seg">
-            <button data-mdrift="on">on</button>
-            <button data-mdrift="off">off</button>
+
+          <div class="opt-slot">
+            <button id="activity-opts-btn" class="opt-btn" aria-expanded="false" aria-haspopup="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13 2L4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/>
+              </svg>
+              Activity
+            </button>
+            <div id="activity-opts-pop" class="opt-pop" hidden>
+              <div class="opt-pop-head">activity</div>
+              <div id="bolt-style-switch" class="seg">
+                <button data-bolt="bolt">bolt</button>
+                <button data-bolt="pulse">pulse</button>
+                <button data-bolt="trace">trace</button>
+                <button data-bolt="off">off</button>
+              </div>
+              <div id="bolt-speed-row">
+                <input id="bolt-speed" type="range" min="300" max="4000" step="100" value="420"
+                       aria-label="Wie lange eine Entladung läuft" />
+                <span id="bolt-speed-value">0.4s</span>
+              </div>
+              <div id="bolt-spread-row">
+                <input id="bolt-spread" type="range" min="0" max="100" step="5" value="100"
+                       aria-label="Wie weit der Blitz vom Strang abweicht" />
+                <span id="bolt-spread-value">100%</span>
+              </div>
+              <div class="filter-label">Demo flares</div>
+              <div id="bolt-demo-switch" class="seg">
+                <button data-bdemo="on">on</button>
+                <button data-bdemo="off" class="active">off</button>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="filter-label" style="margin-top: 10px;">Activity</div>
-        <div id="bolt-style-switch" class="seg">
-          <button data-bolt="bolt">bolt</button>
-          <button data-bolt="pulse">pulse</button>
-          <button data-bolt="trace">trace</button>
-          <button data-bolt="off">off</button>
-        </div>
-        <div id="bolt-speed-row">
-          <input id="bolt-speed" type="range" min="300" max="4000" step="100" value="420"
-                 aria-label="Wie lange eine Entladung läuft" />
-          <span id="bolt-speed-value">0.4s</span>
-        </div>
-        <div id="bolt-spread-row">
-          <input id="bolt-spread" type="range" min="0" max="100" step="5" value="100"
-                 aria-label="Wie weit der Blitz vom Strang abweicht" />
-          <span id="bolt-spread-value">100%</span>
-        </div>
-        <div class="filter-label" style="margin-top: 10px;">Demo flares</div>
-        <div id="bolt-demo-switch" class="seg">
-          <button data-bdemo="on">on</button>
-          <button data-bdemo="off" class="active">off</button>
-        </div>
-        <div class="filter-label" style="margin-top: 10px;">Updated within</div>
+
+        <div class="filter-label">Updated within</div>
         <div id="time-filter" class="seg">
           <button data-days="" class="active">all</button>
           <button data-days="7">7d</button>

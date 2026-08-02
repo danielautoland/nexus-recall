@@ -6,7 +6,10 @@ import { Vault } from "@bastra-recall/core";
 import { FORWARDER_SCRIPT_PATH, CLAUDE_DESKTOP_CONFIG, CLAUDE_CODE_CONFIG } from "./paths.js";
 import type { InstallOpts } from "./types.js";
 
-export const VERSION = "0.8.9";
+// Read from package.json at runtime (see ../version.ts) instead of a literal.
+// The literals drifted: this one said 0.8.9 while index.ts still said 0.8.8,
+// because a bump ran over part of the tree only. Now there is one source.
+export { DAEMON_VERSION as VERSION } from "../version.js";
 export const SERVER_KEY = "bastra-recall";
 
 /**

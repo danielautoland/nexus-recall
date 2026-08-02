@@ -45,9 +45,12 @@ export function createViewControls(deps) {
   function renderMindspaceControls(v = getCurrentView()) {
     const inOrbit = v === "orbit";
     $("#mindspace-mode-label").hidden = $("#mindspace-mode-switch").hidden = !inOrbit;
+    $("#mindspace-lab-label").hidden = $("#mindspace-lab-switch").hidden = !inOrbit;
+    // the distance/drift options steer the SHIPPED galactic ring packing only —
+    // galaxy-lab has no rings to order, so they stay hidden there
     $("#mindspace-galaxy-opts").hidden = !inOrbit || orbitView.getMode() !== "galaxy";
-    $("#mindspace-mode-switch")
-      .querySelectorAll("button")
+    document
+      .querySelectorAll("#mindspace-mode-switch button, #mindspace-lab-switch button")
       .forEach((b) => b.classList.toggle("active", b.dataset.mmode === orbitView.getMode()));
     $("#mindspace-distance-switch")
       .querySelectorAll("button")
@@ -56,14 +59,16 @@ export function createViewControls(deps) {
       .querySelectorAll("button")
       .forEach((b) => b.classList.toggle("active", b.dataset.mdrift === (orbitView.getDrift() ? "on" : "off")));
   }
-  $("#mindspace-mode-switch").addEventListener("click", (ev) => {
+  const onModeClick = (ev) => {
     const b = ev.target.closest("button[data-mmode]");
     if (!b || getCurrentView() !== "orbit" || isBusy()) return;
     if (b.dataset.mmode === orbitView.getMode()) return;
     orbitView.setMode(b.dataset.mmode);
     orbitView.relayout();
     renderMindspaceControls();
-  });
+  };
+  $("#mindspace-mode-switch").addEventListener("click", onModeClick);
+  $("#mindspace-lab-switch").addEventListener("click", onModeClick);
   $("#mindspace-distance-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-mdist]");
     if (!b || getCurrentView() !== "orbit" || isBusy()) return;

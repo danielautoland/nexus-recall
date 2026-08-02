@@ -57,6 +57,7 @@ import {
 import { ALL_TOOL_DEFS } from "./tool-defs.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
+import { DAEMON_VERSION } from "./version.js";
 import {
   adoptTurn,
   defaultStatuslineState,
@@ -287,7 +288,7 @@ async function main(): Promise<void> {
     {
       name: "bastra-recall-mcp",
       title: "Bastra Recall",
-      version: "0.8.8",
+      version: DAEMON_VERSION,
       // serverInfo icons (MCP spec 2025-11-25, SEP-973): the standardized
       // logo channel. Claude Desktop does not render it for config-file
       // servers yet — shipped so the logo appears the day it does; the

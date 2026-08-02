@@ -90,31 +90,38 @@ for (const { path, json } of pkgs) {
   }
 }
 
-// 3b) Version-string constants in source files. bump.mjs originally only
-// touched package.json files, so these shipped stale (beta.2/beta.3 packages
-// reported "0.7.0-beta.1" in /health and the MCP handshake). Every pattern
-// MUST match — a miss fails the bump loudly instead of silently re-opening
-// the gap when a constant moves or gets renamed.
-const VERSION_SOURCES = [
-  { path: "packages/daemon/src/cli/helpers.ts", re: /(export const VERSION = ")[^"]+(")/ },
-  { path: "packages/daemon/src/index.ts", re: /(const DAEMON_VERSION = ")[^"]+(")/ },
-  { path: "packages/daemon/src/index.ts", re: /(\{ name: "bastra-recall", version: ")[^"]+(" \})/ },
-  // multi-line-tolerant: seit dem Desktop-Extension-Handshake (#218) trägt
-  // das Server-Info-Objekt eine title:-Zeile zwischen name und version
-  { path: "packages/daemon/src/mcp-forwarder.ts", re: /(name: "bastra-recall-mcp",[\s\S]{0,120}?version: ")[^"]+(")/ },
+// 3b) Guard: no hardcoded version literals in daemon source.
+//
+// This block used to REWRITE version constants in source files, because
+// bump.mjs originally only touched package.json and the constants shipped
+// stale. That kept failing in a quieter way: on the 0.8.9 bump it ran over
+// part of the tree only, so cli/helpers.ts said 0.8.9 while index.ts still
+// said 0.8.8 — and the daemon reported 0.8.8 in /health, in the MCP handshake,
+// and to the update check, which then compared the wrong version against the
+// published one.
+//
+// The constants now read package.json at runtime (packages/daemon/src/version.ts),
+// so there is nothing left to rewrite. What remains is making sure nobody
+// reintroduces a literal: bumping the package must stay the only way to bump
+// the daemon.
+const VERSION_LITERAL = /(?:VERSION|version)\s*[:=]\s*"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?"/;
+const GUARDED_SOURCES = [
+  "packages/daemon/src/index.ts",
+  "packages/daemon/src/mcp-forwarder.ts",
+  "packages/daemon/src/cli/helpers.ts",
+  "packages/daemon/src/version.ts",
 ];
-for (const { path: relPath, re } of VERSION_SOURCES) {
-  const abs = resolve(repoRoot, relPath);
-  const src = readFileSync(abs, "utf8");
-  const m = src.match(re);
-  if (!m) {
-    console.error(`error: version pattern not found in ${relPath} — update VERSION_SOURCES in scripts/bump.mjs`);
+for (const relPath of GUARDED_SOURCES) {
+  const src = readFileSync(resolve(repoRoot, relPath), "utf8");
+  const hit = src.match(VERSION_LITERAL);
+  if (hit) {
+    console.error(
+      `error: hardcoded version literal in ${relPath}: ${hit[0]}\n` +
+        `       The daemon reads its version from package.json at runtime — remove the literal\n` +
+        `       and import DAEMON_VERSION from ./version.js instead.`,
+    );
     process.exit(1);
   }
-  const current = m[0].slice(m[1].length, m[0].length - m[2].length);
-  if (current === version) continue;
-  changes.push(`${relPath}: "${current}" → "${version}"`);
-  if (!dryRun) writeFileSync(abs, src.replace(re, `$1${version}$2`));
 }
 
 // 4) Report.

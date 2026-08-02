@@ -139,7 +139,13 @@
 #semantic-mode-label[hidden],
 #mindspace-mode-switch[hidden],
 #mindspace-mode-label[hidden],
+#mindspace-lab-switch[hidden],
+#mindspace-lab-label[hidden],
 #mindspace-galaxy-opts[hidden] { display: none !important; }
+
+/* test-mode switch: two words in one button, so it has to be pinned to a
+   single line — a wrapped segment button breaks the row height */
+#mindspace-lab-switch button { white-space: nowrap; }
 
 /* ── view hints (ring, semantic, orbit) ────────────────────────── */
 #ring-hint,

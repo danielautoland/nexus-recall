@@ -24,6 +24,7 @@ import { createLiveUpdates } from "./managers/live-updates.js";
 import { createSidebarPanels } from "./managers/sidebar-panels.js";
 import { createBoltDemo } from "./managers/bolt-demo.js";
 import { createViewControls } from "./managers/view-controls.js";
+import { createTopbarPopovers } from "./managers/topbar-popovers.js";
 import { createWeather } from "./managers/weather.js";
 import { createWeatherChip } from "./managers/weather-chip.js";
 import { createDrillSwitcher } from "./managers/drill-switcher.js";
@@ -553,6 +554,7 @@ async function main() {
   });
   const weatherChip = createWeatherChip({ weather });
   onWeatherChange = () => weatherChip.render();
+  createTopbarPopovers();
 
   $("#structure-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-structure]");

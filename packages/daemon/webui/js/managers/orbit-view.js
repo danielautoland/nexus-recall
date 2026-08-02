@@ -49,6 +49,13 @@ import {
   galaxyPlacement,
 } from "./orbit-galaxy.js";
 import { createOrbitDecor } from "./orbit-decor.js";
+// TEST modes (universe-lab / galaxy-lab) — additive, never reached by the two
+// shipped modes. Realistic morphology + placement that carries information.
+import { buildLab } from "./orbit-lab.js";
+
+/** The four Mindspace layouts. The first two ship and are frozen. */
+export const MODES = ["universe", "galaxy", "universe-lab", "galaxy-lab"];
+const isLab = (m) => m === "universe-lab" || m === "galaxy-lab";
 
 const $ = (sel) => document.querySelector(sel);
 const PITCH_MAX = 1.25;
@@ -129,7 +136,7 @@ export function createOrbitView(deps) {
   const bursts = new Map(); // id → {world, born, entry}
 
   // galactic mode state — persisted; "universe" (heute) bleibt der Default
-  let mode = localStorage.getItem(MODE_KEY) === "galaxy" ? "galaxy" : "universe";
+  let mode = MODES.includes(localStorage.getItem(MODE_KEY)) ? localStorage.getItem(MODE_KEY) : "universe";
   let distanceMode = localStorage.getItem(DIST_KEY) === "balanced" ? "balanced" : "woven";
   let drift = localStorage.getItem(DRIFT_KEY) !== "off";
   let hole = null; // { r } — the black-hole core visual, galaxy mode only
@@ -224,6 +231,25 @@ export function createOrbitView(deps) {
     const dist3 = (a, b) => Math.hypot(a.px - b.px, a.py - b.py, a.pz - b.pz);
     const placedCenters = [];
 
+    // ── TEST modes: an entirely separate construction (orbit-lab.js), so the
+    // shipped loop below keeps its exact code and indentation. Both fill the
+    // same structures, so projection/hover/bursts/decor work unchanged.
+    if (isLab(mode)) {
+      buildLab({
+        universe, entries, adj, R, mode,
+        edges: deps.sim.edges,
+        userKey: "user",
+        discBasis,
+        inPlane,
+        tuning: { SUN_DEGREE, PLANET_DEGREE, MAX_PLANETS, ORBIT_BASE, ORBIT_STEP, OMEGA, DISC_SPIN },
+      });
+      // galaxy-lab keeps the black hole at the centre (Sgr A*) but has no
+      // orbit rings — nothing orbits the core as a separate galaxy any more.
+      hole = mode === "galaxy-lab" ? { r: Math.max(R * 0.035, 34) } : null;
+      orbitRings = [];
+    }
+
+    if (!isLab(mode))
     entries.forEach(([key, members], ci) => {
       let center = null;
       let orbit = null;
@@ -662,6 +688,27 @@ export function createOrbitView(deps) {
         g.center.py = g.orbit.y;
       }
     }
+    // galaxy-lab: the cluster markers sit INSIDE one rotating disc, so they
+    // have to turn with it — same mutate-the-shared-center contract as above.
+    if (mode === "galaxy-lab" && universe) {
+      const tSec = now / 1000;
+      for (const g of universe.galaxies) {
+        if (!g.local) continue;
+        const a = g.spin * tSec;
+        const cos = Math.cos(a);
+        const sin = Math.sin(a);
+        const w = inPlane(
+          { px: 0, py: 0, pz: 0 },
+          g.galaxyBasis,
+          g.local.x * cos - g.local.y * sin,
+          g.local.x * sin + g.local.y * cos,
+          g.local.z,
+        );
+        g.center.px = w.px;
+        g.center.py = w.py;
+        g.center.pz = w.pz;
+      }
+    }
     lastTick = now;
     apply(now / 1000);
   }
@@ -688,7 +735,7 @@ export function createOrbitView(deps) {
   }
 
   function setMode(m) {
-    mode = m === "galaxy" ? "galaxy" : "universe";
+    mode = MODES.includes(m) ? m : "universe";
     localStorage.setItem(MODE_KEY, mode);
     universe = null; // next enter/relayout builds the chosen layout
   }

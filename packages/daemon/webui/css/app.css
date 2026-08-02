@@ -4,6 +4,7 @@
 
 @import url("base.css");
 @import url("topbar.css");
+@import url("topbar-popovers.css");
 @import url("search.css");
 @import url("inspector.css");
 @import url("sidebar.css");

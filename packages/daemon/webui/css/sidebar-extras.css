@@ -8,7 +8,9 @@
   text-transform: uppercase;
   letter-spacing: 0.2em;
 }
-#filters-section { padding-bottom: 14px; }
+/* renamed: the Filters section merged into "Filters & Options" (#opts-section)
+   when the stacked control blocks became the two popover buttons */
+#opts-section { padding-bottom: 14px; }
 
 /* ── minimap ────────────────────────────────────────────────────── */
 #minimap {
