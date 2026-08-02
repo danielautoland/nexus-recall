@@ -15,7 +15,9 @@ interface StatusResult {
   daemon: { status: string; message: string };
   semanticRecall: { configured: string; active: string; detail: string };
   apiToken: { set: boolean };
-  vaultMap: { enabled: boolean; url: string };
+  /** `reachable` is enabled AND a daemon answering — the URL only serves while
+   *  the daemon runs, so "enabled" alone never meant "you can open this". */
+  vaultMap: { enabled: boolean; url: string; reachable: boolean };
   surfaces: Record<string, { status: string; message: string }>;
   /** #269 — only present when a patch series is registered. */
   localPatches?: string;
@@ -25,6 +27,17 @@ function printLine(message: string) {
   process.stdout.write(message + "\n");
 }
 
+/**
+ * The vault-map line — pure, exported for tests. "Enabled" never meant
+ * "openable": /ui is a daemon route, so with the daemon down the URL is a link
+ * that cannot load (#322). status is a read-only diagnostic and starts nothing;
+ * it names `bastra map`, which does.
+ */
+export function formatVaultMapLine(uiOn: boolean, daemonOk: boolean, url: string): string {
+  if (!uiOn) return "· off (open + enable: bastra map)";
+  return daemonOk ? `✓ ${url}` : `· ${url} (daemon down — open it with: bastra map)`;
+}
+
 export async function cmdStatus(options: StatusOptions): Promise<number> {
   let hasError = false;
 
@@ -32,7 +45,7 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
     daemon: { status: "unknown", message: "" },
     semanticRecall: { configured: "unset", active: "unknown", detail: "" },
     apiToken: { set: false },
-    vaultMap: { enabled: false, url: mapUrl() },
+    vaultMap: { enabled: false, url: mapUrl(), reachable: false },
     surfaces: {},
   };
 
@@ -95,12 +108,16 @@ export async function cmdStatus(options: StatusOptions): Promise<number> {
 
   // Vault map (#207) — the discovery line: where the map lives, or how to
   // get it. Local-only feature, never flips the exit code.
+  //
+  // The URL only works while the daemon serves it, so an enabled map with the
+  // daemon down is a link that cannot load (#322). status is a read-only
+  // diagnostic — it reports that instead of starting anything; `bastra map` is
+  // the command that starts a daemon, and the line points at it. daemonInfo is
+  // the probe from the top of this function, so this costs nothing extra.
   const uiOn = await getUiEnabled();
-  statusResult.vaultMap = { enabled: uiOn, url: mapUrl() };
+  statusResult.vaultMap = { enabled: uiOn, url: mapUrl(), reachable: uiOn && daemonInfo.ok };
   if (!options.quiet && !options.json) {
-    printLine(
-      `${"vault map".padEnd(15)} ${uiOn ? `✓ ${mapUrl()}` : "· off (open + enable: bastra map)"}`,
-    );
+    printLine(`${"vault map".padEnd(15)} ${formatVaultMapLine(uiOn, daemonInfo.ok, mapUrl())}`);
   }
 
   for (const [name, adapter] of Object.entries(ADAPTERS)) {

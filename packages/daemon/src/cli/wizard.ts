@@ -33,6 +33,8 @@ import {
   type VaultPresence,
 } from "./helpers.js";
 import { FORWARDER_SCRIPT_PATH } from "./paths.js";
+import { ensureDaemonRunning, type DaemonStartOutcome } from "./daemon-start.js";
+import { mapUrl } from "./map-cmd.js";
 import { findExecutable } from "./exec.js";
 import {
   CLI_DECLINED_NOTE,
@@ -180,6 +182,55 @@ function bailed(value: unknown): value is symbol {
 }
 
 const CANCEL_MSG = "Setup cancelled — nothing was changed.";
+
+/**
+ * The closing vault-map line — pure, exported for tests (the wizard itself is
+ * the @clack shell around it). A map whose daemon never came up must not be
+ * handed over as a link: that URL was the one the #322 reporter clicked.
+ */
+export function vaultMapOutcomeLine(
+  daemon: DaemonStartOutcome,
+  url: string,
+): { level: "success" | "warn"; text: string } {
+  if (daemon.ok) {
+    return { level: "success", text: `Vault map: ${url} (read per request — no restart needed)` };
+  }
+  return {
+    level: "warn",
+    text:
+      `Vault map: enabled, but the daemon did not start (${daemon.detail}).\n` +
+      `The map needs it — open it later with: bastra map`,
+  };
+}
+
+/** Injectable for tests only — the real ones write settings and start a daemon. */
+export interface VaultMapStepIO {
+  enableMap(): Promise<void>;
+  ensureDaemon: typeof ensureDaemonRunning;
+  url(): string;
+}
+
+/**
+ * The setup's vault-map step: enable the map, bring the daemon up, and only
+ * then say what the URL is good for. The order is the fix (#322) — /ui is a
+ * daemon route, and this line is where the user first meets it and the only
+ * place they click it from. A fresh install has no daemon yet: nothing
+ * registers a LaunchAgent, and the forwarder spawns one on the first MCP call,
+ * which is a client restart away. Exported with injectable IO so that order is
+ * verifiable without a real daemon; the wizard renders the returned line.
+ */
+export async function vaultMapSetupStep(
+  opts: { vaultPath?: string; onStarting?: () => void } = {},
+  io: Partial<VaultMapStepIO> = {},
+): Promise<{ level: "success" | "warn"; text: string }> {
+  const enableMap = io.enableMap ?? (() => setUiEnabled(true));
+  const ensureDaemon = io.ensureDaemon ?? ensureDaemonRunning;
+  const url = io.url ?? mapUrl;
+
+  await enableMap();
+  const daemon = await ensureDaemon({ vaultPath: opts.vaultPath, onStarting: opts.onStarting });
+  return vaultMapOutcomeLine(daemon, url());
+}
 
 export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   p.intro(`bastra-recall ${VERSION} — guided setup`);
@@ -577,8 +628,12 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
     p.log.success(`Product-doc capture: ${docsMode}`);
   }
   if (uiOn) {
-    await setUiEnabled(true);
-    p.log.success("Vault map: http://127.0.0.1:6723/ui (read per request — no restart needed)");
+    const line = await vaultMapSetupStep({
+      vaultPath: vaultPath ?? undefined,
+      onStarting: () => p.log.step("Starting the daemon so the vault map is reachable…"),
+    });
+    if (line.level === "success") p.log.success(line.text);
+    else p.log.warn(line.text);
   }
 
   // The CLI itself (#317) — last, because its absence is the one thing the user

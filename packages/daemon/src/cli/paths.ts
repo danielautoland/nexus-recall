@@ -16,6 +16,10 @@ function firstExisting(candidates: string[]): string {
 }
 
 export const FORWARDER_SCRIPT_PATH = resolve(DAEMON_DIST, "mcp-forwarder.js");
+/** The daemon entry point. Whatever launches it — LaunchAgent, the forwarder's
+ *  auto-spawn, `bastra map`, or a hand-run — execs this file; that is also what
+ *  listDaemonProcesses matches on. */
+export const DAEMON_SCRIPT_PATH = resolve(DAEMON_DIST, "index.js");
 export const PRE_TOOL_HOOK_BIN = resolve(DAEMON_DIST, "hook.js");
 export const SESSION_HOOK_BIN = resolve(DAEMON_DIST, "session-hook.js");
 export const PROMPT_HOOK_BIN = resolve(DAEMON_DIST, "prompt-hook.js");
