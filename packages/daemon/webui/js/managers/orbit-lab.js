@@ -103,7 +103,7 @@ function buildMilkyWay(env) {
 
   const discR = Math.min(R * 0.72, Math.max(700, Math.sqrt(countAll(entries)) * 62));
   // the core radius the view will draw, so the user's accretion disc clears it
-  const plan = milkyWayLayout(entries, userKey, discR, Math.max(R * 0.035, 34));
+  const plan = milkyWayLayout(entries, userKey, discR, Math.max(R * 0.035, 34), env.core === "gravity");
   // Where the rotation curve flattens. Inside this radius the disc turns as one
   // piece; outside, omega falls as 1/r. Sits just past the bar so the user's
   // ring is still in the fast solid-body region.
@@ -130,6 +130,7 @@ function buildMilkyWay(env) {
         center: origin, ring: null, basis,
         x: p.x, y: p.y, z: p.z, spin,
         omegaScale: p.omegaScale ?? galacticOmega(Math.hypot(p.x, p.y), rTurn),
+        orbit3d: p.orbit3d,
       });
     }
   }

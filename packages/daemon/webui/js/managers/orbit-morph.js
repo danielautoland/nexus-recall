@@ -392,6 +392,41 @@ export function accretionLocal(i, t, innerR, outerR) {
   };
 }
 
+/** Orbit parameters for the user's memories when the GRAVITY WEB core is on.
+ *
+ *  The web is the one core that reads the ring rather than just sitting next to
+ *  it: its threads run from the centre to each memory. On the plain ring — one
+ *  radius, one shared speed — every thread is the same length and stays that
+ *  way, so the web renders as a rigid star and the motion is invisible.
+ *
+ *  The lab's version worked because each orbiting node had its OWN ellipse:
+ *  `r: rand(26,52)`, `sp: speed*rand(0.72,1.3)`, `tilt: 0.35±0.12`,
+ *  `flat: 0.42±0.06`. Two things follow, and both are the effect worth having:
+ *    · different radii  → threads differ in length from each other
+ *    · flattened orbits → each node's distance to the centre swings between
+ *                         r*flat and r as it comes round, so the lengths keep
+ *                         changing while it turns
+ *
+ *  Same parameters here, scaled to the ring's radius band. Returned as a live
+ *  orbit rather than a fixed point, because the position now depends on time —
+ *  worldPos evaluates it per frame.
+ *
+ *  @returns {orbit3d: {r, a0, sp, flat, tilt}} */
+export function gravityWebLocal(i, innerR, outerR) {
+  const spread = (salt, amp) => (rnd(i, salt) - 0.5) * 2 * amp;
+  return {
+    x: 0, y: 0, z: 0, // filled in per frame from orbit3d
+    orbit3d: {
+      r: innerR + rnd(i, 961) * (outerR - innerR),
+      a0: rnd(i, 967) * Math.PI * 2,
+      sp: 0.72 + rnd(i, 971) * 0.58, // lab: rand(0.72, 1.3)
+      flat: 0.42 + spread(977, 0.06),
+      tilt: 0.35 + spread(983, 0.12),
+    },
+    omegaScale: ACCRETION_SPEEDUP,
+  };
+}
+
 /** How much faster the user's ring turns than the galaxy around it.
  *
  *  This ring orbits the BLACK HOLE, not the galaxy. Those are two different

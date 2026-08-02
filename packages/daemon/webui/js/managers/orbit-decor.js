@@ -222,6 +222,8 @@ export function createOrbitDecor(env) {
           t: tSec,
           camScale: camera.scale,
           theme,
+          // the user's memories, for the cores that bind to them (gravity web)
+          anchors: env.getUserAnchors(),
           // kept SEPARATE on purpose: the shipped core applies depth only to
           // its outer glow, while the dark core and the rim ride on fadeIn
           // alone. Folding them into one number would dim the centre on the

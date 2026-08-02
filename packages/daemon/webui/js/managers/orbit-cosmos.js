@@ -40,7 +40,7 @@
  */
 
 import { rnd } from "./orbit-galaxy.js";
-import { morphLocal, classifyGalaxy, accretionLocal } from "./orbit-morph.js";
+import { morphLocal, classifyGalaxy, accretionLocal, gravityWebLocal } from "./orbit-morph.js";
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
@@ -238,9 +238,12 @@ const BAR_FRAC = 0.26;
  *  @param userKey   the cluster that becomes the bulge
  *  @param discR     radius of the galactic disc
  *  @param holeR     core radius — the accretion disc must clear it
+ *  @param webMode   gravity-web core active: the user's memories ride their own
+ *                   ellipses so the web's threads vary in length (see
+ *                   gravityWebLocal); otherwise they form the plain ring
  *  @returns {positions: Map<nodeId,{x,y,z}>, clusters: [...], discR}
  *           positions are in the galaxy's own disc frame. */
-export function milkyWayLayout(entries, userKey, discR, holeR = null) {
+export function milkyWayLayout(entries, userKey, discR, holeR = null, webMode = false) {
   const positions = new Map();
   const clusters = [];
 
@@ -268,10 +271,12 @@ export function milkyWayLayout(entries, userKey, discR, holeR = null) {
   const inner = coreR * 1.5;
   const outer = Math.max(inner * 3.4, discR * 0.2);
   userMembers.forEach((n, i) => {
-    const l = accretionLocal(i, (i + 0.5) / userMembers.length, inner, outer);
-    // omegaScale rides along: these are Keplerian orbits, so the view has to
-    // turn the inner ring faster than the outer one (see worldPos).
-    positions.set(n.id, { x: l.x, y: l.y, z: l.z, omegaScale: l.omegaScale });
+    const l = webMode
+      ? gravityWebLocal(i, inner, outer)
+      : accretionLocal(i, (i + 0.5) / userMembers.length, inner, outer);
+    // omegaScale and orbit3d ride along: the view needs them to turn these
+    // faster than the galaxy, and to evaluate the ellipses per frame.
+    positions.set(n.id, { x: l.x, y: l.y, z: l.z, omegaScale: l.omegaScale, orbit3d: l.orbit3d });
   });
   if (userMembers.length) {
     clusters.push({ key: userKey, role: ROLE.BULGE, cx: 0, cy: 0, cz: 0, r: outer, count: userMembers.length });

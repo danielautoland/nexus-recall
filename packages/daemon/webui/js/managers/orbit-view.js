@@ -52,7 +52,7 @@ import { createOrbitDecor } from "./orbit-decor.js";
 // TEST modes (universe-lab / galaxy-lab) — additive, never reached by the two
 // shipped modes. Realistic morphology + placement that carries information.
 import { buildLab } from "./orbit-lab.js";
-import { CORES, CORE_KEY, DEFAULT_CORE } from "./orbit-core.js";
+import { CORES, CORE_KEY, DEFAULT_CORE, NEEDS_RELAYOUT } from "./orbit-core.js";
 
 /** The four Mindspace layouts. The first two ship and are frozen. */
 export const MODES = ["universe", "galaxy", "universe-lab", "galaxy-lab"];
@@ -239,7 +239,7 @@ export function createOrbitView(deps) {
     // same structures, so projection/hover/bursts/decor work unchanged.
     if (isLab(mode)) {
       buildLab({
-        universe, entries, adj, R, mode,
+        universe, entries, adj, R, mode, core,
         edges: deps.sim.edges,
         userKey: "user",
         discBasis,
@@ -440,6 +440,21 @@ export function createOrbitView(deps) {
           p.ring.zoff,
         )
       : p.center;
+    // orbit3d: this member rides its own tilted, flattened ellipse instead of
+    // a fixed spot on a rigidly turning disc (gravity-web mode — see
+    // gravityWebLocal). Its distance to the centre swings as it comes round,
+    // which is what makes the web's threads breathe.
+    if (p.orbit3d) {
+      const o3 = p.orbit3d;
+      const ang = o3.a0 + p.spin * (p.omegaScale ?? 1) * o3.sp * tSec;
+      const dx = Math.cos(ang) * o3.r;
+      const dy = Math.sin(ang) * o3.r * o3.flat;
+      const ct = Math.cos(o3.tilt);
+      const st = Math.sin(o3.tilt);
+      // ellipse laid into the disc plane, then rolled by its own tilt
+      return inPlane(center, p.basis, dx * ct - dy * st, dx * st + dy * ct, Math.sin(ang) * o3.r * 0.08);
+    }
+
     // omegaScale carries differential rotation. A galaxy disc leaves it unset
     // and turns rigidly on purpose — the arms are a density wave with one
     // pattern speed, and shearing them would wind them up within seconds. The
@@ -536,6 +551,12 @@ export function createOrbitView(deps) {
     getOrbitRings: () => orbitRings,
     getMode: () => mode,
     getCore: () => core,
+    /** Screen positions of the user's memories — the ring around the core.
+     *  apply() writes n.x/n.y every frame in the same coordinates the decor
+     *  draws in, so the gravity web can hang its threads on the real memories
+     *  instead of on invented points. */
+    getUserAnchors: () =>
+      deps.sim.nodes.filter((n) => (n.baseCluster ?? n.cluster) === "user" && !n.ringHidden),
     getEnterAt: () => enterAt,
     getR: () => R,
     getWeather: deps.getWeather ?? (() => null),
@@ -757,11 +778,17 @@ export function createOrbitView(deps) {
     drift = !!on;
     localStorage.setItem(DRIFT_KEY, drift ? "on" : "off");
   }
-  /** Swap the centre graphic. Purely a decor change — no rebuild needed, the
-   *  next frame draws the other core. */
+  /** Swap the centre graphic. Usually decor only — the next frame just draws
+   *  the other core. The gravity web is the exception: it lays the user's
+   *  memories on their own ellipses, so entering or leaving it needs a rebuild.
+   *  @returns true when the caller has to relayout */
   function setCore(k) {
+    const prev = core;
     core = CORES[k] ? k : DEFAULT_CORE;
     localStorage.setItem(CORE_KEY, core);
+    const layoutChanged = NEEDS_RELAYOUT.has(prev) !== NEEDS_RELAYOUT.has(core);
+    if (layoutChanged) universe = null; // next enter/relayout rebuilds
+    return layoutChanged;
   }
 
   return {

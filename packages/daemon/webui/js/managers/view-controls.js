@@ -94,7 +94,11 @@ export function createViewControls(deps) {
       sel.append(opt);
     }
     sel.value = orbitView.getCore();
-    sel.addEventListener("change", () => orbitView.setCore(sel.value));
+    sel.addEventListener("change", () => {
+      // setCore reports whether the choice changed the LAYOUT (gravity web) or
+      // only the drawing; only the former needs a rebuild.
+      if (orbitView.setCore(sel.value)) orbitView.relayout();
+    });
   }
 
   $("#mindspace-drift-switch").addEventListener("click", (ev) => {
