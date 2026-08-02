@@ -40,6 +40,32 @@
  * second chance before giving up — it can resolve a moved hunk that a plain
  * apply cannot. That is a bonus for one install mode, never the baseline.
  *
+ * ## Two roots, not one
+ *
+ * A source install has two different roots and calling either one "the root" is
+ * how a patch goes missing. `dist/cli.js` lives in the daemon PACKAGE root
+ * (`<repo>/packages/daemon`) — that is what the boot check needs. A patch made
+ * the way this feature expects, `git format-patch` off the checkout, addresses
+ * files from the REPO root (`packages/core/src/graph.ts`) — that is what git
+ * apply needs. They are the same directory only for an npm-global install,
+ * which is why one variable served for both until a real source install ran.
+ *
+ * The failure is silent, which is the part that matters: `git apply` run from a
+ * subdirectory does not error on paths outside it, it SKIPS them and exits 0.
+ * A patch whose files all live outside the package root therefore looks like a
+ * clean apply that changed nothing.
+ *
+ * ## Failure posture of the 3-way second chance
+ *
+ * `git apply --3way` is not a probe. When it cannot merge it still writes
+ * `<<<<<<<` markers into the tree and stages the conflict, then exits non-zero
+ * — so "it failed, therefore nothing happened" is false, and the promise this
+ * feature makes ("set aside, never forced, the file is untouched") would be
+ * broken by the very branch meant to save a patch. Every file the patch
+ * addresses is snapshotted before the attempt and restored byte-for-byte if it
+ * does not merge cleanly, and the attempt runs against a COPY of the index, so
+ * a failed merge cannot stage anything in the real one either.
+ *
  * ## Failure posture
  *
  * A patch series that leaves the daemon unable to boot is worse than a reverted
@@ -49,9 +75,19 @@
  * — it is a return to the one state that is known to work.
  */
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, basename, isAbsolute, resolve } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { findExecutable } from "./cli/exec.js";
 
 export interface PatchEntry {
@@ -225,18 +261,20 @@ function retirePatch(entry: PatchEntry, reason: string, home = homedir()): void 
 
 interface GitRun {
   ok: boolean;
-  stderr: string;
+  /** Both streams, trimmed: `git apply -v` writes its per-file verdict
+   *  ("Checking patch", "Skipped patch") to stdout on some versions and stderr
+   *  on others, and every reader below has to see it either way. */
+  output: string;
+  /** stdout alone, for the plumbing calls whose answer IS their stdout. */
+  stdout: string;
 }
 
-function git(root: string, args: string[]): GitRun {
+function git(root: string, args: string[], env?: NodeJS.ProcessEnv): GitRun {
   const bin = findExecutable("git");
-  if (!bin) return { ok: false, stderr: "git not found on a trusted PATH" };
-  const r = spawnSync(bin, args, { cwd: root, encoding: "utf8", timeout: 30_000 });
-  // Both streams: `git apply -v` writes its per-file verdict ("Checking patch",
-  // "Skipped patch") to stdout on some versions and stderr on others, and
-  // checkApplies below has to read it either way.
-  const combined = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
-  return { ok: r.status === 0, stderr: combined };
+  if (!bin) return { ok: false, output: "git not found on a trusted PATH", stdout: "" };
+  const r = spawnSync(bin, args, { cwd: root, encoding: "utf8", timeout: 30_000, ...(env ? { env } : {}) });
+  const stdout = r.stdout ?? "";
+  return { ok: r.status === 0, output: `${stdout}\n${r.stderr ?? ""}`.trim(), stdout };
 }
 
 /**
@@ -255,15 +293,59 @@ function git(root: string, args: string[]): GitRun {
  */
 function checkApplies(root: string, patchFile: string, reverse: boolean): GitRun {
   const args = ["apply", "--check", "-v", ...(reverse ? ["--reverse"] : []), patchFile];
-  const r = git(root, args);
-  if (r.ok && /Skipped patch/i.test(r.stderr)) {
-    return { ok: false, stderr: `git skipped this patch — it could not be parsed or applied:\n${r.stderr}` };
+  return noSkips(git(root, args), "it could not be parsed or applied");
+}
+
+/**
+ * The same rule on the apply path, where it decides more.
+ *
+ * `--check` is not the only call that exits 0 on a skip: a plain `git apply`
+ * and `git apply --3way` do too, and there the reading is "applied" rather than
+ * "clean". A patch every file of which git skipped would be recorded as
+ * successfully reapplied while the tree is untouched — the user is told their
+ * local fix survived the update when it did not.
+ */
+function noSkips(r: GitRun, what: string): GitRun {
+  if (r.ok && /Skipped patch/i.test(r.output)) {
+    return { ...r, ok: false, output: `git skipped this patch — ${what}:\n${r.output}` };
   }
   return r;
 }
 
-function isGitRepo(root: string): boolean {
-  return git(root, ["rev-parse", "--is-inside-work-tree"]).ok;
+function applyPatch(root: string, patchFile: string, extra: string[] = [], env?: NodeJS.ProcessEnv): GitRun {
+  return noSkips(git(root, ["apply", "-v", ...extra, patchFile], env), "nothing was applied");
+}
+
+/**
+ * The two roots of one installation. `apply` is where git addresses the patch
+ * from, `boot` is where `dist/cli.js` is. See the header: they differ for a
+ * source install and that difference is silent, so it is resolved once, here,
+ * rather than assumed at each call site.
+ */
+export interface PatchRoots {
+  apply: string;
+  boot: string;
+}
+
+/**
+ * The repo a source install is a checkout OF, or null.
+ *
+ * "Is this directory inside a work tree" is the wrong question: an npm-global
+ * root can sit inside an unrelated repository (a dotfiles checkout, a synced
+ * home) and answer yes, and then patches would be addressed against a tree that
+ * has nothing to do with bastra. The question that separates the two is whether
+ * the install's OWN package.json is a file that repo tracks — true for a source
+ * checkout, false for anything unpacked into an ignored node_modules.
+ */
+function sourceRepoRoot(installRoot: string): string | null {
+  if (!git(installRoot, ["ls-files", "--error-unmatch", "package.json"]).ok) return null;
+  const top = git(installRoot, ["rev-parse", "--show-toplevel"]);
+  const path = top.stdout.trim();
+  return top.ok && path ? path : null;
+}
+
+export function resolveRoots(installRoot: string): PatchRoots {
+  return { apply: sourceRepoRoot(installRoot) ?? installRoot, boot: installRoot };
 }
 
 /**
@@ -277,11 +359,12 @@ function isGitRepo(root: string): boolean {
 export function probePatch(root: string, patchFile: string): { state: PatchState; detail?: string } {
   if (!findExecutable("git")) return { state: "unknown", detail: "git not found on a trusted PATH" };
   if (!existsSync(patchFile)) return { state: "unknown", detail: "patch file missing" };
-  const reverse = checkApplies(root, patchFile, true);
+  const applyRoot = resolveRoots(root).apply;
+  const reverse = checkApplies(applyRoot, patchFile, true);
   if (reverse.ok) return { state: "already-upstream" };
-  const forward = checkApplies(root, patchFile, false);
+  const forward = checkApplies(applyRoot, patchFile, false);
   if (forward.ok) return { state: "clean" };
-  return { state: "conflict", detail: forward.stderr || reverse.stderr };
+  return { state: "conflict", detail: forward.output || reverse.output };
 }
 
 export function statusAll(root: string, home = homedir()): PatchStatus[] {
@@ -290,6 +373,82 @@ export function statusAll(root: string, home = homedir()): PatchStatus[] {
     const { state, detail } = probePatch(root, join(dir, entry.file));
     return { entry, state, detail };
   });
+}
+
+/** Every file a patch addresses, as git itself parses it. `--numstat` only
+ *  reads the patch — it never looks at, or touches, the tree. */
+function patchPaths(root: string, patchFile: string): string[] {
+  const r = git(root, ["apply", "--numstat", "-z", patchFile]);
+  if (!r.ok) return [];
+  // One NUL-terminated record per file: "<adds>\t<dels>\t<path>".
+  return r.stdout
+    .split("\0")
+    .map((rec) => rec.split("\t")[2])
+    .filter((p): p is string => !!p && p.length > 0);
+}
+
+interface FileSnapshot {
+  path: string;
+  /** null = the file did not exist, and must not exist again after a restore. */
+  bytes: Buffer | null;
+}
+
+function snapshot(root: string, relPaths: string[]): FileSnapshot[] {
+  return relPaths.map((rel) => {
+    const abs = join(root, rel);
+    return { path: abs, bytes: existsSync(abs) ? readFileSync(abs) : null };
+  });
+}
+
+function restore(snap: FileSnapshot[]): void {
+  for (const f of snap) {
+    try {
+      if (f.bytes === null) {
+        if (existsSync(f.path)) unlinkSync(f.path);
+      } else {
+        writeFileSync(f.path, f.bytes);
+      }
+    } catch {
+      // Best effort per file: one unwritable path must not stop the rest from
+      // going back. What could not be restored still shows in `patches status`.
+    }
+  }
+}
+
+/**
+ * The 3-way second chance, with the tree put back if it does not merge.
+ *
+ * Two guards, because `--3way` writes before it knows whether it succeeded:
+ * the files it addresses are snapshotted and restored on failure, and it runs
+ * against a copy of the index so a conflict cannot stage anything real.
+ */
+function tryThreeWay(applyRoot: string, patchFile: string): boolean {
+  const gitDir = git(applyRoot, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
+  if (!gitDir) return false;
+
+  const before = snapshot(applyRoot, patchPaths(applyRoot, patchFile));
+  let scratch: string | null = null;
+  let env: NodeJS.ProcessEnv | undefined;
+  try {
+    scratch = mkdtempSync(join(tmpdir(), "bastra-3way-"));
+    const indexCopy = join(scratch, "index");
+    const realIndex = join(gitDir, "index");
+    if (existsSync(realIndex)) copyFileSync(realIndex, indexCopy);
+    env = { ...process.env, GIT_INDEX_FILE: indexCopy };
+  } catch {
+    // No scratch index means no safe attempt: a merge that could stage into the
+    // real index is not worth a patch that a plain apply already refused.
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    return false;
+  }
+
+  try {
+    if (applyPatch(applyRoot, patchFile, ["--3way"], env).ok) return true;
+    restore(before);
+    return false;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -329,7 +488,12 @@ export function applySeries(root: string, opts: ApplyOptions = {}): ApplyOutcome
   if (!findExecutable("git")) return { ...out, skipped: "git not found on a trusted PATH" };
 
   const dir = patchesDir(home);
-  const repo = isGitRepo(root);
+  const roots = resolveRoots(root);
+  // The 3-way second chance is for a source checkout and nowhere else: it needs
+  // an object database holding the pre-image blobs, and pointing it at whatever
+  // repository an install root happens to sit inside would merge against a tree
+  // that is not this program.
+  const repo = roots.apply !== roots.boot || sourceRepoRoot(roots.boot) !== null;
 
   for (const entry of series) {
     const file = join(dir, entry.file);
@@ -342,14 +506,14 @@ export function applySeries(root: string, opts: ApplyOptions = {}): ApplyOutcome
     }
 
     if (state === "clean") {
-      if (opts.dryRun || git(root, ["apply", file]).ok) out.applied.push(entry);
+      if (opts.dryRun || applyPatch(roots.apply, file).ok) out.applied.push(entry);
       else out.setAside.push({ entry, detail: "probe said clean but the apply failed" });
       continue;
     }
 
     // Conflict — one more attempt, and only where it is actually available.
     if (state === "conflict" && repo && !opts.dryRun) {
-      if (git(root, ["apply", "--3way", file]).ok) {
+      if (tryThreeWay(roots.apply, file)) {
         out.applied.push(entry);
         continue;
       }
@@ -359,14 +523,14 @@ export function applySeries(root: string, opts: ApplyOptions = {}): ApplyOutcome
 
   if (opts.dryRun || opts.skipSmoke || out.applied.length === 0) return out;
 
-  const smoke = smokeCheck(root);
+  const smoke = smokeCheck(roots.boot);
   if (smoke.ok) return out;
 
   // The series broke the install. Reverse exactly what this run applied, newest
   // first — the same order a stack unwinds in, so a later patch never blocks the
   // reversal of the one it sat on.
   for (const entry of [...out.applied].reverse()) {
-    git(root, ["apply", "--reverse", join(dir, entry.file)]);
+    git(roots.apply, ["apply", "--reverse", join(dir, entry.file)]);
   }
   return { ...out, ok: false, rolledBack: true, smokeError: smoke.detail, applied: [] };
 }
