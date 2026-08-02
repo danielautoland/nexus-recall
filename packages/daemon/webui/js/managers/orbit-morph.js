@@ -351,6 +351,62 @@ function discStar(morph, discR, i, t, spin, region) {
   return { x: Math.cos(ang) * r, y: Math.sin(ang) * r, z: gauss(i, 569, 571) * hz };
 }
 
+/** The user's memories as an ACCRETION DISC around the core, not inside it.
+ *
+ *  Both galactic modes used to put the user cluster AT the origin, with the
+ *  black hole drawn on top of it — so the memories closest to the user sat
+ *  inside the event horizon. Anything inside a horizon is gone; drawing it
+ *  there says the opposite of what the picture means.
+ *
+ *  An accretion disc is the physically right answer and the readable one: it
+ *  has a hard inner edge (nothing orbits below the innermost stable orbit), it
+ *  is thin, and it is brightest where it is fastest — right at the rim of the
+ *  thing it feeds. The user's memories circle their own centre instead of
+ *  vanishing into it.
+ *
+ *  @param innerR  the core radius — the disc starts clear of it
+ *  @returns {x, y, z} in the disc's local frame */
+export function accretionLocal(i, t, innerR, outerR) {
+  // ONE circle. Not a disc, not a band, not a spiral.
+  //
+  // Two earlier versions got this wrong in two different ways: first the radius
+  // grew monotonically with the index while the angle advanced by the golden
+  // angle (a phyllotaxis spiral — it read as one arm sweeping outwards), then
+  // the radius was drawn randomly across the whole band 123…419, which spreads
+  // the points over an AREA. Both look scattered around the centre rather than
+  // circling it.
+  //
+  // The radius is now the same for every member, so the memories sit on a true
+  // ring, evenly spaced by index — with ~30 of them, random angles would leave
+  // gaps. The tiny wobble keeps it from looking like a drawn circle without
+  // breaking the shape.
+  const ring = (innerR + outerR) / 2;
+  const ang = t * Math.PI * 2;
+  const rr = ring * (1 + (rnd(i, 907) - 0.5) * 0.05);
+  return {
+    x: Math.cos(ang) * rr,
+    y: Math.sin(ang) * rr,
+    // essentially flat — a ring, seen edge-on when the plane tilts
+    z: (rnd(i, 913) + rnd(i, 919) - 1) * ring * 0.02,
+    omegaScale: ACCRETION_SPEEDUP,
+  };
+}
+
+/** How much faster the user's ring turns than the galaxy around it.
+ *
+ *  This ring orbits the BLACK HOLE, not the galaxy. Those are two different
+ *  gravitational problems: out in the disc the mass is spread over the whole
+ *  galaxy and a lap takes hundreds of seconds, while a ring sitting right on
+ *  the hole is dominated by that one mass and races around it. Feeding the ring
+ *  through the galactic rotation curve — which is what the first version did —
+ *  gave it a 357 s lap: technically 2.3x quicker than the arms, and visually
+ *  indistinguishable from standing still.
+ *
+ *  5x puts a lap at roughly 72 s — clearly turning without hurrying, and slow
+ *  enough that a memory stays easy to catch under the cursor. (10x read as
+ *  visibly too fast.) */
+export const ACCRETION_SPEEDUP = 5;
+
 /** Radius a classified galaxy should be drawn at. Capped in units of the
  *  universe radius by the caller — the shipped modes let bastra-recall grow to
  *  a disc wider than half the visible volume. */

@@ -3,6 +3,8 @@
  *  app.js (file-size convention). app.js calls the two render functions on
  *  every view switch; the click handlers live here with the views they steer. */
 
+import { CORES } from "./orbit-core.js";
+
 const $ = (sel) => document.querySelector(sel);
 
 export function createViewControls(deps) {
@@ -49,6 +51,9 @@ export function createViewControls(deps) {
     // the distance/drift options steer the SHIPPED galactic ring packing only —
     // galaxy-lab has no rings to order, so they stay hidden there
     $("#mindspace-galaxy-opts").hidden = !inOrbit || orbitView.getMode() !== "galaxy";
+    // the core switcher applies to whatever draws a centre: both galactic modes
+    const galactic = orbitView.getMode() === "galaxy" || orbitView.getMode() === "galaxy-lab";
+    $("#mindspace-core-label").hidden = $("#mindspace-core-select").hidden = !inOrbit || !galactic;
     document
       .querySelectorAll("#mindspace-mode-switch button, #mindspace-lab-switch button")
       .forEach((b) => b.classList.toggle("active", b.dataset.mmode === orbitView.getMode()));
@@ -77,6 +82,21 @@ export function createViewControls(deps) {
     orbitView.relayout();
     renderMindspaceControls();
   });
+  // Core switcher: options come straight from the CORES registry, so adding a
+  // centre graphic is one entry in orbit-core.js and nothing here. Swapping is
+  // decor only — no relayout, the next frame draws the other core.
+  {
+    const sel = $("#mindspace-core-select");
+    for (const [key, { name }] of Object.entries(CORES)) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = name;
+      sel.append(opt);
+    }
+    sel.value = orbitView.getCore();
+    sel.addEventListener("change", () => orbitView.setCore(sel.value));
+  }
+
   $("#mindspace-drift-switch").addEventListener("click", (ev) => {
     const b = ev.target.closest("button[data-mdrift]");
     if (!b) return;

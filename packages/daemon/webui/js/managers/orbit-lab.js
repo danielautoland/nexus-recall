@@ -12,7 +12,7 @@
  */
 
 import { classifyAll, morphLocal, morphRadius, KIND } from "./orbit-morph.js";
-import { cosmicWebPlacement, milkyWayLayout, isIntakeCluster, ROLE } from "./orbit-cosmos.js";
+import { cosmicWebPlacement, milkyWayLayout, isIntakeCluster, ROLE, galacticOmega } from "./orbit-cosmos.js";
 import { GOLDEN, rnd } from "./orbit-galaxy.js";
 
 /** Build one of the lab universes into `env.universe`.
@@ -102,7 +102,12 @@ function buildMilkyWay(env) {
   const { universe, entries, adj, R, userKey, discBasis, tuning } = env;
 
   const discR = Math.min(R * 0.72, Math.max(700, Math.sqrt(countAll(entries)) * 62));
-  const plan = milkyWayLayout(entries, userKey, discR);
+  // the core radius the view will draw, so the user's accretion disc clears it
+  const plan = milkyWayLayout(entries, userKey, discR, Math.max(R * 0.035, 34));
+  // Where the rotation curve flattens. Inside this radius the disc turns as one
+  // piece; outside, omega falls as 1/r. Sits just past the bar so the user's
+  // ring is still in the fast solid-body region.
+  const rTurn = discR * 0.25;
 
   // ONE galaxy, one plane. A modest tilt so the disc reads as a disc rather
   // than a flat ring, but every cluster shares it — there are no sub-galaxies
@@ -115,7 +120,17 @@ function buildMilkyWay(env) {
     for (const n of members) {
       const p = plan.positions.get(n.id);
       if (!p) continue;
-      universe.disc.set(n.id, { center: origin, ring: null, basis, x: p.x, y: p.y, z: p.z, spin });
+      // Every star turns at the speed its RADIUS dictates — the galaxy does not
+      // rotate as one rigid plate. Inner region solid-body, outer flat curve.
+      //
+      // Except the user's ring: it brings its OWN omegaScale, because it orbits
+      // the black hole rather than the galaxy (see ACCRETION_SPEEDUP). Letting
+      // galacticOmega overwrite it was why the ring crawled.
+      universe.disc.set(n.id, {
+        center: origin, ring: null, basis,
+        x: p.x, y: p.y, z: p.z, spin,
+        omegaScale: p.omegaScale ?? galacticOmega(Math.hypot(p.x, p.y), rTurn),
+      });
     }
   }
 
@@ -133,6 +148,9 @@ function buildMilkyWay(env) {
       key: c.key,
       center: { px: w.px, py: w.py, pz: w.pz },
       local: { x: c.cx, y: c.cy, z: c.cz },
+      // the marker follows the SAME rotation curve as the stars around it,
+      // otherwise the label slides off its own arm within a minute
+      omegaScale: galacticOmega(Math.hypot(c.cx, c.cy), rTurn),
       galaxyBasis: basis,
       orbit: null,
       basis,

@@ -187,11 +187,15 @@
                 <button data-mmode="universe">universe</button>
                 <button data-mmode="galaxy">galactic</button>
               </div>
-              <div class="filter-label" id="mindspace-lab-label" hidden>Mindspace · Test</div>
+              <div class="filter-label" id="mindspace-lab-label" hidden>Mindspace · Experimental</div>
               <div id="mindspace-lab-switch" class="seg" hidden>
                 <button data-mmode="universe-lab">universe ✦</button>
                 <button data-mmode="galaxy-lab">milky way ✦</button>
               </div>
+              <!-- only the galactic modes have a centre to draw, so this row
+                   stays hidden in universe / universe-lab -->
+              <div class="filter-label" id="mindspace-core-label" hidden>Galaktischer Kern</div>
+              <select id="mindspace-core-select" hidden aria-label="Galaktischer Kern"></select>
               <div id="mindspace-galaxy-opts" hidden>
                 <div class="filter-label">Distance</div>
                 <div id="mindspace-distance-switch" class="seg">

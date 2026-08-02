@@ -8,6 +8,7 @@
 
 import { clusterColor, glowSprite } from "../graph-data.js";
 import { rnd } from "./orbit-galaxy.js";
+import { coreOf } from "./orbit-core.js";
 
 const SHOOTING_EVERY = 24000;
 
@@ -207,32 +208,29 @@ export function createOrbitDecor(env) {
         ctx.closePath();
         ctx.stroke();
       }
+      // The centre graphic is swappable (orbit-core.js). `classic` is the
+      // shipped black hole moved there unchanged, so the default still renders
+      // exactly as before — the switch only picks a different draw function.
       const pr = project(origin, trig, cx, cy);
       const r0 = Math.max(hole.r * depthScale(pr), 24 / camera.scale);
-      const spinPulse = 1 + 0.05 * Math.sin(tSec * 1.7);
-      ctx.globalCompositeOperation = theme.flowBlend;
-      ctx.globalAlpha = 0.5 * fadeIn * depthFade(pr.d);
-      const gr = r0 * 2.4 * spinPulse;
-      ctx.drawImage(glowSprite(theme.accent, theme.label), pr.x - gr, pr.y - gr, gr * 2, gr * 2);
-      ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = Math.min(1, 0.94 * fadeIn);
-      ctx.fillStyle = theme.labelHalo;
-      ctx.beginPath();
-      ctx.arc(pr.x, pr.y, r0 * 0.6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 0.85 * fadeIn;
-      ctx.strokeStyle = theme.accent;
-      ctx.lineWidth = 1.6 / camera.scale;
-      ctx.beginPath();
-      ctx.arc(pr.x, pr.y, r0 * 0.6 * spinPulse, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 0.22 * fadeIn;
-      ctx.lineWidth = 0.8 / camera.scale;
-      for (const m of [0.95, 1.35]) {
-        ctx.beginPath();
-        ctx.arc(pr.x, pr.y, r0 * m, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+      coreOf(env.getCore()).draw(
+        ctx,
+        {
+          x: pr.x,
+          y: pr.y,
+          r: r0,
+          t: tSec,
+          camScale: camera.scale,
+          theme,
+          // kept SEPARATE on purpose: the shipped core applies depth only to
+          // its outer glow, while the dark core and the rim ride on fadeIn
+          // alone. Folding them into one number would dim the centre on the
+          // far side and `classic` would no longer be pixel-identical.
+          fade: fadeIn,
+          depth: depthFade(pr.d),
+        },
+        glowSprite,
+      );
       ctx.globalAlpha = 1;
     }
 

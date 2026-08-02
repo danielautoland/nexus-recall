@@ -52,6 +52,7 @@ import { createOrbitDecor } from "./orbit-decor.js";
 // TEST modes (universe-lab / galaxy-lab) — additive, never reached by the two
 // shipped modes. Realistic morphology + placement that carries information.
 import { buildLab } from "./orbit-lab.js";
+import { CORES, CORE_KEY, DEFAULT_CORE } from "./orbit-core.js";
 
 /** The four Mindspace layouts. The first two ship and are frozen. */
 export const MODES = ["universe", "galaxy", "universe-lab", "galaxy-lab"];
@@ -139,6 +140,8 @@ export function createOrbitView(deps) {
   let mode = MODES.includes(localStorage.getItem(MODE_KEY)) ? localStorage.getItem(MODE_KEY) : "universe";
   let distanceMode = localStorage.getItem(DIST_KEY) === "balanced" ? "balanced" : "woven";
   let drift = localStorage.getItem(DRIFT_KEY) !== "off";
+  // galactic core graphic — only the two galactic modes have a centre to draw
+  let core = CORES[localStorage.getItem(CORE_KEY)] ? localStorage.getItem(CORE_KEY) : DEFAULT_CORE;
   let hole = null; // { r } — the black-hole core visual, galaxy mode only
   let orbitRings = []; // distinct ring radii for the faint orbit guides
   let orbitT = 0; // drift clock: accumulates ONLY while drifting (no resume-jump)
@@ -437,7 +440,12 @@ export function createOrbitView(deps) {
           p.ring.zoff,
         )
       : p.center;
-    const a = p.spin * tSec;
+    // omegaScale carries differential rotation. A galaxy disc leaves it unset
+    // and turns rigidly on purpose — the arms are a density wave with one
+    // pattern speed, and shearing them would wind them up within seconds. The
+    // accretion disc around the core is the opposite case: those are real
+    // Keplerian orbits, so the inner ring genuinely laps the outer one.
+    const a = p.spin * (p.omegaScale ?? 1) * tSec;
     const cos = Math.cos(a);
     const sin = Math.sin(a);
     return inPlane(center, p.basis, p.x * cos - p.y * sin, p.x * sin + p.y * cos, p.z);
@@ -527,6 +535,7 @@ export function createOrbitView(deps) {
     getHole: () => hole,
     getOrbitRings: () => orbitRings,
     getMode: () => mode,
+    getCore: () => core,
     getEnterAt: () => enterAt,
     getR: () => R,
     getWeather: deps.getWeather ?? (() => null),
@@ -694,7 +703,7 @@ export function createOrbitView(deps) {
       const tSec = now / 1000;
       for (const g of universe.galaxies) {
         if (!g.local) continue;
-        const a = g.spin * tSec;
+        const a = g.spin * (g.omegaScale ?? 1) * tSec;
         const cos = Math.cos(a);
         const sin = Math.sin(a);
         const w = inPlane(
@@ -748,6 +757,12 @@ export function createOrbitView(deps) {
     drift = !!on;
     localStorage.setItem(DRIFT_KEY, drift ? "on" : "off");
   }
+  /** Swap the centre graphic. Purely a decor change — no rebuild needed, the
+   *  next frame draws the other core. */
+  function setCore(k) {
+    core = CORES[k] ? k : DEFAULT_CORE;
+    localStorage.setItem(CORE_KEY, core);
+  }
 
   return {
     enter, exit, tick, spawnBurst, focusBurst, renderBursts, listBursts, pickBurst,
@@ -756,6 +771,8 @@ export function createOrbitView(deps) {
     setMode,
     setDistanceMode,
     setDrift,
+    setCore,
+    getCore: () => core,
     getMode: () => mode,
     getDistanceMode: () => distanceMode,
     getDrift: () => drift,

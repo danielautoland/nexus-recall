@@ -100,8 +100,18 @@ body.panel-pinned .opt-pop { right: 270px; }
 #activity-opts-pop[hidden],
 #mindspace-galaxy-opts[hidden] { display: none !important; }
 
-/* The pin sits at the panel's top-right corner; align it with the centre of
-   the first section heading rather than the panel edge. The heading's text
-   centre lands at panel-body padding (12) + .section-title padding-top (11) +
-   half its line box (~6) ≈ 29px, so a 26px button starts at 16px. */
-#panel-pin { top: 16px; }
+/* core switcher — a select rather than a segmented row: the list will grow
+   well past what fits side by side once the lab centres get ported in */
+#mindspace-core-select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 5px 6px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-dim);
+  font: 11px var(--font-mono);
+  cursor: pointer;
+}
+#mindspace-core-select:hover { color: var(--accent); border-color: var(--accent); }
+#mindspace-core-select option { background: var(--panel); color: var(--text); }
+#mindspace-core-select[hidden], #mindspace-core-label[hidden] { display: none !important; }

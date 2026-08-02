@@ -40,10 +40,31 @@
  */
 
 import { rnd } from "./orbit-galaxy.js";
-import { morphLocal, classifyGalaxy } from "./orbit-morph.js";
+import { morphLocal, classifyGalaxy, accretionLocal } from "./orbit-morph.js";
 
 const TAU = Math.PI * 2;
 const DEG = Math.PI / 180;
+
+/** Angular speed at radius r, from a real disc-galaxy rotation curve.
+ *
+ *  NOT Kepler. Kepler (omega ~ r^-1.5) only holds when nearly all the mass sits
+ *  at the centre — true for an accretion disc, wrong for a galaxy, where the
+ *  mass is spread through the disc and halo. The first attempt used it and the
+ *  result was exactly what that implies: the middle spun far too fast while the
+ *  outskirts barely moved.
+ *
+ *  A real galaxy's curve has two parts:
+ *    r < rTurn : solid-body — the inner region turns as one piece, omega flat
+ *    r > rTurn : FLAT rotation curve, v constant, so omega ~ 1/r
+ *
+ *  That is what makes the centre quicker than the rim without the rim standing
+ *  still, and it is why the user's ring — sitting deep inside, near the hole —
+ *  laps the arms.
+ *
+ *  @returns a multiplier normalised to 1 at rTurn */
+export function galacticOmega(r, rTurn) {
+  return r <= rTurn ? 1 : rTurn / Math.max(r, 1);
+}
 
 /** Is this cluster an unadopted import? Same test the shipped mode uses. */
 export const isIntakeCluster = (key, members) =>
@@ -216,9 +237,10 @@ const BAR_FRAC = 0.26;
  *  @param entries   [key, members][]  (already size-sorted by the caller)
  *  @param userKey   the cluster that becomes the bulge
  *  @param discR     radius of the galactic disc
+ *  @param holeR     core radius — the accretion disc must clear it
  *  @returns {positions: Map<nodeId,{x,y,z}>, clusters: [...], discR}
  *           positions are in the galaxy's own disc frame. */
-export function milkyWayLayout(entries, userKey, discR) {
+export function milkyWayLayout(entries, userKey, discR, holeR = null) {
   const positions = new Map();
   const clusters = [];
 
@@ -238,18 +260,21 @@ export function milkyWayLayout(entries, userKey, discR) {
   const push = (n, x, y, z) => positions.set(n.id, { x, y, z });
   const acc = [];
 
-  // ── bulge: the memories about the user, spheroidal around Sgr A*
+  // ── the user: an accretion disc AROUND Sgr A*, not a bulge inside it.
+  // A spheroid centred on the origin put the user's closest memories inside
+  // the event horizon, where nothing can be. See accretionLocal.
   const userMembers = entries.find(([k]) => k === userKey)?.[1] ?? [];
+  const coreR = holeR ?? discR * 0.05;
+  const inner = coreR * 1.5;
+  const outer = Math.max(inner * 3.4, discR * 0.2);
   userMembers.forEach((n, i) => {
-    const u = rnd(i, 733);
-    const rr = discR * 0.19 * u * u;
-    const th = rnd(i, 739) * TAU;
-    const ph = Math.acos(2 * rnd(i, 743) - 1);
-    const sp = Math.sin(ph);
-    push(n, sp * Math.cos(th) * rr, sp * Math.sin(th) * rr, Math.cos(ph) * rr * 0.75);
+    const l = accretionLocal(i, (i + 0.5) / userMembers.length, inner, outer);
+    // omegaScale rides along: these are Keplerian orbits, so the view has to
+    // turn the inner ring faster than the outer one (see worldPos).
+    positions.set(n.id, { x: l.x, y: l.y, z: l.z, omegaScale: l.omegaScale });
   });
   if (userMembers.length) {
-    clusters.push({ key: userKey, role: ROLE.BULGE, cx: 0, cy: 0, cz: 0, r: discR * 0.2, count: userMembers.length });
+    clusters.push({ key: userKey, role: ROLE.BULGE, cx: 0, cy: 0, cz: 0, r: outer, count: userMembers.length });
   }
 
   // ── main arms: one project per arm, its sub-areas as knots along it
