@@ -4,6 +4,70 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.9] — 2026-08-02
+
+A test release. Everything here came out of the v0.9 release gate (#213) — a
+manual end-to-end walk through all three install paths, the onboarding block
+and the import, on a clean macOS VM. Twelve findings, none of which stopped a
+route from completing: they were cases where something was unclear, silently
+absent, or reported a number that was not true. These are the fixes; v0.9
+follows once they are verified against a real release.
+
+### Fixed
+
+- **An update from an npx-started process installed the new version and left
+  every surface running the old one** (#304). `ensureStableForwarder` pins
+  `~/.bastra/runtime/<version>/` using `VERSION` — a constant compiled into the
+  *running* process. `bastra update` performed the npm upgrade and then
+  re-registered in that same, old process, so it re-pinned its own old version,
+  found last run's marker, reported `reused`, and the freshly installed code was
+  referenced by nobody. Nothing failed: the installer succeeded, `bastra
+  version` printed the new number, and the update was simply not in effect.
+  The re-registration is now handed to the newly installed binary, and `bastra
+  doctor` reports a stale pin — the quiet third case next to *missing* and
+  *ephemeral*, which never breaks and just runs replaced code.
+
+- **`npx bastra-recall install` left no `bastra` command** (#317). The guided
+  setup completed, three clients were registered, the runtime was pinned — and
+  every documented next step answered `command not found`. npx executes a
+  package, it never installs one. The setup now offers the global install once
+  at the end and runs it only on an explicit yes; declining prints a working
+  invocation instead. Not a launcher shim, which would have pinned the `bastra`
+  command to one version permanently — the stale-pin failure above, rebuilt at
+  the entry point.
+
+- **`import vault` reported a total its own breakdown contradicted** (#312).
+  The synthetic curated-index node counted toward the total but through no
+  adapter, so `57 + 16 = 73` was printed directly beneath a total of 74. The
+  same pass sat behind `!dryRun`, so a preview predicted one node fewer than the
+  run it previewed. Fixed by adding the missing category rather than reconciling
+  the numbers.
+
+- **A category created after page load only appeared on the map after a manual
+  reload** (#307). Live updates carried the cluster alone while every node in
+  the graph projection carries cluster + group + sub, and the client hardcoded
+  the fallbacks on adopt. On a fresh vault the user cloud does not exist yet —
+  it is created by the very memories being written — so the onboarding result
+  sat there as loose points until someone reloaded.
+
+- **The install prompt offered to create a vault that already existed**
+  (#318). `Create ~/BastraVault (recommended)` was shown over a directory
+  holding 74 memories. It now probes and says what it found, using the same
+  loader the daemon indexes with rather than a second counter that could drift.
+
+- **`Install Bastra.command` was documented as a release download and had never
+  been attached to a release** (#306). The file only ever lived in
+  `distribution/`; the documented download resolved to nothing.
+
+### Added
+
+- **A curl installer** (#320). `curl -fsSL https://bastra.io/install | bash` is
+  now the recommended path for people who do not open terminals. The
+  double-click script stays, and the README now says what actually happens with
+  it: a browser download arrives without the executable bit and under
+  quarantine, so it needs `chmod +x` and right-click → Open. That path was only
+  ever tested from the repo copy, which has neither problem.
+
 ## [0.8.8] — 2026-07-28
 
 ### Fixed

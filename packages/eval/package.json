@@ -1,6 +1,6 @@
 {
   "name": "@bastra-recall/eval",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Offline ablation harness: marginal lift of the recall_when field under paraphrased held-out queries (control: stripped vs treatment: x5).",
   "private": true,
   "type": "module",
@@ -17,7 +17,7 @@
     "check:types": "tsc --noEmit"
   },
   "dependencies": {
-    "@bastra-recall/core": "0.8.8",
+    "@bastra-recall/core": "0.8.9",
     "minisearch": "^7.1.1"
   },
   "devDependencies": {
