@@ -386,7 +386,7 @@ test("save_memory save_quality does not surface private duplicate candidates by 
   }
 });
 
-test("save_quality (#108): trigger collisions apply the noise floor — weak grazing matches don't count, real recall_when overlaps do", async () => {
+test("save_quality (#108, criterion replaced in #300): weak grazing matches don't count as trigger collisions, real recall_when overlaps do", async () => {
   const dir = await mkdtemp(join(tmpdir(), "bastra-collision-test-"));
   try {
     // 4 Memories, deren recall_when DENSELBEN spezifischen Trigger trägt →
@@ -423,12 +423,14 @@ test("save_quality (#108): trigger collisions apply the noise floor — weak gra
     search.start();
     const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: dir };
 
-    // Precondition für den Bug-Repro: der schwache Trigger STREIFT ≥3 Memories
-    // unterhalb des Floors (genau die wurden vor #108 als Kollisionen gezählt).
+    // Precondition für den Bug-Repro: der schwache Trigger STREIFT ≥3 Memories,
+    // die die Suche als Kandidaten durchreicht — genau die wurden vor #108 als
+    // Kollisionen gezählt. #300 hat den Floor, der sie danach aussortierte,
+    // durch die Trigger-Deckung ersetzt: die Kandidaten kommen weiterhin an,
+    // nur entscheidet der Score nicht mehr über sie.
     const weakTrigger = "quantum blorbnik subsystem flux";
     const rawWeak = search.recall(weakTrigger, { k: 20, scope: "collision-test" });
     assert.ok(rawWeak.length >= 3, `precondition: weak trigger should graze >=3 memories, got ${rawWeak.length}`);
-    assert.ok(rawWeak.every((h) => h.score < 30), `precondition: grazing hits must sit below the floor, scores=${rawWeak.map((h) => h.score.toFixed(1)).join(",")}`);
 
     const res = await saveMemoryHandler(deps, {
       title: "flux capacitor drift compensation",

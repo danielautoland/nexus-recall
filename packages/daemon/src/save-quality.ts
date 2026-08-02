@@ -18,17 +18,16 @@ import {
   formatInjectionAdvisory,
 } from "@bastra-recall/core";
 import { detectLanguage } from "./learned-recall/language.js";
-import { envInt } from "./env.js";
 import {
+  containedIn,
   fieldSimilarity,
   triggerRestatesSummary,
   DUPLICATE_SIMILARITY_MIN,
+  TRIGGER_CLAIMS_SITUATION_MIN,
   tokens as words,
   type SimilarityFields,
 } from "./save-similarity.js";
 import type { ToolDeps } from "./tool-deps.js";
-
-const RECALL_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
 
 /** #239: upper bound for the collision scan. The pool decides `k`, but a
  *  pathological scope must not turn an advisory into a full-index sweep on
@@ -50,6 +49,11 @@ export interface SaveQualityResult {
     trigger: string;
     count: number;
     examples: string[];
+    /** #300: the colliding memory's OWN trigger — the phrase that makes this a
+     *  collision. Without it the advisory names a conflict the author cannot
+     *  see, which is how the previous count stayed unactionable even when it
+     *  happened to be right. */
+    claim?: string;
     /** #239: true when `count` is bounded by the retrieval cap and the real
      *  number is higher. An exact count cannot reuse `SearchIndex.recall` —
      *  staleness/demotion multipliers are applied only to the already-sliced
@@ -111,6 +115,23 @@ function buildSpecificTriggerSuggestion(input: SaveMemoryInput): string {
     .join(" ");
   const anchor = summaryTokens || input.title.toLowerCase();
   return `tighten recall_when around an action + anchor, e.g. 'about to ${input.type} in ${path}: ${anchor}'`;
+}
+
+/**
+ * #300 — does one of `theirs` already declare the situation `trigger` names?
+ *
+ * Directional on purpose: full containment of THIS trigger in one of theirs is
+ * the actionable direction. It means this trigger is the broader of the two, so
+ * every situation it names also belongs to them and their memory comes up
+ * whenever it fires. The reverse (theirs contained in this one) is their
+ * problem to solve, not something to charge this save for.
+ *
+ * Per single trigger, never against the joined list: two of their triggers that
+ * between them cover this one's words do not claim its situation, they just
+ * share vocabulary — which is the mistake this whole issue is about.
+ */
+function claimingTrigger(trigger: string, theirs: string[]): string | undefined {
+  return theirs.find((candidate) => containedIn(trigger, candidate) >= TRIGGER_CLAIMS_SITUATION_MIN);
 }
 
 // #159: admission rules — vault rot has a known shape. Negative capability
@@ -309,37 +330,86 @@ export function scoreSaveQuality(
   // #239: the scope/type filter decides which memories a trigger could collide
   // with at all. "20 of 21 admitted" says the scope shares vocabulary; a bare
   // "20" says nothing and does not compare across vaults.
+  //
+  // #300: obsolete and private memories are excluded here too, because the scan
+  // below cannot reach them — `recall` masks both. Counting them made the
+  // denominator name a set the numerator was never drawn from: in the very
+  // cohort the issue reports, "of 27" was really "of 25".
   const admittedPool = deps.vault
     .list()
-    .filter((m) => m.fm.scope === input.scope && m.fm.type === input.type && m.fm.id !== excludeId).length;
+    .filter(
+      (m) =>
+        m.fm.scope === input.scope &&
+        m.fm.type === input.type &&
+        m.fm.id !== excludeId &&
+        !m.fm.obsolete &&
+        m.fm.sensitivity !== "private",
+    ).length;
   const triggerCollisions = input.recall_when
     .map((trigger) => {
       // #108: ohne den Noise-Floor zählte das die rohe top-k-Liste — jeder
       // Trigger meldete "matches 20 memories" (k-Cap, keine Kollisionen).
-      // Kollision = ein anderes Memory, das dieser Trigger ÜBER dem Floor
-      // hochspülen würde, exakt wie recall() selbst filtert.
       //
       // #239: `k` was 20 while the reported number was rendered as exact, so a
       // trigger matching 146 memories reported "19". `k` now follows the pool,
       // and whatever the cap still hides is marked rather than hidden.
+      //
+      // #300: but the floor was still the DECISION, and an absolute cut on a
+      // raw BM25 score decides nothing — inside one scan that score spans two
+      // orders of magnitude, so `>= 30` passed all but the tail and "collision"
+      // became a synonym for "the admitted pool" (a median 69% of it on a
+      // 661-memory vault, firing on 97% of scans). Cutting relative to the
+      // pool's own distribution is no better: `>= 50% of top` still fired on
+      // 57% of non-collisions, because the top of a ranking is populated
+      // whether or not anything collides. No cut on this axis can work.
+      //
+      // So the decision no longer runs on retrieval at all. A collision is a
+      // claim about AUTHORED TRIGGERS — another memory declaring this same
+      // situation — which is a containment question between two written
+      // phrases, answered with the same primitive #238/#239 answer theirs.
+      // BM25 stays what it became in #239: the candidate generator, not the
+      // judge. Over 2516 scans of the real vault the generator hid nothing
+      // (423 collisions via top-k, 423 via an exhaustive pool scan), and the
+      // false-alarm rate against verbatim-duplicate ground truth fell from
+      // 90.4% to 0.9% — a residual that is duplicates the ground truth missed,
+      // not misfires.
       const k = Math.max(20, Math.min(admittedPool, COLLISION_SCAN_MAX));
       const raw = deps.search.recall(trigger, { k, scope: input.scope, type: input.type, allow_private: false });
-      const hits = raw.filter((hit) => hit.id !== excludeId).filter((hit) => hit.score >= RECALL_FLOOR);
+      const hits = raw
+        .filter((hit) => hit.id !== excludeId)
+        .map((hit) => ({ id: hit.id, claim: claimingTrigger(trigger, deps.vault.get(hit.id)?.fm.recall_when ?? []) }))
+        .filter((hit): hit is { id: string; claim: string } => hit.claim !== undefined);
       return {
         trigger,
         count: hits.length,
         examples: hits.slice(0, 3).map((h) => h.id),
+        claim: hits[0]?.claim,
         // Bounded either by our own cap or by the pool being bigger than it.
         ...(raw.length >= k && admittedPool > k ? { at_least: true } : {}),
         admitted_pool: admittedPool,
       };
     })
-    .filter((collision) => collision.count >= 3);
+    // #300: `>= 3` was the shipped defence against a count that was inflated by
+    // construction. One memory that already declares this situation IS the
+    // finding, and at 2.2% of scans firing there is nothing left to damp.
+    .filter((collision) => collision.count >= 1);
   if (triggerCollisions.length > 0) {
     const top = triggerCollisions[0];
     const howMany = `${top.at_least ? "at least " : ""}${top.count} of ${top.admitted_pool}`;
-    issues.push(`trigger collision: ${top.trigger} already matches ${howMany} memories in this scope`);
-    suggestions.push("make high-collision triggers include a concrete action, subsystem, failure mode, or file family");
+    issues.push(
+      `trigger collision: '${top.trigger}' names a situation ${top.examples[0]} already declares ('${top.claim}') — ${howMany} in this scope`,
+    );
+    // The old advice ("make it include a concrete action, subsystem, …") pointed
+    // at the author's own wording, which is not where the conflict is: the other
+    // memory will surface in this situation no matter how this trigger is
+    // phrased, unless one of the two moves.
+    suggestions.push(
+      `consider load_memory('${top.examples[0]}') — either update that memory instead, or narrow this trigger to what is genuinely different from its situation`,
+    );
+    // Unchanged from #239's shape: 12 per affected trigger, capped at 30. There
+    // is no strength gradient left to follow — every reported collision sits at
+    // full coverage — so the only dimension is how many of this save's triggers
+    // are taken.
     score -= Math.min(30, triggerCollisions.length * 12);
   }
 

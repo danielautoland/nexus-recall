@@ -180,6 +180,21 @@ export function triggerRestatesSummary(trigger: string, summary: string): boolea
 }
 
 /**
+ * #300 — when does another memory's trigger CLAIM this one's situation?
+ *
+ * At the end of the scale on purpose. `containedIn(mine, theirs) === 1` reads
+ * as "every content word my trigger says, their trigger already says" — the
+ * boundary is a property of the measure, not a number somebody picked, so it
+ * cannot rot the way an absolute score floor did. Anything below 1.0 is a
+ * paraphrase question, and paraphrases need a goldset this vault does not have:
+ * measured on the 661-memory vault, the 0.80–0.99 band mixes genuine
+ * restatements ("neue Server Action absichern" / "… schreiben") with templated
+ * triggers whose only distinguishing word is a proper noun ("<handle> taucht
+ * auf (PR, Issue, Kommentar)"), and no threshold separates the two.
+ */
+export const TRIGGER_CLAIMS_SITUATION_MIN = 1;
+
+/**
  * Above this, two memories are close enough that the agent should look before
  * creating a third one.
  *
