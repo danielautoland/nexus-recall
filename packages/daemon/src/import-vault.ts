@@ -92,11 +92,17 @@ export interface ImportVaultResult {
   scope: string;
   scanned: number;
   imported: number;
-  byAdapter: { claudeCode: number; generic: number };
+  /** #312: every id in `ids` is counted in exactly ONE of these, so the
+   *  breakdown always sums to `imported`. `index` is the synthetic
+   *  curated-index node (#217) — it is a written memory like any other, but it
+   *  comes from no source file and therefore from no adapter, which is why it
+   *  used to fall out of the itemisation while still inflating the total. */
+  byAdapter: { claudeCode: number; generic: number; index: number };
   skipped: ImportVaultSkip[];
   ids: string[];
   /** #217: id of the synthetic curated-index node minted from the source
-   *  index (MEMORY.md / hubs), or null when the source carried no index. */
+   *  index (MEMORY.md / hubs), or null when the source carried no index.
+   *  #312: a dry-run predicts this id too — it is resolved without writing. */
   indexNode: string | null;
   /** #240/A10: kept for shape compatibility, ALWAYS []. Weg C: the import
    *  never trashes a pre-A10 twin — automatic retirement could not be made
@@ -190,7 +196,7 @@ export async function importVault(
   const used = new Set<string>();
   const skipped: ImportVaultSkip[] = [];
   const ids: string[] = [];
-  const byAdapter = { claudeCode: 0, generic: 0 };
+  const byAdapter = { claudeCode: 0, generic: 0, index: 0 };
 
   // Pass 0: read every file once — the inbound-veto and the index harvest both
   // need a view of the WHOLE set before any single file is mapped.
@@ -422,7 +428,11 @@ export async function importVault(
   // grouped by section. Links point only at ids that actually imported, so it
   // adds edges (the star that ties the islands together), never ghosts.
   let indexNode: string | null = null;
-  if (!dryRun && harvest.size > 0 && ids.length > 0) {
+  // #312: the dry-run runs this pass too. Everything up to the write is pure
+  // computation over the already-read sources, and the pass mints a node that
+  // counts in `imported` — skipping it made the preview predict one node fewer
+  // than the run it previews, which is the one thing a preview must not do.
+  if (harvest.size > 0 && ids.length > 0) {
     const importedIds = new Set(ids);
     const bySection = new Map<string, string[]>(); // section → wikilink ids, in index order
     for (const [fileBase, entry] of harvest) {
@@ -462,35 +472,47 @@ export async function importVault(
         (indexCheck.owner === "free" || indexCheck.owner === "mine")
       ) {
         const id = alloc.id;
-        try {
-          await saveMemoryWithAuditTrail({
-            vaultRoot,
-            input: {
-              id,
-              title: `${label} — Index`,
-              type: "reference",
-              summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
-              body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
-              topic_path: ["imported", label],
-              tags: [...new Set(["imported", label, "index"])],
-              scope: label,
-              recall_when: [`${label} index`, `${label} übersicht`],
-              folder,
-              write_origin: "user-directed",
-              overwrite,
-              source: `index:${label}`,
-            },
-            actor: "import",
-            actorDetail: "import:vault",
-            sessionId: runId,
-            commit: { expectedTarget: indexCheck.target },
-          });
+        // A dry-run has nothing to write, so nothing can fail — it lands by
+        // definition; a real run only lands if the write returns.
+        let landed = dryRun;
+        if (!dryRun) {
+          try {
+            await saveMemoryWithAuditTrail({
+              vaultRoot,
+              input: {
+                id,
+                title: `${label} — Index`,
+                type: "reference",
+                summary: `Navigations-Index für den Import „${label}" (${linkCount} Notizen${sectionCount ? `, ${sectionCount} Bereiche` : ""}).`,
+                body: `Kuratierter Index des importierten Ordners „${label}" — die Verbindungsstruktur aus dem Quell-Index.\n\n${lines.join("\n")}`,
+                topic_path: ["imported", label],
+                tags: [...new Set(["imported", label, "index"])],
+                scope: label,
+                recall_when: [`${label} index`, `${label} übersicht`],
+                folder,
+                write_origin: "user-directed",
+                overwrite,
+                source: `index:${label}`,
+              },
+              actor: "import",
+              actorDetail: "import:vault",
+              sessionId: runId,
+              commit: { expectedTarget: indexCheck.target },
+            });
+            landed = true;
+          } catch {
+            // Audit-only failures were already absorbed by `recordAudit`.
+            // A routing/write failure here still cannot fail the imported notes:
+            // the synthetic index is navigation and remains best-effort.
+          }
+        }
+        if (landed) {
           ids.push(id);
           indexNode = id;
-        } catch {
-          // Audit-only failures were already absorbed by `recordAudit`.
-          // A routing/write failure here still cannot fail the imported notes:
-          // the synthetic index is navigation and remains best-effort.
+          // #312: it goes into `ids`, so it must go into the breakdown in the
+          // same breath — an id counted in the total but in no category is the
+          // itemisation contradicting the number above it.
+          byAdapter.index++;
         }
       }
     }

@@ -223,6 +223,10 @@ async function cmdImportVault(args: ParsedArgs): Promise<number> {
     `✓ ${verb} ${result.imported}/${result.scanned} file(s) → ${result.folder}/ ` +
       `(scope: ${result.scope})\n` +
       `  ${result.byAdapter.claudeCode} via Claude-Code adapter · ${result.byAdapter.generic} generic markdown` +
+      // #312: the synthetic index (#217) is part of the reported total, so it
+      // has to appear here as well — otherwise the breakdown reads one short
+      // of the number printed directly above it.
+      (result.byAdapter.index > 0 ? ` · ${result.byAdapter.index} curated index` : "") +
       (result.skipped.length > 0 ? ` · ${result.skipped.length} skipped` : "") +
       `\n`,
   );

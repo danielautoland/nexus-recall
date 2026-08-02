@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import matter from "gray-matter";
@@ -299,6 +299,64 @@ test("#219 slug twins: link targets get the SAME slugify as minted ids (undersco
     assert.ok(!body.includes("feedback_gate_catalog]]"), "no underscored ghost twin left behind");
   } finally {
     await rm(src, { recursive: true, force: true });
+    await rm(vault, { recursive: true, force: true });
+  }
+});
+
+/**
+ * #312: `imported` counted the synthetic index node (#217), the breakdown did
+ * not, and the whole pass was skipped under --dry-run. Three numbers that had
+ * to agree disagreed twice: 57 + 16 = 73 next to a reported total of 74, and a
+ * dry-run predicting 73 for a run that did 74. The invariants pinned here:
+ * breakdown sums to the total, dry-run predicts the real run exactly, and the
+ * total matches what ends up on disk.
+ */
+test("#312 index node is counted and predicted: breakdown sums to the total, dry-run == real run", async () => {
+  const src = await tmp("iv-312-src-");
+  const dryVault = await tmp("iv-312-dry-");
+  const vault = await tmp("iv-312-vault-");
+  try {
+    // A source index (the only thing that mints the synthetic index node) plus
+    // one file per adapter, so all three categories are non-zero.
+    await writeSrc(
+      src,
+      "MEMORY.md",
+      "# Memory Index\n\n## Projekte\n- [Alpha](alpha.md) — das Alpha-Projekt\n- [Beta](beta.md) — die Beta-Notiz\n",
+    );
+    await writeSrc(src, "alpha.md", "---\nname: Alpha\ndescription: Alpha-Projekt\ntype: project\n---\nAlpha body.");
+    await writeSrc(src, "beta.md", "# Beta\n\nDie Beta-Notiz ohne Frontmatter.\n");
+
+    const dry = await importVault(dryVault, src, { label: "sum", dryRun: true });
+    const real = await importVault(vault, src, { label: "sum" });
+
+    // the itemisation must account for every id in the total
+    for (const r of [dry, real]) {
+      assert.equal(
+        r.byAdapter.claudeCode + r.byAdapter.generic + r.byAdapter.index,
+        r.imported,
+        `breakdown must sum to imported (${JSON.stringify(r.byAdapter)} vs ${r.imported})`,
+      );
+      assert.equal(r.imported, r.ids.length);
+      assert.equal(r.byAdapter.claudeCode, 1);
+      assert.equal(r.byAdapter.generic, 1);
+      assert.equal(r.byAdapter.index, 1, "the synthetic index has its own category");
+    }
+
+    // the preview must describe the run it previews
+    assert.equal(dry.imported, real.imported);
+    assert.deepEqual(dry.ids, real.ids);
+    assert.deepEqual(dry.byAdapter, real.byAdapter);
+    assert.equal(dry.indexNode, real.indexNode);
+    assert.equal(real.indexNode, "sum-index");
+
+    // …and the total must match reality on disk
+    const onDisk = (await readdir(join(vault, real.folder))).filter((n) => n.endsWith(".md"));
+    assert.equal(onDisk.length, real.imported);
+    // a dry-run still writes nothing, index node included
+    await assert.rejects(() => readdir(join(dryVault, dry.folder)));
+  } finally {
+    await rm(src, { recursive: true, force: true });
+    await rm(dryVault, { recursive: true, force: true });
     await rm(vault, { recursive: true, force: true });
   }
 });
