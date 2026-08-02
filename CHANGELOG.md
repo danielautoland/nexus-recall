@@ -4,6 +4,125 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-08-02
+
+**Honest numbers, nothing silently lost.** The milestone this release closes is
+44 issues wide, and they share one shape: not a crash, not an error, but a
+number that was not true or a thing quietly missing while every surface
+reported healthy. An update that installed the new version and left every
+client running the old one. A doctor saying 7/7 healthy over a hook pointing at
+a deleted runtime. An installer printing a map URL four lines above its own
+"not reachable". A `curl | bash` that exited 0 having registered nothing.
+
+0.8.9 was the test release for exactly this: its fixes were re-verified against
+a real published release on a clean macOS VM before this one was cut. That pass
+confirmed #304, #306, #307, #312, #317 and #318, and surfaced three more
+findings, which are fixed below. The 0.8.9 section documents what came before
+them.
+
+### Fixed
+
+- **An update no longer tells you your local patches survived when they did
+  not** (#269, #303, #327). A source install has two roots — `dist/cli.js` sits
+  in the daemon package root, while a patch made by `git format-patch` off the
+  checkout addresses files from the repo root — and one variable stood for
+  both. `git apply` run from a subdirectory does not fail on a path outside it:
+  it prints `Skipped patch`, changes nothing, and exits 0, which the apply path
+  recorded as *applied*. The skip guard that already existed on `--check` now
+  covers the apply calls as well.
+
+  `git apply --3way` was the second half. It is not a probe: when it cannot
+  merge it writes `<<<<<<<` into the tree and stages it, and only *then* exits
+  non-zero — so "it failed, therefore nothing happened" was false, and a patch
+  reported *set aside* could leave a tree that no longer parsed. It now
+  snapshots every file the patch addresses, restores them byte-for-byte on a
+  failed merge, and runs against a copy of the index so a conflict cannot stage
+  anything real. That snapshot includes the source side of a rename, which the
+  `--numstat` plumbing does not report and which git writes C-quoted
+  (`"sp\303\244t.txt"`) in the patch header; without it a failed 3-way took
+  both paths with it. When the file list cannot be established at all, the
+  3-way is declined rather than attempted unreversibly.
+
+- **`curl https://bastra.io/install | bash` stopped after installing Homebrew
+  on a first run** (#323). Under a pipe, bash reads the script from stdin
+  incrementally, and a child that also reads stdin consumes the not-yet-parsed
+  remainder — so `brew install` ate step 4/4. Nothing was registered: hooks
+  0/7, all three surfaces missing, and `bastra --version` printed the new
+  number with exit status 0, making the run indistinguishable from success.
+  stdin is now redirected away from the script pipe for every child that could
+  read it, the body moved into a `main()` called on the last line so the whole
+  script is parsed before anything runs, and the installer verifies at the end
+  that at least one AI client was actually registered.
+
+- **The map URL the installer prints now opens** (#322). A fresh install left
+  no daemon running — there is no LaunchAgent, and the forwarder only spawns on
+  the first MCP call — so the one onboarding route documented as working
+  without an AI session could not start without the thing it precedes.
+  `bastra map` and the guided setup start the daemon and wait for `/health`
+  first, and open nothing if it does not come up. `status` deliberately still
+  starts nothing and reports the daemon as down instead.
+
+- **The preserved Stop hook kept its old path across updates.** #48 made
+  install preserve a Stop hook the user had opted into; it preserved the whole
+  entry including its path, while every other event is rebuilt from the current
+  definition. So the one hook that survives an update was the one still running
+  replaced code — and `pruneOldRuntimes()` then deletes that directory, turning
+  "runs old code" into "points at nothing". doctor reported 7/7 healthy
+  throughout. The opt-in is what #48 protects; the path is not part of it.
+
+- **The save-quality collision warning fired on 97.2% of saves** (#300). It
+  filtered recall hits by an absolute floor of 30 on a scale that spans 0.3 to
+  1861 on a real vault, so the floor passed the whole pool by construction and
+  the penalty landed on almost every save — citing memories with no topical
+  relation. A collision is now defined as what the field actually promises:
+  another memory declaring *the same situation*, measured as containment
+  between single `recall_when` sentences. Against 2516 scans on 661 memories
+  with 33 verbatim-duplicate triggers as the gold set, the false rate drops
+  from 90.4% to 0.9% at an unchanged 100% hit rate. Scans that fire at all:
+  97.2% → 2.2%.
+
+- **Ollama is detected on Windows** (#316, part of #84). `findExecutable()`
+  split `PATH` on a hardcoded `":"` and probed for the POSIX executable bit, so
+  on Windows nothing resolved and every tool was reported "not installed" while
+  sitting on `PATH`. It now splits on `path.delimiter`, resolves through
+  `PATHEXT`, and scopes the Homebrew fallbacks and ownership checks to
+  non-Windows; POSIX behaviour is unchanged. Claude Desktop's config directory
+  resolves per platform instead of being hardcoded to the macOS location. This
+  is the detection half of #84 — automatic install and a persistent Ollama
+  service on Windows are still open.
+
+### Added
+
+- **The Mindspace map gained a galactic core you can switch.** Nine cores
+  behind a select under "Mindspace · Experimental" — classic, jets, Binary
+  Hole, Feeding, Collapse, Double Pulse, Heartbeat, Quasar, Gravity Web. Adding
+  one is a single entry in a registry. Gravity Web hangs its threads on the
+  user's real memories rather than decorative points, which is a layout change
+  and triggers a relayout; every other core is a pure decor swap and the
+  shipped `classic` stays pixel-identical.
+
+- **Two experimental Mindspace lab modes**, both additive — the shipped
+  `universe` and `galaxy` modes and the whole rendering layer are untouched.
+  `universe-lab` classifies each cluster onto the Hubble sequence from one
+  measured property, the Gini coefficient of its degree distribution, and
+  places them by 3D force relaxation over the bridge edges. `galaxy-lab` draws
+  one Milky Way instead of galaxies orbiting galaxies: the user is Sgr A*, big
+  projects are arms, sub-folders are star-forming knots on their project's arm.
+  Star rotation follows a flat disc-galaxy curve rather than Kepler, so the
+  outskirts still visibly move.
+
+- **View and Activity moved into two popovers** at the top of the right rail
+  ("Filters & Options"). Stacked, they had eaten most of its height.
+
+### Changed
+
+- **The daemon reads its version from `package.json` at runtime.** It sat as a
+  literal in four places while `bump.mjs` only rewrites `package.json`, so the
+  0.8.9 bump covered part of the tree only and the daemon reported 0.8.8 in
+  `/health`, in the MCP handshake, and to the update check — which compares
+  that very number against the published one. `bump.mjs` now refuses a version
+  literal instead of rewriting it.
+
 ## [0.8.9] — 2026-08-02
 
 A test release. Everything here came out of the v0.9 release gate (#213) — a
@@ -1090,6 +1209,8 @@ edges. Dogfooded daily against a real vault.
 - CI (GitHub Actions): `npm ci` → build → type-check → test on a Node 20/22
   matrix, on every push and PR.
 
+[0.9.0]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.9.0
+[0.8.9]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.9
 [0.8.8]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.8
 [0.8.7]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.7
 [0.8.6]: https://github.com/n0mad-ai/bastra-recall/releases/tag/v0.8.6

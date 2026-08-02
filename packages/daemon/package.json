@@ -1,6 +1,6 @@
 {
   "name": "@bastra-recall/daemon",
-  "version": "0.8.9",
+  "version": "0.9.0",
   "description": "MCP server exposing recall + load_memory over a markdown vault.",
   "type": "module",
   "license": "MIT",
@@ -52,8 +52,8 @@
     "build:mcpb:local": "node scripts/build-mcpb.mjs --local"
   },
   "dependencies": {
-    "@bastra-recall/core": "0.8.9",
-    "@bastra-recall/statusline": "0.8.9",
+    "@bastra-recall/core": "0.9.0",
+    "@bastra-recall/statusline": "0.9.0",
     "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^4.4.3"
