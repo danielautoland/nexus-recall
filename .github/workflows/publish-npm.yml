@@ -86,3 +86,26 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" packages/daemon/mcpb/*.mcpb --clobber
 
+  installer-scripts:
+    # Double-click installer + uninstaller (#306): README A) sends non-coders to
+    # the latest release for these two files, but they only ever lived in
+    # distribution/ — the documented download resolved to nothing. Own job (no
+    # build, no `needs`) so the documented entry point is published even if the
+    # npm or .mcpb step fails. NOTE: GitHub normalizes spaces in asset names to
+    # dots, so they appear as `Install.Bastra.command` / `Uninstall.Bastra.command`.
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Attach installer scripts to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" \
+            "distribution/Install Bastra.command" \
+            "distribution/Uninstall Bastra.command" \
+            --clobber
+
