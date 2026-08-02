@@ -66,6 +66,12 @@
  * does not merge cleanly, and the attempt runs against a COPY of the index, so
  * a failed merge cannot stage anything in the real one either.
  *
+ * "Every file it addresses" includes the SOURCE side of a rename, which the
+ * `--numstat` plumbing does not report — see patchPaths(). A snapshot that
+ * misses it loses that file outright, so when the list cannot be established
+ * the 3-way is not attempted at all: an unreversible attempt is worth less
+ * than the set-aside it would replace.
+ *
  * ## Failure posture
  *
  * A patch series that leaves the daemon unable to boot is worse than a reverted
@@ -356,10 +362,16 @@ export function resolveRoots(installRoot: string): PatchRoots {
  * applying it then would duplicate the change. Asking "is this already here?"
  * before "can this go in?" is the only order that cannot double-apply.
  */
-export function probePatch(root: string, patchFile: string): { state: PatchState; detail?: string } {
+export function probePatch(
+  root: string,
+  patchFile: string,
+  /** Pass the already-resolved apply root when probing a whole series: working
+   *  it out costs two `git` processes, and it cannot change between patches. */
+  knownApplyRoot?: string,
+): { state: PatchState; detail?: string } {
   if (!findExecutable("git")) return { state: "unknown", detail: "git not found on a trusted PATH" };
   if (!existsSync(patchFile)) return { state: "unknown", detail: "patch file missing" };
-  const applyRoot = resolveRoots(root).apply;
+  const applyRoot = knownApplyRoot ?? resolveRoots(root).apply;
   const reverse = checkApplies(applyRoot, patchFile, true);
   if (reverse.ok) return { state: "already-upstream" };
   const forward = checkApplies(applyRoot, patchFile, false);
@@ -369,22 +381,88 @@ export function probePatch(root: string, patchFile: string): { state: PatchState
 
 export function statusAll(root: string, home = homedir()): PatchStatus[] {
   const dir = patchesDir(home);
+  const applyRoot = resolveRoots(root).apply;
   return activePatches(home).map((entry) => {
-    const { state, detail } = probePatch(root, join(dir, entry.file));
+    const { state, detail } = probePatch(root, join(dir, entry.file), applyRoot);
     return { entry, state, detail };
   });
 }
 
-/** Every file a patch addresses, as git itself parses it. `--numstat` only
- *  reads the patch — it never looks at, or touches, the tree. */
-function patchPaths(root: string, patchFile: string): string[] {
+/**
+ * Undo git's C-quoting of a path (`"sp\303\244t.txt"`).
+ *
+ * The `-z` plumbing reports paths raw, but the `rename from` header inside a
+ * patch is written with `core.quotePath` applied, so anything outside ASCII
+ * arrives escaped. The octal escapes are UTF-8 BYTES: they are collected as
+ * bytes and decoded once at the end, because decoding each escape on its own
+ * turns every multi-byte character into mojibake. Returns null for anything
+ * that is not a well-formed quoted path — the caller treats that as "I cannot
+ * enumerate this patch" rather than guessing.
+ */
+function unquotePath(raw: string): string | null {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return null;
+  const body = raw.slice(1, -1);
+  const simple: Record<string, number> = {
+    a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92,
+  };
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!;
+    if (c !== "\\") {
+      for (const b of Buffer.from(c, "utf8")) bytes.push(b);
+      continue;
+    }
+    const esc = body[++i];
+    if (esc === undefined) return null;
+    if (esc in simple) {
+      bytes.push(simple[esc]!);
+      continue;
+    }
+    const oct = body.slice(i, i + 3);
+    if (!/^[0-7]{3}$/.test(oct)) return null;
+    bytes.push(Number.parseInt(oct, 8));
+    i += 2;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Every file a patch addresses, and whether that list is trustworthy.
+ *
+ * `--numstat` only reads the patch — it never looks at, or touches, the tree.
+ * But for a RENAME it names the destination only, and the apply deletes the
+ * source. A snapshot built from `--numstat` alone therefore cannot put a
+ * renamed-away file back, and a failed 3-way would leave the user with neither
+ * path: the destination unlinked because it did not exist before, the source
+ * gone because nothing recorded it. So the `rename from` headers are read out
+ * of the patch itself and added.
+ *
+ * `complete: false` means the caller must not run anything that has to be
+ * undone afterwards. A partial snapshot restores partially, which is worse
+ * than never having tried.
+ */
+function patchPaths(root: string, patchFile: string): { paths: string[]; complete: boolean } {
   const r = git(root, ["apply", "--numstat", "-z", patchFile]);
-  if (!r.ok) return [];
+  if (!r.ok) return { paths: [], complete: false };
   // One NUL-terminated record per file: "<adds>\t<dels>\t<path>".
-  return r.stdout
+  const paths = r.stdout
     .split("\0")
     .map((rec) => rec.split("\t")[2])
     .filter((p): p is string => !!p && p.length > 0);
+
+  let content: string;
+  try {
+    content = readFileSync(patchFile, "utf8");
+  } catch {
+    return { paths, complete: false };
+  }
+  for (const m of content.matchAll(/^rename from (.+)$/gm)) {
+    const raw = m[1]!.trim();
+    const source = raw.startsWith('"') ? unquotePath(raw) : raw;
+    if (source === null || source.length === 0) return { paths, complete: false };
+    if (!paths.includes(source)) paths.push(source);
+  }
+  return { paths, complete: true };
 }
 
 interface FileSnapshot {
@@ -426,7 +504,14 @@ function tryThreeWay(applyRoot: string, patchFile: string): boolean {
   const gitDir = git(applyRoot, ["rev-parse", "--absolute-git-dir"]).stdout.trim();
   if (!gitDir) return false;
 
-  const before = snapshot(applyRoot, patchPaths(applyRoot, patchFile));
+  // No trustworthy list of what the attempt would touch means no attempt. The
+  // snapshot is the only thing that makes `--3way` reversible, and an empty or
+  // partial one restores nothing while `--3way` still writes — which is the
+  // pre-guard behaviour this function exists to remove.
+  const addressed = patchPaths(applyRoot, patchFile);
+  if (!addressed.complete || addressed.paths.length === 0) return false;
+
+  const before = snapshot(applyRoot, addressed.paths);
   let scratch: string | null = null;
   let env: NodeJS.ProcessEnv | undefined;
   try {
@@ -497,7 +582,7 @@ export function applySeries(root: string, opts: ApplyOptions = {}): ApplyOutcome
 
   for (const entry of series) {
     const file = join(dir, entry.file);
-    const { state, detail } = probePatch(root, file);
+    const { state, detail } = probePatch(root, file, roots.apply);
 
     if (state === "already-upstream") {
       if (!opts.dryRun) retirePatch(entry, "merged-upstream", home);

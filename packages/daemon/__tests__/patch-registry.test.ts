@@ -433,3 +433,86 @@ test("a 3-way that cannot merge leaves the tree and the index exactly as they we
     s.cleanup();
   }
 });
+
+/**
+ * Builds a rename patch whose 3-way is guaranteed to conflict, and returns the
+ * paths involved. `name` picks the file so the same shape can be built once
+ * with an ASCII path and once with one git will C-quote.
+ */
+function conflictingRenamePatch(
+  s: { home: string; repo: string },
+  fromName: string,
+  toName: string,
+): { patch: string; fromAbs: string; toAbs: string } {
+  const dir = "packages/core/src";
+  const fromAbs = join(s.repo, dir, fromName);
+  const toAbs = join(s.repo, dir, toName);
+
+  // Enough shared context that git records a rename (similarity) rather than a
+  // delete plus an add — the rename header is the whole point of the fixture.
+  writeFileSync(fromAbs, "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
+  gitIn(s.repo, "add", "-A");
+  gitIn(s.repo, "commit", "-qm", "content to rename");
+  gitIn(s.repo, "mv", `${dir}/${fromName}`, `${dir}/${toName}`);
+  writeFileSync(toAbs, "one\nTWO\nthree\nfour\nfive\nsix\n", "utf8");
+  gitIn(s.repo, "add", "-A");
+  gitIn(s.repo, "commit", "-qm", "rename + edit");
+  const patch = gitIn(s.repo, "format-patch", "-1", "--stdout").stdout;
+  gitIn(s.repo, "reset", "-q", "--hard", "HEAD~1");
+
+  // Upstream rewrote the same region under the OLD name, so the merge has a
+  // genuine conflict and the source path is what the apply deletes.
+  writeFileSync(fromAbs, "upstream rewrote every line of this file\n", "utf8");
+  gitIn(s.repo, "commit", "-qam", "upstream");
+  return { patch, fromAbs, toAbs };
+}
+
+test("a rename patch that fails its 3-way puts the source path back", () => {
+  const s = sourceCheckout();
+  try {
+    const { patch, fromAbs, toAbs } = conflictingRenamePatch(s, "a.txt", "b.txt");
+    assert.match(patch, /^rename from /m, "fixture must actually be a rename patch");
+
+    const before = readFileSync(fromAbs, "utf8");
+    const indexBefore = gitIn(s.repo, "status", "--porcelain").stdout;
+
+    addPatch(writePatchFile(s.home, "p.patch", patch), s.home);
+    const out = applySeries(s.installRoot, { home: s.home, skipSmoke: true });
+
+    assert.equal(out.applied.length, 0);
+    assert.equal(out.setAside.length, 1, "a rename that cannot merge is set aside like any other");
+    // `git apply --numstat` names only the DESTINATION of a rename. Snapshot
+    // that alone and a failed merge takes both paths with it: the destination
+    // unlinked because it did not exist before, the source gone because the
+    // apply deleted it and nothing recorded that it was ever there.
+    assert.ok(existsSync(fromAbs), "the rename source must still exist");
+    assert.equal(readFileSync(fromAbs, "utf8"), before, "and be byte-identical");
+    assert.ok(!existsSync(toAbs), "the destination must not be left behind");
+    assert.equal(gitIn(s.repo, "status", "--porcelain").stdout, indexBefore, "the index must be untouched");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a rename path git C-quotes is enumerated, not guessed at", () => {
+  const s = sourceCheckout();
+  try {
+    // git writes non-ASCII paths in the rename header as "sp\303\244t.txt",
+    // regardless of what the -z plumbing reports. A vault of Cyrillic memories
+    // is the normal case here, not an exotic one.
+    const { patch, fromAbs, toAbs } = conflictingRenamePatch(s, "спät.txt", "спäter.txt");
+    assert.match(patch, /^rename from "/m, "fixture must produce a quoted rename header");
+
+    const before = readFileSync(fromAbs, "utf8");
+    addPatch(writePatchFile(s.home, "p.patch", patch), s.home);
+    const out = applySeries(s.installRoot, { home: s.home, skipSmoke: true });
+
+    assert.equal(out.setAside.length, 1);
+    assert.ok(existsSync(fromAbs), "the quoted source path must be decoded and restored");
+    assert.equal(readFileSync(fromAbs, "utf8"), before);
+    assert.ok(!existsSync(toAbs), "the destination must not be left behind");
+    assert.equal(gitIn(s.repo, "status", "--porcelain").stdout, "", "the index must be untouched");
+  } finally {
+    s.cleanup();
+  }
+});
