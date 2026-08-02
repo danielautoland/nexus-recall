@@ -56,10 +56,23 @@ export const CURSOR_RULES_SOURCE_PATH = firstExisting([
 ]);
 export const CURSOR_RULES_RELATIVE = ".cursor/rules/bastra-recall.mdc";
 
-export const CLAUDE_DESKTOP_CONFIG = resolve(
-  homedir(),
-  "Library/Application Support/Claude/claude_desktop_config.json",
-);
+/** Claude Desktop's config directory, per Electron's app.getPath("userData").
+ *  macOS: ~/Library/Application Support/Claude · Windows: %APPDATA%\Claude ·
+ *  Linux: $XDG_CONFIG_HOME/Claude (~/.config/Claude). The path was previously
+ *  hardcoded to the macOS location, so every non-mac host resolved into a
+ *  directory that never exists. */
+function claudeDesktopDir(): string {
+  if (process.platform === "win32") {
+    return resolve(process.env.APPDATA ?? resolve(homedir(), "AppData", "Roaming"), "Claude");
+  }
+  if (process.platform === "darwin") {
+    return resolve(homedir(), "Library", "Application Support", "Claude");
+  }
+  return resolve(process.env.XDG_CONFIG_HOME ?? resolve(homedir(), ".config"), "Claude");
+}
+
+export const CLAUDE_DESKTOP_DIR = claudeDesktopDir();
+export const CLAUDE_DESKTOP_CONFIG = resolve(CLAUDE_DESKTOP_DIR, "claude_desktop_config.json");
 export const CLAUDE_CODE_CONFIG = resolve(homedir(), ".claude.json");
 export const CLAUDE_CODE_SETTINGS = resolve(homedir(), ".claude/settings.json");
 export const CURSOR_CONFIG = resolve(homedir(), ".cursor/mcp.json");
