@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.9.0] — 2026-08-02
 
 **Honest numbers, nothing silently lost.** The milestone this release closes is
-44 issues wide, and they share one shape: not a crash, not an error, but a
+45 issues wide, and they share one shape: not a crash, not an error, but a
 number that was not true or a thing quietly missing while every surface
 reported healthy. An update that installed the new version and left every
 client running the old one. A doctor saying 7/7 healthy over a hook pointing at

@@ -23,7 +23,7 @@
 
 **What it is** — A long-term memory for your AI assistant. Whenever you correct it, state a rule, or commit to a decision, it gets saved as a small note. In your next chat — days or weeks later — the AI pulls those notes back automatically. No more repeating yourself. Everything stays on your own Mac as plain Markdown files (Obsidian-compatible), and every connected tool shares the same memory at the same time. Today that means **Claude Code and Claude Desktop, tested in daily use** — see the support matrix below for what's wired and what's next.
 
-**Status** — 🟢 Early beta, `v0.9.x`. v0.9 "Honest numbers, nothing silently lost" is out — 44 issues against the class of bug where nothing fails, nothing is logged, and the number you are shown is not true. Next is the V1.0 release contract: a reproducibly measured, selective, controllable recall base, fully specified. See [PLAN.md](./PLAN.md).
+**Status** — 🟢 Early beta, `v0.9.x`. v0.9 "Honest numbers, nothing silently lost" is out — 45 issues against the class of bug where nothing fails, nothing is logged, and the number you are shown is not true. Next is the V1.0 release contract: a reproducibly measured, selective, controllable recall base, fully specified. See [PLAN.md](./PLAN.md).
 
 ### Supported surfaces
 
@@ -177,7 +177,7 @@ Details and system requirements: **[System Requirements](https://github.com/n0ma
 ### Roadmap
 
 - **Shipped:** daemon + hybrid read path, autonomous save path, the seven-hook Claude Code reflex layer, npm + Homebrew + `.command` distribution, Claude Desktop autonomy.
-- **Shipped — v0.9 "Honest numbers, nothing silently lost":** 44 issues of hardening from contributor field reports and a manual end-to-end release gate on a clean VM, all of one shape — an update that installed itself and left every client on the old version, a doctor reporting 7/7 healthy over a hook pointing at a deleted runtime, an installer that exited 0 having registered nothing. Plus update safety: local patches survive `bastra update`, and are set aside rather than forced when they no longer apply.
+- **Shipped — v0.9 "Honest numbers, nothing silently lost":** 45 issues of hardening from contributor field reports and a manual end-to-end release gate on a clean VM, all of one shape — an update that installed itself and left every client on the old version, a doctor reporting 7/7 healthy over a hook pointing at a deleted runtime, an installer that exited 0 having registered nothing. Plus update safety: local patches survive `bastra update`, and are set aside rather than forced when they no longer apply.
 - **Next — V1.0 release contract:** a reproducibly measured, selective, controllable recall base — honest eval baselines, deterministic relevance evidence with real abstention, a project-aware session assembler, a global context budget. The long-term V2 target (adaptive, multi-layer memory) is specified and strictly measurement-gated.
 
 Full picture: [PLAN.md](./PLAN.md). Out of v0: multi-device sync — today the vault folder syncs at OS level (iCloud / Google Drive / Dropbox / Git); the file watcher's polling mode handles the latency.
@@ -204,7 +204,7 @@ Built by [@n0mad-ai](https://github.com/n0mad-ai).
 
 **Was es ist** — Ein Langzeit-Gedächtnis für deinen AI-Assistenten. Sobald du etwas korrigierst, eine Regel aufstellst oder eine Entscheidung triffst, wird das als kleine Notiz gespeichert. In der nächsten Sitzung — Tage oder Wochen später — holt die AI diese Notizen automatisch wieder hervor. Schluss mit ewigem Wiederholen. Alles bleibt lokal auf deinem Mac als reine Markdown-Dateien (Obsidian-kompatibel), und alle verbundenen Tools teilen sich dasselbe Gedächtnis gleichzeitig. Heute heißt das: **Claude Code und Claude Desktop, im Alltag getestet** — was verdrahtet ist und was als Nächstes kommt, zeigt die Support-Matrix.
 
-**Status** — 🟢 Frühe Beta, `v0.9.x`. v0.9 „Honest numbers, nothing silently lost" ist draußen — 44 Issues gegen die Fehlerklasse, bei der nichts fehlschlägt, nichts geloggt wird und die angezeigte Zahl trotzdem nicht stimmt. Als Nächstes der V1.0-Releasevertrag: eine reproduzierbar gemessene, selektive, kontrollierbare Recall-Basis, vollständig spezifiziert. Siehe [PLAN.md](./PLAN.md).
+**Status** — 🟢 Frühe Beta, `v0.9.x`. v0.9 „Honest numbers, nothing silently lost" ist draußen — 45 Issues gegen die Fehlerklasse, bei der nichts fehlschlägt, nichts geloggt wird und die angezeigte Zahl trotzdem nicht stimmt. Als Nächstes der V1.0-Releasevertrag: eine reproduzierbar gemessene, selektive, kontrollierbare Recall-Basis, vollständig spezifiziert. Siehe [PLAN.md](./PLAN.md).
 
 ### Unterstützte Oberflächen
 
@@ -358,7 +358,7 @@ Details und Systemvoraussetzungen: **[System Requirements](https://github.com/n0
 ### Roadmap
 
 - **Ausgeliefert:** Daemon + hybrider Read-Path, autonomer Save-Path, der Sieben-Hook-Reflex-Layer für Claude Code, npm- + Homebrew- + `.command`-Distribution, Claude-Desktop-Autonomie.
-- **Ausgeliefert — v0.9 „Honest numbers, nothing silently lost":** 44 Issues Härtung aus Contributor-Field-Reports und einem manuellen End-to-End-Release-Gate auf einer frischen VM, alle von derselben Form — ein Update, das sich installiert und jeden Client auf der alten Version lässt; ein Doctor, der 7/7 gesund meldet, während ein Hook auf eine gelöschte Runtime zeigt; ein Installer, der mit Exit 0 endet, ohne irgendetwas registriert zu haben. Dazu Update-Sicherheit: lokale Patches überleben `bastra update` und werden beiseitegelegt statt erzwungen, wenn sie nicht mehr passen.
+- **Ausgeliefert — v0.9 „Honest numbers, nothing silently lost":** 45 Issues Härtung aus Contributor-Field-Reports und einem manuellen End-to-End-Release-Gate auf einer frischen VM, alle von derselben Form — ein Update, das sich installiert und jeden Client auf der alten Version lässt; ein Doctor, der 7/7 gesund meldet, während ein Hook auf eine gelöschte Runtime zeigt; ein Installer, der mit Exit 0 endet, ohne irgendetwas registriert zu haben. Dazu Update-Sicherheit: lokale Patches überleben `bastra update` und werden beiseitegelegt statt erzwungen, wenn sie nicht mehr passen.
 - **Als Nächstes — V1.0-Releasevertrag:** eine reproduzierbar gemessene, selektive, kontrollierbare Recall-Basis — ehrliche Eval-Baselines, deterministische Relevanzevidenz mit echter Abstention, ein projektfähiger Session-Assembler, ein globales Kontextbudget. Das langfristige V2-Ziel (adaptives, mehrschichtiges Gedächtnis) ist spezifiziert und strikt messungs-gegated.
 
 Das ganze Bild: [PLAN.md](./PLAN.md). Außerhalb von v0: Multi-Device-Sync — heute synchronisiert der Vault-Ordner auf OS-Ebene (iCloud / Google Drive / Dropbox / Git); der Polling-Modus des File-Watchers gleicht die Latenz aus.
