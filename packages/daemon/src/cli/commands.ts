@@ -22,6 +22,7 @@ import { cmdInstallExtension } from "./extension-install.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import { showHelp } from "./help-text.js";
+import { describeStale } from "../code-staleness.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
 
 export function showVersion(): void {
@@ -383,6 +384,13 @@ async function printVersionPairNote(): Promise<void> {
     process.stdout.write("→ version\n");
     if (!probe.ok || !probe.version) {
       process.stdout.write(`  · cli ${VERSION} (no running daemon to compare against)\n\n`);
+      return;
+    }
+    // #329 first: when the daemon's own code was replaced under it, the number
+    // it reports describes the process, not the installation — and "both
+    // 0.9.0" would be the most misleading thing to print at that moment.
+    if (probe.codeStale) {
+      process.stdout.write(`  ⚠ ${describeStale(probe.codeStale)}\n\n`);
       return;
     }
     if (probe.version === VERSION) {

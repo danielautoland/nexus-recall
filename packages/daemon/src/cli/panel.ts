@@ -9,6 +9,7 @@
  */
 import { request as httpRequest } from "node:http";
 import { VERSION, VERSION_DRIFT_HINT } from "./helpers.js";
+import type { CodeStale } from "../code-staleness.js";
 import { probeOllama } from "./ollama.js";
 import {
   getUpdateMode,
@@ -33,6 +34,7 @@ interface HealthResponse {
   vault_size?: number;
   semantic_recall?: "on" | "off" | "degraded";
   update_available?: HealthUpdate | null;
+  code_stale?: CodeStale | null;
 }
 
 /** A rendered box row: label column, value column. */
@@ -99,11 +101,30 @@ export function formatVersionRows(i: {
   daemonVersion: string | null;
   /** Newer release the daemon knows about, or null. */
   updateLatest: string | null;
+  /** Set when the daemon's code was replaced under it (#329). */
+  codeStale?: CodeStale | null;
 }): PanelRow[] {
   if (i.daemonVersion === null) {
     return [["version", `cli ${i.cliVersion}  (daemon offline — can't check)`]];
   }
   const status = i.updateLatest ? `↑ ${i.updateLatest} available` : "✓ up to date";
+  // #329 — a daemon whose code was swapped out reports the version it booted
+  // with. Printing that as the version, next to "✓ up to date", is exactly the
+  // sentence the user must not be given: the answer itself is out of date, and
+  // the update status was computed from it.
+  if (i.codeStale) {
+    const s = i.codeStale;
+    // Same version on both sides means the build moved, not the release — and
+    // then naming the version twice says nothing. The build time does.
+    const detail =
+      s.running === s.on_disk
+        ? `daemon ${s.running} — build on disk is newer (${s.built_at.slice(0, 16).replace("T", " ")})`
+        : `daemon ${s.running} (process), ${s.on_disk} on disk`;
+    return [
+      ["version", `cli ${i.cliVersion}  ⚠ daemon runs replaced code — restart it`],
+      ["", detail],
+    ];
+  }
   if (i.daemonVersion === i.cliVersion) {
     return [["version", `${i.cliVersion}  ${status}`]];
   }
@@ -170,6 +191,7 @@ export async function cmdPanel(_args: ParsedArgs): Promise<number> {
     cliVersion: VERSION,
     daemonVersion: health?.version ?? null,
     updateLatest: health?.update_available?.latest ?? null,
+    codeStale: health?.code_stale ?? null,
   });
   const recallRow = semanticRecallRow({
     effectiveProvider: embedding.provider,

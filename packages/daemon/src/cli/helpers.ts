@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { Vault } from "@bastra-recall/core";
 import { FORWARDER_SCRIPT_PATH, CLAUDE_DESKTOP_CONFIG, CLAUDE_CODE_CONFIG } from "./paths.js";
+import type { CodeStale } from "../code-staleness.js";
 import type { InstallOpts } from "./types.js";
 
 // Read from package.json at runtime (see ../version.ts) instead of a literal.
@@ -22,6 +23,22 @@ export const SERVER_KEY = "bastra-recall";
  */
 export const VERSION_DRIFT_HINT = "restart your AI client to reload the daemon";
 const DAEMON_HEALTH_URL = "http://127.0.0.1:6723/health";
+
+/**
+ * A `code_stale` block from /health (#329). Validated rather than cast: an
+ * older daemon does not send the field at all, and a half-shaped one must read
+ * as "no finding" instead of printing `undefined` into a version line.
+ */
+function isCodeStale(v: unknown): v is CodeStale {
+  if (typeof v !== "object" || v === null) return false;
+  const s = v as Record<string, unknown>;
+  return (
+    typeof s.running === "string" &&
+    typeof s.on_disk === "string" &&
+    typeof s.built_at === "string" &&
+    (s.reason === "rebuilt" || s.reason === "not-built")
+  );
+}
 
 export interface McpServerBlock {
   command: string;
@@ -260,6 +277,13 @@ export interface DaemonProbe {
    * simply isn't there, and neither is worth a separate state.
    */
   version?: string;
+  /**
+   * Set when the running daemon reports that its code was replaced on disk
+   * (#329). `version` above is then the version of the PROCESS, not of the
+   * installation — which is why every surface that shows a version has to be
+   * able to say so instead of printing a number that reads as current.
+   */
+  codeStale?: CodeStale;
   // From /health when reachable — lets `bastra status` show the live embedding
   // mode (the user-visible #79 fix; the daemon's own stderr is /dev/null'd when
   // the forwarder spawns it).
@@ -283,6 +307,7 @@ export function probeDaemon(): Promise<DaemonProbe> {
               ok: true,
               detail: `vault_size=${data.vault_size}`,
               version: typeof data.version === "string" ? data.version : undefined,
+              codeStale: isCodeStale(data.code_stale) ? data.code_stale : undefined,
               semanticRecall: data.semantic_recall,
               embeddingMode: data.embedding_mode,
               embeddingSource: data.embedding_source,

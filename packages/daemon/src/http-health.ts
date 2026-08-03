@@ -21,6 +21,7 @@ import type { EmbeddingRuntimeHealth } from "@bastra-recall/core";
 import type { EmbeddingStatus } from "./embedding-status.js";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import type { UpdateState } from "./update-check.js";
+import type { CodeStale } from "./code-staleness.js";
 
 export interface HealthDeps {
   vaultSize: () => number;
@@ -33,6 +34,10 @@ export interface HealthDeps {
    *  from `process.uptime()` so the value is testable and so a restart is
    *  visible as a reset rather than as a silently continuing clock. */
   startedAtMs?: number;
+  /** Whether the code on disk has moved on without this process (#329).
+   *  `version` above is what this process runs; without this field nothing
+   *  distinguishes that from what a caller would get if it restarted. */
+  codeStale?: () => CodeStale | null;
 }
 
 export function buildHealthPayload(deps: HealthDeps): Record<string, unknown> {
@@ -59,6 +64,11 @@ export function buildHealthPayload(deps: HealthDeps): Record<string, unknown> {
     ok: true,
     vault_size: deps.vaultSize(),
     version: deps.version,
+    // #329 — null means "the version above is current". Anything else means
+    // this process is answering for code that has been replaced, and every
+    // consumer of `version` (update check, panel, doctor, MCP handshake) is
+    // reading a number that no longer describes the disk.
+    code_stale: deps.codeStale?.() ?? null,
     ...uptime,
     // Embedding mode — lets `bastra status` show whether semantic recall is
     // live without relying on the daemon's discarded stderr (#79).

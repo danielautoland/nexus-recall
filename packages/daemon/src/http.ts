@@ -76,6 +76,7 @@ import { computeSalienceShadow } from "./salience-shadow.js";
 import { handleHookReflex } from "./reflex.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
+import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -348,6 +349,12 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
   // by whatever the vault took to index.
   const startedAtMs = Date.now();
 
+  // #329 — the disk can be replaced under a running process, and until this
+  // existed nothing noticed. Probed lazily from the health path (throttled)
+  // rather than on a timer: no extra clock, and the answer is at most one
+  // throttle window old on the door where it is actually read.
+  const staleness = createStalenessMonitor(version, defaultStalenessIo());
+
   /** Reachability + vault size, shared by /health and /api/v1/health. */
   const healthPayload = (): Record<string, unknown> =>
     buildHealthPayload({
@@ -358,6 +365,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
       embeddingBreaker: opts.embeddingBreaker,
       updateState: getUpdateState,
       startedAtMs,
+      codeStale: () => staleness.check(),
     });
 
   /** Liveness probes, on both doors — they must not count as activity. */
