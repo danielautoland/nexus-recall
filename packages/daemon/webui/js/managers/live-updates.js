@@ -21,6 +21,7 @@
 
 import { drawBurstAt, BURST_LIFE } from "./orbit-view.js";
 import { createLiveDeck } from "./live-deck.js";
+import { createMemoryCounter } from "./memory-counter.js";
 import { KIND_META } from "./live-kinds.js";
 import { createTickRail } from "../components/tick-rail.js";
 
@@ -251,17 +252,34 @@ export function createLiveUpdates(deps) {
     }, CARD_LIFE_MS);
   }
 
-  // topbar memory counter follows live: ±1 per birth/death, with a tiny pulse
-  function bumpCounter(delta) {
-    if (delta === 0) return;
-    const el = $("#stat-count");
-    const cur = parseInt(el.textContent, 10);
-    if (Number.isNaN(cur)) return; // health not loaded yet — next reload catches up
-    el.textContent = `${cur + delta} memories`;
-    el.classList.remove("bump");
-    void el.offsetWidth; // restart the animation
-    el.classList.add("bump");
-  }
+  // topbar memory counter: ±1 per birth/death for the immediate reaction, with
+  // /health.vault_size as the authority behind it (#294). The arithmetic and
+  // the reconcile cadence live in memory-counter.js; this is just the DOM.
+  const counter = createMemoryCounter({
+    read: () => {
+      const el = $("#stat-count");
+      if (!el) return null;
+      const cur = parseInt(el.textContent, 10);
+      return Number.isNaN(cur) ? null : cur;
+    },
+    write: (n) => {
+      const el = $("#stat-count");
+      if (!el) return;
+      el.textContent = `${n} memories`;
+      el.classList.remove("bump");
+      void el.offsetWidth; // restart the animation
+      el.classList.add("bump");
+    },
+    fetchSize: async () => {
+      const res = await fetch("/health");
+      if (!res.ok) return null;
+      const data = await res.json();
+      return typeof data.vault_size === "number" ? data.vault_size : null;
+    },
+    // ~30 s at POLL_MS. Slow on purpose: this corrects drift, it does not
+    // deliver the news — the deltas already do that within one poll.
+    reconcileEveryPolls: Math.round(30000 / POLL_MS),
+  });
 
   function summaryCard(count, older = false, text) {
     const li = document.createElement("div");
@@ -347,11 +365,16 @@ export function createLiveUpdates(deps) {
       if (typeof data.seq === "number" && data.seq < sinceSeq) {
         sinceSeq = data.seq;
         summaryCard(0, true, "daemon restarted — live feed resynced");
+        // The events across the restart are gone; the counter must not keep
+        // carrying a total that was computed from them (#294).
+        void counter.reconcile();
         return;
       }
       // buffer overflowed past our cursor → be honest about the drop (#234)
       if (typeof data.minSeq === "number" && data.minSeq > sinceSeq + 1) {
         summaryCard(data.minSeq - sinceSeq - 1, true);
+        // Those dropped entries never reach the delta — measure instead.
+        void counter.reconcile();
       }
       const fresh = data.updates ?? [];
       sinceSeq = data.seq ?? sinceSeq; // server delivers each seq exactly once
@@ -361,9 +384,10 @@ export function createLiveUpdates(deps) {
       }
       for (const u of fresh.slice(0, MAX_CARDS_PER_POLL)) card(u);
       if (fresh.length > MAX_CARDS_PER_POLL) summaryCard(fresh.length - MAX_CARDS_PER_POLL);
-      bumpCounter(
+      counter.bump(
         fresh.filter((u) => u.kind === "add").length - fresh.filter((u) => u.kind === "delete").length,
       );
+      counter.afterPoll();
     } catch {
       // daemon briefly away — next poll retries
     } finally {
