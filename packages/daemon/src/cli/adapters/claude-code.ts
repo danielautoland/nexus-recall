@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   CLAUDE_CODE_CONFIG,
   CLAUDE_CODE_SETTINGS,
@@ -106,10 +108,74 @@ const HOOK_EVENTS: HookEventName[] = [
   "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
 ];
 
-// Which of our hook bins are actually registered (by dist filename), across
-// every event — used by doctor to report N/7 coverage.
-function registeredHookBins(hooks: Record<string, unknown>): Set<string> {
-  const found = new Set<string>();
+/**
+ * The path a hook command actually executes, pulled back out of the command
+ * string (`node /…/dist/stop-hook.js`, quoted or not).
+ *
+ * Doctor needs the path, not just the filename: an entry can be registered and
+ * still run a replaced runtime (#321). `~` is expanded because the check it
+ * feeds compares against `~/.bastra/runtime/<version>/` as a real path.
+ */
+export function hookCommandPath(
+  cmd: string,
+  file: string,
+  home: string = homedir(),
+): string | null {
+  const suffix = `/${file}`;
+  const expand = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
+  // Quoted first — a path containing spaces can only appear that way.
+  for (const m of cmd.matchAll(/"([^"]+)"|'([^']+)'/g)) {
+    const v = m[1] ?? m[2];
+    if (v.endsWith(suffix)) return expand(v);
+  }
+  for (const tok of cmd.split(/\s+/)) {
+    const t = tok.replace(/^["']+|["']+$/g, "");
+    if (t.endsWith(suffix)) return expand(t);
+  }
+  return null;
+}
+
+/**
+ * Every registered hook whose command does not execute the running version
+ * (#321), one line per problem, empty when all of them are sound.
+ *
+ * A registered hook can still run replaced code: `N/N registered` answers
+ * whether an entry exists, which is not the same question as whether it
+ * executes what was just installed. Reporting only the first one is how a pin
+ * to an evicted runtime survived an update while doctor called the surface
+ * healthy — the check for exactly this shape existed since #304 and was applied
+ * to the forwarder path alone. Here it is applied where the drift happened.
+ *
+ * `io` is injectable for tests; production passes nothing.
+ */
+export async function checkHookPaths(
+  found: Map<string, string>,
+  io: {
+    exists?: (p: string) => Promise<boolean>;
+    running?: string;
+    home?: string;
+  } = {},
+): Promise<string[]> {
+  const exists = io.exists ?? fileExists;
+  const home = io.home ?? homedir();
+  const problems: string[] = [];
+  for (const [file, cmd] of found) {
+    const path = hookCommandPath(cmd, file, home);
+    if (path === null) {
+      problems.push(`${file}: no path in '${cmd}'`);
+      continue;
+    }
+    const check = checkForwarderRegistration(path, await exists(path), "claude-code", io.running, home);
+    if (check.broken) problems.push(`${file} → ${check.detail}`);
+  }
+  return problems;
+}
+
+// Which of our hook bins are actually registered, across every event, mapped to
+// the command that runs them — doctor reports N/7 coverage from the keys and
+// checks the paths from the values (#321).
+export function registeredHookBins(hooks: Record<string, unknown>): Map<string, string> {
+  const found = new Map<string, string>();
   for (const ev of HOOK_EVENTS) {
     const arr = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
     for (const entry of arr) {
@@ -120,7 +186,7 @@ function registeredHookBins(hooks: Record<string, unknown>): Set<string> {
         const cmd = typeof (h as Record<string, unknown>)?.command === "string"
           ? ((h as Record<string, unknown>).command as string)
           : "";
-        for (const f of OUR_HOOK_FILES) if (cmd.includes(`/${f}`)) found.add(f);
+        for (const f of OUR_HOOK_FILES) if (cmd.includes(`/${f}`)) found.set(f, cmd);
       }
     }
   }
@@ -526,6 +592,7 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
   // Hooks. Stop is optional: some users intentionally disable autonomous
   // save-eval while keeping the rest of the reflex layer active.
   let requiredHooksMissing = false;
+  let hookPathBroken = false;
   const settingsRead = await readJsonConfig(CLAUDE_CODE_SETTINGS);
   if ("error" in settingsRead) {
     details["hooks"] = `settings.json broken: ${settingsRead.error}`;
@@ -546,6 +613,10 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
         ? `${found.size}/${OUR_HOOK_FILES.length} registered (optional disabled: ${optionalMissing.join(", ")})`
         : `${OUR_HOOK_FILES.length}/${OUR_HOOK_FILES.length} registered`;
 
+    const hookPathProblems = await checkHookPaths(found);
+    hookPathBroken = hookPathProblems.length > 0;
+    if (hookPathBroken) details["hook-paths"] = hookPathProblems.join("; ");
+
     // Statusline (optional/cosmetic — never marks the surface as broken).
     const sl = settingsRead.data.statusLine;
     details["statusline"] = sl === undefined || sl === null
@@ -564,6 +635,7 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
     forwarderBroken ||
     details["vault-path"]?.includes("MISSING") === true ||
     requiredHooksMissing ||
+    hookPathBroken ||
     details["skill"] === "missing";
   if (broken) return { status: "broken", message: "registered but some pieces need repair — re-run 'bastra install claude-code'", details };
   return { status: "ok", message: "MCP + skill + required hooks registered and healthy", details };
