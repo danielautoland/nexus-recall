@@ -14,9 +14,9 @@ import {
   cmdInstall,
   cmdUninstall,
   parseArgs,
-  showHelp,
   showVersion,
 } from "./cli/commands.js";
+import { showHelp } from "./cli/help-text.js";
 import { cmdStatus } from "./cli/status.js";
 import { cmdUpdate } from "./cli/update.js";
 import { cmdConfig } from "./cli/config-cmd.js";
@@ -40,9 +40,13 @@ import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
 async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
   if (args.showVersion) { showVersion(); return 0; }
-  if (args.showHelp && !args.command) { showHelp(); return 0; }
+  // #330 — this guard runs BEFORE the switch and carries no `!args.command`
+  // condition, so `--help` documents every command instead of executing it.
+  // Binding it to "no command given" is what made `bastra update --help`
+  // restart the daemon as its answer to what update does.
+  if (args.showHelp) { showHelp(args.command); return 0; }
   if (!args.command) { return cmdPanel(args); }
-  if (args.command === "help") { showHelp(); return 0; }
+  if (args.command === "help") { showHelp(args.surface); return 0; }
 
   switch (args.command) {
     case "version": showVersion(); return 0;

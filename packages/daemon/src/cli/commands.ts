@@ -1,4 +1,4 @@
-import { ADAPTERS, resolveTargets } from "./registry.js";
+import { resolveTargets } from "./registry.js";
 import {
   VERSION,
   VERSION_DRIFT_HINT,
@@ -21,144 +21,8 @@ import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { cmdInstallExtension } from "./extension-install.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
+import { showHelp } from "./help-text.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
-
-export function showHelp(): void {
-  const supportedSurfaces = Object.keys(ADAPTERS).join(", ");
-  process.stdout.write(`bastra ${VERSION} — install bastra-recall across AI clients
-
-Usage:
-  bastra                     Show status panel (version, update, daemon, vault)
-  bastra <command> [surface] [options]
-
-Commands:
-  install                    Guided setup (interactive): pick vault, clients,
-                             semantic recall from selection lists
-  install <surface|all>      Register bastra-recall with the AI client
-  install claude-desktop --extension
-                             Hand the .mcpb Desktop Extension to Claude
-                             Desktop instead (logo + vault picker; one
-                             Install click stays in Desktop's dialog)
-  uninstall <surface|all>    Remove the registration (the shared skill is
-                             removed once no surface references it anymore)
-  update                     brew upgrade (if brew-installed) + re-register +
-                             daemon restart. Use this after pulling new code.
-  patches <list|add <file>|remove <id>|status>
-                             Local patches that survive an update: an ordered
-                             series reapplied onto the fresh install. One that
-                             upstream has absorbed is retired, one that no
-                             longer applies is set aside and reported — never
-                             forced. 'status' probes them against what is
-                             installed right now.
-  embeddings <on|off|status> Semantic recall (multilingual vector search):
-                             'on' sets up Ollama + the embeddinggemma model
-                             (~620 MB) and persists the choice; 'off' returns
-                             to BM25 keyword-only; 'status' shows the effective
-                             provider and how it was resolved
-  models [status|recommend|  Local text model for memory rewriting (doc2query +
-    set <tag>]               rerank). 'status' shows the active model + this
-                             machine's RAM-tier recommendation; 'set' pulls a
-                             model + persists it (e.g. gemma4:12b on a 24 GB+ box)
-  config get <key>           Read a setting (e.g. update.mode)
-  config set <key> <value>   Write a setting (update.mode = notify|auto|off,
-                             docs.mode = off|suggest|auto, docs.language = en|de|…)
-  token [rotate|clear]       Print the REST API token (mint on first use) for
-                             browser/REST clients; 'rotate' issues a fresh one,
-                             'clear' removes it (locks out browser/REST clients)
-    [--origin <url>]         With 'token': also allowlist this browser Origin
-                             (e.g. https://bastra.io) so the web app can reach
-                             the daemon — no plist/env editing needed
-  commons <enable|update|disable|status>
-                             Bastra Commons: community-proven recipes as a
-                             read-only second recall index (git-synced)
-  bridges <enable|disable|status|language|mint|harvest>
-                             Shared learned-recall: opt-in, language-partitioned
-                             vocabulary bridges that widen recall (off by default).
-                             'mint' = bridges from acted-on reaches; 'harvest' =
-                             deep far-slice pass with the local reranker (Teacher 2).
-  map                        Open the vault map in the browser — an interactive
-                             graph of your memory (local only; offers to enable
-                             it when off). Alias: ui
-  import <file|-> [source]   Seed the vault from another AI tool's memories
-                             (ChatGPT/Claude/Gemini list or free text): stages
-                             candidates in import-review.md for review — your
-                             next AI session distills accepted ones with you;
-                             nothing is saved without your accept.
-                             A conversations.json data export is queued locally
-                             instead; the AI session mines it chunk-wise
-  import rules               Stage local rules files (CLAUDE.md, AGENTS.md,
-                             .cursorrules, .cursor/rules/, ~/.claude/CLAUDE.md)
-  import vault <dir> [label] Import a whole folder of memory files (e.g. a
-                             Claude Code memory dir) into its own isolated
-                             set under memories/imported/ — deterministic,
-                             no per-item review, nothing existing is touched
-  import <mine|clear>        Print the next mining chunk for the AI session /
-                             discard the local mining queue
-  onboard                    5-minute interview that seeds a fresh vault:
-                             persona-aware questions, every answer becomes a
-                             profile memory ('onboard skip' stops the nudge)
-  skills <list|add|remove>   Declare link targets that live on another surface
-                             (e.g. Claude Code skills): declared ids render in
-                             the map's skills ring instead of as unwritten
-                             ghosts — no path, no scan, no sync
-  feedback <bug|idea>        Open a prefilled GitHub issue form in the browser.
-                             'bug' includes a sanitized diagnostics block
-                             (version, OS, embedding mode, vault size — never
-                             vault content); you review and submit it yourself
-  doctor [surface|all]       Check status of one or every surface
-  doctor [surface|all] --fix Check status and repair missing/broken pieces
-  status                     Check daemon and adapters status (supports --json, -q)
-  logs                       Readable view of what the hooks and the daemon
-                             recorded — one line per event, newest last
-                             (-f to follow, --since 1h, --source hook|daemon)
-  rules cursor [path]        Write Cursor's memory rules into a project
-                             (.cursor/rules/bastra-recall.mdc). Cursor keeps
-                             rules per repo — there is no global equivalent,
-                             so run this once per project. 'rules remove
-                             cursor [path]' takes it back out
-  completion <shell>         Print a Tab-completion script (bash, zsh, fish)
-  help                       Show this help
-  version                    Show version
-
-Surfaces:
-  claude-desktop             Claude Desktop App
-  claude-code                Claude Code
-  cursor                     Cursor
-  all                        Every surface above
-
-Options:
-  --dry-run                  Print what would change; write nothing
-  --vault <path>             Vault path (BASTRA_VAULT_PATH env also works)
-  --json                     Output status in JSON format (status command only)
-  -q, --quiet                Suppress output, return exit code only (status command only)
-  --yes, -y                  Skip confirmation prompts (replace a foreign statusLine)
-  --ollama                   Set up Ollama for semantic recall without asking (installs via Homebrew, downloads ~620 MB)
-  --no-ollama                Skip the Ollama setup (semantic recall uses BM25 keyword search)
-  -f, --follow               Keep printing new entries as they arrive (logs only)
-  --since <duration>         How far back to read: 30s, 10min, 2h, 1d (logs only, default 5min)
-  --source <daemon|hook|all> Which log source to read (logs only, default all)
-  --lines <n>                Cap the number of lines printed (logs only, default 200)
-  --stats                    Aggregate per trigger lane instead of printing lines
-                             (logs only; --since defaults to 7d)
-  --fix                      With doctor: repair non-ok surfaces (on 'all', won't set up ones never installed)
-  --no-stop-hook             Skip the Stop save-eval hook (registered by default)
-  --force                    With update: install even though locally modified files
-                             were found (they are backed up to
-                             ~/.bastra/update-backups/<version>/ either way).
-                             Never applies to the unattended auto-update.
-  --help, -h                 Show this help
-  --version, -v              Show version
-
-Examples:
-  bastra install claude-desktop
-  bastra install all --dry-run
-  bastra status --json
-  bastra doctor
-  bastra uninstall claude-desktop
-
-Supported surfaces (this build): ${supportedSurfaces}
-`);
-}
 
 export function showVersion(): void {
   process.stdout.write(`${VERSION}\n`);
@@ -304,8 +168,10 @@ export async function installVaultFirstRunStep(
 export async function cmdInstall(args: ParsedArgs): Promise<number> {
   // `bastra install --help` must document, never act — without this it would
   // fall through to the wizard (TTY) or the missing-surface error (script).
+  // dispatch() now guards every command the same way (#330); this stays as the
+  // direct-call guard, since cmdInstall is also reached from cmdUpdate.
   if (args.showHelp) {
-    showHelp();
+    showHelp("install");
     return 0;
   }
 
