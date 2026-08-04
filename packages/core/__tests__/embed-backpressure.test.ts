@@ -105,14 +105,17 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
       await vault.reindexFile(path.join(dir, `${id}.md`));
     }
 
-    // Burst-enqueue messen: dauert spürbar länger als ohne backpressure,
-    // weil enqueue() stallt sobald queue > 20.
-    const t0 = performance.now();
+    // Den Mechanismus prüfen, nicht seine Dauer (#331): die Wanduhr-Untergrenze
+    // hielt nur solange der Stall das Langsamste im Burst war — unter voller
+    // Suite-Last ist die umgebende Scheduling-Zeit nicht kontrolliert.
     await Promise.all(ids.map((id) => idx.enqueue(id)));
-    const dt = performance.now() - t0;
 
-    // mit limit=20 und stall=30ms sollten wir mehrfach gestallt haben → > 30ms
-    assert.ok(dt > 30, `enqueue burst dt=${dt.toFixed(0)}ms must include stall`);
+    // mit limit=20 stallt jeder enqueue ab dem 21. — der Burst startet alle
+    // Callbacks synchron, also wächst die Queue über das Limit hinaus.
+    assert.ok(
+      idx.stallCount() > 0,
+      `enqueue burst must stall once the queue exceeds the limit, stalls=${idx.stallCount()}`,
+    );
 
     await idx.stop();
     // Drain in-flight provider calls before rm(), else a late embed-write
@@ -124,6 +127,44 @@ test("enqueue() applies backpressure when queue grows beyond limit", async () =>
     else process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT = prevLimit;
     if (prevStall === undefined) delete process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS;
     else process.env.BASTRA_EMBED_BACKPRESSURE_STALL_MS = prevStall;
+  }
+});
+
+test("enqueue() does not stall while the queue stays under the limit", async () => {
+  // Gegenrichtung zum Test oben: ohne diesen Fall wäre `stallCount > 0` auch
+  // von einem enqueue erfüllt, das immer stallt.
+  const prevLimit = process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT;
+  process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT = "500";
+
+  try {
+    const { dir, vault } = await vaultWith(0);
+    const provider = new SlowMockProvider(20);
+    const persistPath = path.join(dir, ".bastra", "embeddings.json");
+    const idx = new EmbeddingIndex(vault, provider, persistPath);
+    await idx.start();
+
+    const ids: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `nb${String(i).padStart(4, "0")}`;
+      ids.push(id);
+      await writeFile(path.join(dir, `${id}.md`), memoryMd(id));
+      await vault.reindexFile(path.join(dir, `${id}.md`));
+    }
+
+    await Promise.all(ids.map((id) => idx.enqueue(id)));
+
+    assert.equal(
+      idx.stallCount(),
+      0,
+      "100 enqueues under a limit of 500 must never hit backpressure",
+    );
+
+    await idx.stop();
+    while (idx.inFlightCount() > 0) await new Promise((r) => setTimeout(r, 10));
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } finally {
+    if (prevLimit === undefined) delete process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT;
+    else process.env.BASTRA_EMBED_BACKPRESSURE_LIMIT = prevLimit;
   }
 });
 

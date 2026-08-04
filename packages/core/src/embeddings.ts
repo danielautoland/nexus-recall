@@ -225,6 +225,10 @@ export class EmbeddingIndex {
   private lastOkAt: number | null = null;
   /** Provider-Calls seit Prozessstart (query + batch) — Energie-Telemetrie (#109). */
   private providerCalls = 0;
+  /** Wie oft `enqueue()` wegen voller Queue gestallt hat (#331). Der Stall ist
+   *  sonst nur an der Wanduhr sichtbar, und eine Wanduhr-Untergrenze hält nur
+   *  solange der Stall das Langsamste im Burst ist — unter Suite-Last nicht. */
+  private stalls = 0;
 
   constructor(
     private readonly vault: Vault,
@@ -461,6 +465,7 @@ export class EmbeddingIndex {
   async enqueue(id: string): Promise<void> {
     this.pendingQueue.add(id);
     if (this.pendingQueue.size > backpressureLimit()) {
+      this.stalls++;
       await new Promise<void>((r) => setTimeout(r, backpressureStallMs()));
     }
     void this.flushQueue();
@@ -469,6 +474,11 @@ export class EmbeddingIndex {
   /** Anzahl gerade laufender Provider-Calls (für Tests / Telemetry). */
   inFlightCount(): number {
     return this.inFlight;
+  }
+
+  /** Wie oft `enqueue()` gestallt hat (für Tests / Telemetry). */
+  stallCount(): number {
+    return this.stalls;
   }
 
   /** Runtime-Health (#92) — der Daemon spiegelt das auf /health, damit ein
