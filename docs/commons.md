@@ -133,8 +133,13 @@ terms = trigger; the resolved memory's distinctive terms not in the query =
 expansion) → `writeBridges` into the clone. CLI: `bastra bridges mint [days]`
 (in-band reaches) and `bastra bridges harvest [days]` (deep, local Ollama
 reranker over the far slice). `bastra bridges contribute` is intentionally **not
-yet wired** (depends on #121) and currently only prints that it will PR once
-harvesting is wired.
+yet wired**, and the reason is a gate rather than missing plumbing: minting works,
+but a harvested bridge today has promotion (`evidence`) with no demotion, is scored
+by the same judge that mints it, and fires on *any* query sharing one trigger term —
+so one mint perturbs every query that shares it. Contribution waits on **#129**: a
+verification contract with measured lift over a held-out set, a near-slice
+regression guard, and a decay/demotion path. (The older note here cited #121; that
+issue closed 2026-06-16 and was never the real blocker.)
 
 ## What stays private
 
