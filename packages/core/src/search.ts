@@ -2,7 +2,7 @@ import MiniSearch from "minisearch";
 import type { Memory } from "./schema.js";
 import type { Vault, VaultEvent } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
-import { fuseRRF } from "./embeddings.js";
+import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
 
@@ -36,7 +36,7 @@ export interface RecallHit {
     rank_bm25: number | null;
     /** 1-basierter Rang im Vector-Arm, `null` wenn dieser Arm den Hit nicht führte. */
     rank_vector: number | null;
-    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der ×5000-Skalierung, die `score` ergibt. */
+    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der RRF_SCALE-Skalierung, die `score` ergibt. */
     raw: number;
   };
 }
@@ -346,7 +346,7 @@ export class SearchIndex {
    *  EmbeddingIndex registriert ist — oder der Vektor-Arm nichts liefert
    *  (#240/B1) — fällt auf reines BM25 (sync) zurück.
    *
-   *  Der finale Score ist `RRF * 5000` (siehe :39 und die Skalierung unten),
+   *  Der finale Score ist `RRF * RRF_SCALE` (siehe :39 und die Skalierung unten),
    *  NICHT die hier früher behaupteten `* 1000`. Wichtig für jeden, der
    *  Schwellen darauf setzt: der Wert ist eine skalierte Rang-Summe, keine
    *  Ähnlichkeit — Rang 1 in beiden Armen ergibt die Obergrenze 163.934
@@ -478,9 +478,10 @@ export class SearchIndex {
         scope: fm.scope,
         summary: fm.summary,
         topic_path: fm.topic_path,
-        // RRF-Score skaliert auf BM25-vergleichbare Range. Klassisch sind
-        // BM25-Scores ~5–500, RRF ist 0.005–0.04 → *5000 mappt grob.
-        score: round(entry.score * 5000),
+        // RRF-Score skaliert auf BM25-vergleichbare Range. Der Faktor hängt an
+        // RRF_K (embeddings.ts), damit die Anker 163.934 / 81.967 stehen
+        // bleiben, wenn sich die Fusion ändert.
+        score: round(entry.score * RRF_SCALE),
         matched_terms: bm?.terms ?? [],
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.

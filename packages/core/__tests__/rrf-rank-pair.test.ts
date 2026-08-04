@@ -2,21 +2,27 @@
  * Tests for the RRF rank pair exposed by `fuseRRF` (#230).
  *
  * The hybrid recall score is a RANK quantity, not a similarity: `fuseRRF` sums
- * `1/(k + rank)` across the BM25 and vector arms, and `recallHybrid` scales the
- * result by ×5000 into a BM25-looking range. This test pins that the fused entry
- * carries the per-arm rank pair (1-based, null when an arm did not return the
- * hit) alongside the raw RRF value, so a caller can decompose any score — and it
- * pins the two structural anchors from the field report: rank 1 in both arms is
- * the ceiling (≈163.934), rank 1 in one arm only is ≈81.967.
+ * `1/(RRF_K + rank)` across the BM25 and vector arms, and `recallHybrid` scales
+ * the result by `RRF_SCALE` into a BM25-looking range. This test pins that the
+ * fused entry carries the per-arm rank pair (1-based, null when an arm did not
+ * return the hit) alongside the raw RRF value, so a caller can decompose any
+ * score — and it pins the two structural anchors from the field report: rank 1
+ * in both arms is the ceiling (≈163.934), rank 1 in one arm only is ≈81.967.
+ *
+ * Those two anchors are written against the SCALED score on purpose. `RRF_K`
+ * moved from 60 to 5 to stop the damping constant from swamping the rank, and
+ * `RRF_SCALE` is tied to it precisely so these numbers do not move with it: the
+ * fusion reorders results, it does not re-denominate scores. A change that
+ * shifts 163.934 or 81.967 is a change to every band downstream, and this test
+ * is where it should fail first.
  *
  * Runner: node --import tsx --test packages/core/__tests__/rrf-rank-pair.test.ts
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fuseRRF } from "../src/index.js";
+import { fuseRRF, RRF_K, RRF_SCALE } from "../src/index.js";
 
-const K = 60;
-const rrf = (rank: number): number => 1 / (K + rank); // rank is 1-based
+const rrf = (rank: number): number => 1 / (RRF_K + rank); // rank is 1-based
 
 test("fuseRRF: 1-based rank pair per arm, null when an arm did not return the hit", () => {
   // bm25 order: a, b, c   |   vector order: b, x
@@ -41,18 +47,18 @@ test("fuseRRF: 1-based rank pair per arm, null when an arm did not return the hi
   assert.equal(x.rank_vector, 2, "x is second in the vector arm");
 });
 
-test("fuseRRF: raw value is the sum that ×5000 turns into the reported score", () => {
+test("fuseRRF: raw value is the sum that RRF_SCALE turns into the reported score", () => {
   const fused = fuseRRF(["only"], ["only"]);
   const e = fused.get("only")!;
-  // raw is the unscaled RRF sum; recallHybrid multiplies it by 5000 for `score`.
+  // raw is the unscaled RRF sum; recallHybrid multiplies it by RRF_SCALE for `score`.
   assert.ok(Math.abs(e.score - 2 * rrf(1)) < 1e-12);
 });
 
 test("fuseRRF: structural anchors — rank1+rank1 ceiling ≈163.934, one-arm ≈81.967", () => {
   const both = fuseRRF(["top"], ["top"]).get("top")!;
-  assert.ok(Math.abs(both.score * 5000 - 163.934) < 0.01, "rank 1 in both arms is the ceiling");
+  assert.ok(Math.abs(both.score * RRF_SCALE - 163.934) < 0.01, "rank 1 in both arms is the ceiling");
 
   const oneArm = fuseRRF(["solo"], []).get("solo")!;
   assert.equal(oneArm.rank_vector, null);
-  assert.ok(Math.abs(oneArm.score * 5000 - 81.967) < 0.01, "rank 1 in a single arm sits near 82");
+  assert.ok(Math.abs(oneArm.score * RRF_SCALE - 81.967) < 0.01, "rank 1 in a single arm sits near 82");
 });
