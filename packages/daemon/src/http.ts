@@ -87,7 +87,7 @@ import {
 } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
-import { isWeakResult } from "./weak-result.js";
+import { isWeakResult, isNoHome } from "./weak-result.js";
 import {
   FindDocumentArgs,
   ReadDocumentArgs,
@@ -1149,6 +1149,14 @@ function handleHookRecall(
         }
       }
 
+      // #249/#230: both honesty flags, computed ONCE for this recall and used by
+      // the telemetry row and the payload alike. They were computed twice from
+      // the same inputs before, which is how `no_home` came to be recorded on the
+      // MCP path and nowhere here.
+      const hybridActiveAtRecall = search.hasEmbeddings() && !embeddingDegradedAtRecall;
+      const weakResult = isWeakResult(hits, hybridActiveAtRecall);
+      const noHome = isNoHome(hits, hybridActiveAtRecall);
+
       fireAndForget(
         telemetry.logHookRecall({
           recall_id: recallId,
@@ -1182,7 +1190,8 @@ function handleHookRecall(
           // #249: recorded, not just returned. Without this the flag reads
           // zero in every stats run — not because recall is healthy, but
           // because nothing ever wrote it down.
-          weak_result: isWeakResult(hits, search.hasEmbeddings() && !embeddingDegradedAtRecall) || undefined,
+          weak_result: weakResult || undefined,
+          no_home: noHome || undefined,
         }),
       );
 
@@ -1196,13 +1205,15 @@ function handleHookRecall(
       // and without the flag the formatters label pure noise as "Strong
       // matches" — the daemon computed the contradicting signal and simply did
       // not send it. Same computation as the MCP path, from the same module.
-      const weakResult = isWeakResult(hits, search.hasEmbeddings() && !embeddingDegradedAtRecall);
       const payload = {
         hits: hits.map((h) => ({ ...toLeanHit(h), matched_recall_when: h.matched_recall_when ?? false })),
         vault_size: vault.size(),
         latency_ms: totalLatencyMs,
         recall_id: recallId,
         ...(weakResult ? { weak_result: true } : {}),
+        // #230: the stricter half travels the same wire. A strict subset of
+        // weak_result, so a consumer that only knows weak_result is unaffected.
+        ...(noHome ? { no_home: true } : {}),
       };
       if (wantsSse) {
         writeSseEvent(res, "done", payload);

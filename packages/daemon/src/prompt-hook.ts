@@ -120,6 +120,8 @@ interface RecallResponse {
   recall_id: string;  /** #249: no returned hit lexically anchors — the top score is rank-1-of-
    *  nothing. Absent means "not weak". */
   weak_result?: boolean;
+  /** #230: stricter subset of weak_result — the fact has no home in this vault. */
+  no_home?: boolean;
 }
 
 /** #217 Reflex-Lane: lean hit vom /hook/reflex-Endpoint. */
