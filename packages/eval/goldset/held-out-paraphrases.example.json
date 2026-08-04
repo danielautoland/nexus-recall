@@ -1,0 +1,12 @@
+[
+  { "gold": "git-rebase-autosquash-fixup", "query": "fold a follow-up edit into the commit it belongs to before review" },
+  { "gold": "css-flexbox-min-width-zero", "query": "a flex child refuses to shrink and pushes the row wider than the container" },
+  { "gold": "money-not-float", "query": "amounts drift by a cent after a few additions" },
+  { "gold": "timestamps-store-utc", "query": "the same event shows a different hour depending on who opens the report" },
+  { "gold": "secrets-in-env", "query": "an API key ended up in the repository history" },
+  { "gold": "backoff-jitter", "query": "every client retries at the same instant and the service falls over again" },
+  { "gold": "debounce-vs-throttle", "query": "fire the handler once the user stops typing, not on every keystroke" },
+  { "gold": "docker-manifest-before-source", "query": "the image rebuilds all dependencies whenever any source file changes" },
+  { "gold": "focus-ring-keyboard", "query": "tabbing through the form gives no visible indication of where you are" },
+  { "gold": "postgres-index-type-mismatch", "query": "the planner ignores an index that clearly covers the column" }
+]
