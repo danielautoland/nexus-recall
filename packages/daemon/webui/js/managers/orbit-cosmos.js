@@ -260,7 +260,22 @@ export function milkyWayLayout(entries, userKey, discR, holeR = null, webMode = 
   const halo = remainder.filter(([, m]) => m.length < 5);
 
   const aMin = discR * BAR_FRAC;
-  const push = (n, x, y, z) => positions.set(n.id, { x, y, z });
+  // Where the rotation curve flattens. Only halo structures are placed by it
+  // now (see below); it sits just past the bar, so anything outside the disc
+  // is guaranteed slower than the disc itself.
+  const rTurn = discR * 0.25;
+  // omegaScale is a property of the STRUCTURE, not of the single star (#328).
+  // Handing every star its own omega out of its own radius makes the arms
+  // MATERIAL structures under differential rotation, and those wind up within
+  // a few turns — measured here: 180° of shear across one arm after ~4 min,
+  // and every knot and globular smeared into an arc along with it. Real spiral
+  // arms are a density wave with ONE pattern speed, which is why the shipped
+  // galaxy disc turns rigidly on purpose. Three zones, and inside a zone
+  // everything turns at exactly the same rate, so every distance holds:
+  //   core  — the user's accretion disc keeps its own ACCRETION_SPEEDUP
+  //   disc  — arms, spurs, knots: one pattern speed (omegaScale unset → 1)
+  //   halo  — globulars and satellites: galacticOmega once per structure
+  const push = (n, x, y, z, omegaScale) => positions.set(n.id, { x, y, z, omegaScale });
   const acc = [];
 
   // ── the user: an accretion disc AROUND Sgr A*, not a bulge inside it.
@@ -339,15 +354,23 @@ export function milkyWayLayout(entries, userKey, discR, holeR = null, webMode = 
     const cy = sp * Math.sin(th) * shell;
     const cz = Math.cos(ph) * shell;
     const spread = Math.max(22, Math.sqrt(members.length) * 15);
+    // ONE omega for the whole globular, from the SHELL it sits on — not from
+    // each member, and not from the projected radius hypot(cx,cy). A globular
+    // parked near the rotation axis has a projected radius of almost nothing
+    // and would run at full solid-body speed while an equally distant one in
+    // the plane crawls: the halo would de-mix. The shell is the real distance
+    // from the centre, and it is always > discR > rTurn, so every halo
+    // structure is guaranteed slower than the disc.
+    const omega = galacticOmega(shell, rTurn);
     members.forEach((n, i) => {
       const u = rnd(i + hi * 13, 773);
       const rr = spread * u * u;
       const t2 = rnd(i + hi * 13, 787) * TAU;
       const p2 = Math.acos(2 * rnd(i + hi * 13, 797) - 1);
       const s2 = Math.sin(p2);
-      push(n, cx + s2 * Math.cos(t2) * rr, cy + s2 * Math.sin(t2) * rr, cz + Math.cos(p2) * rr);
+      push(n, cx + s2 * Math.cos(t2) * rr, cy + s2 * Math.sin(t2) * rr, cz + Math.cos(p2) * rr, omega);
     });
-    clusters.push({ key, role: ROLE.HALO, cx, cy, cz, r: spread, count: members.length });
+    clusters.push({ key, role: ROLE.HALO, cx, cy, cz, r: spread, count: members.length, omegaScale: omega });
   });
 
   // ── satellites: unadopted imports, irregular, falling in from outside
@@ -363,12 +386,15 @@ export function milkyWayLayout(entries, userKey, discR, holeR = null, webMode = 
     const cz = Math.cos(ph) * shell;
     const morph = classifyGalaxy(key, members, true, si + 1);
     const rr = Math.max(45, Math.sqrt(members.length) * 20);
+    // same rule as the globulars: one omega for the whole satellite, from its
+    // shell — a satellite that shears itself apart stops being a galaxy.
+    const omega = galacticOmega(shell, rTurn);
     members.forEach((n, i) => {
       const t = (i + 0.5) / members.length;
       const l = morphLocal(morph, rr, i + si * 17, t, 1);
-      push(n, cx + l.x, cy + l.y, cz + l.z);
+      push(n, cx + l.x, cy + l.y, cz + l.z, omega);
     });
-    clusters.push({ key, role: ROLE.SATELLITE, cx, cy, cz, r: rr, count: members.length });
+    clusters.push({ key, role: ROLE.SATELLITE, cx, cy, cz, r: rr, count: members.length, omegaScale: omega });
   });
 
   return { positions, clusters, discR, aMin };
