@@ -90,6 +90,13 @@ export interface VaultGraph {
   /** display name of the vault — the root folder's name */
   vault_name: string;
   vault_size: number;
+  /** #332: was `vault_size` mitzählt und der Graph bewusst NICHT zeichnet.
+   *  Ohne diese Zahl ist `vault_size` minus der memory/doc-Nodes ein
+   *  unerklärtes Delta — auf einem Live-Vault waren es 622 gegen 620, und
+   *  klein genug, dass es am Bild niemand sieht. `vault_size` bleibt die
+   *  Zahl aus `/health` und der Statusline; erklärbar wird sie hier:
+   *  vault_size − withheld.private === Anzahl der memory+doc-Nodes. */
+  withheld: { private: number };
   clusters: GraphCluster[];
   /** the coarse layer: memory building blocks with member counts */
   groups: GraphCluster[];
@@ -225,8 +232,11 @@ export function subKeyFor(m: Memory, vaultRoot: string): string {
 
 export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
   // Private memories stay off the wire entirely — same default the other
-  // externally reachable endpoints apply (min_sensitivity "team").
-  const memories = vault.list().filter((m) => m.fm.sensitivity !== "private");
+  // externally reachable endpoints apply (min_sensitivity "team"). How many
+  // that drops is reported as `withheld` (#332), so the gap to `vault_size`
+  // is a stated exclusion rather than a silent one.
+  const all = vault.list();
+  const memories = all.filter((m) => m.fm.sensitivity !== "private");
   const byId = new Map(memories.map((m) => [m.fm.id, m]));
   // Declared skills keep their identity regardless of live links — the fix
   // for "my skills are gone": a ghost exists only while a linker survives,
@@ -414,6 +424,7 @@ export function buildGraph(vault: Vault, skills: SkillRef[] = []): VaultGraph {
     generated_at: new Date().toISOString(),
     vault_name: basename(vault.root),
     vault_size: vault.size(),
+    withheld: { private: all.length - memories.length },
     clusters,
     groups,
     nodes,

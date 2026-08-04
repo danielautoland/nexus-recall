@@ -94,6 +94,16 @@ test("buildGraph: clusters, ghosts, bridges, private filter", async () => {
     assert.ok(ids.includes("a1") && ids.includes("p1") && ids.includes("b1"));
     assert.ok(!ids.includes("secret"), "private memories must not appear");
 
+    // #332: der Abstand zwischen vault_size und den gezeichneten Nodes muss
+    // erklärt sein, nicht bloß klein. Die Invariante ist die Erklärung.
+    const drawn = g.nodes.filter((n) => n.kind === "memory" || n.kind === "doc").length;
+    assert.equal(g.withheld.private, 1, "the one private fixture is the only exclusion");
+    assert.equal(
+      g.vault_size - g.withheld.private,
+      drawn,
+      `vault_size ${g.vault_size} − withheld ${g.withheld.private} must equal the ${drawn} memory/doc nodes`,
+    );
+
     const a1 = g.nodes.find((n) => n.id === "a1")!;
     assert.equal(a1.cluster, "alpha", "projects/<scope> is its own cluster");
     const p1 = g.nodes.find((n) => n.id === "p1")!;
