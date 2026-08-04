@@ -430,11 +430,12 @@ export class SearchIndex {
 
     // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF
     // on one arm produced a different score space, not the BM25 one. A
-    // one-armed rank-1 hit scores 5000/61 = 81.967 and rank 20 scores 62.5,
-    // so every hit collapses into the 62–82 band: the floor stops
-    // discriminating and the documented MUST_LOAD band (100) becomes
-    // structurally unreachable exactly when the provider is down. Fall back
-    // to the real BM25 path so scores mean what the thresholds assume.
+    // one-armed rank-1 hit scores RRF_SCALE/(RRF_K+1) = 81.967 by
+    // construction, and the documented MUST_LOAD band (100) is structurally
+    // unreachable on one arm at ANY k — exactly when the provider is down.
+    // (The width of the band below that ceiling does move with RRF_K: at
+    // k=60 rank 20 sat at 62.5, at k=5 it sits at 19.7.) Fall back to the
+    // real BM25 path so scores mean what the thresholds assume.
     if (vectorTop.length === 0) {
       // Reuse the BM25 results this call already computed — no recursion into
       // the public pipeline, so the stage sequence stays monotonic and emits

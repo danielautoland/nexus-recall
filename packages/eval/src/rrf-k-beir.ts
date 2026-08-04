@@ -147,9 +147,25 @@ async function main(): Promise<void> {
   await emb.start();
   // start() kicks the backfill off without awaiting it; the arms are only
   // comparable once every document has a vector.
+  const embedDeadline = Date.now() + Number(process.env.BASTRA_EMBED_TIMEOUT_MS ?? 900_000);
+  let lastSize = -1;
+  let stalledSince = Date.now();
   while (emb.size() < loaded) {
     await new Promise((r) => setTimeout(r, 1000));
     process.stderr.write(`\rembedding ${emb.size()}/${loaded}`);
+    if (emb.size() !== lastSize) {
+      lastSize = emb.size();
+      stalledSince = Date.now();
+    }
+    // Ollama down or a document that never embeds would otherwise hang here
+    // forever, which reads as "slow" and wastes the run.
+    if (Date.now() - stalledSince > 120_000 || Date.now() > embedDeadline) {
+      console.error(
+        `\nFATAL: embedding stalled at ${emb.size()}/${loaded}. Is Ollama reachable at ` +
+          `${process.env.BASTRA_OLLAMA_URL ?? "http://localhost:11434"}?`,
+      );
+      process.exit(3);
+    }
   }
   process.stderr.write("\n");
   search.useEmbeddings(emb);
@@ -206,11 +222,19 @@ async function main(): Promise<void> {
     const ties = diffs.length - wins - losses;
     const mean = diffs.reduce((s, d) => s + d, 0) / diffs.length;
 
-    // paired bootstrap over queries, 10k resamples
-    let rngState = 42;
+    // Paired bootstrap over queries. mulberry32, not the textbook
+    // `(s*1103515245+12345) & 0x7fffffff` LCG: that multiply reaches 2.4e18,
+    // past Number.MAX_SAFE_INTEGER, so the low bits are rounded away BEFORE
+    // the mask ever sees them. The result has a period of 10 466 and 15 824
+    // distinct values — 10k resamples then cycle the same sequence ~309 times
+    // and the "bootstrap" is a fixed pattern with a 3x occupancy bias.
+    let rngState = 42 >>> 0;
     const rnd = (): number => {
-      rngState = (rngState * 1103515245 + 12345) & 0x7fffffff;
-      return rngState / 0x7fffffff;
+      rngState = (rngState + 0x6d2b79f5) >>> 0;
+      let t = rngState;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     const means: number[] = [];
     for (let b = 0; b < 10_000; b++) {
@@ -224,9 +248,22 @@ async function main(): Promise<void> {
     // two-sided bootstrap p: how often the resampled mean crosses zero
     const crossings = means.filter((m) => (mean > 0 ? m <= 0 : m >= 0)).length;
     const p = Math.min(1, (2 * crossings) / means.length);
+    // Sign-flip permutation as a second opinion — it makes no distributional
+    // assumption and does not reuse the resampling machinery, so the two
+    // failing together is informative.
+    let ge = 0;
+    for (let b = 0; b < 10_000; b++) {
+      let s = 0;
+      for (const d of diffs) s += rnd() < 0.5 ? -d : d;
+      if (Math.abs(s / diffs.length) >= Math.abs(mean)) ge += 1;
+    }
+    const pPerm = (ge + 1) / 10_001;
     console.log(`\n── paired: k=${ka} vs k=${kb}, per-query nDCG@10 (n=${diffs.length}) ──`);
-    console.log(`   mean Δ ${mean >= 0 ? "+" : ""}${mean.toFixed(4)}   95% CI [${lo.toFixed(4)}, ${hi.toFixed(4)}]   bootstrap p=${p.toFixed(4)}`);
+    console.log(`   mean Δ ${mean >= 0 ? "+" : ""}${mean.toFixed(4)}   95% CI [${lo.toFixed(4)}, ${hi.toFixed(4)}]   bootstrap p=${p.toFixed(4)}   sign-flip p=${pPerm.toFixed(4)}`);
     console.log(`   better on ${wins} queries · worse on ${losses} · unchanged on ${ties}`);
+    if (arg("--dump-diffs", "")) {
+      await fs.writeFile(arg("--dump-diffs", ""), JSON.stringify(diffs));
+    }
   }
 
   // single-arm references, so "the fusion helps at all" stays falsifiable

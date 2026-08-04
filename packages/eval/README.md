@@ -211,13 +211,29 @@ computed once per query and reused for every k, so only the combination moves:
 | 60 | 0.3494 | 0.1739 | 64.7% |
 | 100 | 0.3490 | 0.1738 | 65.0% |
 
-Paired per query, k=5 against k=60: **+0.0079 nDCG@10, 95% CI [0.0019, 0.0122],
-p=0.0012** (10 k bootstrap resamples) — better on 88 queries, worse on 57. The
-dev split, independent queries, agrees: **+0.0061, CI [0.0011, 0.0128],
-p=0.0128**. 1–10 is a plateau, not a spike, so the exact value inside that band
-is not load-bearing.
+Paired per query, k=5 against k=60: **+0.0079 nDCG@10, 95% CI [0.0018, 0.0142],
+bootstrap p=0.0108, sign-flip permutation p=0.0111** — better on 88 queries,
+worse on 57, unchanged on 178. The dev split is positive but does **not** clear
+the same bar: **+0.0061, CI [-0.0001, 0.0124], p=0.0526**. One split
+significant, one not. 1–10 is a plateau, not a spike, so the exact value inside
+that band is not load-bearing.
 
-Small effect, honestly. What makes it worth the constant is that it is free,
-it is significant on two independent splits, and the arithmetic behind it says
-the shipped value was doing something nobody intended — see
-`core/__tests__/rrf-damping.test.ts`.
+> Those p-values are the second set. The first run shipped a bootstrap whose
+> RNG was `(s * 1103515245 + 12345) & 0x7fffffff` — in JS that multiply reaches
+> 2.4e18, past `Number.MAX_SAFE_INTEGER`, so the low bits round away before the
+> mask: period 10 466, 15 824 distinct values, 10 k resamples cycling one
+> sequence ~309 times. It reported p=0.0012 / p=0.0128 and "significant on two
+> independent splits". Corrected to mulberry32, the dev split stops clearing
+> 0.05. Same measurements, weaker evidence.
+
+Two numbers the harness prints that belong next to the table: the **dense arm
+alone** scores 0.3577 — above this fusion at k=5 (0.3572), below it at k=3
+(0.3586) — and the bm25 arm alone 0.2909. On this corpus the fusion does not
+clear its own best arm at any k. What the constant buys is a fusion that beats
+the fusion that shipped, at every cut; it does not make the fusion worth having
+here. That line is printed on purpose, and quoting the k table without it would
+be a selective read of the same output.
+
+Small effect, honestly. What makes it worth the constant is that it is free and
+that the arithmetic behind it says the shipped value was doing something nobody
+intended — see `core/__tests__/rrf-damping.test.ts`.

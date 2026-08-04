@@ -36,6 +36,18 @@ async function main(): Promise<void> {
   const depth = Number.parseInt(arg("--depth", "50"), 10);
   const casesPath = arg("--cases", "");
   const outPath = arg("--out", "");
+  if (!vaultRoot || !casesPath) {
+    console.error("FATAL: set BASTRA_VAULT_PATH (or --vault) and --cases <file>");
+    process.exit(2);
+  }
+  const embSrc = path.join(vaultRoot, ".bastra", "embeddings.json");
+  if (!(await fs.stat(embSrc).catch(() => null))) {
+    console.error(
+      `FATAL: ${embSrc} not found — this harness reads the vectors a daemon already built. ` +
+        "Run the daemon once on this vault, or use absence-honesty.ts, which seeds them itself.",
+    );
+    process.exit(2);
+  }
   const cases = JSON.parse(await fs.readFile(casesPath, "utf8")) as { gold: string; query: string }[];
 
   const vault = new Vault(vaultRoot);
@@ -51,7 +63,7 @@ async function main(): Promise<void> {
   // backfills, both of which persist. The vault is an input here, not a target.
   const work = await fs.mkdtemp(path.join(os.tmpdir(), "pool-depth-"));
   const embWork = path.join(work, "embeddings.json");
-  await fs.copyFile(path.join(vaultRoot, ".bastra", "embeddings.json"), embWork);
+  await fs.copyFile(embSrc, embWork);
   const emb = new EmbeddingIndex(vault, provider, embWork, path.join(work, "cache.json"));
   await emb.start();
   search.useEmbeddings(emb);

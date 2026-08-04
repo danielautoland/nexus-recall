@@ -142,9 +142,17 @@ export async function handleUiSearch(
   }
   try {
     const hits = await search.recallHybrid(q, { k: 8, allow_private: false });
-    // only hits that stand close to the top score make it into the type-ahead:
-    // the long tail of a hybrid search is keyword noise and reads as fuzz
-    const floor = hits.length ? Math.max(100, hits[0].score * 0.85) : 0;
+    // Only hits that stand close to the top score make it into the type-ahead:
+    // the long tail of a hybrid search is keyword noise and reads as fuzz.
+    //
+    // Relative to the top hit, not `max(100, …)`. The absolute half of that
+    // floor produced an EMPTY list whenever the top hit itself scored under
+    // 100 — a one-armed top hit is 81.967 by construction at any k, so the
+    // search box already returned nothing for those queries, and RRF_K made
+    // the case common rather than rare (measured on a 3 633-doc corpus:
+    // 6.2% → 17.6% of queries). A floor above the best result the search has
+    // is not a confidence filter, it is a switch that turns the box off.
+    const floor = hits.length ? hits[0].score * 0.85 : 0;
     const confident = hits.filter((h) => h.score >= floor).slice(0, 5);
     sendJsonPlain(res, 200, {
       hits: confident.map((h) => ({ id: h.id, title: h.title, type: h.type, score: h.score })),

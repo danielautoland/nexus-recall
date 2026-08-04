@@ -303,8 +303,10 @@ async function main(): Promise<void> {
     await seedIdx.stop();
     await seedVault.stop();
   }
+  // base64-encoded Float32Array per id (embeddings.ts persist format); only
+  // the key set is used here, but the type should not claim otherwise
   const persisted = JSON.parse(await fs.readFile(embSrc, "utf8")) as {
-    vectors: Record<string, number[]>;
+    vectors: Record<string, string>;
   };
   const withVectors = new Set(Object.keys(persisted.vectors));
 
@@ -315,10 +317,17 @@ async function main(): Promise<void> {
   console.error(`corpus: ${corpus.size} memories (of ${withVectors.size} with vectors)`);
 
   // deterministic sample
-  let s = seed;
+  // mulberry32. The textbook `(s*1103515245+12345) & 0x7fffffff` LCG is wrong
+  // in JS: the multiply reaches 2.4e18, past Number.MAX_SAFE_INTEGER, so the
+  // low bits round away before the mask — period 10 466, 15 824 distinct
+  // values. Deterministic either way, but a biased shuffle is a biased sample.
+  let s = seed >>> 0;
   const rnd = (): number => {
-    s = (s * 1103515245 + 12345) & 0x7fffffff;
-    return s / 0x7fffffff;
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   let ids = [...corpus.keys()].sort();
   for (let i = ids.length - 1; i > 0; i--) {
@@ -464,7 +473,9 @@ async function main(): Promise<void> {
   console.log(`  recall  SILENT (claims hits) ${summary.absent.recall_silent}/${total}  ${pct(summary.absent.recall_silent)}`);
   const pn = summary.paraphrase.n || 1;
   const ppct = (x: number): string => `${((x / pn) * 100).toFixed(1)}%`;
-  console.log(`\nPARAPHRASE (same memory, asked with a sentence from its body — not circular):`);
+  console.log(
+    `\nPARAPHRASE (same memory, asked ${casesPath ? "with a hand-written held-out query" : "with a sentence from its body — a quotation, not a paraphrase"}):`,
+  );
   console.log(`  n = ${summary.paraphrase.n}`);
   console.log(`  recall  gold in top-${k}      ${summary.paraphrase.recall_hit_at_k}/${pn}  ${ppct(summary.paraphrase.recall_hit_at_k)}`);
   console.log(`  grep    gold in ranked top-${k} ${summary.paraphrase.grep_ranked_hit}/${pn}  ${ppct(summary.paraphrase.grep_ranked_hit)}`);
