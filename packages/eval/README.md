@@ -237,3 +237,81 @@ be a selective read of the same output.
 Small effect, honestly. What makes it worth the constant is that it is free and
 that the arithmetic behind it says the shipped value was doing something nobody
 intended — see `core/__tests__/rrf-damping.test.ts`.
+
+## Band occupancy (`src/band-occupancy.ts`)
+
+`rrf-k-beir.ts` asks whether the fusion constant is right. This asks what the
+constants layered on top of it — the hook's `SCORE_FLOOR = 30` and
+`MUST_LOAD_SCORE = 100` — actually select once the fusion has run. #302 measured
+that once, at `RRF_K = 60`, and #335 changed the scale under it. The harness
+exists so the question can be re-asked rather than re-argued.
+
+Three things it fixes about how that question was asked the first time.
+
+### The call shape is part of the measurement
+
+`recallHybrid(query, {k})` is not what the hook does. `/hook/recall` defaults
+`expand_hops` to 1 (`daemon/src/http.ts`), so the caller receives up to **2k**
+hits: k seeds, plus up to k one-hop neighbours scored `seed.score * 0.5 *
+link.score` (`core/src/search.ts`) — half a seed at best. Those neighbours are
+the only hits that can land under a floor of 30 on this path, because
+`http.ts` clamps the endpoint to `k <= 10` and the k-th fused score is bounded
+below by `RRF_SCALE / (RRF_K + k)` = 32.79 there. Measure with hops off and the
+floor reports as inert; measure the shape the hook uses and it fires, on
+neighbours only. `--hops` (default 1, the hook's own default) is the switch, and
+every row carries `hop` and `pos` so seeds and neighbours are never pooled.
+
+### Two corpora, every time — and which one is the finding
+
+Run both, always:
+
+```bash
+# the phenomenon — a real vault, the distribution the product actually serves
+BASTRA_VAULT_PATH=/path/to/vault npx tsx src/band-occupancy.ts --n 400 --k 3
+
+# the credential — a corpus the reader can download and rerun
+npx tsx src/band-occupancy.ts --corpus ./nfcorpus --n 200 --k 3,10
+```
+
+They answer different questions and neither substitutes for the other. The
+public corpus establishes that a result is **reproducible by someone who does
+not have your vault** — without it a number cannot end an argument, which is
+why `rrf-k-beir.ts` settles the constant on NFCorpus. The private vault
+establishes what the system does on the distribution it is actually serving:
+hand-written triggers, one author's language, a linked graph. NFCorpus has no
+`related_via` edges at all, so the hop half of this measurement cannot be asked
+there.
+
+When the two agree within noise, **report the private number as the finding and
+the public one as the replication.** The public corpus is a proxy for the
+phenomenon; the vault is the phenomenon. When they disagree, the disagreement is
+the result — it says the effect was a property of one corpus, and the harness
+has just told you which.
+
+Observed so far, `--hops 0`, k=3: REQUIRED 67.6% answerable / 29.2% absent on a
+649-memory vault, 58.5% / 6.7% on NFCorpus. Same direction, wider separation on
+the public corpus — a personal vault is about the things its owner queries, so
+its "absent" queries are less absent than a foreign corpus's.
+
+### An absent set is mandatory, and it is two populations
+
+`--queries <file>` takes one query per line, chosen to be outside the corpus.
+A band that only ever sees answerable queries cannot be judged: a noise floor
+exists for the empty case, so the empty case is where it has to be measured.
+The set has to be written per corpus — `offvault-queries.txt` (cooking,
+sailing, veterinary) is absent from a developer's vault and *present* in
+NFCorpus, which is nutrition and medicine; `offvault-queries-nfcorpus.txt` is
+the mirror.
+
+Keep topical queries and bare operational strings (`ls -la`, `chmod 755`)
+separate when reporting. They are not one population — at `--hops 0` they gave
+23.3% and 46.7% REQUIRED on the same run, and pooling them reports 29.2% for
+neither.
+
+### Two medians, because one label can invent a finding
+
+The harness prints the median over **all served hits** and the median of **each
+query's top hit** side by side. They are 70.3 and 163.9 on the same run. Print
+the first under the second's name and a reader concludes the top-hit median
+moved when it did not — it is still the structural ceiling, exactly where #302's
+own table put it.

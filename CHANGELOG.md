@@ -4,6 +4,42 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`packages/eval/src/band-occupancy.ts` — what the hook's two constants
+  select, measured at the call the hook makes** (#302). #302 measured the bands
+  once, at `RRF_K = 60`; #335 changed the scale under them and the closing
+  comment left the re-measurement open. The instrument was a paragraph in an
+  issue body, so re-asking meant re-arguing. It is a file now.
+
+  The first version of it reproduced the original mistake and is worth stating
+  because the correction is the feature: it called `recallHybrid(query, {k})`,
+  and `/hook/recall` does not. That endpoint defaults `expand_hops` to 1, so a
+  caller receives up to 2k hits — k seeds plus up to k one-hop neighbours,
+  each scored `seed.score * 0.5 * link.score`, half a seed at best. On a
+  649-memory vault at k=3 that is the whole difference between `dropped <30 =
+  0.0%` and `2.6%`, and every dropped hit is a neighbour. No seed can reach the
+  floor through that endpoint at all: `http.ts` clamps it to `k <= 10` and the
+  k-th fused score is bounded below by `RRF_SCALE / (RRF_K + k)` = 32.79. So
+  the floor at 30 is not inert, as #302 said it was — its job is narrow and
+  real, and it is the only thing between the hook and a half-scored graph
+  neighbour. `--hops` selects the shape and defaults to the hook's own; rows
+  carry `hop` and `pos` so the two populations are never pooled.
+
+  `--corpus` builds the vault from a BEIR corpus with the same code
+  `rrf-k-beir.ts` uses, so the same question can be asked on something the
+  reader can download. NFCorpus, 3633 documents: REQUIRED 58.5% on judged
+  queries against 6.7% on absent ones at k=3, against 67.6% / 29.2% on a
+  personal vault. The separation reproduces and is wider on the public corpus.
+  The hop half does not reproduce there and is not claimed to — one document
+  per memory means no `related_via` edges and no neighbours to score.
+
+  `packages/eval/README.md` documents when each corpus is the finding and when
+  it is the replication, why an absent query set is mandatory and has to be
+  written per corpus, and why the harness prints two medians instead of one.
+
 ## [0.9.0] — 2026-08-02
 
 **Honest numbers, nothing silently lost.** The milestone this release closes is
