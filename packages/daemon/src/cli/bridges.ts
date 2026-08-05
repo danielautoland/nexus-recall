@@ -184,10 +184,18 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       // Bridges are minted locally from successful recalls and contributed to the
       // Commons repo via PR (same flow as `bastra commons verify`). Deliberately
       // not auto-run: nothing leaves the machine without an explicit, reviewed PR.
-      // Not yet wired — minting depends on #121 (the below-floor far slice is not
-      // logged yet), so there is no harvested material to contribute.
+      //
+      // Still not wired, but the blocker moved. #121 (far-slice logging) closed
+      // 2026-06-16 and `mint`/`harvest` above produce real bridges, so "there is
+      // no harvested material" stopped being true. The live gate is #129: a
+      // harvested bridge has promotion (`evidence`) and no demotion, the judge
+      // that mints it is the judge that scores it, and `expansionsFor` perturbs
+      // every query sharing a trigger term — so contribution waits on measured
+      // lift over a held-out set, not on more plumbing.
       process.stderr.write(
-        `contribute: not yet available — bridge minting depends on #121. Bridges will be contributed to ${COMMONS_REPO_URL.replace(/\.git$/, "")} via PR once harvesting is wired.\n`,
+        `contribute: not yet available — gated on #129 (verification contract: held-out lift, regression guard, demotion path). ` +
+          `Minting works; what is missing is evidence that a bridge helps without regressing anything else. ` +
+          `Bridges will be contributed to ${COMMONS_REPO_URL.replace(/\.git$/, "")} via PR once that gate is met.\n`,
       );
       return 1;
     }

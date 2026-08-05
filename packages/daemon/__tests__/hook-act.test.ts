@@ -73,7 +73,16 @@ async function makeServer(): Promise<{ port: number; telemetry: Telemetry; close
   await vault.init();
   const search = new SearchIndex(vault);
   search.start();
+  // Telemetry resolves its log dir in the constructor. Without a redirect, the two
+  // acted-on episodes these tests produce land in the developer's real
+  // ~/.bastra/logs as fixture rows ("m1"), where `bastra bridges mint` would later
+  // mine them into contributable bridges. Only fill in a dir when the caller has
+  // not chosen one — the session-id test below sets BASTRA_LOG_PATH itself and
+  // then reads the events back out of it.
+  const ownLogDir = process.env.BASTRA_LOG_PATH ? null : await mkdtemp(join(tmpdir(), "bastra-act-logs-"));
+  if (ownLogDir) process.env.BASTRA_LOG_PATH = ownLogDir;
   const telemetry = new Telemetry();
+  if (ownLogDir) delete process.env.BASTRA_LOG_PATH;
   const handle = await startHttpServer({
     port: 0,
     vault,
@@ -92,6 +101,7 @@ async function makeServer(): Promise<{ port: number; telemetry: Telemetry; close
       await vault.stop?.();
       await handle.close();
       await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      if (ownLogDir) await rm(ownLogDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

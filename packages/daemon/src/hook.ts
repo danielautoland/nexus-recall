@@ -100,6 +100,8 @@ interface RecallResponse {
    *  nothing. Absent means "not weak", so the flag is only ever present when
    *  it has something to say. */
   weak_result?: boolean;
+  /** #230: stricter subset of weak_result — the fact has no home in this vault. */
+  no_home?: boolean;
 }
 
 type HookStatus =
@@ -328,11 +330,11 @@ async function main(): Promise<void> {
     } else {
       emitEmpty();
     }
-    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true);
+    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true);
     suppressedTokensEst = Math.ceil(block.length / 4);
     recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
-    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true);
+    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true);
     const block = sizeNote ? `${sizeNote}\n${hintsBlock}` : hintsBlock;
     hintTokensEst = Math.ceil(block.length / 4);
     hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
@@ -398,7 +400,13 @@ function formatHintLine(h: RecallHit): string {
   return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-function formatHintBlock(required: RecallHit[], optional: RecallHit[], project: string | null, weak = false): string {
+function formatHintBlock(
+  required: RecallHit[],
+  optional: RecallHit[],
+  project: string | null,
+  weak = false,
+  noHome = false,
+): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const head = `<recall-hints surface="claude-code"${projAttr}>`;
   const tail = `</recall-hints>`;
@@ -411,7 +419,12 @@ function formatHintBlock(required: RecallHit[], optional: RecallHit[], project: 
     // keep it to itself. Annotated rather than omitted, so the agent still sees
     // that a lookup happened and came up empty instead of silently getting less.
     sections.push(
-      weak
+      noHome
+        ? `A lookup ran for what you're about to do and this vault has NO memory of ` +
+          `it — nothing anchored lexically, and the ranking found no near neighbour ` +
+          `either. The lines below are the least-bad rows of an empty result. Treat ` +
+          `this as "not written down yet", not as weak evidence, and do not load them.`
+        : weak
         ? `Ranked matches for what you're about to do — but NONE of them anchors ` +
           `lexically (no trigger phrase, no title term matched). On the hybrid path a ` +
           `high score is rank-1-of-nothing, so treat these as "probably not relevant" ` +
