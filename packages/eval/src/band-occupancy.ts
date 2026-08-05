@@ -45,6 +45,10 @@ interface Row {
   rank_vector: number | null;
   band: "dropped" | "optional" | "required";
   arms: 1 | 2 | 0;
+  /** A seed of the fused list, or a one-hop neighbour appended after the cut. */
+  hop: "direct" | "1-hop";
+  /** 1-based position in the list the caller received, seeds first. */
+  pos: number;
 }
 
 async function main(): Promise<void> {
@@ -53,18 +57,51 @@ async function main(): Promise<void> {
     const i = argv.indexOf(n);
     return i === -1 ? d : (argv[i + 1] ?? d);
   };
-  const vaultRoot = (process.env.BASTRA_VAULT_PATH ?? arg("--vault", "")).replace(/^~/, os.homedir());
   const n = Number.parseInt(arg("--n", "400"), 10);
   const ks = arg("--k", "3,10,30").split(",").map((s) => Number.parseInt(s, 10));
   const outPath = arg("--out", "");
-  if (!vaultRoot) {
-    console.error("FATAL: set BASTRA_VAULT_PATH (or --vault)");
-    process.exit(2);
-  }
-  const embSrc = path.join(vaultRoot, ".bastra", "embeddings.json");
-  if (!(await fs.stat(embSrc).catch(() => null))) {
-    console.error(`FATAL: ${embSrc} not found — run the daemon once on this vault first.`);
-    process.exit(2);
+  // A BEIR corpus directory (corpus.jsonl + queries.jsonl) instead of a personal
+  // vault. The occupancy of a band is a corpus property, so a number measured on
+  // a private vault can open a question and cannot close one — the same reason
+  // `rrf-k-beir.ts` settles the constant on NFCorpus rather than on anyone's
+  // notes. Same code path, same constants, a corpus the reader can download.
+  const corpusDir = arg("--corpus", "").replace(/^~/, os.homedir());
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), "band-occupancy-"));
+
+  let vaultRoot = (process.env.BASTRA_VAULT_PATH ?? arg("--vault", "")).replace(/^~/, os.homedir());
+  let embSeed: string | null = null;
+  if (corpusDir) {
+    // Vault build copied from rrf-k-beir.ts, so both harnesses measure the same
+    // documents the same way. No recall_when: a public corpus has no
+    // author-written triggers and inventing them would test doc2query.
+    const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const esc = (s: string): string => JSON.stringify(s.replace(/\s+/g, " ").trim());
+    const corpus = (await fs.readFile(path.join(corpusDir, "corpus.jsonl"), "utf8"))
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as { _id: string; title: string; text: string });
+    vaultRoot = path.join(work, "vault");
+    await fs.mkdir(path.join(vaultRoot, "memories"), { recursive: true });
+    for (const doc of corpus) {
+      const id = slug(doc._id);
+      await fs.writeFile(
+        path.join(vaultRoot, "memories", `${id}.md`),
+        `---\nid: ${id}\ntitle: ${esc(doc.title || id)}\ntype: reference\n` +
+          `summary: ${esc((doc.text || "").slice(0, 200))}\ntopic_path: [beir]\ntags: [beir]\n` +
+          `scope: beir\nrecall_when: []\ncreated: 2020-01-01\nupdated: 2020-01-01\n---\n\n${doc.text ?? ""}\n`,
+      );
+    }
+    console.error(`corpus ${corpus.length} docs -> ${vaultRoot}`);
+  } else {
+    if (!vaultRoot) {
+      console.error("FATAL: set BASTRA_VAULT_PATH (or --vault), or pass --corpus <beir dir>");
+      process.exit(2);
+    }
+    embSeed = path.join(vaultRoot, ".bastra", "embeddings.json");
+    if (!(await fs.stat(embSeed).catch(() => null))) {
+      console.error(`FATAL: ${embSeed} not found — run the daemon once on this vault first.`);
+      process.exit(2);
+    }
   }
 
   const vault = new Vault(vaultRoot);
@@ -77,11 +114,29 @@ async function main(): Promise<void> {
     keepAlive: "10m",
   });
   // Same discipline as pool-depth.ts: work off a COPY, the vault is an input.
-  const work = await fs.mkdtemp(path.join(os.tmpdir(), "band-occupancy-"));
   const embWork = path.join(work, "embeddings.json");
-  await fs.copyFile(embSrc, embWork);
+  if (embSeed) await fs.copyFile(embSeed, embWork);
   const emb = new EmbeddingIndex(vault, provider, embWork, path.join(work, "cache.json"));
   await emb.start();
+  // start() kicks the backfill off without awaiting it (same trap rrf-k-beir.ts
+  // documents). Querying before it lands measures the BM25 arm alone and reports
+  // it as hybrid: no `rrf` field, scores in the hundreds, 100% REQUIRED. Wait.
+  const embedDeadline = Date.now() + Number(process.env.BASTRA_EMBED_TIMEOUT_MS ?? 3_600_000);
+  let lastSize = -1;
+  let stalledSince = Date.now();
+  while (emb.size() < vault.size()) {
+    await new Promise((r) => setTimeout(r, 1000));
+    process.stderr.write(`\rembedding ${emb.size()}/${vault.size()}`);
+    if (emb.size() !== lastSize) {
+      lastSize = emb.size();
+      stalledSince = Date.now();
+    }
+    if (Date.now() - stalledSince > 120_000 || Date.now() > embedDeadline) {
+      console.error(`\nFATAL: embedding stalled at ${emb.size()}/${vault.size()}.`);
+      process.exit(3);
+    }
+  }
+  process.stderr.write("\n");
   search.useEmbeddings(emb);
 
   // Two query sources, and which one is used IS the angle (blocker-protocol 4a).
@@ -101,12 +156,22 @@ async function main(): Promise<void> {
         .filter((s) => s.length > 0 && !s.startsWith("#"))
         .slice(0, n)
         .map((q) => ({ id: q, q }))
-    : vault
-        .list()
-        .map((m) => ({ id: m.fm.id, q: m.fm.recall_when?.[0] ?? "" }))
-        .filter((x) => x.q.trim().length > 0)
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .slice(0, n);
+    : corpusDir
+      ? // BEIR: the corpus ships real user queries with graded relevance. These
+        // are answerable by construction and, unlike a memory's own trigger,
+        // nobody wrote them against these documents.
+        (await fs.readFile(path.join(corpusDir, "queries.jsonl"), "utf8"))
+          .split("\n")
+          .filter((l) => l.trim())
+          .map((l) => JSON.parse(l) as { _id: string; text: string })
+          .slice(0, n)
+          .map((q) => ({ id: q._id, q: q.text }))
+      : vault
+          .list()
+          .map((m) => ({ id: m.fm.id, q: m.fm.recall_when?.[0] ?? "" }))
+          .filter((x) => x.q.trim().length > 0)
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .slice(0, n);
 
   console.error(
     `vault ${vault.size()} memories, ${emb.size()} vectors, ${queries.length} queries` +
@@ -120,10 +185,19 @@ async function main(): Promise<void> {
     );
   }
 
+  // The shape of the call IS part of the measurement. `/hook/recall` defaults
+  // expand_hops to 1 (http.ts:1000) and appends up to k one-hop neighbours to
+  // the k seeds, each scored `seed.score * 0.5 * link.score` (search.ts:568) —
+  // half a seed at best. Those neighbours are the only hits that can land under
+  // the floor at 30 on this path, so a run with hops off measures a call the
+  // hook never makes and reports the floor as inert.
+  const hops: 0 | 1 = arg("--hops", "1") === "0" ? 0 : 1;
+  console.error(`  expand_hops=${hops} (the hook's own default is 1)`);
+
   const rows: Row[] = [];
   for (const k of ks) {
     for (const { q } of queries) {
-      const hits = await search.recallHybrid(q, { k });
+      const hits = await search.recallHybrid(q, { k, expand_hops: hops });
       for (const h of hits) {
         const rb = h.rrf?.rank_bm25 ?? null;
         const rv = h.rrf?.rank_vector ?? null;
@@ -137,6 +211,8 @@ async function main(): Promise<void> {
           rank_vector: rv,
           band: h.score >= MUST_LOAD ? "required" : h.score >= FLOOR ? "optional" : "dropped",
           arms,
+          hop: h.hop ?? "direct",
+          pos: hits.indexOf(h) + 1,
         });
       }
     }
@@ -158,11 +234,33 @@ async function main(): Promise<void> {
       `  OPTIONAL 30..99  ${pct(opt.length, r.length).padStart(6)}` +
         `   — ${pct(opt.filter((x) => x.arms === 1).length, opt.length)} found by ONE arm`,
     );
-    console.log(`  dropped   <30    ${pct(drop.length, r.length).padStart(6)}`);
+    console.log(
+      `  dropped   <30    ${pct(drop.length, r.length).padStart(6)}` +
+        `   — ${pct(drop.filter((x) => x.hop === "1-hop").length, drop.length)} of them one-hop neighbours`,
+    );
     console.log(`  above bash-fail floor (>=50): ${pct(r.filter((x) => x.score >= BASH_FAIL_FLOOR).length, r.length)}`);
-    const scores = r.map((x) => x.score).sort((a, b) => a - b);
-    const med = scores.length ? scores[Math.floor(scores.length / 2)] : 0;
-    console.log(`  top-hit score median ${med.toFixed(1)}, max ${Math.max(...scores, 0).toFixed(1)}`);
+    const seeds = r.filter((x) => x.hop === "direct");
+    const neigh = r.filter((x) => x.hop === "1-hop");
+    if (neigh.length) {
+      console.log(
+        `  hits per query ${(r.length / queries.length).toFixed(1)} ` +
+          `(${(seeds.length / queries.length).toFixed(1)} seeds + ${(neigh.length / queries.length).toFixed(1)} hops)` +
+          `   hop hits under the floor: ${pct(neigh.filter((x) => x.score < FLOOR).length, neigh.length)}`,
+      );
+    }
+    // Two different medians, labelled as what they are. The all-hits median is
+    // NOT the median top hit — printing one under the other's name manufactures
+    // a finding out of a column heading.
+    const med = (xs: number[]): number =>
+      xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0;
+    const perQ = new Map<string, Row[]>();
+    for (const x of r) perQ.set(x.query, [...(perQ.get(x.query) ?? []), x]);
+    const tops = [...perQ.values()].map((v) => Math.max(...v.map((x) => x.score)));
+    console.log(
+      `  score median over ALL served hits ${med(r.map((x) => x.score)).toFixed(1)}` +
+        `   ·   median of each query's TOP hit ${med(tops).toFixed(1)}` +
+        `   ·   max ${Math.max(...r.map((x) => x.score), 0).toFixed(1)}`,
+    );
     const perQuery = new Map<string, Row[]>();
     for (const x of r) perQuery.set(x.query, [...(perQuery.get(x.query) ?? []), x]);
     const allReq = [...perQuery.values()].filter((v) => v.every((x) => x.band === "required")).length;
