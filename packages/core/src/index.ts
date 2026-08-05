@@ -93,6 +93,8 @@ export {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
   fuseRRF,
+  RRF_K,
+  RRF_SCALE,
 } from "./embeddings.js";
 export type { EmbeddingProvider, EmbeddingHit, EmbedListener, EmbeddingRuntimeHealth } from "./embeddings.js";
 

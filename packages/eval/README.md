@@ -123,3 +123,117 @@ near↔far axis** (the gradient is emergent, not hand-binned).
 
 Unknown ids (a renamed/deleted memory) are reported and skipped, not counted as
 misses.
+
+---
+
+## Absence honesty (`src/absence-honesty.ts`)
+
+Every MCP client is told to *"call recall before any other lookup tool"*. Against
+`grep` that claim has two halves, and this harness measures the half that had no
+number: **when the vault does not hold a fact, does recall say so?** `grep`
+answers with exit code 1. A ranked list always has a first element, so recall has
+to signal absence explicitly or the caller cannot tell a hit from a
+rank-1-of-nothing.
+
+Leave-one-out over a real vault, three arms on the same corpus:
+
+| arm | query | gold | what it measures |
+|---|---|---|---|
+| **present** | the memory's own `recall_when` | in the vault | plumbing control — circular by construction, an upper bound |
+| **absent** | the same trigger | **held out** | do `weak_result` / `no_home` fire? |
+| **paraphrase** | `--cases` — the fact asked in words the memory does not contain | in the vault | retrieval vs a lexical baseline, and the false-positive cost of any anchor rule |
+
+The paraphrase arm needs hand-written held-out queries. Without `--cases` it falls
+back to a sentence lifted from the body — that is a **quotation**, which a literal
+search wins by construction; treat the fallback as a plumbing check, never as a
+result.
+
+Two baselines stand in for "grep": **AND** (every content word in one file — the
+`grep -q` signal) and **ranked** (top-k by distinct-term coverage — what an agent
+does when the AND comes back empty).
+
+```bash
+BASTRA_VAULT_PATH=/path/to/vault \
+  npx tsx src/absence-honesty.ts --n 40 --k 5 \
+    --cases goldset/held-out-paraphrases.example.json --out honesty.json
+```
+
+Only memories that already carry a persisted vector are staged, so the dense leg
+is identical across arms and no backfill runs mid-measurement. `--out` keeps the
+per-hit `matched_terms` / RRF ranks, so a candidate anchor rule can be swept
+offline without paying for the index rebuilds again.
+
+## Pool depth (`src/pool-depth.ts`)
+
+`absence-honesty` reports hit@5. That number cannot tell a **retrieval** failure
+(the memory is nowhere near the top of either arm — nothing downstream can
+rescue it) from a **ranking** failure (it is in the pool at depth 8 and only the
+cut hides it). Different fixes, and only one of them is cheap.
+
+One index, one pass, the gold's rank in the BM25 arm, the dense arm and the
+fused list, measured to depth 50:
+
+```bash
+BASTRA_VAULT_PATH=/path/to/vault \
+  npx tsx src/pool-depth.ts --cases goldset/held-out-paraphrases.example.json --depth 50 --out pool.json
+```
+
+The split it makes is the useful part: **the gold is in one arm's top-5 or the
+other's** far more often than the fused list returns it. That gap is combination
+loss — it is the cheap kind, and `--out` dumps both ranked lists so alternative
+fusions can be swept without re-running the arms. That sweep is what pointed at
+`RRF_K`; the number that justifies the change is on a public corpus, below.
+
+## The fusion constant on a public corpus (`src/rrf-k-beir.ts`)
+
+A measurement on your own vault can start an investigation but cannot end one:
+nobody else can rerun it, and the vault it describes is the thing you are not
+publishing. So the claim about `RRF_K` is settled on BEIR/NFCorpus instead —
+3 633 documents, 323 judged test queries, graded relevance, real users' queries,
+and a hard task by design.
+
+```bash
+# BEIR, CC BY-SA 4.0
+curl -sLO https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip && unzip -q nfcorpus.zip
+npx tsx src/rrf-k-beir.ts --data ./nfcorpus --split test --paired 5,60
+```
+
+Production arms (real `SearchIndex`, real `EmbeddingIndex`), both arm lists
+computed once per query and reused for every k, so only the combination moves:
+
+| k | nDCG@10 | recall@10 | hit@5 |
+|---:|---:|---:|---:|
+| 1 | 0.3570 | 0.1796 | 66.9% |
+| 3 | 0.3586 | 0.1794 | 66.6% |
+| **5** | **0.3572** | **0.1789** | **66.9%** |
+| 10 | 0.3570 | 0.1804 | 67.2% |
+| 30 | 0.3497 | 0.1743 | 65.3% |
+| 60 | 0.3494 | 0.1739 | 64.7% |
+| 100 | 0.3490 | 0.1738 | 65.0% |
+
+Paired per query, k=5 against k=60: **+0.0079 nDCG@10, 95% CI [0.0018, 0.0142],
+bootstrap p=0.0108, sign-flip permutation p=0.0111** — better on 88 queries,
+worse on 57, unchanged on 178. The dev split is positive but does **not** clear
+the same bar: **+0.0061, CI [-0.0001, 0.0124], p=0.0526**. One split
+significant, one not. 1–10 is a plateau, not a spike, so the exact value inside
+that band is not load-bearing.
+
+> Those p-values are the second set. The first run shipped a bootstrap whose
+> RNG was `(s * 1103515245 + 12345) & 0x7fffffff` — in JS that multiply reaches
+> 2.4e18, past `Number.MAX_SAFE_INTEGER`, so the low bits round away before the
+> mask: period 10 466, 15 824 distinct values, 10 k resamples cycling one
+> sequence ~309 times. It reported p=0.0012 / p=0.0128 and "significant on two
+> independent splits". Corrected to mulberry32, the dev split stops clearing
+> 0.05. Same measurements, weaker evidence.
+
+Two numbers the harness prints that belong next to the table: the **dense arm
+alone** scores 0.3577 — above this fusion at k=5 (0.3572), below it at k=3
+(0.3586) — and the bm25 arm alone 0.2909. On this corpus the fusion does not
+clear its own best arm at any k. What the constant buys is a fusion that beats
+the fusion that shipped, at every cut; it does not make the fusion worth having
+here. That line is printed on purpose, and quoting the k table without it would
+be a selective read of the same output.
+
+Small effect, honestly. What makes it worth the constant is that it is free and
+that the arithmetic behind it says the shipped value was doing something nobody
+intended — see `core/__tests__/rrf-damping.test.ts`.

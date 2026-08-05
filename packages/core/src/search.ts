@@ -2,7 +2,7 @@ import MiniSearch from "minisearch";
 import type { Memory } from "./schema.js";
 import type { Vault, VaultEvent } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
-import { fuseRRF } from "./embeddings.js";
+import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
 
@@ -36,7 +36,7 @@ export interface RecallHit {
     rank_bm25: number | null;
     /** 1-basierter Rang im Vector-Arm, `null` wenn dieser Arm den Hit nicht führte. */
     rank_vector: number | null;
-    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der ×5000-Skalierung, die `score` ergibt. */
+    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der RRF_SCALE-Skalierung, die `score` ergibt. */
     raw: number;
   };
 }
@@ -346,7 +346,7 @@ export class SearchIndex {
    *  EmbeddingIndex registriert ist — oder der Vektor-Arm nichts liefert
    *  (#240/B1) — fällt auf reines BM25 (sync) zurück.
    *
-   *  Der finale Score ist `RRF * 5000` (siehe :39 und die Skalierung unten),
+   *  Der finale Score ist `RRF * RRF_SCALE` (siehe :39 und die Skalierung unten),
    *  NICHT die hier früher behaupteten `* 1000`. Wichtig für jeden, der
    *  Schwellen darauf setzt: der Wert ist eine skalierte Rang-Summe, keine
    *  Ähnlichkeit — Rang 1 in beiden Armen ergibt die Obergrenze 163.934
@@ -430,11 +430,12 @@ export class SearchIndex {
 
     // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF
     // on one arm produced a different score space, not the BM25 one. A
-    // one-armed rank-1 hit scores 5000/61 = 81.967 and rank 20 scores 62.5,
-    // so every hit collapses into the 62–82 band: the floor stops
-    // discriminating and the documented MUST_LOAD band (100) becomes
-    // structurally unreachable exactly when the provider is down. Fall back
-    // to the real BM25 path so scores mean what the thresholds assume.
+    // one-armed rank-1 hit scores RRF_SCALE/(RRF_K+1) = 81.967 by
+    // construction, and the documented MUST_LOAD band (100) is structurally
+    // unreachable on one arm at ANY k — exactly when the provider is down.
+    // (The width of the band below that ceiling does move with RRF_K: at
+    // k=60 rank 20 sat at 62.5, at k=5 it sits at 19.7.) Fall back to the
+    // real BM25 path so scores mean what the thresholds assume.
     if (vectorTop.length === 0) {
       // Reuse the BM25 results this call already computed — no recursion into
       // the public pipeline, so the stage sequence stays monotonic and emits
@@ -478,9 +479,10 @@ export class SearchIndex {
         scope: fm.scope,
         summary: fm.summary,
         topic_path: fm.topic_path,
-        // RRF-Score skaliert auf BM25-vergleichbare Range. Klassisch sind
-        // BM25-Scores ~5–500, RRF ist 0.005–0.04 → *5000 mappt grob.
-        score: round(entry.score * 5000),
+        // RRF-Score skaliert auf BM25-vergleichbare Range. Der Faktor hängt an
+        // RRF_K (embeddings.ts), damit die Anker 163.934 / 81.967 stehen
+        // bleiben, wenn sich die Fusion ändert.
+        score: round(entry.score * RRF_SCALE),
         matched_terms: bm?.terms ?? [],
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.
