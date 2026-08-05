@@ -18,7 +18,8 @@
  *   - Helpers (postRecall/emitEmpty/telemetry/readStdin) are intentionally
  *     copied — not imported — for the same reason.
  */
-import { detectProject } from "@bastra-recall/core";
+import { detectProject, RRF_K, RRF_SCALE } from "@bastra-recall/core";
+import { requiredHeadline } from "./band-wording.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -499,8 +500,8 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
     );
   } else {
     sections.push(
-      `Pre-recall surfaced strong matches (score >=${MUST_LOAD_SCORE}) for this prompt. ` +
-        `Load them via bastra-recall:load_memory before answering.`,
+      `Pre-recall found memories both search paths agreed on for this prompt ` +
+        `(score >=${MUST_LOAD_SCORE}). Load them via bastra-recall:load_memory before answering.`,
     );
   }
 
@@ -511,7 +512,7 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
     sections.push(
       weak
         ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
-        : `Strong matches (score >=${MUST_LOAD_SCORE}) for this prompt — ` +
+        : `${requiredHeadline("this prompt", MUST_LOAD_SCORE, { k: RRF_K, scale: RRF_SCALE })} ` +
           `load_memory(id) the relevant ones before responding ` +
           `(hints, not obligations; honor an explicit count or scope from the user):`,
     );

@@ -21,7 +21,8 @@
  * Discipline mirrors hook.ts: hard wall-clock budget, fail-silent on every
  * error path, telemetry best-effort.
  */
-import { detectProject } from "@bastra-recall/core";
+import { detectProject, RRF_K, RRF_SCALE } from "@bastra-recall/core";
+import { requiredHeadline } from "./band-wording.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -514,7 +515,7 @@ function formatBlock(hits: RecallHit[], project: string | null, source: string |
     sections.push(
       weak
         ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
-        : `Strong matches (score ≥${MUST_LOAD_SCORE}) for ${project ?? "this"} session — ` +
+        : `${requiredHeadline(`the ${project ?? "current"} session`, MUST_LOAD_SCORE, { k: RRF_K, scale: RRF_SCALE })} ` +
           `load_memory(id) the ones relevant to what the user actually asks for. ` +
           `These are hints, not obligations: load only what fits, don't batch-load the list, ` +
           `and if the user requested a specific number or scope, honor that over this list.`,

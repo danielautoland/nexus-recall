@@ -198,10 +198,14 @@ test("formatHintBlock — separates strong vs OPTIONAL by score", () => {
     { id: "mid", title: "M", type: "lesson", scope: "user", summary: "mid", score: 70 },
   ];
   const block = formatHintBlock(hits, null, "retrieval");
-  const strongIdx = block.indexOf("Strong matches");
+  // #302: the headline states arm agreement now, not strength — the score is a
+  // rank sum and never carried the claim "Strong matches" made. The split this
+  // test guards is unchanged; only its anchor moved off the retired wording.
+  const strongIdx = block.indexOf("Both search paths agreed");
   const optionalIdx = block.indexOf("OPTIONAL");
-  assert.ok(strongIdx >= 0, "strong-match section missing");
-  assert.ok(optionalIdx > strongIdx, "OPTIONAL must come after the strong-match section");
+  assert.ok(strongIdx >= 0, "required-band section missing");
+  assert.ok(optionalIdx > strongIdx, "OPTIONAL must come after the required-band section");
+  assert.ok(!block.includes("Strong matches"), "#302: strength is not what the score measures");
   assert.ok(block.indexOf("high") < block.indexOf("mid"));
   // Hints must read as non-coercive (no "REQUIRED"/"not allowed" wording).
   assert.ok(!block.includes("REQUIRED"), "must not use coercive REQUIRED wording");

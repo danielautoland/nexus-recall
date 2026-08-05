@@ -18,7 +18,8 @@
  *   - hook.ts is under heavy refactor in a parallel PR; this hook ships as
  *     its own CLI entry (`bastra-recall-todo-hook`) to avoid merge friction.
  */
-import { detectProject } from "@bastra-recall/core";
+import { detectProject, RRF_K, RRF_SCALE } from "@bastra-recall/core";
+import { requiredHeadline } from "./band-wording.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -331,8 +332,8 @@ export function formatHintBlock(
   if (required.length > 0) {
     sections.push("");
     sections.push(
-      `Strong topology/decision matches (score >=${MUST_LOAD_SCORE}) — ` +
-        `load_memory(id) the ones relevant to these todos (hints, not obligations):`,
+      `${requiredHeadline("these todos", MUST_LOAD_SCORE, { k: RRF_K, scale: RRF_SCALE })} ` +
+        `load_memory(id) the ones relevant to them (hints, not obligations):`,
     );
     for (const h of required) sections.push(formatHintLine(h));
   }

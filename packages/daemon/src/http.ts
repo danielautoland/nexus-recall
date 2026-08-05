@@ -1214,6 +1214,13 @@ function handleHookRecall(
         // #230: the stricter half travels the same wire. A strict subset of
         // weak_result, so a consumer that only knows weak_result is unaffected.
         ...(noHome ? { no_home: true } : {}),
+        // #302: whether RRF ran at all. Without a vector arm there is no
+        // fusion and no ceiling — raw BM25 is unbounded (top hits into six
+        // digits on a real vault), so the 30/100 cuts describe nothing there.
+        // The formatter has to say so rather than band an unbounded scale.
+        // Same shape as the flags above: present only when it has something
+        // to say, computed once from the value the honesty flags already use.
+        ...(hybridActiveAtRecall ? {} : { unfused: true }),
       };
       if (wantsSse) {
         writeSseEvent(res, "done", payload);

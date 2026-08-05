@@ -36,6 +36,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { shouldSkipPath, passesScopeFilter } from "./hook-skip.js";
+import { requiredHeadline, unfusedHeadline, type RrfConstants } from "./band-wording.js";
 import { reportHinted } from "./hook-hinted.js";
 import {
   bumpShown,
@@ -67,6 +68,12 @@ const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30); // mirror SKILL.md: <30 i
 // can lift the REQUIRED band (e.g. to 130) from telemetry without a rebuild,
 // but the default stays 100 until the data says to raise it.
 const MUST_LOAD_SCORE = envInt("BASTRA_MUST_LOAD_SCORE", 100);
+// #302: filled in at step 4, where `@bastra-recall/core` is loaded anyway. NOT
+// a top-level import — #28 keeps core lazy so the skip-gate path never pays for
+// it, and #305 shows how little headroom the hook budget has. Null until then;
+// the wording degrades to a sentence that needs no rank. See band-wording.ts
+// for what a cut selects and why the old headline was wrong.
+let rrf: RrfConstants | null = null;
 // #161: backoff source key — write-edit hints back off independently of the
 // other hook sources (bash-tripwire, bash-fail, prompt-lookup, todo-plan).
 const BACKOFF_SOURCE = "write-edit";
@@ -102,6 +109,9 @@ interface RecallResponse {
   weak_result?: boolean;
   /** #230: stricter subset of weak_result — the fact has no home in this vault. */
   no_home?: boolean;
+  /** #302: no vector arm, so no RRF ran and the score is raw BM25 — an
+   *  unbounded scale with no ceiling. The band cuts describe nothing there. */
+  unfused?: boolean;
 }
 
 type HookStatus =
@@ -177,9 +187,13 @@ async function main(): Promise<void> {
   const sizeNote = await fileSizeNote(filePath, undefined, payload.cwd).catch(() => null);
 
   // 4) Now (and only now) load the expensive core utils — see #28.
-  const { detectTopics, detectProject, extractContentExcerpt } = await import(
+  const { detectTopics, detectProject, extractContentExcerpt, RRF_K, RRF_SCALE } = await import(
     "@bastra-recall/core"
   );
+  // #302: the fusion constants ride along on the import that already happens,
+  // so the band wording can state the rank a cut selects instead of asserting
+  // strength. Free here; a top-level import would not be.
+  rrf = { k: RRF_K, scale: RRF_SCALE };
 
   const intent = {
     tool_name: toolName,
@@ -330,11 +344,11 @@ async function main(): Promise<void> {
     } else {
       emitEmpty();
     }
-    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true);
+    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true);
     suppressedTokensEst = Math.ceil(block.length / 4);
     recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
-    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true);
+    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true);
     const block = sizeNote ? `${sizeNote}\n${hintsBlock}` : hintsBlock;
     hintTokensEst = Math.ceil(block.length / 4);
     hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
@@ -400,12 +414,13 @@ function formatHintLine(h: RecallHit): string {
   return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-function formatHintBlock(
+export function formatHintBlock(
   required: RecallHit[],
   optional: RecallHit[],
   project: string | null,
   weak = false,
   noHome = false,
+  unfused = false,
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const head = `<recall-hints surface="claude-code"${projAttr}>`;
@@ -429,7 +444,10 @@ function formatHintBlock(
           `lexically (no trigger phrase, no title term matched). On the hybrid path a ` +
           `high score is rank-1-of-nothing, so treat these as "probably not relevant" ` +
           `unless one obviously fits. Do not load them just because they are listed.`
-        : `Strong matches (score ≥${MUST_LOAD_SCORE}) for what you're about to do — ` +
+        : unfused
+        ? `${unfusedHeadline("what you're about to do")} ` +
+          `load_memory(id) the ones that bear on this edit.`
+        : `${requiredHeadline("what you're about to do", MUST_LOAD_SCORE, rrf)} ` +
           `load_memory(id) the ones that bear on this edit. ` +
           `Hints, not obligations: load only what fits, don't batch-load the list.`,
     );
@@ -439,7 +457,14 @@ function formatHintBlock(
   if (optional.length > 0) {
     if (required.length > 0) sections.push("");
     sections.push(
-      `OPTIONAL (score ${SCORE_FLOOR}–${MUST_LOAD_SCORE - 1}) — load only if the title/summary directly relates to the pending change:`,
+      unfused
+        ? `FURTHER DOWN the same lexical ranking — load only if the title/summary directly relates to the pending change:`
+        : // #302: the honest reading of this band. Either one path only — such
+          // a hit can never clear MUST_LOAD however well it ranks, since it
+          // scores half of a two-armed hit at the same rank — or both paths,
+          // but further down than the REQUIRED band demands.
+          `OPTIONAL — found by ONE search path only, or by both but ranked lower. ` +
+          `Load only if the title/summary directly relates to the pending change:`,
     );
     for (const h of optional) sections.push(formatHintLine(h));
   }
@@ -577,16 +602,34 @@ async function writeTelemetry(payload: HookCallTelemetry): Promise<void> {
   }
 }
 
-// Global hard cap: even if main() somehow stalls, we exit fast.
-const killSwitch = setTimeout(() => {
-  emitEmpty();
-  process.exit(0);
-}, HOOK_TIMEOUT_MS + 50);
-killSwitch.unref();
+// Same guard bash-fail-hook.ts carries, and for the reason written down there:
+// on module top level the kill-switch and the exit fire for IMPORTERS too, so
+// the test runner dies with exit 0 after a couple of seconds and silently skips
+// everything after it. This file only became importable with #302 (the band
+// wording needs a test), so the hazard is new here.
+// Exact basename, not endsWith: this file is plain "hook.js", and every
+// sibling entrypoint (session-hook.js, prompt-hook.js, bash-fail-hook.js, …)
+// ends with that string. A suffix test would make THIS main() run inside those
+// processes.
+const isMain = (() => {
+  const argv1 = process.argv[1];
+  if (typeof argv1 !== "string") return false;
+  const base = argv1.split(/[\\/]/).pop() ?? "";
+  return base === "hook.js" || base === "hook.ts" || base === "bastra-recall-hook";
+})();
 
-main()
-  .then(() => process.exit(0))
-  .catch(() => {
+if (isMain) {
+  // Global hard cap: even if main() somehow stalls, we exit fast.
+  const killSwitch = setTimeout(() => {
     emitEmpty();
     process.exit(0);
-  });
+  }, HOOK_TIMEOUT_MS + 50);
+  killSwitch.unref();
+
+  main()
+    .then(() => process.exit(0))
+    .catch(() => {
+      emitEmpty();
+      process.exit(0);
+    });
+}
