@@ -182,6 +182,8 @@ Details and system requirements: **[System Requirements](https://github.com/n0ma
 
 Full picture: [PLAN.md](./PLAN.md). Out of v0: multi-device sync — today the vault folder syncs at OS level (iCloud / Google Drive / Dropbox / Git); the file watcher's polling mode handles the latency.
 
+**One caveat on that setup:** the daemon rewrites memory files on its own — trigger expansion adds `recall_when_expanded`, related-enrichment adds `related_via` and the Auto-Related block, in files nobody edited. Each rewrite is atomic (temp+rename) and gives the file a fresh modification time even when the authored text is unchanged. File-syncing services resolve conflicts by that timestamp — Git compares content instead — so an enrichment pass that added nothing can outrank a real edit made on another machine. Enrichment regenerates itself; your edit does not. If a memory reads stale after a sync, compare the two copies below the frontmatter.
+
 ### Bastra Mac App
 
 A native macOS app is being built on top of bastra-recall — same vault, same daemon, just a graphical interface for people who don't want to live in the terminal. In development.
@@ -362,6 +364,8 @@ Details und Systemvoraussetzungen: **[System Requirements](https://github.com/n0
 - **Als Nächstes — V1.0-Releasevertrag:** eine reproduzierbar gemessene, selektive, kontrollierbare Recall-Basis — ehrliche Eval-Baselines, deterministische Relevanzevidenz mit echter Abstention, ein projektfähiger Session-Assembler, ein globales Kontextbudget. Das langfristige V2-Ziel (adaptives, mehrschichtiges Gedächtnis) ist spezifiziert und strikt messungs-gegated.
 
 Das ganze Bild: [PLAN.md](./PLAN.md). Außerhalb von v0: Multi-Device-Sync — heute synchronisiert der Vault-Ordner auf OS-Ebene (iCloud / Google Drive / Dropbox / Git); der Polling-Modus des File-Watchers gleicht die Latenz aus.
+
+**Ein Vorbehalt dazu:** Der Daemon schreibt Memory-Dateien von sich aus um — die Trigger-Expansion ergänzt `recall_when_expanded`, die Related-Anreicherung `related_via` und den Auto-Related-Block, in Dateien, die niemand bearbeitet hat. Jede Umschreibung läuft atomar (temp+rename) und gibt der Datei eine frische Modification Time, auch wenn der geschriebene Text unverändert bleibt. Datei-Sync-Dienste entscheiden Konflikte über diesen Zeitstempel — Git vergleicht stattdessen den Inhalt —, also kann ein Anreicherungslauf ohne neuen Inhalt eine echte Bearbeitung von einem anderen Gerät überstimmen. Die Anreicherung stellt sich von selbst wieder her, deine Bearbeitung nicht. Wirkt eine Memory nach dem Sync veraltet, vergleiche beide Kopien unterhalb des Frontmatters.
 
 ### Bastra Mac App
 
