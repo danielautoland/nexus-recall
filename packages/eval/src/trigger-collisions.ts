@@ -19,9 +19,26 @@
  * WHAT THIS IS NOT: not a recall measurement. A trigger that collides is a
  * trigger that fails to DISCRIMINATE, which is a necessary condition for bad
  * ranking, not a sufficient one. The lift this predicts (recall@5 0.457 ->
- * 0.565 on the vault quoted at `save-quality.ts:208`) is an argument for the
- * cleanup, not a result of it. Nothing here rewrites anything: `recall_when`
- * is authoring work and stays the human's (#289, proposal 3).
+ * 0.565, measured under #238 on a vault whose triggers were summary copies) is
+ * an argument for the cleanup, not a result of it. Nothing here rewrites
+ * anything: `recall_when` is authoring work and stays the human's (#289/3).
+ *
+ * WHAT THE NUMBER IS A FLOOR OF — two exclusions, both structural:
+ *
+ *  1. The verdict is FULL containment. `TRIGGER_CLAIMS_SITUATION_MIN` is
+ *     exactly 1 (`save-similarity.ts:195`): every content word of this trigger
+ *     must appear in the other one. A paraphrase that means the same thing and
+ *     shares 83% of its words is not counted here — that band is #325's open
+ *     question, and it has no gold set yet. So this reports the collisions
+ *     nobody can argue about, not all of them.
+ *  2. Collisions are scope×type-local. `admittedPool` filters on
+ *     `scope === input.scope && type === input.type` (`save-quality.ts:338`),
+ *     so the same phrase on a `lesson` and on a `project-fact` never collides,
+ *     however identical. That mirrors what `recall` can retrieve, which is the
+ *     right frame for a write-time advisory and a real ceiling on a stock-take.
+ *
+ * Requires the daemon to be built (`npm run build -w @bastra-recall/daemon`):
+ * `scoreSaveQuality` is read from `daemon/dist` at runtime.
  *
  *   BASTRA_VAULT_PATH=~/vault npx tsx src/trigger-collisions.ts --out stock.json
  */
