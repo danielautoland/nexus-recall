@@ -18,7 +18,7 @@
  * comparison later must re-run this same script, not a different query source.
  * Live hook traffic is the honest denominator and this is not it.
  *
- *   BASTRA_VAULT_PATH=~/zzalli-vault npx tsx src/band-occupancy.ts --n 400 --out t0.json
+ *   BASTRA_VAULT_PATH=~/vault npx tsx src/band-occupancy.ts --n 400 --out t0.json
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -32,8 +32,25 @@ import {
   RRF_SCALE,
 } from "@bastra-recall/core";
 
-const FLOOR = 30;
-const MUST_LOAD = 100;
+/** Same semantics as `daemon/src/env.ts`, replicated because `@bastra-recall/eval`
+ *  depends on `core` only — pulling in `daemon` for two numbers is the larger
+ *  evil. Keep in step with `envInt` there if that ever changes. */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// The bands are NOT constants in the hook — they are env-tunable there
+// (`hook.ts:66,70`), so hardcoding the defaults here would measure the shipped
+// numbers on a machine that runs different ones. That is the same mistake this
+// harness exists to correct, one level up: the measurement has to take the
+// shape the hook actually has, and on this machine that shape includes the
+// environment. Whoever raised BASTRA_RECALL_FLOOR gets their floor measured.
+const FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
+const MUST_LOAD = envInt("BASTRA_MUST_LOAD_SCORE", 100);
+// Not env-tunable: `bash-fail-hook.ts:44` hardcodes it. Literal on purpose.
 const BASH_FAIL_FLOOR = 50;
 
 interface Row {
@@ -58,7 +75,11 @@ async function main(): Promise<void> {
     return i === -1 ? d : (argv[i + 1] ?? d);
   };
   const n = Number.parseInt(arg("--n", "400"), 10);
-  const ks = arg("--k", "3,10,30").split(",").map((s) => Number.parseInt(s, 10));
+  // Default stops at 10 because `/hook/recall` clamps there (`http.ts`). A run
+  // at k=30 measures a call the hook cannot make — the very thing the --hops
+  // switch below exists to stop doing. Higher values stay available on the flag
+  // for the question "what does the tail look like", which is a different one.
+  const ks = arg("--k", "3,10").split(",").map((s) => Number.parseInt(s, 10));
   const outPath = arg("--out", "");
   // A BEIR corpus directory (corpus.jsonl + queries.jsonl) instead of a personal
   // vault. The occupancy of a band is a corpus property, so a number measured on
@@ -177,6 +198,13 @@ async function main(): Promise<void> {
     `vault ${vault.size()} memories, ${emb.size()} vectors, ${queries.length} queries` +
       `, RRF_K=${RRF_K} RRF_SCALE=${RRF_SCALE.toFixed(2)}`,
   );
+  // A band report that does not name its own cuts is unreadable the moment the
+  // cuts are tunable — the reader cannot tell 30 from a raised floor.
+  console.error(
+    `  bands: floor ${FLOOR}${FLOOR === 30 ? "" : " (BASTRA_RECALL_FLOOR)"}` +
+      `, must-load ${MUST_LOAD}${MUST_LOAD === 100 ? "" : " (BASTRA_MUST_LOAD_SCORE)"}` +
+      `, bash-fail ${BASH_FAIL_FLOOR}`,
+  );
   // The inversion #302 shipped, printed so the bands can be read as ranks.
   for (const cut of [FLOOR, BASH_FAIL_FLOOR, MUST_LOAD]) {
     console.error(
@@ -253,16 +281,14 @@ async function main(): Promise<void> {
     // a finding out of a column heading.
     const med = (xs: number[]): number =>
       xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0;
-    const perQ = new Map<string, Row[]>();
-    for (const x of r) perQ.set(x.query, [...(perQ.get(x.query) ?? []), x]);
-    const tops = [...perQ.values()].map((v) => Math.max(...v.map((x) => x.score)));
+    const perQuery = new Map<string, Row[]>();
+    for (const x of r) perQuery.set(x.query, [...(perQuery.get(x.query) ?? []), x]);
+    const tops = [...perQuery.values()].map((v) => Math.max(...v.map((x) => x.score)));
     console.log(
       `  score median over ALL served hits ${med(r.map((x) => x.score)).toFixed(1)}` +
         `   ·   median of each query's TOP hit ${med(tops).toFixed(1)}` +
         `   ·   max ${Math.max(...r.map((x) => x.score), 0).toFixed(1)}`,
     );
-    const perQuery = new Map<string, Row[]>();
-    for (const x of r) perQuery.set(x.query, [...(perQuery.get(x.query) ?? []), x]);
     const allReq = [...perQuery.values()].filter((v) => v.every((x) => x.band === "required")).length;
     const anyOpt = [...perQuery.values()].filter((v) => v.some((x) => x.band === "optional")).length;
     console.log(`  queries where EVERY served hit is REQUIRED: ${pct(allReq, perQuery.size)}`);

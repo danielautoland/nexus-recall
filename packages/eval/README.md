@@ -246,6 +246,13 @@ constants layered on top of it — the hook's `SCORE_FLOOR = 30` and
 that once, at `RRF_K = 60`, and #335 changed the scale under it. The harness
 exists so the question can be re-asked rather than re-argued.
 
+Both cuts are env-tunable in the hook (`BASTRA_RECALL_FLOOR`,
+`BASTRA_MUST_LOAD_SCORE` — `hook.ts:66,70`), so the harness reads the same two
+variables rather than hardcoding the defaults, and prints the cuts it used. On a
+machine that raised its floor, a run against the shipped 30 would be measuring
+somebody else's hook. The bash-fail floor of 50 is a literal in
+`bash-fail-hook.ts:44` and is a literal here too.
+
 Three things it fixes about how that question was asked the first time.
 
 ### The call shape is part of the measurement
