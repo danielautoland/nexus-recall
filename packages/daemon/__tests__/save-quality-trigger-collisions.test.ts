@@ -233,3 +233,45 @@ test("#300: the memory's other triggers stay unaffected when one of them collide
     "only the taken trigger is reported — the other one has no claimant",
   );
 });
+
+// ─── #325: umlaut folding on the similarity path ────────────────────────────
+
+test("#325: ä and ae are the same trigger — the spelling is not the situation", async (t) => {
+  // Both spellings occur inside one real vault: one was typed, the other came
+  // from a keyboard layout or a paste. Before folding these scored 0.80 and
+  // stayed invisible, because ä and ae were two tokens.
+  const { deps, close } = await makeVault([
+    ["twin", "Der letzte Stand des Threads.", ["naechste Nachricht an zzalli entwerfen"]],
+  ]);
+  t.after(close);
+
+  const quality = scoreSaveQuality(
+    deps,
+    saveInput(["nächste Nachricht an zzalli entwerfen"]),
+    "vault-path-watcher-decision",
+  );
+  assert.deepEqual(
+    quality.trigger_collisions.map((c) => c.trigger),
+    ["nächste Nachricht an zzalli entwerfen"],
+    `the ae-spelling claims the same situation, got ${JSON.stringify(quality.trigger_collisions)}`,
+  );
+});
+
+test("#325: folding does not smuggle German function words past the stopword list", async (t) => {
+  // The trap this fix could have introduced: fold "für" to "fuer" and the
+  // stopword lookup misses it, so a function word starts carrying signal and
+  // any two German notes begin to look alike — the failure STOPWORDS exists to
+  // prevent. A trigger of nothing but function words has no content at all and
+  // can never claim a situation.
+  const { deps, close } = await makeVault([
+    ["twin", "Ablage für den Watcher.", ["für den Watcher und über die Ablage"]],
+  ]);
+  t.after(close);
+
+  const quality = scoreSaveQuality(deps, saveInput(["für über"]), "vault-path-watcher-decision");
+  assert.deepEqual(
+    quality.trigger_collisions,
+    [],
+    `function words carry no claim, got ${JSON.stringify(quality.trigger_collisions)}`,
+  );
+});

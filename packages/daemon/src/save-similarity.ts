@@ -40,6 +40,48 @@ export function tokens(text: string): string[] {
   return text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
 }
 
+/**
+ * Umlaut folding for the SIMILARITY path only (#325).
+ *
+ * "nächste Nachricht an zzalli entwerfen" and "naechste Nachricht an zzalli
+ * entwerfen" are the same sentence, and without this they are two different
+ * tokens: four memory pairs in a real vault scored 0.80 instead of 1.0 purely
+ * because of ä vs ae, so a collision the author would call obvious was never
+ * reported. Both spellings occur in one vault because one of them was typed
+ * and the other came from a keyboard or a paste.
+ *
+ * Transliteration MUST run before NFKD — `slugify` (`core/src/save.ts`)
+ * documents why: NFKD splits ä into a + combining mark, the diacritic strip
+ * turns that into a bare "a", and a later ä-replace finds nothing, so ä/ö/ü
+ * would degrade to a/o/u instead of ae/oe/ue.
+ *
+ * Deliberately NOT applied inside `tokens()`, though that would be one line
+ * fewer. `tokens()` is also the tokenizer for `distinctiveTokensForActedOn`
+ * (`tool-handlers.ts:536`), whose output rides in telemetry and survives a
+ * restart; folding there would silently change what open episodes match
+ * against, for no gain on this problem. `tokens()` answers "where are the word
+ * boundaries", folding is a choice this similarity measure makes.
+ */
+export function foldUmlauts(token: string): string {
+  return token
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/ß/g, "ss")
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+/** A token reduced to its comparable form, or null when it carries no signal.
+ *  The stopword list is folded too — otherwise "für" survives as "fuer", is no
+ *  longer recognised as a function word, and starts making any two German
+ *  notes look similar, which is the failure mode STOPWORDS exists to prevent. */
+function contentToken(raw: string): string | null {
+  const token = foldUmlauts(raw);
+  if (token.length < MIN_TOKEN_LENGTH || FOLDED_STOPWORDS.has(token)) return null;
+  return token;
+}
+
 /** Function words carry no topical signal, so leaving them in would make any
  *  two German notes look similar — which is the reported failure mode. Same
  *  list as the reflex lane's (`reflex.ts`), duplicated rather than imported:
@@ -47,6 +89,9 @@ export function tokens(text: string): string[] {
 const STOPWORDS = new Set([
   // EN
   "about", "after", "all", "and", "any", "are", "because", "been", "before",
+  // NOTE: this list is folded through `foldUmlauts` where it is used, so "für"
+  // and "über" below still match after folding. Write entries the way a German
+  // writes them; the folding is applied to both sides.
   "between", "but", "can", "for", "from", "has", "have", "how", "into", "its",
   "just", "not", "only", "should", "than", "that", "the", "their", "then",
   "there", "these", "this", "through", "was", "were", "what", "when", "which",
@@ -58,6 +103,9 @@ const STOPWORDS = new Set([
   "nicht", "noch", "nur", "oder", "sich", "sind", "soll", "über", "und", "von",
   "vor", "war", "wenn", "werden", "wie", "wird", "zum", "zur",
 ]);
+
+/** The list above, in the same shape tokens arrive in after folding. */
+const FOLDED_STOPWORDS = new Set([...STOPWORDS].map(foldUmlauts));
 
 /** A single character carries no topical signal and inflates the union. */
 const MIN_TOKEN_LENGTH = 2;
@@ -84,8 +132,9 @@ function weighTokens(fields: SimilarityFields): Map<string, number> {
   for (const [field, weight] of FIELD_WEIGHTS) {
     const raw = fields[field];
     const text = Array.isArray(raw) ? raw.join(" ") : (raw ?? "");
-    for (const token of tokens(text)) {
-      if (token.length < MIN_TOKEN_LENGTH || STOPWORDS.has(token)) continue;
+    for (const raw of tokens(text)) {
+      const token = contentToken(raw);
+      if (token === null) continue;
       const prev = out.get(token);
       if (prev === undefined || weight > prev) out.set(token, weight);
     }
@@ -149,9 +198,9 @@ export function containedIn(text: string, inside: string): number {
 
 function contentTokens(text: string): Set<string> {
   const out = new Set<string>();
-  for (const token of tokens(text)) {
-    if (token.length < MIN_TOKEN_LENGTH || STOPWORDS.has(token)) continue;
-    out.add(token);
+  for (const raw of tokens(text)) {
+    const token = contentToken(raw);
+    if (token !== null) out.add(token);
   }
   return out;
 }
