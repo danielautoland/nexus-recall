@@ -350,9 +350,11 @@ new MCP tool):
 | `BASTRA_ADOPTION_PROMOTION_MIN` | `2`            | Acted-on recalls (30d) before the curator proposes adopting an intake memory (#217) |
 | `BASTRA_SALIENCE_RANK`        | `shadow`         | `off` \| `shadow` \| `live` — salience ranking multiplier (#217, lift-gated) |
 | `BASTRA_SALIENCE_RANK_CAP`    | `0.25`           | Max salience score boost (`1 + salience × cap`)               |
+| `BASTRA_SAMPLE_ROT_DAYS`      | `28`             | Sample floor: days a memory may go unmeasured before it must re-enter the sample, whatever its salience (#160) |
 | `BASTRA_SIZE_CHECK`           | `on`             | `off` disables the PreToolUse file-size check                 |
 | `BASTRA_SIZE_GUIDE`           | `500`            | Guide line count before the size hook nudges a split (also `bastra config set size.guide`) |
 | `BASTRA_SIZE_CRITICAL`        | `800`            | Critical line count for the size hook (also `size.critical`; test files use 700/1000) |
 
 All `BASTRA_*` vars accept a legacy `NEXUS_*` fallback for migration (except the
-size-hook and adoption knobs above, which read their env var directly).
+size-hook, adoption and sample-floor knobs above, which read their env var
+directly).

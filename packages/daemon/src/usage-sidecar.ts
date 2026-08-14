@@ -247,7 +247,16 @@ export function isSampleDue(
  */
 export function dueForSampling(
   usage: UsageAggregate,
-  ids: Iterable<string> = Object.keys(usage),
+  /**
+   * The population to bound — REQUIRED, and the reason this parameter has no
+   * default. `Object.keys(usage)` was the obvious one and is exactly wrong: the
+   * sidecar only holds memories that have surfaced at least once, so defaulting
+   * to it bounds the head and calls it the vault. That is the head-only
+   * certification #160 exists to prevent, reintroduced through the most
+   * convenient call. Pass the vault's ids; passing the aggregate's keys is a
+   * legitimate choice, but it has to be a choice someone made.
+   */
+  ids: Iterable<string>,
   now: number = Date.now(),
   thresholdMs: number = sampleRotThresholdMs(),
 ): string[] {

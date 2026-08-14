@@ -163,7 +163,7 @@ test("the bound is decoupled from engagement: heavy use does not exempt, zero us
   };
   assert.equal(isSampleDue(usage["hot"], now, threshold), true, "engagement does not buy exemption");
   assert.equal(isSampleDue(usage["cold"], now, threshold), false, "a fresh measurement holds, however cold");
-  assert.deepEqual(dueForSampling(usage, undefined, now, threshold), ["hot"]);
+  assert.deepEqual(dueForSampling(usage, Object.keys(usage), now, threshold), ["hot"]);
 });
 
 test("the low-salience tail enters the sample even with no sidecar entry at all", () => {
