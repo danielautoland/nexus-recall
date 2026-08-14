@@ -71,6 +71,7 @@
  *   npm run personas                          # bundled synthetic vault + personas
  *   npm run personas -- --k 3 --near 0.30     # tune @k and the near/far cut
  *   npm run personas -- --arms lexical,hybrid,expanded   # three-arm (#103)
+ *   npm run personas -- --pool 100            # sweep first-stage pool depth (#118)
  *   BASTRA_VAULT_PATH=/v npm run personas -- --personas p.json --out survival.json
  *
  * Exit code: 0 always (a measurement, not a pass/fail gate).
@@ -107,6 +108,8 @@ interface Args {
   k: number;
   near: number;
   arms: ArmName[];
+  /** First-stage pool depth; null = core's default max(k·4, 20) (#118). */
+  pool: number | null;
 }
 
 const DEFAULT_VAULT = resolve(import.meta.dirname, "../fixtures/eval-vault");
@@ -121,6 +124,7 @@ function parseArgs(argv: string[]): Args {
     k: 3,
     near: 0.3,
     arms: ["lexical"],
+    pool: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -131,6 +135,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--k") args.k = num(argv[++i], "--k");
     else if (a === "--near") args.near = num(argv[++i], "--near");
     else if (a === "--arms") args.arms = parseArms(req(argv[++i], "--arms"));
+    else if (a === "--pool") args.pool = poolNum(argv[++i]);
     else if (a === "-h" || a === "--help") {
       console.log(
         "persona-lift — simulated-user survival of recall_when\n" +
@@ -141,6 +146,9 @@ function parseArgs(argv: string[]): Args {
           "  --boost <n>        treatment recall_when weight (default 5; lexical/expanded\n" +
           "                     arms only — hybrid always runs production weights)\n" +
           "  --k <n>            Recall@k (default 3)\n" +
+          "  --pool <n>         first-stage candidate-pool depth (#118; default max(k·4, 20),\n" +
+          "                     i.e. core's HOP_SEED_POOL — only moves the far in-pool/\n" +
+          "                     not-retrieved split, R@k is unaffected without a reranker)\n" +
           "  --near <0..1>      query↔trigger overlap cut for near/far (default 0.30)\n" +
           "  --out <path>       also write a JSON report",
       );
@@ -169,6 +177,11 @@ function req(v: string | undefined, flag: string): string {
 function num(v: string | undefined, flag: string): number {
   const n = Number(v);
   if (!Number.isFinite(n)) throw new Error(`${flag} must be a number`);
+  return n;
+}
+function poolNum(v: string | undefined): number {
+  const n = num(v, "--pool");
+  if (!Number.isInteger(n) || n < 1) throw new Error("--pool must be a positive integer");
   return n;
 }
 
@@ -242,6 +255,9 @@ const meanGoldRank = (s: FarSplit): number => (s.inPool ? s.goldRankSum / s.inPo
 // pool; 0 = not retrieved. For the BM25-only arms the pool mirrors core
 // recall()'s HOP_SEED_POOL = max(k*4, 20) (search.ts) — exactly the pool
 // onCandidatePool exposes (#121). For hybrid we capture that pool directly.
+// `--pool` (#118) sweeps that depth for every arm. It moves ONLY the far
+// in-pool/not-retrieved split, never R@k: without a reranker behind the pool,
+// widening the window cannot change which memory ends up in the top k.
 
 type BmIndex = ReturnType<typeof buildIndex>;
 
@@ -260,6 +276,8 @@ interface ArmCounters {
   farSplitC: FarSplit;
   farSplitT: FarSplit;
   perPersonaT: Map<string, Run>;
+  /** per-query wall time of the treatment-side retrieval call, ms (#118). */
+  latencyT: number[];
 }
 const emptyCounters = (): ArmCounters => ({
   overallC: emptyRun(),
@@ -271,30 +289,58 @@ const emptyCounters = (): ArmCounters => ({
   farSplitC: emptySplit(),
   farSplitT: emptySplit(),
   perPersonaT: new Map(),
+  latencyT: [],
 });
 
 function bm25PoolRank(index: BmIndex, query: string, goldId: string, poolCap: number): number {
   return rankOf(index.search(query).slice(0, poolCap), goldId);
 }
 
-/** Run production recallHybrid, capture the #121 pool, return the gold's pool rank. */
+/**
+ * Run production recallHybrid, capture the #121 pool, return the gold's pool rank.
+ *
+ * `poolCap` (#118) is the depth we WANT to observe. core sizes its exposed pool
+ * as `HOP_SEED_POOL = max(k·4, 20)`, so the only lever from the outside is the
+ * `k` we pass: ask for `ceil(poolCap/4)` and the callback hands us at least
+ * `poolCap` candidates, which we then slice ourselves. `k` does not touch the
+ * fusion order (RRF runs before the pool is cut), so this widens the WINDOW,
+ * not the ranking — at the default poolCap the captured pool is identical to
+ * what `k` alone produced before.
+ *
+ * Structural ceiling worth knowing before reading a deep sweep: recallHybrid
+ * fuses `bm25.slice(0, 50)` with `vectorTop.slice(0, 50)` (search.ts), so the
+ * fused pool can never exceed ~100 distinct ids no matter how deep we ask.
+ */
 async function hybridPoolRank(
   search: SearchIndex,
   query: string,
   goldId: string,
-  k: number,
+  poolCap: number,
 ): Promise<number> {
   let captured: RecallHit[] = [];
   await search.recallHybrid(query, {
-    k,
+    k: Math.ceil(poolCap / 4),
     allow_private: true,
     onCandidatePool: (pool) => {
       captured = pool;
     },
   });
-  const idx = captured.findIndex((h) => h.id === goldId);
+  const idx = captured.slice(0, poolCap).findIndex((h) => h.id === goldId);
   return idx === -1 ? 0 : idx + 1;
 }
+
+// ── Latency (#118) ─────────────────────────────────────────────
+// Wall time of ONE arm's retrieval call per query — for hybrid that is
+// production `recallHybrid` including the Ollama query-embed round-trip; for
+// the BM25 arms it is the in-process minisearch call. Nothing around it (hook
+// process, MCP transport, topic detection, formatting) is in these numbers.
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return NaN;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[i];
+}
+const ms = (x: number): string => (Number.isFinite(x) ? x.toFixed(1) : "n/a");
 
 // ── Main ───────────────────────────────────────────────────────
 
@@ -314,8 +360,9 @@ async function main(): Promise<void> {
     triggerToks.set(m.fm.id, t);
   }
 
-  // First-stage pool cap for the BM25-only arms (see comment on bm25PoolRank).
-  const poolCap = Math.max(args.k * 4, 20);
+  // First-stage pool cap (see comment on bm25PoolRank). Default mirrors core's
+  // HOP_SEED_POOL; `--pool` (#118) sweeps it without touching production.
+  const poolCap = args.pool ?? Math.max(args.k * 4, 20);
 
   // Every control strips BOTH trigger fields (buildIndex control indexes
   // neither), so lexical + expanded share one control index.
@@ -354,7 +401,7 @@ async function main(): Promise<void> {
     const pair = await buildHybridArmPair(args.vault);
     runners.set("hybrid", {
       rank: (side, q, id) =>
-        hybridPoolRank(side === "control" ? pair.control.search : pair.treatment.search, q, id, args.k),
+        hybridPoolRank(side === "control" ? pair.control.search : pair.treatment.search, q, id, poolCap),
       close: pair.cleanup,
     });
   }
@@ -378,7 +425,9 @@ async function main(): Promise<void> {
         const c = counters.get(arm)!;
         const runner = runners.get(arm)!;
         const cRank = await runner.rank("control", query, id);
+        const t0 = performance.now();
         const tRank = await runner.rank("treatment", query, id);
+        c.latencyT.push(performance.now() - t0);
         record(c.overallC, cRank, args.k);
         record(c.overallT, tRank, args.k);
         record(isNear ? c.nearC : c.farC, cRank, args.k);
@@ -495,8 +544,8 @@ async function main(): Promise<void> {
       `Where the gold sat on far queries. \`in-pool\` = somewhere in the first-stage ` +
         `candidate pool (retrieved but possibly mis-ranked — a precision problem); ` +
         `\`not-retrieved\` = a recall-bound miss (what an index-side lever must fix). ` +
-        `Pool = max(k·4, 20) = ${poolCap}, core's #121 candidate pool. Precision signal: ` +
-        `mean gold rank among in-pool fars (lower = better).\n`,
+        `Pool = **${poolCap}**${args.pool === null ? " (default max(k·4, 20), core's #121 candidate pool)" : " (--pool, #118)"}. ` +
+        `Precision signal: mean gold rank among in-pool fars (lower = better).\n`,
     );
     L.push("| arm | side | far n | in-pool | not-retrieved | mean gold rank (in-pool) |");
     L.push("|---|---|---|---|---|---|");
@@ -509,6 +558,24 @@ async function main(): Promise<void> {
             `${split.notRetrieved} | ${Number.isFinite(mgr) ? mgr.toFixed(2) : "n/a"} |`,
         );
       }
+    }
+    L.push("");
+
+    L.push("## Retrieval-path latency at this pool depth (#118)\n");
+    L.push(
+      `Wall time of ONE treatment-side retrieval call per query, against the ~500 ms ` +
+        `hook budget. hybrid = production \`recallHybrid\` incl. the Ollama query embed; ` +
+        `lexical/expanded = the in-process BM25 call. Hook process start, MCP transport, ` +
+        `topic detection and formatting are NOT in these numbers.\n`,
+    );
+    L.push("| arm | queries | p50 ms | p95 ms | max ms |");
+    L.push("|---|---|---|---|---|");
+    for (const arm of args.arms) {
+      const s = [...counters.get(arm)!.latencyT].sort((a, b) => a - b);
+      L.push(
+        `| ${arm} | ${s.length} | ${ms(percentile(s, 50))} | ${ms(percentile(s, 95))} | ` +
+          `${ms(s.at(-1) ?? NaN)} |`,
+      );
     }
     L.push("");
 
@@ -575,6 +642,10 @@ async function main(): Promise<void> {
         notRetrieved: s.notRetrieved,
         meanGoldRank: meanGoldRank(s), // NaN → null in JSON
       });
+      const latencyJson = (xs: number[]): Record<string, unknown> => {
+        const s = [...xs].sort((a, b) => a - b);
+        return { n: s.length, p50: percentile(s, 50), p95: percentile(s, 95), max: s.at(-1) ?? null };
+      };
       json = {
         vault: args.vault,
         vaultSize: loaded,
@@ -599,6 +670,7 @@ async function main(): Promise<void> {
                   control: splitJson(c.farSplitC),
                   treatment: splitJson(c.farSplitT),
                 },
+                latencyMs: latencyJson(c.latencyT),
                 personaRecall: Object.fromEntries([...c.perPersonaT].map(([l, r]) => [l, recallK(r)])),
               },
             ];
