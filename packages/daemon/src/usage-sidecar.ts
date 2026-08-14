@@ -22,11 +22,27 @@ import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:f
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
+import { envInt } from "./env.js";
+
+/** Engagement kinds: someone did something with the memory. These count. */
 export type UsageKind = "surfaced" | "loaded" | "acted_on";
+
+/**
+ * The measurement kind (#160): we checked whether this memory still earns its
+ * weight. Deliberately not a `UsageKind` — it is our own bookkeeping, not the
+ * user's engagement, and it carries no counter for the same reason.
+ *
+ * Written like any other event — `recordUsage(root, [{ id, kind:
+ * MEASUREMENT_KIND, ts }])` — so it rides the same append → rotate → fold path
+ * and inherits its compaction and crash-replay guarantees unchanged.
+ */
+export const MEASUREMENT_KIND = "sampled";
+
+export type UsageEventKind = UsageKind | typeof MEASUREMENT_KIND;
 
 export interface UsageEvent {
   id: string;
-  kind: UsageKind;
+  kind: UsageEventKind;
   /** ISO timestamp. */
   ts: string;
 }
@@ -38,6 +54,18 @@ export interface UsageEntry {
   last_surfaced_at?: string;
   last_loaded_at?: string;
   last_acted_on_at?: string;
+  /**
+   * Measurement clock (#160): when we last CHECKED whether this memory still
+   * earns its weight — as opposed to the three engagement clocks above, which
+   * record when someone last used it.
+   *
+   * Without it the schema cannot tell "never used" from "the evidence went
+   * stale": a memory demoted on one early bad impression looks identical to
+   * one measured yesterday and found wanting, so a salience-weighted sample
+   * orbits the head forever and the tail rots silently. Absent = never
+   * measured, which is a due state, not a fresh one (see `isSampleDue`).
+   */
+  last_sampled_at?: string;
 }
 
 export type UsageAggregate = Record<string, UsageEntry>;
@@ -141,6 +169,102 @@ export function computeReach(usage: UsageAggregate): Record<string, UsageReach> 
   return out;
 }
 
+// ─── sample floor: the coverage bound on the measurement clock (#160) ────────
+
+/**
+ * How long a memory may go unmeasured before it MUST re-enter the sample.
+ * Env-tunable in days: `BASTRA_SAMPLE_ROT_DAYS`.
+ *
+ * The default is two `HEAT_HALF_LIFE_DAYS`: by the time a memory falls due,
+ * the engagement evidence that fixed its current standing has decayed to ~25%
+ * of the weight it carried when we last looked. The period is set against the
+ * decay of the thing being certified, not against a calendar — 14 (one
+ * half-life) is the other defensible setting and doubles the probe budget for
+ * evidence still at ~50%.
+ *
+ * The cost is a flat N/T probes per day — ~33/day on a 1000-memory vault — and
+ * it does NOT grow with vault size the way a per-query baseline probability
+ * would. Setting the value very high is the kill switch; 0 makes everything not
+ * measured this instant due. Read per call so the knob works live.
+ */
+export function sampleRotThresholdMs(): number {
+  return Math.max(0, envInt("BASTRA_SAMPLE_ROT_DAYS", 2 * HEAT_HALF_LIFE_DAYS)) * DAY_MS;
+}
+
+/**
+ * Has this memory gone unmeasured past the floor? (#160)
+ *
+ * A missing `last_sampled_at` reads as DUE, not as fresh. Two reasons. It is
+ * the truth — an entry written before this field existed carries no
+ * measurement, and "we never checked" is exactly the state the floor exists to
+ * clear. And it is the safe direction: being wrong here costs one probe, while
+ * the opposite default silently exempts the entire installed base from the
+ * bound and reinstates the rot on the tail.
+ *
+ * Note the polarity is the reverse of `lastContactMs` above, where a missing
+ * stamp means "we don't know when" and must NOT demote. Both are the
+ * conservative reading of absence for their own question: absence must never
+ * demote a memory, and must never excuse us from measuring one.
+ *
+ * FOR WHOEVER WIRES THE FIRST CONSUMER: on an existing vault every memory is
+ * due at once, because none of them carries a stamp yet. The steady-state cost
+ * quoted at `sampleRotThresholdMs` — a flat N/T probes per day — is what this
+ * settles into, NOT what the first run costs. On a 800-memory vault the first
+ * pass has 800 memories due simultaneously. Spread that first sweep over the
+ * threshold window, or stamp the installed base on migration; do not let the
+ * shadow run discover it. Nothing calls this yet, which is why it is a comment
+ * and not a queue.
+ */
+export function isSampleDue(
+  entry: UsageEntry | undefined,
+  now: number = Date.now(),
+  thresholdMs: number = sampleRotThresholdMs(),
+): boolean {
+  const stamp = entry?.last_sampled_at;
+  if (typeof stamp !== "string" || stamp === "") return true;
+  const t = Date.parse(stamp);
+  if (!Number.isFinite(t)) return true; // garbled stamp = no measurement we can stand behind
+  return now - t > thresholdMs;
+}
+
+/**
+ * Every memory that must enter the next sample, oldest measurement first.
+ *
+ * This is a hard coverage bound, not a probability: each id is re-measured at
+ * least every T, whatever its salience, heat or engagement. A salience-weighted
+ * sample alone only ever offers a probabilistic bound, under which a tail
+ * memory can go arbitrarily long unsampled while its stale weight keeps it out
+ * of the very sample that would correct it.
+ *
+ * Pass the vault's full id set as `ids`. The default — the aggregate's own keys
+ * — covers only memories that already have a sidecar entry, i.e. ones that have
+ * been surfaced at least once, which is the head bias this bound exists to
+ * break. A memory with no entry at all has never been measured and is due.
+ *
+ * Ordering is never-measured first, then oldest stamp first, ties by id: a
+ * caller with a per-run probe budget slices from the front and still honours
+ * the bound as long as its budget covers N/T per period.
+ */
+export function dueForSampling(
+  usage: UsageAggregate,
+  ids: Iterable<string> = Object.keys(usage),
+  now: number = Date.now(),
+  thresholdMs: number = sampleRotThresholdMs(),
+): string[] {
+  const due: Array<{ id: string; at: number }> = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== "string" || id === "" || seen.has(id)) continue;
+    seen.add(id);
+    const entry = usage[id];
+    if (!isSampleDue(entry, now, thresholdMs)) continue;
+    const t = Date.parse(entry?.last_sampled_at ?? "");
+    due.push({ id, at: Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY });
+  }
+  due.sort((a, b) => (a.at === b.at ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.at < b.at ? -1 : 1));
+  return due.map((d) => d.id);
+}
+
 const USAGE_DIR = join(".bastra", "usage");
 const EVENTS_FILE = "events.jsonl";
 const COMPACTING_FILE = "events.compacting.jsonl";
@@ -172,10 +296,14 @@ function emptyEntry(): UsageEntry {
 
 function foldEvent(agg: UsageAggregate, e: UsageEvent): void {
   if (!e || typeof e.id !== "string" || e.id.length === 0) return;
-  if (e.kind !== "surfaced" && e.kind !== "loaded" && e.kind !== "acted_on") return;
+  const kind = e.kind;
+  if (kind !== "surfaced" && kind !== "loaded" && kind !== "acted_on" && kind !== MEASUREMENT_KIND) return;
   const entry = (agg[e.id] ??= emptyEntry());
-  entry[e.kind] += 1;
-  const tsField = `last_${e.kind}_at` as const;
+  // The measurement kind stamps its clock and stops there. Counting our own
+  // probes would let the sample floor manufacture the very engagement signal
+  // it exists to audit — every forced re-measurement would read as demand.
+  if (kind !== MEASUREMENT_KIND) entry[kind] += 1;
+  const tsField = `last_${kind}_at` as const;
   // Events arrive roughly ordered, but a merge after compaction rotation may
   // replay older lines — keep the max, not the last seen.
   if (typeof e.ts === "string" && (!entry[tsField] || e.ts > entry[tsField]!)) {
