@@ -30,13 +30,29 @@ import { confirm, isInteractive } from "./prompt.js";
 
 const ENABLE_HINT = "bastra embeddings on";
 
-/** The one OFF wording every surface shares (doctor, install hint, status). */
-export const RECALL_OFF_NOTE = `Semantic recall is OFF — recall is keyword-only (BM25). Enable: ${ENABLE_HINT}`;
-/** Same message behind the install step's "→ semantic recall:" prefix. */
-const INSTALL_OFF_HINT = `→ semantic recall: OFF — recall is keyword-only (BM25). Enable: ${ENABLE_HINT}`;
+/** What the user gives up by leaving it off, in one clause.
+ *
+ *  #103 measured all three arms on a real 811-memory vault, 180 simulated-user
+ *  queries: keyword-only found the right note in 61.1% of cases, with the
+ *  vector leg on it was 80.0%. The split by user voice is the part worth
+ *  carrying into a prompt — someone who names the concept exactly loses almost
+ *  nothing (86.7% → 96.7%), someone who describes it in their own words loses
+ *  most of their recall (26.7% → 66.7%). Stated as measured, not as a promise:
+ *  it is one vault, and the wording says so. */
+const OFF_COST = "keyword-only finds 61% of notes where semantic recall finds 80% (#103)";
 
+/** The one OFF wording every surface shares (doctor, install hint, status). */
+export const RECALL_OFF_NOTE = `Semantic recall is OFF — recall is keyword-only (BM25). Measured on a real vault: ${OFF_COST}, and the gap is widest when your wording differs from the note's. Enable: ${ENABLE_HINT}`;
+/** Same message behind the install step's "→ semantic recall:" prefix. */
+const INSTALL_OFF_HINT = `→ semantic recall: OFF — recall is keyword-only (BM25). Measured: ${OFF_COST}. Enable: ${ENABLE_HINT}`;
+
+// Benefit first, price second. The old wording asked for 620 MB and a Homebrew
+// install without once saying what they buy, so the only informed answer was
+// "no" (#103, install-prompt review 2026-08-14).
 export const INSTALL_PROMPT_QUESTION =
-  "Enable semantic recall (multilingual vector search)? Downloads the embeddinggemma model (~620 MB) via Ollama (installed with Homebrew if missing).";
+  "Enable semantic recall (multilingual vector search)? It finds notes when your wording has drifted from theirs — " +
+  "on a real vault 80% of notes found, against 61% keyword-only (#103). " +
+  "Downloads the embeddinggemma model (~620 MB) via Ollama (installed with Homebrew if missing).";
 
 function write(line: string): void {
   process.stdout.write(line + "\n");

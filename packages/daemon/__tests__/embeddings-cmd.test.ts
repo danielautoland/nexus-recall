@@ -184,7 +184,15 @@ test("doctor: effective none → the exact OFF note, as a note (not a failure)",
   });
   assert.equal(lines[0], "→ semantic recall");
   assert.equal(lines[1], `  note: ${RECALL_OFF_NOTE}`);
-  assert.equal(RECALL_OFF_NOTE, "Semantic recall is OFF — recall is keyword-only (BM25). Enable: bastra embeddings on");
+  // Pinned on substance, not on the sentence: the note must say what is off,
+  // what it costs the user (#103's measured figures — the reason the default
+  // stays opt-in is that the price is real, so the benefit has to be stated),
+  // and how to turn it on. Rewording is fine; dropping one of the three is the
+  // regression, because the prompt then asks for 620 MB and names no gain.
+  assert.match(RECALL_OFF_NOTE, /Semantic recall is OFF/);
+  assert.match(RECALL_OFF_NOTE, /61%/);
+  assert.match(RECALL_OFF_NOTE, /80%/);
+  assert.match(RECALL_OFF_NOTE, /bastra embeddings on/);
 });
 
 test("doctor: configured ollama with the model missing → actionable warning", () => {
