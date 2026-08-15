@@ -73,6 +73,7 @@ import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { envBool } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
+import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { handleHookReflex } from "./reflex.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
@@ -1187,6 +1188,14 @@ function handleHookRecall(
             hits,
             (id) => vault.get(id)?.fm as Record<string, unknown> | undefined,
           ),
+          // #160: dieselbe Projektion für den Trust-Multiplikator. MUSS hier
+          // stehen und nicht nur im MCP-Pfad: der Hook ist der häufigere
+          // Aufrufer, und ein Shadow, der nur die Tool-Calls sieht, misst eine
+          // Verteilung, die es so nicht gibt.
+          trust_shadow:
+            trustRankMode() === "shadow"
+              ? computeTrustShadow(hits, (id) => usageForShadow(vault.root)[id])
+              : undefined,
           // #249: recorded, not just returned. Without this the flag reads
           // zero in every stats run — not because recall is healthy, but
           // because nothing ever wrote it down.

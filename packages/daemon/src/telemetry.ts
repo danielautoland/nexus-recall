@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { readJoinStateSync, writeJoinState } from "./telemetry-join-store.js";
 import type { SalienceShadow } from "./salience-shadow.js";
+import type { TrustShadow } from "./trust-shadow.js";
 
 /**
  * Migration-aware default log directory: prefer `~/.bastra/logs`, aber
@@ -104,6 +105,10 @@ export interface RecallEvent extends BaseEvent {
   /** #217: would-be re-ranking under the salience multiplier (shadow mode).
    *  Absent when no served hit carries salience or the mode isn't shadow. */
   salience_shadow?: SalienceShadow;
+  /** #160: would-be re-ranking under the usage-driven trust multiplier
+   *  (shadow mode). Absent when every served hit sits at the trust ceiling —
+   *  i.e. nothing has been shown-and-ignored — or the mode isn't shadow. */
+  trust_shadow?: TrustShadow;
 }
 
 export interface LoadMemoryEvent extends BaseEvent {
@@ -216,6 +221,9 @@ export interface HookRecallEvent extends BaseEvent {
   embedding_degraded?: boolean;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
   salience_shadow?: SalienceShadow;
+  /** #160: same projection for the usage-driven trust multiplier. Present on
+   *  the hook path too, which is the busier caller of the two. */
+  trust_shadow?: TrustShadow;
 }
 
 /** #217 Phase 2: Reflex-Injektion ohne aktive Query (POST /hook/reflex) —

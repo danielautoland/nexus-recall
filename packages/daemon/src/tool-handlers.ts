@@ -29,6 +29,7 @@ import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
+import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
@@ -283,28 +284,40 @@ export async function recallHandler(
   );
 
   const recallId = deps.telemetry.newRecallId();
+  // #160: would-be order under the usage-driven trust multiplier. Reads the
+  // cached aggregate synchronously and refreshes it in the background, so the
+  // telemetry event is written exactly as promptly as before — see
+  // `usageForShadow` for why awaiting the read here would be the worse trade.
+  const trustShadow =
+    trustRankMode() === "shadow"
+      ? computeTrustShadow(hits, (id) => usageForShadow(deps.vaultPath)[id])
+      : undefined;
+
   fireAndForget(
     deps.telemetry.logRecall({
-      recall_id: recallId,
-      query: parsed.data.query,
-      k: parsed.data.k ?? null,
-      scope: parsed.data.scope ?? null,
-      type: parsed.data.type ?? null,
-      vault_size: deps.vault.size(),
-      hit_count: hits.length,
-      top_score: hits[0]?.score ?? null,
-      hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
-      latency_ms: latencyMs,
-      recall_stages: collector.timings,
-      dropped_below_floor: droppedBelowFloor,
-      // #249: the flag has to be recorded on every path, not only returned.
-      weak_result: weakResult || undefined,
-      no_home: noHome || undefined,
-      bridge_expansion:
-        expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
-      candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
-      embedding_degraded: embeddingDegraded ? true : undefined,
-      salience_shadow: salienceShadow,
+        recall_id: recallId,
+        query: parsed.data.query,
+        k: parsed.data.k ?? null,
+        scope: parsed.data.scope ?? null,
+        type: parsed.data.type ?? null,
+        vault_size: deps.vault.size(),
+        hit_count: hits.length,
+        top_score: hits[0]?.score ?? null,
+        hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
+        latency_ms: latencyMs,
+        recall_stages: collector.timings,
+        dropped_below_floor: droppedBelowFloor,
+        // #249: the flag has to be recorded on every path, not only returned.
+        weak_result: weakResult || undefined,
+        no_home: noHome || undefined,
+        bridge_expansion:
+          expansion.lang && expansion.added.length > 0
+            ? { lang: expansion.lang, added: expansion.added }
+            : undefined,
+        candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+        embedding_degraded: embeddingDegraded ? true : undefined,
+        salience_shadow: salienceShadow,
+        trust_shadow: trustShadow,
     }),
   );
 
