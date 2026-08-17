@@ -76,6 +76,7 @@ import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { handleHookReflex } from "./reflex.js";
 import { runPromptLane, type ClaudeHookPayload } from "./prompt-lane.js";
+import { runWriteLane, type WriteHookPayload } from "./write-lane.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
@@ -460,6 +461,26 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           const ppid = typeof body.client_ppid === "number" ? body.client_ppid : null;
           const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
           const out = await runPromptLane(payload, ppid, self);
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(out);
+        })
+        .catch(() => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end("{}");
+        });
+      return;
+    }
+
+    // #343 second half: same contract as /hook/prompt, for the PreToolUse
+    // Write/Edit lane. The skip gate stays in the thin client (pure stdlib,
+    // fires on the majority of calls), so everything arriving here already
+    // survived it. No client_ppid — this lane touches no statusline feed.
+    if (method === "POST" && url === "/hook/write") {
+      readJsonBody(req, MAX_BODY_BYTES)
+        .then(async (body) => {
+          const payload = (body.payload ?? {}) as WriteHookPayload;
+          const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
+          const out = await runWriteLane(payload, self);
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(out);
         })

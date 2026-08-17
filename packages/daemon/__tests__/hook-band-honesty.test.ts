@@ -20,7 +20,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core";
-import { formatHintBlock } from "../src/hook.js";
+// #343: the formatter moved daemon-side with the rest of the lane.
+import { formatHintBlock } from "../src/write-lane.js";
 import { twoArmedRankFor, requiredHeadline, unfusedHeadline } from "../src/band-wording.js";
 
 const MUST_LOAD = 100;
