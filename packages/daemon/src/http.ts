@@ -77,6 +77,8 @@ import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shado
 import { handleHookReflex } from "./reflex.js";
 import { runPromptLane, type ClaudeHookPayload } from "./prompt-lane.js";
 import { runWriteLane, type WriteHookPayload } from "./write-lane.js";
+import { runBashPreLane, type BashHookPayload } from "./bash-pre-lane.js";
+import { runBashFailLane, type BashFailPayload } from "./bash-fail-lane.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
@@ -481,6 +483,42 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           const payload = (body.payload ?? {}) as WriteHookPayload;
           const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
           const out = await runWriteLane(payload, self);
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(out);
+        })
+        .catch(() => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end("{}");
+        });
+      return;
+    }
+
+    // #343 pattern, bash lanes: same contract as /hook/prompt and /hook/write.
+    // No client-side content gates — the pattern tables and invokesOwnBinary
+    // are gate logic that must stay hot-swappable, so they live in the lanes.
+    if (method === "POST" && url === "/hook/bash-pre") {
+      readJsonBody(req, MAX_BODY_BYTES)
+        .then(async (body) => {
+          const out = await runBashPreLane(
+            (body.payload ?? {}) as BashHookPayload,
+            `http://127.0.0.1:${req.socket.localPort ?? 6723}`,
+          );
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(out);
+        })
+        .catch(() => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end("{}");
+        });
+      return;
+    }
+    if (method === "POST" && url === "/hook/bash-fail") {
+      readJsonBody(req, MAX_BODY_BYTES)
+        .then(async (body) => {
+          const out = await runBashFailLane(
+            (body.payload ?? {}) as BashFailPayload,
+            `http://127.0.0.1:${req.socket.localPort ?? 6723}`,
+          );
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(out);
         })

@@ -21,6 +21,11 @@ export const FORWARDER_SCRIPT_PATH = resolve(DAEMON_DIST, "mcp-forwarder.js");
  *  listDaemonProcesses matches on. */
 export const DAEMON_SCRIPT_PATH = resolve(DAEMON_DIST, "index.js");
 export const PRE_TOOL_HOOK_BIN = resolve(DAEMON_DIST, "hook.js");
+/** #344: the compiled thin-client stub. Built locally via `npm run build:stub`
+ *  (deno compile) — present on hosts that ran that task, absent on plain npm
+ *  installs, so every consumer must fall back to the node client when this
+ *  path does not exist. */
+export const HOOK_STUB_BIN = resolve(PACKAGE_ROOT, "stub", "bastra-hook");
 export const SESSION_HOOK_BIN = resolve(DAEMON_DIST, "session-hook.js");
 export const PROMPT_HOOK_BIN = resolve(DAEMON_DIST, "prompt-hook.js");
 export const TODO_HOOK_BIN = resolve(DAEMON_DIST, "todo-hook.js");

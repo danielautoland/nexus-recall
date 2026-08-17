@@ -18,7 +18,10 @@
  *   - hook.ts is under heavy refactor in a parallel PR; this hook ships as
  *     its own CLI entry (`bastra-recall-todo-hook`) to avoid merge friction.
  */
-import { detectProject, RRF_K, RRF_SCALE } from "@bastra-recall/core";
+// #305: subpath leafs, never the core barrel — measured +40ms of process
+// start against +0.8ms for the three leafs, on a fresh spawn per event.
+import { detectProject } from "@bastra-recall/core/topics";
+import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { requiredHeadline } from "./band-wording.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";

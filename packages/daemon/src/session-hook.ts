@@ -21,7 +21,10 @@
  * Discipline mirrors hook.ts: hard wall-clock budget, fail-silent on every
  * error path, telemetry best-effort.
  */
-import { detectProject, RRF_K, RRF_SCALE } from "@bastra-recall/core";
+// #305: subpath leafs, never the core barrel — measured +40ms of process
+// start against +0.8ms for the three leafs, on a fresh spawn per event.
+import { detectProject } from "@bastra-recall/core/topics";
+import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { requiredHeadline } from "./band-wording.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";

@@ -11,7 +11,8 @@ import {
   isThrottled,
   markThrottle,
   throttleFile,
-} from "../src/bash-fail-hook.js";
+  runBashFailLane,
+} from "../src/bash-fail-lane.js";
 
 const SESSION = "test-session-fail-hook";
 
@@ -106,13 +107,8 @@ describe("bash-fail-hook: throttle", () => {
 
 // ─── #144: act-signal integration (mock daemon + spawned hook) ────────────
 
-import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve as resolvePath } from "node:path";
 
-const __dirname144 = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH_144 = resolvePath(__dirname144, "..", "src", "bash-fail-hook.ts");
 
 interface SeenRequest {
   path: string;
@@ -140,19 +136,21 @@ function startRecordingDaemon(): Promise<{ port: number; seen: SeenRequest[]; cl
   });
 }
 
-function runFailHook(payload: object, port: number): Promise<string> {
-  return new Promise((ok, ko) => {
-    const child = spawn("npx", ["tsx", HOOK_PATH_144], {
-      env: { ...process.env, BASTRA_HTTP_URL: `http://127.0.0.1:${port}`, BASTRA_TELEMETRY: "off" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.on("error", ko);
-    child.on("close", () => ok(stdout));
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-  });
+/** #343: the pipeline under test is `runBashFailLane`, in-process. The
+ *  recording mock stays identical — the lane still reaches /hook/act,
+ *  /hook/recall and /hook/hinted over loopback HTTP. */
+async function runFailHook(payload: object, port: number): Promise<string> {
+  const prev = process.env.BASTRA_TELEMETRY;
+  process.env.BASTRA_TELEMETRY = "off";
+  try {
+    return await runBashFailLane(
+      payload as Parameters<typeof runBashFailLane>[0],
+      `http://127.0.0.1:${port}`,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.BASTRA_TELEMETRY;
+    else process.env.BASTRA_TELEMETRY = prev;
+  }
 }
 
 describe("bash-fail-hook: #144 act-signal", () => {

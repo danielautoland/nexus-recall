@@ -30,7 +30,9 @@ import { request } from "node:http";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { scrubInjectedBlocks } from "@bastra-recall/core";
+// #305: the scrub leaf, never the core barrel — the barrel costs +40ms of
+// process start for a function that lives in a dependency-free module.
+import { scrubInjectedBlocks } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { writePendingSuggestion } from "./pending-suggestions.js";

@@ -1,15 +1,11 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { matchPattern, formatHintBlock } from "../src/bash-pre-hook.js";
+import { matchPattern, formatHintBlock, runBashPreLane } from "../src/bash-pre-lane.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH = resolve(__dirname, "..", "src", "bash-pre-hook.ts");
 
 describe("bash-pre-hook: matchPattern", () => {
   it("matches rm -rf as destructive", () => {
@@ -178,24 +174,30 @@ function startMockDaemon(handler: (req: IncomingMessage, res: ServerResponse) =>
   });
 }
 
-function runHook(
+/** #343: the pipeline under test is `runBashPreLane`, in-process. The mock
+ *  daemon stays identical to the CLI era — the lane still reaches recall and
+ *  hinted over loopback HTTP. env vars are applied around the call and
+ *  restored, mirroring what the spawned CLI inherited before. */
+async function runHook(
   payload: object,
   env: Record<string, string>,
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((ok, ko) => {
-    const child = spawn("npx", ["tsx", HOOK_PATH], {
-      env: { ...process.env, ...env, BASTRA_TELEMETRY: "off" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
-    child.on("error", ko);
-    child.on("close", (code) => ok({ stdout, stderr, code: code ?? -1 }));
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-  });
+): Promise<{ stdout: string }> {
+  const applied: Record<string, string | undefined> = {};
+  const withDefaults: Record<string, string> = { BASTRA_TELEMETRY: "off", ...env };
+  for (const [k, v] of Object.entries(withDefaults)) {
+    applied[k] = process.env[k];
+    process.env[k] = v;
+  }
+  try {
+    const baseUrl = withDefaults.BASTRA_HTTP_URL ?? "http://127.0.0.1:1";
+    const stdout = await runBashPreLane(payload as Parameters<typeof runBashPreLane>[0], baseUrl);
+    return { stdout };
+  } finally {
+    for (const [k, v] of Object.entries(applied)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 }
 
 describe("bash-pre-hook: backoff exemption (#161)", () => {

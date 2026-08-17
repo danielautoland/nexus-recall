@@ -35,7 +35,8 @@ const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOU
 const DEFAULT_PORT = 6723;
 const STUB_VERSION = "0.4.0-stub";
 
-type Lane = "prompt" | "write";
+type Lane = "prompt" | "write" | "bash-pre" | "bash-fail";
+const LANES = new Set<Lane>(["prompt", "write", "bash-pre", "bash-fail"]);
 const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 interface HookPayload {
@@ -164,7 +165,7 @@ function classifyError(e: NodeJS.ErrnoException): "daemon-unreachable" | "timeou
 async function main(): Promise<void> {
   const startedAt = Date.now();
   const lane = (process.argv[2] ?? "") as Lane;
-  if (lane !== "prompt" && lane !== "write") {
+  if (!LANES.has(lane)) {
     // Unknown subcommand: fail open like every other path — a misregistered
     // hook must not break the turn, and the mistake shows up in telemetry.
     emitOnce("{}");
@@ -204,9 +205,14 @@ async function main(): Promise<void> {
     }
     path = "/hook/write";
     body = { payload };
-  } else {
+  } else if (lane === "prompt") {
     path = "/hook/prompt";
     body = { payload, client_ppid: process.ppid };
+  } else {
+    // bash-pre / bash-fail: no client-side content gates — the pattern
+    // tables and invokesOwnBinary are hot-swappable lane logic (#344).
+    path = `/hook/${lane}`;
+    body = { payload };
   }
 
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));

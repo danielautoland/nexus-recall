@@ -1,8 +1,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import {
   CLAUDE_CODE_CONFIG,
   CLAUDE_CODE_SETTINGS,
+  HOOK_STUB_BIN,
   PRE_TOOL_HOOK_BIN,
   SESSION_HOOK_BIN,
   PROMPT_HOOK_BIN,
@@ -39,6 +41,12 @@ interface HookDef {
   bin: string;
   timeout: number;
   note: string;
+  /** #344: subcommand of the compiled stub that serves this lane. When set
+   *  AND the stub binary exists, registration prefers `<stub> <subcommand>`
+   *  over `node <bin>` — the stub starts in ~20ms against node's ~45ms floor,
+   *  which is the whole point of compiling it. Lanes without a daemon-side
+   *  pipeline (session, todo, stop) have no subcommand yet and stay on node. */
+  stubSubcommand?: string;
 }
 
 // Held separately from the list below because a run that does NOT register the
@@ -56,22 +64,30 @@ const STOP_HOOK_DEF: HookDef = {
 function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
   const defs: HookDef[] = [
     { event: "SessionStart", matcher: "startup|resume|clear|compact", bin: SESSION_HOOK_BIN, timeout: 3, note: "bastra-recall SessionStart hook" },
-    { event: "UserPromptSubmit", bin: PROMPT_HOOK_BIN, timeout: 2, note: "bastra-recall UserPromptSubmit hook (lookup-mode, #33)" },
-    { event: "PreToolUse", matcher: "Write|Edit|MultiEdit|NotebookEdit", bin: PRE_TOOL_HOOK_BIN, timeout: 2, note: "bastra-recall PreToolUse hook" },
+    { event: "UserPromptSubmit", bin: PROMPT_HOOK_BIN, timeout: 2, note: "bastra-recall UserPromptSubmit hook (lookup-mode, #33)", stubSubcommand: "prompt" },
+    { event: "PreToolUse", matcher: "Write|Edit|MultiEdit|NotebookEdit", bin: PRE_TOOL_HOOK_BIN, timeout: 2, note: "bastra-recall PreToolUse hook", stubSubcommand: "write" },
     { event: "PreToolUse", matcher: "TodoWrite", bin: TODO_HOOK_BIN, timeout: 2, note: "bastra-recall TodoWrite hook (topology-recall, #36)" },
-    { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)" },
-    { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash post hook (act-signal #144 + lesson recall on fail #37)" },
+    { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)", stubSubcommand: "bash-pre" },
+    { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash post hook (act-signal #144 + lesson recall on fail #37)", stubSubcommand: "bash-fail" },
   ];
   if (opts.includeStop) defs.push(STOP_HOOK_DEF);
   return defs;
 }
 
 function buildHookEntry(def: HookDef): Record<string, unknown> {
+  // #344: prefer the compiled stub when this lane has a subcommand and the
+  // binary actually exists on this host. Plain npm installs have no stub
+  // (it is built locally via deno) — they keep the node thin client, which
+  // serves the same daemon lane, just with node's start cost.
+  const command =
+    def.stubSubcommand && existsSync(HOOK_STUB_BIN)
+      ? `${HOOK_STUB_BIN} ${def.stubSubcommand}`
+      : `node ${def.bin}`;
   const entry: Record<string, unknown> = {};
   if (def.matcher) entry.matcher = def.matcher;
   entry.hooks = [{
     type: "command",
-    command: `node ${def.bin}`,
+    command,
     timeout: def.timeout,
     __bastraRecall: true,
     __note: def.note,
