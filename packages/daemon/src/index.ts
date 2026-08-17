@@ -350,6 +350,12 @@ async function main(): Promise<void> {
   // disclaimer-Wrapper) beim Boot wegräumen. Verzögert + unref'd, damit der
   // health-kritische Boot-Pfad (#78) keinen ps-Roundtrip zahlt.
   setTimeout(() => reapStaleForwarderProcesses(), 5_000).unref();
+  // #345: and keep sweeping. Boot-only reaping was measured leaking on a
+  // long-lived daemon — #305 found 6 orphaned forwarders next to a daemon
+  // with 3.5 days of uptime, because the sweep had run once, days before the
+  // orphans existed. One ps table every 15min is noise; a supervisor that
+  // only supervises at boot is not one.
+  setInterval(() => reapStaleForwarderProcesses(), 15 * 60_000).unref();
 
   if (telemetry.isEnabled()) {
     console.error(`[bastra-recall] telemetry: enabled (log path: ${logDirFor()})`);
