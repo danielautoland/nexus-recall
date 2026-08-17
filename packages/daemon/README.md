@@ -102,6 +102,7 @@ npm run backfill:related   # populate related_via on legacy memories
 | `OPENAI_API_KEY` | no | unset | required when `BASTRA_EMBEDDING_PROVIDER=openai` |
 | `BASTRA_FORWARDER_SPAWN` | no | `1` | when `0`, the MCP forwarder will not auto-spawn the daemon |
 | `BASTRA_HOOK_TIMEOUT_MS` | no | `500` | per-hook wall-clock budget before fail-silent |
+| `BASTRA_VECTOR_DEADLINE_MS` | no | `150` | hook path only: how long a recall waits for the dense arm before serving BM25-only. Bounds that stage, not the call — measured warm the arm costs 87–96ms (total 106–113ms), cold 668ms (total 694ms), so 150ms passes every warm call and caps a cold one near 180ms. The embed is abandoned, not cancelled, so the model still finishes loading and the next call is warm. Degradations are visible as `degraded: "vector-arm-timeout"`; `0` disables (kill switch) |
 | `BASTRA_HOOK_MAX_SHOW` | no | `1` | how often the same memory may appear in `<recall-hints>` per session (4h window); a `load_memory` of that id resets the counter |
 | `BASTRA_HOOK_CONTENT_RECALL` | no | `off` | set to `1` to run the opt-in edit-content recall arm (#282) |
 | `BASTRA_DOCUMENT_WRITE` | no | unset | set to `1` to expose document write tools |

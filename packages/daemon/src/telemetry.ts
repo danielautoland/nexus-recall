@@ -102,6 +102,16 @@ export interface RecallEvent extends BaseEvent {
    *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
    *  stats separate degraded from normal recalls. */
   embedding_degraded?: boolean;
+  /** #342: served BM25-only because a leg of the hybrid dropped out, and which
+   *  one. `vector-arm-timeout` = the dense arm missed its per-arm deadline
+   *  (#305: a cold embedding model costs ~590ms it cannot make up); the embed
+   *  is left running so the next call is warm. `vector-arm-empty` = the arm
+   *  returned nothing, which predates the deadline.
+   *
+   *  Distinct from `embedding_degraded`: that one means no embed was attempted
+   *  at all (breaker open). This one means it was attempted and abandoned — the
+   *  two have different fixes, so counting them as one number hides both. */
+  degraded_reason?: string;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode).
    *  Absent when no served hit carries salience or the mode isn't shadow. */
   salience_shadow?: SalienceShadow;
@@ -219,6 +229,9 @@ export interface HookRecallEvent extends BaseEvent {
   no_home?: boolean;
   /** #165: served BM25-only because the embedding circuit breaker was open. */
   embedding_degraded?: boolean;
+  /** #342: which leg dropped out — `vector-arm-timeout` (missed its per-arm
+   *  deadline) or `vector-arm-empty` (had nothing to say). See the hook event. */
+  degraded_reason?: string;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
   salience_shadow?: SalienceShadow;
   /** #160: same projection for the usage-driven trust multiplier. Present on

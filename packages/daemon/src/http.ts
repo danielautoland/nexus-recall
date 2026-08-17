@@ -71,7 +71,7 @@ import type {
 } from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
-import { envBool } from "./env.js";
+import { envBool, envInt } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { handleHookReflex } from "./reflex.js";
@@ -932,6 +932,35 @@ function handleHookAct(req: IncomingMessage, res: ServerResponse, telemetry: Tel
 
 const CONTENT_RECALL_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * #342: deadline for the dense arm on the HOOK path only — the surface with a
+ * hard client-side budget (HOOK_TIMEOUT_MS, 600ms). Offline callers (bridge
+ * harvest, doc2query self-test, the WebUI) keep waiting indefinitely; they have
+ * no budget and want the better result.
+ *
+ * The number comes from the per-stage split measured on a real host, and it is
+ * a bound on THIS STAGE, not on the call:
+ *
+ *   warm   bm25 15-24ms   vector  87-96ms   →  total 106-113ms
+ *   cold   bm25 24ms      vector 668ms      →  total 694ms
+ *
+ * So 150ms clears every warm dense arm with ~55ms to spare, and caps the cold
+ * one at 150 + ~25ms of BM25 ≈ 180ms. That keeps BOTH cases under the 200ms
+ * ceiling #305 set — the warm path untouched at ~110ms, the cold path degraded
+ * to BM25-only but arriving, instead of the whole call expiring silently and
+ * the turn continuing as if there had been nothing to say.
+ *
+ * 0 disables the deadline (kill switch, pre-#342 behaviour). Every expiry is
+ * visible as `degraded: "vector-arm-timeout"` on the recall telemetry, so a
+ * machine where the warm arm genuinely needs longer shows up as a rate rather
+ * than as quietly worse recall.
+ *
+ * Read per call, not once at module load, like BASTRA_HOOK_CONTENT_RECALL
+ * below: a latency kill switch that needs a daemon restart to take effect is
+ * not much of a kill switch.
+ */
+const hookVectorDeadlineMs = (): number => envInt("BASTRA_VECTOR_DEADLINE_MS", 150);
+
 export function mergeHookRecallHits(
   first: RecallHit[],
   second: RecallHit[],
@@ -1001,7 +1030,17 @@ function handleHookRecall(
       const expand_hops = body.expand_hops === 0 ? 0 : 1;
 
       const stageTimings: NonNullable<Parameters<Telemetry["logHookRecall"]>[0]["recall_stages"]> = {};
+      // #342: why the hit list came back one-armed, if it did. Recorded rather
+      // than merely returned — #305's whole finding is that this lane fails
+      // quietly, and a degradation nobody counts repeats that failure one level
+      // up: recall gets worse and the only visible symptom is that it got
+      // faster. `vector-arm-timeout` is the deadline firing, `vector-arm-empty`
+      // the pre-existing case where the arm had nothing to say.
+      let degradedReason: string | undefined;
       const collectStage = (s: RecallStage): void => {
+        if (s.name === "done" && typeof s.meta?.degraded === "string") {
+          degradedReason = s.meta.degraded;
+        }
         if (s.name === "cache.hit") {
           stageTimings.cache_hit = true;
           return;
@@ -1063,6 +1102,7 @@ function handleHookRecall(
             expand_hops,
             onStage,
             onCandidatePool: onQueryCandidatePool,
+            vector_deadline_ms: hookVectorDeadlineMs(),
           })
         : search.recall(expansion.query, {
             k,
@@ -1099,6 +1139,11 @@ function handleHookRecall(
                 scope,
                 type,
                 expand_hops,
+                // Same deadline, not a remaining-budget split: by the time this
+                // runs the query recall above has either warmed the model (so
+                // this costs ~120ms) or is still loading it (so this expires
+                // too and degrades the same way). Both are the right outcome.
+                vector_deadline_ms: hookVectorDeadlineMs(),
               })
             : search.recall(contentQuery, {
                 k,
@@ -1154,7 +1199,14 @@ function handleHookRecall(
       // the telemetry row and the payload alike. They were computed twice from
       // the same inputs before, which is how `no_home` came to be recorded on the
       // MCP path and nowhere here.
-      const hybridActiveAtRecall = search.hasEmbeddings() && !embeddingDegradedAtRecall;
+      // #342: a recall that fell back to one arm did not run RRF, whatever the
+      // reason — breaker open (#165), deadline expired, or the arm returning
+      // nothing. All three serve raw BM25, which is unbounded, so the 30/100
+      // bands describe nothing and `unfused` has to say so (#302). Reading only
+      // the breaker was already blind to `vector-arm-empty`; the deadline makes
+      // that blind spot common instead of rare, which is why it is fixed here.
+      const hybridActiveAtRecall =
+        search.hasEmbeddings() && !embeddingDegradedAtRecall && degradedReason === undefined;
       const weakResult = isWeakResult(hits, hybridActiveAtRecall);
       const noHome = isNoHome(hits, hybridActiveAtRecall);
 
@@ -1183,6 +1235,8 @@ function handleHookRecall(
           content_recall: contentRecall,
           // #165: pre-recall festgehalten, siehe oben / recallHandler.
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,
+          // #342: which arm dropped out, if one did.
+          degraded_reason: degradedReason,
           // #217: would-be Salience-Reihenfolge (shadow-only).
           salience_shadow: computeSalienceShadow(
             hits,
@@ -1230,6 +1284,11 @@ function handleHookRecall(
         // Same shape as the flags above: present only when it has something
         // to say, computed once from the value the honesty flags already use.
         ...(hybridActiveAtRecall ? {} : { unfused: true }),
+        // #342: name the reason on the wire too. `unfused` says the bands do
+        // not apply; this says why, so a slow machine degrading on every call
+        // is distinguishable from embeddings being off — from the response
+        // alone, without correlating against the telemetry log.
+        ...(degradedReason ? { degraded: degradedReason } : {}),
       };
       if (wantsSse) {
         writeSseEvent(res, "done", payload);
