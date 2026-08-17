@@ -25,6 +25,14 @@
     "./scrub": {
       "types": "./dist/scrub.d.ts",
       "import": "./dist/scrub.js"
+    },
+    "./topics": {
+      "types": "./dist/topics.d.ts",
+      "import": "./dist/topics.js"
+    },
+    "./rrf": {
+      "types": "./dist/rrf.d.ts",
+      "import": "./dist/rrf.js"
     }
   },
   "files": [
