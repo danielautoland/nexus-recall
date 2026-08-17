@@ -75,6 +75,7 @@ import { envBool, envInt } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { handleHookReflex } from "./reflex.js";
+import { runPromptLane, type ClaudeHookPayload } from "./prompt-lane.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
@@ -442,6 +443,30 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // über reflex-markierte Memories. Loopback-only wie /hook/recall.
     if (method === "POST" && url === "/hook/reflex") {
       handleHookReflex(req, res, t0, vault, telemetry);
+      return;
+    }
+
+    // #343 (stage A of #305 direction 2): the full UserPromptSubmit pipeline,
+    // server-side. The thin client POSTs {payload, client_ppid} and writes the
+    // response body to stdout verbatim, so this endpoint returns the exact
+    // document Claude Code expects — `{}` or the hookSpecificOutput envelope —
+    // and fails open to `{}` with 200: the client must never see an error it
+    // would only translate back into `{}` anyway. Loopback-only like
+    // /hook/recall. Logic lives in prompt-lane.ts; this stays a route.
+    if (method === "POST" && url === "/hook/prompt") {
+      readJsonBody(req, MAX_BODY_BYTES)
+        .then(async (body) => {
+          const payload = (body.payload ?? {}) as ClaudeHookPayload;
+          const ppid = typeof body.client_ppid === "number" ? body.client_ppid : null;
+          const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
+          const out = await runPromptLane(payload, ppid, self);
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(out);
+        })
+        .catch(() => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end("{}");
+        });
       return;
     }
 

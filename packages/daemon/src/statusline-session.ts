@@ -84,6 +84,16 @@ export function reapStaleFeeds(): void {
  * in-memory walk. Falls back to `process.ppid` if `claude` isn't found.
  */
 export function claudeSessionPid(): number {
+  return claudeSessionPidFrom(process.ppid);
+}
+
+/**
+ * #343: same walk, but starting from an ARBITRARY pid. The daemon-side prompt
+ * lane needs this — it is not in the Claude session's process tree, so the
+ * thin client ships its own ppid and the walk runs here. Falls back to the
+ * start pid if `claude` isn't found (same contract as claudeSessionPid).
+ */
+export function claudeSessionPidFrom(startPid: number): number {
   try {
     const out = execFileSync("ps", ["-axo", "pid=,ppid=,comm="], {
       encoding: "utf8",
@@ -98,7 +108,7 @@ export function claudeSessionPid(): number {
         });
       }
     }
-    let pid = process.ppid;
+    let pid = startPid;
     for (let i = 0; i < 12 && pid > 1; i++) {
       const e = procs.get(pid);
       if (!e) break;
@@ -109,9 +119,9 @@ export function claudeSessionPid(): number {
       pid = e.ppid;
     }
   } catch {
-    // ps unavailable / parse error — fall through to ppid
+    // ps unavailable / parse error — fall through to the start pid
   }
-  return process.ppid;
+  return startPid;
 }
 
 export function sessionFeedPath(sessionPid: number): string {

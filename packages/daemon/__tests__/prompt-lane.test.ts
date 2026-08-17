@@ -1,14 +1,16 @@
 /**
- * Tests for prompt-hook.ts (Issue #33).
+ * Tests for the UserPromptSubmit lane (Issue #33; daemon-side since #343).
  *
  * Strategy: unit-test the pure helpers (detectRetrieval, extractPrompt,
- * formatHintBlock) directly, then run an end-to-end test by spawning the
- * hook via tsx against a mock daemon HTTP server.
+ * formatHintBlock) directly, then run the full pipeline via `runPromptLane`
+ * in-process against a mock HTTP server. The mock serves the same
+ * /hook/recall + /hook/reflex + /hook/hinted endpoints as in the CLI era —
+ * the lane still reaches them over loopback, so the request assertions kept
+ * their meaning across the migration. The thin CLI's own stdin→stdout
+ * behaviour is covered separately in prompt-hook.test.ts.
  */
-import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -21,14 +23,12 @@ import {
   formatHintBlock,
   formatReflexBlock,
   isTrivialPrompt,
+  runPromptLane,
   MUST_LOAD_SCORE,
   type PromptReflexHit,
   type RecallHit,
-} from "../src/prompt-hook.ts";
+} from "../src/prompt-lane.ts";
 import { decideBackoff, type SourceBackoff } from "../src/session-state.ts";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH = resolve(__dirname, "..", "src", "prompt-hook.ts");
 
 // ─── Pure unit tests ─────────────────────────────────────────────────────
 
@@ -252,24 +252,33 @@ function startMockDaemon(handler: (req: IncomingMessage, res: ServerResponse) =>
   });
 }
 
-function runHook(
+/**
+ * #343: the pipeline these tests exercise is `runPromptLane`, in-process. The
+ * mock daemon stays IDENTICAL to the CLI era — the lane still reaches recall,
+ * reflex and hinted over loopback HTTP, so every request assertion below keeps
+ * meaning what it meant. env vars are applied around the call and restored,
+ * mirroring what the spawned CLI inherited before.
+ */
+async function runHook(
   payload: object,
   env: Record<string, string>,
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((ok, ko) => {
-    const child = spawn("npx", ["tsx", HOOK_PATH], {
-      env: { ...process.env, ...env, BASTRA_TELEMETRY: "off" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
-    child.on("error", ko);
-    child.on("close", (code) => ok({ stdout, stderr, code: code ?? -1 }));
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-  });
+): Promise<{ stdout: string }> {
+  const applied: Record<string, string | undefined> = {};
+  const withDefaults: Record<string, string> = { BASTRA_TELEMETRY: "off", ...env };
+  for (const [k, v] of Object.entries(withDefaults)) {
+    applied[k] = process.env[k];
+    process.env[k] = v;
+  }
+  try {
+    const baseUrl = withDefaults.BASTRA_HTTP_URL ?? "http://127.0.0.1:1";
+    const stdout = await runPromptLane(payload as Parameters<typeof runPromptLane>[0], null, baseUrl);
+    return { stdout };
+  } finally {
+    for (const [k, v] of Object.entries(applied)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 }
 
 test("integration — retrieval prompt yields recall-hints block", async () => {
