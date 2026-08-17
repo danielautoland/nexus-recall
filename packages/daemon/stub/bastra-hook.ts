@@ -1,0 +1,246 @@
+/**
+ * bastra-hook — the compiled thin-client stub (#344).
+ *
+ * One binary, every hook entry point as a subcommand: `bastra-hook prompt`
+ * (UserPromptSubmit) and `bastra-hook write` (PreToolUse Write/Edit). New
+ * lanes join as new subcommands and inherit the fast start for free.
+ *
+ * This is the deliberate difference to the rejected "compile everything"
+ * path: the LOGIC lives in the daemon (#343) and stays hot-swappable with a
+ * daemon restart; what gets compiled is the ~200 lines that must run in the
+ * hook process — stdin → POST → stdout verbatim, the pure-stdlib skip gate,
+ * the client-side telemetry for calls the daemon cannot see. A logic change
+ * never needs a stub rebuild; only a change to THIS contract does.
+ *
+ * Why the start matters: the hook budget is 200ms (#305). Measured on the
+ * reference host, the node thin client pays 86–89ms of interpreter start
+ * before its first syscall; the compiled stub pays ~15–25ms. That difference
+ * is the whole point of #344.
+ *
+ * Built with `deno compile` (deno task in package.json — the toolchain that
+ * is actually present on the dev host; bun would do equally). The stub uses
+ * node:-specifier stdlib + the two dependency-free daemon modules only, so
+ * both runtimes and plain node can run this file unchanged — which is also
+ * the fallback: `node stub/bastra-hook.ts` behaves identically, just slower.
+ */
+import { request } from "node:http";
+import { appendFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { envFirst, envInt } from "../src/env.js";
+import { shouldSkipPath } from "../src/hook-skip.js";
+
+const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
+const DEFAULT_PORT = 6723;
+const STUB_VERSION = "0.4.0-stub";
+
+type Lane = "prompt" | "write";
+const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+interface HookPayload {
+  session_id?: string;
+  cwd?: string;
+  hook_event_name?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  prompt?: string;
+  user_message?: string;
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk: string) => (data += chunk));
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", reject);
+  });
+}
+
+let stdoutEmitted = false;
+function emitOnce(payload: string): void {
+  if (stdoutEmitted) return;
+  stdoutEmitted = true;
+  process.stdout.write(payload);
+}
+
+function postLane(baseUrl: string, path: string, body: unknown, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let url: URL;
+    try {
+      url = new URL(path, baseUrl);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+    const req = request(
+      {
+        method: "POST",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Length": payload.byteLength.toString(),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          const data = Buffer.concat(chunks).toString("utf8");
+          if ((res.statusCode ?? 500) >= 400) {
+            reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+            return;
+          }
+          resolve(data);
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error("timeout"));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** Same event kinds and field shapes as the daemon-side lanes — one series. */
+async function writeClientTelemetry(
+  lane: Lane,
+  fields: Record<string, unknown>,
+  startedAt: number,
+): Promise<void> {
+  if ((envFirst("BASTRA_TELEMETRY", "NEXUS_TELEMETRY") ?? "on").toLowerCase() === "off") return;
+  try {
+    const logDir =
+      envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? join(homedir(), ".bastra", "logs");
+    await mkdir(logDir, { recursive: true });
+    const ts = new Date().toISOString();
+    const base =
+      lane === "prompt"
+        ? { kind: "prompt_hook_call", detected_mode: "none", prompt_chars: 0, hint_count: 0, top_score: null }
+        : {
+            kind: "hook_call",
+            topics: [],
+            query_chars: 0,
+            hint_count: 0,
+            required_count: 0,
+            top_score: null,
+            dropped_dedup_count: 0,
+            dropped_scope_count: 0,
+            hint_tokens_est: 0,
+            hinted_ids: [],
+            backoff_streak: 0,
+            suppressed: false,
+            suppressed_tokens_est: 0,
+          };
+    const event = {
+      ts,
+      session_id: randomUUID(),
+      hook_version: STUB_VERSION,
+      daemon_reachable: false,
+      latency_ms_total: Date.now() - startedAt,
+      error: null,
+      ...base,
+      ...fields,
+    };
+    await appendFile(join(logDir, `events-${ts.slice(0, 10)}.jsonl`), JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // Telemetry must never break the hook.
+  }
+}
+
+function classifyError(e: NodeJS.ErrnoException): "daemon-unreachable" | "timeout" | "error" {
+  if (e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH")
+    return "daemon-unreachable";
+  return e.message === "timeout" ? "timeout" : "error";
+}
+
+async function main(): Promise<void> {
+  const startedAt = Date.now();
+  const lane = (process.argv[2] ?? "") as Lane;
+  if (lane !== "prompt" && lane !== "write") {
+    // Unknown subcommand: fail open like every other path — a misregistered
+    // hook must not break the turn, and the mistake shows up in telemetry.
+    emitOnce("{}");
+    return;
+  }
+
+  const raw = await readStdin();
+  let payload: HookPayload;
+  try {
+    payload = JSON.parse(raw) as HookPayload;
+  } catch {
+    return emitOnce("{}");
+  }
+
+  const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
+  const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
+  const url = httpURL ?? `http://127.0.0.1:${httpPort}`;
+
+  // Lane-specific client-side gates — everything that must not cost a round trip.
+  let path: string;
+  let body: unknown;
+  if (lane === "write") {
+    if (payload.hook_event_name !== "PreToolUse") return emitOnce("{}");
+    const toolName = payload.tool_name ?? "";
+    if (!SUPPORTED_TOOLS.has(toolName)) return emitOnce("{}");
+    const toolInput = (payload.tool_input ?? {}) as Record<string, unknown>;
+    const filePath = typeof toolInput.file_path === "string" ? toolInput.file_path : null;
+    if (!filePath) return emitOnce("{}");
+    if (shouldSkipPath(filePath, payload.cwd)) {
+      emitOnce("{}");
+      await writeClientTelemetry(
+        "write",
+        { tool_name: toolName, file_path: filePath, daemon_url: "", status: "skipped" },
+        startedAt,
+      );
+      return;
+    }
+    path = "/hook/write";
+    body = { payload };
+  } else {
+    path = "/hook/prompt";
+    body = { payload, client_ppid: process.ppid };
+  }
+
+  const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+  try {
+    const out = await postLane(url, path, body, remainingMs);
+    emitOnce(out);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    emitOnce("{}");
+    const status = classifyError(e);
+    await writeClientTelemetry(
+      lane,
+      {
+        daemon_url: url,
+        status,
+        error: status === "error" ? (e.message ?? String(err)) : null,
+        ...(lane === "write"
+          ? { tool_name: payload.tool_name ?? "", file_path: (payload.tool_input as { file_path?: string } | undefined)?.file_path ?? null }
+          : {}),
+      },
+      startedAt,
+    );
+  }
+}
+
+const killSwitch = setTimeout(() => {
+  emitOnce("{}");
+  process.exit(0);
+}, HOOK_TIMEOUT_MS + 50);
+killSwitch.unref?.();
+
+main()
+  .then(() => process.exit(0))
+  .catch(() => {
+    emitOnce("{}");
+    process.exit(0);
+  });

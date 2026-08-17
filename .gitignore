@@ -95,3 +95,4 @@ packages/daemon/webui/js/demo.js
 # query text in the public repo, so this now lands in the private run artifact
 # under ~/.bastra/eval-runs/ instead.
 packages/daemon/scripts/stress-report.md
+packages/daemon/stub/bastra-hook
