@@ -5,6 +5,7 @@ import type { EmbeddingIndex } from "./embeddings.js";
 import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
+import { abandonAfter } from "./deadline.js";
 
 export interface RecallHit {
   id: string;
@@ -87,6 +88,21 @@ export interface RecallOptions {
    * offline bridge harvesting. Null-overhead when unset.
    */
   onCandidatePool?: (pool: RecallHit[]) => void;
+  /**
+   * #342: per-arm deadline for the vector leg, in ms. The two arms have
+   * measurably different cost profiles — BM25 is in-memory, the dense arm needs
+   * a warm model — but they share one deadline today, so a cold Ollama makes the
+   * whole call miss it and the caller gets nothing (#305: 734ms cold vs ~161ms
+   * warm, against a 600ms hook budget).
+   *
+   * When the vector arm exceeds this, it is ABANDONED, not aborted: the embed
+   * call keeps running so the model finishes loading and the next call is warm.
+   * The result degrades to BM25 through the same path an empty vector arm takes
+   * (see #240/B1 below for why one-armed RRF is not an option).
+   *
+   * Unset or 0 = wait indefinitely, the pre-#342 behaviour.
+   */
+  vector_deadline_ms?: number;
 }
 
 interface IndexDoc {
@@ -409,7 +425,17 @@ export class SearchIndex {
     // — measured on a real 514-memory vault: 95.3% of scoped queries lost
     // in-scope candidates, and the smallest scopes lost a third of theirs.
     const filtered = opts.scope != null || opts.type != null || !opts.allow_private;
-    const vec = await this.embeddings.search(query, filtered ? 1000 : 100);
+    // #342: race the dense arm against its own deadline. `abandonAfter` never
+    // rejects and never cancels — on expiry it hands back null and leaves the
+    // embed in flight, which is the point: the model finishes loading on the
+    // call that gave up on it, so the NEXT call is warm. Cancelling here would
+    // re-pay the cold load every single time.
+    const vecOrTimeout = await abandonAfter(
+      this.embeddings.search(query, filtered ? 1000 : 100),
+      opts.vector_deadline_ms ?? 0,
+    );
+    const vectorArmTimedOut = vecOrTimeout === null;
+    const vec = vecOrTimeout ?? [];
     const vectorTop = vec
       .map((h) => ({ hit: h, mem: this.vault.get(h.id) }))
       .filter(({ mem }) => {
@@ -441,12 +467,19 @@ export class SearchIndex {
       // the public pipeline, so the stage sequence stays monotonic and emits
       // exactly one `done` and one candidate-pool callback.
       const bm25Only = this.rankBm25(bm25, k, opts, stage);
-      this.storeQueryCache(cacheKey, bm25Only);
+      // #342: a timeout degradation must NOT be cached. The cache key varies on
+      // `embeddings.size()`, which a cold model does not change — so caching
+      // here would freeze the one-armed answer for the full TTL and every
+      // follow-up query in that window would be served BM25-only by a warm
+      // machine. Same trap #240/B2 closed for the boot window, arriving through
+      // a different door. An empty vector arm still caches: that is a property
+      // of the vault, not of this call's timing.
+      if (!vectorArmTimedOut) this.storeQueryCache(cacheKey, bm25Only);
       stage.emit("done", recallStart, {
         hit_count: bm25Only.length,
         vault_size: this.mini.documentCount,
         total_ms: Date.now() - recallStart,
-        degraded: "vector-arm-empty",
+        degraded: vectorArmTimedOut ? "vector-arm-timeout" : "vector-arm-empty",
       });
       return bm25Only;
     }
