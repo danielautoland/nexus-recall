@@ -1,6 +1,11 @@
 import { execSync } from "node:child_process";
+import { readTickCache, writeTickCache } from "./tick-cache";
 
 const VALID_TTY_PATTERN = /^[a-zA-Z0-9/]+$/;
+
+/** How long a cached width is trusted (#347). Within the TTL a tick pays
+ *  zero forks; after a resize the statusline catches up within this window. */
+const WIDTH_TTL_MS = 2000;
 
 function findParentTty(): string | null {
   if (process.platform === "win32") return null;
@@ -47,23 +52,23 @@ function getWindowsTerminalWidth(): number | null {
   return null;
 }
 
-function getUnixTerminalWidth(): number | null {
-  const tty = findParentTty();
-  if (tty) {
-    try {
-      const size = execSync(`stty size < /dev/${tty}`, {
-        encoding: "utf8",
-        stdio: ["pipe", "pipe", "ignore"],
-        shell: "/bin/sh",
-      }).trim();
-      const width = size.split(" ")[1];
-      if (width) {
-        const parsed = parseInt(width, 10);
-        if (!isNaN(parsed) && parsed > 0) return parsed;
-      }
-    } catch {}
-  }
+function sttyWidth(tty: string): number | null {
+  try {
+    const size = execSync(`stty size < /dev/${tty}`, {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      shell: "/bin/sh",
+    }).trim();
+    const width = size.split(" ")[1];
+    if (width) {
+      const parsed = parseInt(width, 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+  } catch {}
+  return null;
+}
 
+function tputWidth(): number | null {
   try {
     const width = execSync("tput cols 2>/dev/null", {
       encoding: "utf8",
@@ -73,8 +78,51 @@ function getUnixTerminalWidth(): number | null {
     const parsed = parseInt(width, 10);
     if (!isNaN(parsed) && parsed > 0) return parsed;
   } catch {}
-
   return null;
+}
+
+/** Memo for the lifetime of this tick's process — getTerminalWidth and
+ *  getRawTerminalWidth both land here, so measure at most once per tick. */
+let unixWidthMemo: number | null | undefined;
+
+/**
+ * Cached measurement (#347): a fresh cache entry answers with zero forks;
+ * a stale one re-measures via the cached tty (one stty fork instead of the
+ * ps parent-walk). The full walk only runs when the tty is unknown or the
+ * cached one stopped answering.
+ */
+function getUnixTerminalWidth(): number | null {
+  if (unixWidthMemo !== undefined) return unixWidthMemo;
+
+  const cached = readTickCache();
+  if (
+    typeof cached.width === "number" &&
+    typeof cached.widthAt === "number" &&
+    Date.now() - cached.widthAt < WIDTH_TTL_MS
+  ) {
+    unixWidthMemo = cached.width;
+    return cached.width;
+  }
+
+  // Re-validate before the shell interpolation in sttyWidth — the cache
+  // file is user-owned, but a tty read from disk must pass the same gate
+  // as one discovered via ps.
+  let tty =
+    typeof cached.tty === "string" && VALID_TTY_PATTERN.test(cached.tty)
+      ? cached.tty
+      : null;
+  let width = tty ? sttyWidth(tty) : null;
+  if (width === null) {
+    tty = findParentTty();
+    if (tty) width = sttyWidth(tty);
+  }
+  if (width === null) width = tputWidth();
+
+  if (width !== null && tty) {
+    writeTickCache({ tty, width, widthAt: Date.now() });
+  }
+  unixWidthMemo = width;
+  return width;
 }
 
 /**

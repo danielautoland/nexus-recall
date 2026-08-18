@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { pidAlive, readTickCache, writeTickCache } from "../utils/tick-cache";
 
 /**
  * bastra-recall statusline segment.
@@ -39,8 +40,13 @@ export interface BastraInfo {
 }
 
 /** Walk parent chain up to the `claude` session process; its PID namespaces
- *  the feed. One `ps` call + in-memory walk. Falls back to process.ppid. */
+ *  the feed. One `ps` call + in-memory walk. Falls back to process.ppid.
+ *  The resolved pid is cached across ticks (#347) — it cannot change while
+ *  the session lives, so a cache hit skips the `ps` fork entirely. Only a
+ *  comm-matched hit is cached; the ppid fallback keeps retrying. */
 function claudeSessionPid(): number {
+  const cached = readTickCache().claudePid;
+  if (cached !== undefined && pidAlive(cached)) return cached;
   try {
     const out = execFileSync("ps", ["-axo", "pid=,ppid=,comm="], {
       encoding: "utf8",
@@ -59,7 +65,10 @@ function claudeSessionPid(): number {
     for (let i = 0; i < 12 && pid > 1; i++) {
       const e = procs.get(pid);
       if (!e) break;
-      if (e.comm.toLowerCase().includes("claude")) return pid;
+      if (e.comm.toLowerCase().includes("claude")) {
+        writeTickCache({ claudePid: pid });
+        return pid;
+      }
       if (e.ppid === pid) break;
       pid = e.ppid;
     }
