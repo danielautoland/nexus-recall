@@ -65,3 +65,33 @@ test("findStaleForwarders: never reports self", () => {
   const rows = parsePsTable(["  404     1 " + FWD].join("\n"));
   assert.deepEqual(findStaleForwarders(rows, 404), []);
 });
+
+// #345: Terminal-Tab-Klasse — der Client stirbt, ein generischer Wrapper
+// (sh -c, npx …) überlebt mit den Pipes, der Forwarder-ppid wird nie 1.
+const SH_WRAPPER = "/bin/sh -c " + FWD;
+
+test("findStaleForwarders: sh wrapper reparented to init (#345 tab class) → forwarder stale, wrapper spared", () => {
+  const rows = parsePsTable(
+    [
+      "  300     1 " + SH_WRAPPER, // claude died → wrapper now child of init
+      "  404   300 " + FWD,
+    ].join("\n"),
+  );
+  assert.deepEqual(findStaleForwarders(rows, 999), [404]);
+});
+
+test("findStaleForwarders: sh wrapper under living claude → not stale", () => {
+  const rows = parsePsTable(
+    [
+      "  500   100 claude",
+      "  300   500 " + SH_WRAPPER,
+      "  404   300 " + FWD,
+    ].join("\n"),
+  );
+  assert.deepEqual(findStaleForwarders(rows, 999), []);
+});
+
+test("findStaleForwarders: lingering wrapper without child under init → reaped like a forwarder", () => {
+  const rows = parsePsTable(["  300     1 " + SH_WRAPPER].join("\n"));
+  assert.deepEqual(findStaleForwarders(rows, 999), [300]);
+});

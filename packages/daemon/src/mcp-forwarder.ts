@@ -544,8 +544,12 @@ async function main(): Promise<void> {
   // unsere stdio-Pipes offen, ppid bleibt ≠ 1) — beide #49-Pfade greifen
   // nie. Erkennung: der WRAPPER wird dann zu init/launchd reparented, also
   // poll'en wir im Wrapper-Modus zusätzlich `ppid(wrapper) === 1`.
+  // #345 generalisiert den Wrapper-Begriff: jeder Parent, der unser Script
+  // im Kommando trägt (sh -c, npx, …), ist ein Wrapper — ein direkter
+  // Client-Spawn (claude, Cursor, Codex) trägt es nie.
   const wrapperPid = process.ppid;
-  const wrapperMode = /disclaimer/i.test(commandOf(wrapperPid) ?? "");
+  const wrapperCmd = commandOf(wrapperPid) ?? "";
+  const wrapperMode = /disclaimer/i.test(wrapperCmd) || wrapperCmd.includes("mcp-forwarder");
   const orphanCheck = setInterval(() => {
     if (process.ppid === 1) {
       void shutdown();

@@ -39,27 +39,43 @@ export function parsePsTable(out: string): ProcRow[] {
  * Forwarder-PIDs, deren Client tot ist. Stale heißt:
  *  - ppid === 1 (klassischer Orphan — der eigene Backstop killt ihn binnen
  *    30 s, der Daemon-Sweep räumt nur schneller auf), oder
- *  - Parent ist ein Wrapper (disclaimer) der selbst zu init reparented wurde
- *    → der spawnen­de Client (Claude Desktop) existiert nicht mehr.
- * Lebende Setups matchen nie: bei aktivem Desktop hat der disclaimer
- * ppid = Desktop-PID ≠ 1; bei Claude Code ist der Parent kein Wrapper.
+ *  - Parent ist ein Wrapper, der selbst zu init reparented wurde → der
+ *    spawnen­de Client existiert nicht mehr. #345 generalisiert das vom
+ *    Desktop-`disclaimer` auf jeden Wrapper, der das Forwarder-Script im
+ *    Kommando trägt (sh -c, npx, …) — die Klasse, in der der Forwarder-ppid
+ *    nie 1 wird, weil der Wrapper die Pipes hält.
+ * Lebende Setups matchen nie: beim aktiven Client hat der Wrapper
+ * ppid = Client-PID ≠ 1; bei direktem Spawn ist der Parent kein Wrapper.
  * Exported for unit tests.
  */
 export function findStaleForwarders(rows: ProcRow[], selfPid: number): number[] {
   const byPid = new Map(rows.map((r) => [r.pid, r]));
+  // Kandidaten: jede Zeile, die das Forwarder-Script trägt — echte Forwarder
+  // UND Wrapper, die das Script als Argument führen (disclaimer, sh -c …).
+  const candidates = rows.filter(
+    (r) => r.pid !== selfPid && r.command.includes("mcp-forwarder"),
+  );
+  // Wrapper strukturell erkennen: Parent eines anderen Kandidaten. Ein Wrapper
+  // wird nie selbst geSIGTERMt, solange sein Kind lebt — das Kind ist der
+  // Kill-Punkt, der Wrapper stirbt von allein, sobald es weg ist.
+  const wrapperPids = new Set(
+    candidates
+      .filter((r) => candidates.some((c) => c !== r && c.ppid === r.pid))
+      .map((r) => r.pid),
+  );
   const stale: number[] = [];
-  for (const r of rows) {
-    if (r.pid === selfPid) continue;
-    if (!r.command.includes("mcp-forwarder")) continue;
-    // Der disclaimer-Wrapper trägt das Forwarder-Script selbst als Argument —
-    // nicht als Forwarder zählen; er stirbt von allein, wenn sein Kind geht.
-    if (r.command.includes("disclaimer")) continue;
+  for (const r of candidates) {
+    if (wrapperPids.has(r.pid)) continue;
     if (r.ppid === 1) {
       stale.push(r.pid);
       continue;
     }
     const parent = byPid.get(r.ppid);
-    if (parent && parent.command.includes("disclaimer") && parent.ppid === 1) {
+    if (
+      parent &&
+      parent.ppid === 1 &&
+      (parent.command.includes("disclaimer") || parent.command.includes("mcp-forwarder"))
+    ) {
       stale.push(r.pid);
     }
   }
