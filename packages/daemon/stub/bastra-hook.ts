@@ -4,6 +4,9 @@
  * One binary, every hook entry point as a subcommand: `bastra-hook prompt`
  * (UserPromptSubmit) and `bastra-hook write` (PreToolUse Write/Edit). New
  * lanes join as new subcommands and inherit the fast start for free.
+ * The statusline rides along the same way (#347 stage 2): `bastra-hook
+ * statusline` lazily imports the built statusline bundle — not a lane, just
+ * an entry point that inherits the compiled start.
  *
  * This is the deliberate difference to the rejected "compile everything"
  * path: the LOGIC lives in the daemon (#343) and stays hot-swappable with a
@@ -238,15 +241,25 @@ async function main(): Promise<void> {
   }
 }
 
-const killSwitch = setTimeout(() => {
-  emitOnce("{}");
-  process.exit(0);
-}, HOOK_TIMEOUT_MS + 50);
-killSwitch.unref?.();
-
-main()
-  .then(() => process.exit(0))
-  .catch(() => {
+if (process.argv[2] === "statusline") {
+  // #347 stage 2: the statusline joins the stub for the compiled start. Not a
+  // lane — no kill switch, no "{}" fail-open: its stdout is a rendered line
+  // for the status bar, not hook JSON, so a failure must print nothing. The
+  // bundle (self-contained, built by tsdown) is imported lazily; hook lanes
+  // never pay for its load. The import specifier is a static string so
+  // `deno compile` embeds the module in the binary.
+  import("../../statusline/dist/index.mjs").catch(() => process.exit(0));
+} else {
+  const killSwitch = setTimeout(() => {
     emitOnce("{}");
     process.exit(0);
-  });
+  }, HOOK_TIMEOUT_MS + 50);
+  killSwitch.unref?.();
+
+  main()
+    .then(() => process.exit(0))
+    .catch(() => {
+      emitOnce("{}");
+      process.exit(0);
+    });
+}

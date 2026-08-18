@@ -338,8 +338,13 @@ async function patchClaudeCodeHooks(
 //   node <statusline>/dist/index.mjs --style=powerline
 // The bin is a parameter (#180): under an active stable runtime it points into
 // the ~/.bastra/runtime copy instead of the npx cache.
+// #347 stage 2: same stub policy as the hook lanes (#344) — when the compiled
+// stub exists on this host, register `bastra-hook statusline` for the fast
+// start; plain npm installs keep the node client.
 function statuslineCommand(bin: string): string {
-  return `node ${bin} --style=powerline`;
+  return existsSync(HOOK_STUB_BIN)
+    ? `${HOOK_STUB_BIN} statusline --style=powerline`
+    : `node ${bin} --style=powerline`;
 }
 
 function buildStatuslineBlock(command: string): Record<string, unknown> {
