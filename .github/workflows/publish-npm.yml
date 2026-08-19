@@ -66,11 +66,17 @@ jobs:
     # Claude Desktop Extension (.mcpb): built from the SAME checkout the npm
     # packages were published from (workspace tarballs — no registry
     # propagation race) and attached to the GitHub release as an asset.
+    # #281: each bundle ships with a .sha256 file (the CLI verifies it after
+    # download) and a Sigstore attestation (`gh attestation verify <file>
+    # --repo n0mad-ai/bastra-recall`) — the npm packages already carry
+    # --provenance, this closes the same gap for the release asset.
     if: ${{ github.event_name == 'release' }}
     needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -80,11 +86,21 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run build:mcpb:local --workspace=@bastra-recall/daemon
+      - name: Checksum the bundle
+        working-directory: packages/daemon/mcpb
+        run: |
+          for f in *.mcpb; do
+            sha256sum "$f" > "$f.sha256"
+          done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: packages/daemon/mcpb/*.mcpb
       - name: Attach extension to release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" packages/daemon/mcpb/*.mcpb --clobber
+        run: gh release upload "$TAG" packages/daemon/mcpb/*.mcpb packages/daemon/mcpb/*.mcpb.sha256 --clobber
 
   installer-scripts:
     # Double-click installer + uninstaller (#306): README A) sends non-coders to

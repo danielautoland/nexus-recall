@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localMcpbPath, releaseDownloadUrl, pkgVersion } from "../src/cli/extension-install.js";
+import { localMcpbPath, releaseDownloadUrl, pkgVersion, parseSha256 } from "../src/cli/extension-install.js";
 import { parseArgs } from "../src/cli/commands.js";
 
 test("release asset URL and local path are version-locked and consistent", async () => {
@@ -18,6 +18,17 @@ test("release asset URL and local path are version-locked and consistent", async
     `https://github.com/n0mad-ai/bastra-recall/releases/download/v${version}/bastra-recall-${version}.mcpb`,
   );
   assert.match(localMcpbPath(version, "/tmp/pkg"), /^\/tmp\/pkg\/mcpb\/bastra-recall-.+\.mcpb$/);
+});
+
+test("parseSha256 accepts sha256sum output and bare digests, rejects everything else (#281)", () => {
+  const hex = "a".repeat(64);
+  assert.equal(parseSha256(`${hex}  bastra-recall-0.9.1.mcpb\n`), hex);
+  assert.equal(parseSha256(hex), hex);
+  assert.equal(parseSha256(`${"A".repeat(64)}  file`), hex, "uppercase digests normalize to lowercase");
+  assert.equal(parseSha256(""), null);
+  assert.equal(parseSha256("not a digest"), null);
+  assert.equal(parseSha256(`${"a".repeat(63)}  short`), null, "63 hex chars is not a SHA-256");
+  assert.equal(parseSha256(`<html>404 Not Found</html>`), null, "an error page never verifies");
 });
 
 test("--extension flag parses and stays scoped to the install command", () => {

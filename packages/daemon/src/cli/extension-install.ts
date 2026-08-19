@@ -9,6 +9,7 @@
  */
 import { readFile, writeFile, mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tmpdir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -61,12 +62,44 @@ export async function latestMcpbAssetUrl(): Promise<string | null> {
   return asset?.browser_download_url ?? null;
 }
 
+/** First whitespace-delimited token of a `.sha256` file, when it is a
+ *  SHA-256 hex digest — tolerates both `<hex>` and `<hex>  <filename>`. */
+export function parseSha256(text: string): string | null {
+  const token = text.trim().split(/\s+/)[0] ?? "";
+  return /^[a-f0-9]{64}$/i.test(token) ? token.toLowerCase() : null;
+}
+
+async function fetchChecksum(url: string): Promise<string | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return parseSha256(await resp.text());
+  } catch {
+    return null;
+  }
+}
+
 async function download(url: string, dest: string): Promise<boolean> {
   try {
     const resp = await fetch(url);
     if (!resp.ok) return false;
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.byteLength < MIN_MCPB_BYTES) return false;
+    // #281: releases carry a .sha256 next to the bundle since 0.9.1 — verify
+    // when it is there; a mismatch discards the download. Older releases (the
+    // latest-asset fallback can land on one) never published a checksum, so
+    // absence downgrades to a visible skip instead of breaking the install.
+    const expected = await fetchChecksum(`${url}.sha256`);
+    if (expected) {
+      const actual = createHash("sha256").update(buf).digest("hex");
+      if (actual !== expected) {
+        process.stderr.write("✗ checksum mismatch for the downloaded bundle — discarding it\n");
+        return false;
+      }
+      process.stdout.write("  · checksum verified (sha256)\n");
+    } else {
+      process.stdout.write("  · no published checksum for this asset — skipping verification\n");
+    }
     // "wx": the destination lives in a fresh private mkdtemp dir, so it must
     // not exist — refusing to follow a pre-planted file/symlink.
     await writeFile(dest, buf, { flag: "wx" });
