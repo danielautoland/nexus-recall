@@ -45,6 +45,7 @@ import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getS
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
+import { runInBandMint } from "./learned-recall/mint-job.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
 import { ollamaChat } from "./learned-recall/reranker.js";
 import { existsSync } from "node:fs";
@@ -387,6 +388,29 @@ async function main(): Promise<void> {
       ? () => embeddingBreaker.state(Date.now()) === "open"
       : undefined,
   };
+
+  // #353: Teacher 1 (in-band mint) runs on its own trigger — it needs no
+  // model and must never depend on the reranker. Once shortly after boot
+  // (reaches accumulated while the daemon was down), then daily. After a
+  // write the pool reloads in place, so new bridges serve without a restart.
+  // Same opt-in gate as the pool itself: no shared recall, no background mint.
+  if (learnedBridges !== null) {
+    const runScheduledMint = async (trigger: "daemon-boot" | "daemon-interval"): Promise<void> => {
+      try {
+        const outcome = await runInBandMint({ vault, bridgesRoot: bridgesPath(), trigger });
+        if (outcome.written > 0) {
+          toolDeps.learnedBridges = BridgePool.load(bridgesPath());
+          console.error(
+            `[bastra-recall] in-band mint (${trigger}): ${outcome.minted} bridge(s) from ${outcome.reaches} acted-on reach(es) — pool reloaded (${toolDeps.learnedBridges.size()} bridges)`,
+          );
+        }
+      } catch (err) {
+        console.error(`[bastra-recall] in-band mint failed (non-fatal): ${err}`);
+      }
+    };
+    setTimeout(() => void runScheduledMint("daemon-boot"), 2 * 60_000).unref();
+    setInterval(() => void runScheduledMint("daemon-interval"), 24 * 60 * 60_000).unref();
+  }
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
   // mcp-forwarder, so it can safely self-terminate after a stretch of no

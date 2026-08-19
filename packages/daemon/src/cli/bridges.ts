@@ -13,6 +13,9 @@
  *
  * Local-first: toggle off ⇒ the daemon never builds the pool; nothing leaves the
  * machine. Contribution is opt-in and PR-only — there is no auto-egress.
+ * ("Never writes" means the SYNCED content / no egress: local mints — CLI or
+ * the daemon's own #353 schedule — write new local bridge files into the same
+ * clone; they only ever leave via the PR flow.)
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +30,8 @@ import {
 import { envFirst } from "../env.js";
 import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
 import { BridgePool, distinctiveTerms } from "../learned-recall/bridges.js";
-import { readEventLog, reconstructReaches, harvestBridges, writeBridges, extractCandidatePools, harvestFarBridges } from "../learned-recall/harvest.js";
+import { readEventLog, writeBridges, extractCandidatePools, harvestFarBridges } from "../learned-recall/harvest.js";
+import { runInBandMint, readLastMint } from "../learned-recall/mint-job.js";
 import { ollamaChat, DEFAULT_RERANK_MODEL, listOllamaModels, resolveRerankModel } from "../learned-recall/reranker.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "../learned-recall/language.js";
 
@@ -86,14 +90,10 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
     case "mint": {
       // Offline harvest: reconstruct (far query → acted-on memory) reaches from the
       // telemetry log and mint bridges from them. Optional [days] limits the window.
+      // Shared core with the daemon's own schedule (#353) — both record last-mint.json
+      // and a bridges_mint telemetry event.
       const daysArg = opts.positional?.[2];
       const days = daysArg ? parseInt(daysArg, 10) : null;
-      const events = await readEventLog(undefined, days != null && Number.isFinite(days) ? days : null);
-      const reaches = reconstructReaches(events);
-      if (reaches.length === 0) {
-        process.stdout.write("no acted-on reaches found in telemetry — nothing to mint yet\n");
-        return 0;
-      }
       const vaultPath = envFirst("BASTRA_VAULT_PATH", "NEXUS_VAULT_PATH");
       if (!vaultPath) {
         process.stderr.write("✗ BASTRA_VAULT_PATH not set — cannot read memory vocabulary to mint bridges\n");
@@ -101,16 +101,19 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       }
       const vault = new Vault(vaultPath);
       await vault.init();
-      const getMemoryTerms = (id: string): string[] => {
-        const m = vault.get(id);
-        if (!m) return [];
-        return distinctiveTerms([m.fm.title, m.fm.summary, ...m.fm.recall_when, ...m.fm.tags, m.body].join(" "));
-      };
-      const result = harvestBridges(reaches, getMemoryTerms);
-      const written = await writeBridges(bridgesPath(), result.bridges);
+      const outcome = await runInBandMint({
+        vault,
+        bridgesRoot: bridgesPath(),
+        trigger: "cli",
+        days: days != null && Number.isFinite(days) ? days : null,
+      });
+      if (outcome.reaches === 0) {
+        process.stdout.write("no acted-on reaches found in telemetry — nothing to mint yet\n");
+        return 0;
+      }
       process.stdout.write(
-        `✓ minted ${result.minted} bridge(s) from ${result.reaches} acted-on reach(es) — ${written} written to ${join(bridgesPath(), "bridges")}\n` +
-          "  restart the daemon to load them\n",
+        `✓ minted ${outcome.minted} bridge(s) from ${outcome.reaches} acted-on reach(es) — ${outcome.written} written to ${join(bridgesPath(), "bridges")}\n` +
+          "  a running daemon picks them up with its next scheduled mint, or restart it to load them now\n",
       );
       return 0;
     }
@@ -150,7 +153,12 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       } catch (err) {
         process.stderr.write(
           `✗ local reranker unavailable — Ollama not reachable at ${ollamaURL} (${(err as Error).message}).\n` +
-            "  start Ollama, or run 'bastra models on' to set it up.\n",
+            "  start Ollama, or run 'bastra models on' to set it up.\n" +
+            // #353: "Ollama is up" and "the harvest can reach it" are two different
+            // facts when the address is a configured remote — name the gap.
+            (process.env.BASTRA_OLLAMA_URL
+              ? "  note: BASTRA_OLLAMA_URL points at a configured remote — if the reranker runs on THIS box, unset it to dial loopback.\n"
+              : ""),
         );
         return 1;
       }
@@ -208,9 +216,15 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       const poolStr = pool
         ? `${pool.size()} bridges (${pool.languages().map((l) => `${l}:${pool.size(l)}`).join(" ") || "none"})`
         : "(not loaded — disabled)";
+      // #353: a frozen pool must be visible without counting files on disk.
+      const lastMint = await readLastMint(bridgesPath());
+      const mintStr = lastMint
+        ? `last mint: ${lastMint.ts} — ${lastMint.minted} bridge(s) from ${lastMint.reaches} reach(es) (${lastMint.trigger}, ${lastMint.host})`
+        : "last mint: never ran on this box";
       process.stdout.write(
         `shared learned-recall: ${enabled ? "enabled" : "disabled"} · language: ${langOverride ?? "auto"} · ` +
-          `pool: ${poolStr} · repo: ${join(bridgesPath(), "bridges")}\n`,
+          `pool: ${poolStr} · repo: ${join(bridgesPath(), "bridges")}\n` +
+          `${mintStr}\n`,
       );
       return 0;
     }
