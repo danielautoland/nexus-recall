@@ -346,6 +346,18 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
             "of the link are recorded. To retire a memory entirely, that is " +
             "archive_memory — a different thing.",
         },
+        conflict_with: {
+          type: "string",
+          description:
+            "Id of an existing memory this save CONTRADICTS (incompatible " +
+            "claim on the same fact — not a mere near-duplicate: those are " +
+            "overwrite or [[wikilink]] cases). The save is then diverted: " +
+            "nothing new is created and nothing is overwritten — a visible " +
+            "conflict block carrying both claims lands in the existing " +
+            "memory, and its recall hits carry `conflict: true` until " +
+            "someone resolves it. Resolve by deciding with the user which " +
+            "claim stands, then re-saving that memory with overwrite=true.",
+        },
         related: {
           type: "array",
           items: { type: "string" },

@@ -23,6 +23,7 @@ import {
 } from "@bastra-recall/core";
 import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
+import { markConflict } from "./conflict-marking.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { tokens as words } from "./save-similarity.js";
 
@@ -234,8 +235,12 @@ export interface SaveMemoryResult {
   id: string;
   file_path: string;
   created: boolean;
-  /** Advisory save-time quality signal for the agent; not persisted. */
-  save_quality: SaveQualityResult;
+  /** Advisory save-time quality signal for the agent; not persisted.
+   *  Absent on a #205 conflict diversion — nothing was saved to score. */
+  save_quality?: SaveQualityResult;
+  /** #205: set when the save was diverted into a conflict mark on the
+   *  existing memory (`id` then names THAT memory, nothing was created). */
+  conflict_marked?: true;
   /** Present only when saveMemory auto-truncated an over-long summary. */
   summary_note?: string;
   /** Present only when a re-file left the old file behind under the same id. */
@@ -331,8 +336,9 @@ export async function saveMemoryHandler(
   }
   resetSaveFailures();
   // Terminal success marker: no state echo beyond the advisory — a re-issued
-  // identical save is thrash, not diligence.
-  return { ...result, note: "Save complete — do not repeat this save_memory call." };
+  // identical save is thrash, not diligence. A conflict diversion (#205)
+  // carries its own terminal note and keeps it.
+  return { ...result, note: result.note ?? "Save complete — do not repeat this save_memory call." };
 }
 
 async function saveMemoryInner(
@@ -346,6 +352,11 @@ async function saveMemoryInner(
   // scoreSaveQuality das Memory nicht von seinen eigenen Duplikat- und
   // Kollisions-Checks aus (#239).
   const finalId = parsed.data.id ?? slugify(parsed.data.title);
+
+  // #205: a save declaring a contradiction is a conflict report, not a write —
+  // diverted before any quality scoring or file I/O touches the vault.
+  if (parsed.data.conflict_with) return markConflict(deps, parsed.data, finalId);
+
   const saveQuality = scoreSaveQuality(deps, parsed.data, finalId);
 
   // #164: validate the supersession target BEFORE writing anything. A

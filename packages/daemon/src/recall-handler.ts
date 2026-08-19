@@ -4,7 +4,7 @@
  * re-exports everything, so the existing import paths keep working.
  */
 import { z } from "zod";
-import { truncateSummaryTo, type StageListener, type RecallStage, type RecallHit } from "@bastra-recall/core";
+import { truncateSummaryTo, hasUnresolvedConflict, type StageListener, type RecallStage, type RecallHit } from "@bastra-recall/core";
 import { envInt } from "./env.js";
 import { fireAndForget } from "./telemetry.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
@@ -307,10 +307,15 @@ export async function recallHandler(
   // Prong 1 (#50): lean-by-default. `verbosity: "full"` liefert alle
   // Felder + den stages-Block (Mac-App / Debug).
   const full = parsed.data.verbosity === "full";
+  // #205: ein Hit auf ein Memory mit ungelöstem Konflikt-Block trägt das
+  // Flag — das Modell kann „der Vault widerspricht sich hier" sagen, statt
+  // selbstbewusst eine Seite zu servieren. Nur gesetzt wenn true (lean).
+  const flagConflict = (h: { id: string }): unknown =>
+    hasUnresolvedConflict(deps.vault.get(h.id)?.body) ? { ...h, conflict: true } : h;
   return {
     query: query,
     vault_size: deps.vault.size(),
-    hits: full ? hits : hits.map(toLeanHit),
+    hits: (full ? hits : hits.map(toLeanHit)).map(flagConflict),
     recall_id: recallId,
     latency_ms: latencyMs,
     // #230: nur setzen wenn true — Abwesenheit = nicht weak, hält lean schlank.

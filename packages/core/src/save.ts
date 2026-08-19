@@ -54,6 +54,15 @@ export const SaveMemoryInput = z.object({
    * historical, it is gone, and old versions have to stay citable.
    */
   replaces: z.string().min(1).optional(),
+  /**
+   * #205 — conflict marking. Id of an existing memory the incoming save
+   * CONTRADICTS. The save is then diverted: the incoming memory is NOT
+   * created (no silent sibling), the existing one is NOT overwritten (no
+   * silent discard) — instead a plain-markdown conflict block carrying both
+   * claims, sources and dates is appended to the existing memory's body.
+   * Resolution is a later deliberate `overwrite=true` save of that memory.
+   */
+  conflict_with: z.string().min(1).optional(),
   /** #235: optional anchor command that can prove this memory's claim.
    *  Stored and displayed only — nothing here ever runs it. */
   verify_cmd: z.string().min(1).optional(),

@@ -78,6 +78,13 @@ export {
   restoreFromTrash,
 } from "./audit-log.js";
 export type { AuditEntry, AuditOperation, AuditActor } from "./audit-log.js";
+export {
+  CONFLICT_START,
+  CONFLICT_END,
+  hasUnresolvedConflict,
+  renderConflictBlock,
+  type ConflictClaim,
+} from "./conflict.js";
 
 export {
   AuditContext,
