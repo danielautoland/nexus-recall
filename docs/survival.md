@@ -58,6 +58,31 @@ packages/daemon/__tests__/floors.test.ts   (retire/unpin arm)
 The day any of these operations starts *evaporating* the cell instead of
 demoting / unpinning / trashing it, the tests go red.
 
+### Coverage guard ([#194](https://github.com/n0mad-ai/bastra-recall/issues/194))
+
+The arms above are point-coverage: they prove the *known* transitions cannot
+evaporate a cell, but nothing proved the set of transitions *stays* known. A
+fifth mutation path landing next quarter would ship unpinned by default —
+survival would hold by convention on exactly the path least likely to think
+about it. `packages/core/__tests__/survival-coverage.test.ts` closes that
+mechanically, both halves enumerated **from code**:
+
+- **Cell mutations** — runtime reflection diffs the exported `audited*`
+  surface of `audit-save.ts` against the pinned arms. A new audited export
+  without a survival arm goes red, with the pin as the price of admission.
+- **Score mutations** — a static source scan counts every score assignment in
+  `core/src` and `daemon/src` against a pinned site list. All ranking
+  multipliers (staleness, curator-demote, doc-damping, salience-live) already
+  pass through the one gateway (`applyStaleness` in `search.ts`); a new
+  assignment anywhere else goes red until it is routed through the gateway or
+  pinned with its own arm. RRF fusion is pinned as score *construction*, and
+  the freestanding pre-gateway multiplier stays bench-only — a src import of
+  it is a failure. (#142 floors never appear in this scan by construction:
+  the floor is injection-layer-only and touches no engine score.)
+
+With the guard in place survival is **coverage-guaranteed, not
+four-arms-guaranteed**: the suite defends its own completeness.
+
 ## Provenance
 
 This contract was hardened in the dev.to threads with **Mike Czerwinski**
