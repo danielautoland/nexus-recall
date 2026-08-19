@@ -55,6 +55,7 @@ import {
   type RecallStage,
 } from "@bastra-recall/core";
 import { ALL_TOOL_DEFS } from "./tool-defs.js";
+import { mergeBatchResults } from "./recall-batch.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import { DAEMON_VERSION } from "./version.js";
@@ -221,7 +222,9 @@ async function callDaemon(tool: string, args: unknown): Promise<unknown> {
 const SERVER_INSTRUCTIONS =
   "bastra-recall is the user's persistent local memory. Treat it as YOUR long-term memory and use it " +
   "without being asked: (1) At the start of a conversation and before acting on a task, call `recall` " +
-  "with the topic — durable preferences, lessons, decisions and project facts live there. (2) For ANY " +
+  "with the topic — durable preferences, lessons, decisions and project facts live there. When several " +
+  "angles are worth asking in one turn, batch the phrasings into ONE call via `queries: [...]` (2-4) " +
+  "instead of firing separate recalls. (2) For ANY " +
   "question about the user's past, projects, documents, people or preferences ('find…', 'where is…', " +
   "'when did I…', 'how much was…'), search `recall` + `find_document` BEFORE any other lookup tool. " +
   "(3) When the user states a durable rule or preference, finalizes a decision, or a hard-won fix " +
@@ -618,6 +621,23 @@ async function callRecallStreaming(
   onStage: (s: RecallStage) => void | Promise<void>,
 ): Promise<unknown> {
   const a = (args ?? {}) as Record<string, unknown>;
+  // #351 batch mode: several phrasings, ONE tool round trip. Sub-recalls run
+  // in parallel against /hook/recall — each gets its own recall_id/telemetry
+  // (the reach-join keys per query); only the first streams stages (the
+  // statusline shows one recall either way). Results interleave by BEST
+  // original score, so the tool description's score bands stay valid.
+  if (Array.isArray(a.queries) && a.queries.length > 0 && a.queries.every((q) => typeof q === "string")) {
+    const queries = (a.queries as string[]).slice(0, 4);
+    const subs = (await Promise.all(
+      queries.map((q, i) =>
+        callRecallStreaming(
+          { ...a, queries: undefined, query: q, batch_of: queries.length },
+          i === 0 ? onStage : () => undefined,
+        ),
+      ),
+    )) as Parameters<typeof mergeBatchResults>[1];
+    return mergeBatchResults(queries, subs, typeof a.k === "number" ? a.k : 5);
+  }
   const body: Record<string, unknown> = {
     query: typeof a.query === "string" ? a.query : "",
     tool_name: "mcp-forwarder",
@@ -627,6 +647,8 @@ async function callRecallStreaming(
   if (typeof a.k === "number") body.k = a.k;
   if (typeof a.scope === "string") body.scope = a.scope;
   if (typeof a.type === "string") body.type = a.type;
+  // #351: batch width rides along so the hook_recall event can count it.
+  if (typeof a.batch_of === "number") body.batch_of = a.batch_of;
   // MCP-Pfad: genau k Hits, keine 1-Hop-Nachbarn (#50). Der /hook/recall-
   // Default ist 1 (gut für die PreToolUse-Hook-CLI), aber für den vom Modell
   // ausgelösten recall verdoppeln die Nachbarn nur den Context. Das Modell

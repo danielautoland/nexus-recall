@@ -34,6 +34,7 @@ import { touchLoadedMarker } from "./session-state.js";
 import { envInt } from "./env.js";
 import { commonsRankFactor } from "./cli/commons.js";
 import { expandQuery } from "./learned-recall/bridges.js";
+import { mergeBatchResults } from "./recall-batch.js";
 import { tokens as words } from "./save-similarity.js";
 
 import type { ToolDeps } from "./tool-deps.js";
@@ -48,7 +49,13 @@ export { MEMORY_TOOL_DEFS };
 // ─── Zod-Schemas ────────────────────────────────────────────────
 
 export const RecallArgs = z.object({
-  query: z.string().min(1),
+  query: z.string().min(1).optional(),
+  /** #351 batch mode: 2-4 phrasings, one round trip. Exactly one of
+   *  query/queries must be present (enforced below). */
+  queries: z.array(z.string().min(1)).min(2).max(4).optional(),
+  /** #351: set internally on batched sub-recalls so telemetry can count the
+   *  batch width (query_count on the recall event). */
+  batch_of: z.number().int().min(2).max(4).optional(),
   k: z.number().int().min(1).max(20).optional(),
   scope: z.string().optional(),
   type: z.string().optional(),
@@ -212,6 +219,30 @@ export async function recallHandler(
   const parsed = RecallArgs.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
 
+  // #351 batch mode: run each phrasing through the full single pipeline
+  // (own recall_id + telemetry — the reach-join and bridge minting key on
+  // per-query events), then merge by best original score (recall-batch.ts).
+  if (parsed.data.queries) {
+    if (parsed.data.query) throw new Error("pass query OR queries, not both");
+    const { queries, ...rest } = parsed.data;
+    const subs = await Promise.all(
+      queries.map((q) => recallHandler(deps, { ...rest, query: q, batch_of: queries.length })),
+    );
+    const merged = mergeBatchResults(
+      queries,
+      subs as Parameters<typeof mergeBatchResults>[1],
+      parsed.data.k ?? 5,
+    );
+    return {
+      ...merged,
+      recall_id: merged.recall_id ?? "",
+      vault_size: merged.vault_size ?? deps.vault.size(),
+      latency_ms: subs.reduce((m, s) => Math.max(m, s.latency_ms ?? 0), 0),
+    };
+  }
+  const query = parsed.data.query;
+  if (!query) throw new Error("query or queries required");
+
   const t0 = Date.now();
   const collector = makeStageCollector(options.onStage);
   // #121: capture the deeper candidate pool (incl. below-floor) for the far slice.
@@ -231,7 +262,7 @@ export async function recallHandler(
   // expansion terms before searching. No-op when the layer is off (null pool) or
   // the query language abstains. Telemetry below still logs the ORIGINAL query;
   // the expansion is recorded separately so its effect is measurable.
-  const expansion = expandQuery(parsed.data.query, deps.learnedBridges, {
+  const expansion = expandQuery(query, deps.learnedBridges, {
     configuredLang: deps.sharedRecallLang ?? null,
   });
   // #165: VOR dem Recall ausgewertet — der Flag muss den Recall beschreiben,
@@ -248,7 +279,7 @@ export async function recallHandler(
   // expliziter scope-Filter (außer "commons") überspringt die Fusion.
   if (deps.commonsSearch && (!parsed.data.scope || parsed.data.scope === "commons")) {
     const commonsHits = deps.commonsSearch
-      .recall(parsed.data.query, { k: recallOpts.k, type: parsed.data.type })
+      .recall(query, { k: recallOpts.k, type: parsed.data.type })
       .map((h) => {
         const v = deps.commonsVerifications?.get(h.id) ?? { works: 0, fails: 0 };
         return { ...h, score: h.score * commonsRankFactor(v.works, v.fails) };
@@ -296,7 +327,9 @@ export async function recallHandler(
   fireAndForget(
     deps.telemetry.logRecall({
         recall_id: recallId,
-        query: parsed.data.query,
+        query: query,
+        // #351: batch width when this recall is one phrasing of a batch.
+        query_count: parsed.data.batch_of,
         k: parsed.data.k ?? null,
         scope: parsed.data.scope ?? null,
         type: parsed.data.type ?? null,
@@ -325,7 +358,7 @@ export async function recallHandler(
   // Felder + den stages-Block (Mac-App / Debug).
   const full = parsed.data.verbosity === "full";
   return {
-    query: parsed.data.query,
+    query: query,
     vault_size: deps.vault.size(),
     hits: full ? hits : hits.map(toLeanHit),
     recall_id: recallId,

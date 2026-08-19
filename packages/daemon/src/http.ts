@@ -1298,6 +1298,8 @@ function handleHookRecall(
         telemetry.logHookRecall({
           recall_id: recallId,
           query,
+          // #351: batch width when this recall is one phrasing of a batch.
+          query_count: typeof body.batch_of === "number" ? body.batch_of : undefined,
           topics: Array.isArray(body.topics)
             ? (body.topics as unknown[]).filter((t): t is string => typeof t === "string")
             : [],

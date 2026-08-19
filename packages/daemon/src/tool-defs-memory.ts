@@ -67,7 +67,20 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
           description:
             "Natural-language query OR a description of what you are " +
             "about to do (e.g. 'creating new input component', " +
-            "'about to give a multi-option plan').",
+            "'about to give a multi-option plan'). For several angles in " +
+            "one turn, use `queries` instead.",
+        },
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 2,
+          maxItems: 4,
+          description:
+            "#351 batch mode — 2-4 phrasings of what you need, ONE round " +
+            "trip. Use this instead of firing several recall calls in the " +
+            "same turn: results are merged (deduped, best score per hit), " +
+            "so the score bands above stay valid. Pass query OR queries, " +
+            "not both.",
         },
         k: {
           type: "number",

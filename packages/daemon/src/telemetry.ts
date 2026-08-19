@@ -57,6 +57,9 @@ export interface RecallEvent extends BaseEvent {
   kind: "recall";
   recall_id: string;
   query: string;
+  /** #351: set when this recall is one phrasing of a batched call — the
+   *  batch width (2-4). Absent on plain single-query recalls. */
+  query_count?: number;
   k: number | null;
   scope: string | null;
   type: string | null;
@@ -183,6 +186,8 @@ export interface HookRecallEvent extends BaseEvent {
   kind: "hook_recall";
   recall_id: string;
   query: string;
+  /** #351: set when this recall is one phrasing of a batched call (2-4). */
+  query_count?: number;
   topics: string[];
   tool_name: string | null;
   project: string | null;
