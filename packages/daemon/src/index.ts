@@ -38,14 +38,12 @@ import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
-import { runCuratorPass } from "./curator-run.js";
-import { pruneEventLogs } from "./log-retention.js";
+import { startBackgroundJobs } from "./daemon-jobs.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
-import { runInBandMint } from "./learned-recall/mint-job.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
 import { ollamaChat } from "./learned-recall/reranker.js";
 import { existsSync } from "node:fs";
@@ -80,8 +78,7 @@ import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { startBackgroundCheck } from "./update-check.js";
 import { DAEMON_VERSION } from "./version.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
-import { reapStaleForwarderProcesses } from "./reap-forwarders.js";
-import { prewarmOllamaModel, unloadOllamaModel } from "./ollama-lifecycle.js";
+import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
@@ -157,20 +154,6 @@ async function main(): Promise<void> {
   })();
   writeSharedVaultSize(vault.size()); // initial, before any event
   vault.on(() => publishVaultSize());
-
-  // Periodic disk reconcile: the fs watcher misses external writes/deletes on
-  // cloud-storage mounts (GoogleDrive/iCloud), so size() — and the shared
-  // count — would otherwise drift whenever the Mac app or another process
-  // touches the vault directly. reconcile() walks the disk itself (watcher-
-  // independent) and emits add/remove events, which flow through the listener
-  // above into the shared file. Set BASTRA_VAULT_RECONCILE_MS=0 to disable.
-  const reconcileMs = envInt("BASTRA_VAULT_RECONCILE_MS", 60_000);
-  if (reconcileMs > 0) {
-    const reconcileTimer = setInterval(() => {
-      void vault.reconcile().catch(() => {});
-    }, reconcileMs);
-    reconcileTimer.unref();
-  }
 
   const search = new SearchIndex(vault);
   search.start();
@@ -347,17 +330,6 @@ async function main(): Promise<void> {
     },
   });
 
-  // Stale-Forwarder-Sweep (#80): Desktop-Zombies (toter Client, lebender
-  // disclaimer-Wrapper) beim Boot wegräumen. Verzögert + unref'd, damit der
-  // health-kritische Boot-Pfad (#78) keinen ps-Roundtrip zahlt.
-  setTimeout(() => reapStaleForwarderProcesses(), 5_000).unref();
-  // #345: and keep sweeping. Boot-only reaping was measured leaking on a
-  // long-lived daemon — #305 found 6 orphaned forwarders next to a daemon
-  // with 3.5 days of uptime, because the sweep had run once, days before the
-  // orphans existed. One ps table every 15min is noise; a supervisor that
-  // only supervises at boot is not one.
-  setInterval(() => reapStaleForwarderProcesses(), 15 * 60_000).unref();
-
   if (telemetry.isEnabled()) {
     console.error(`[bastra-recall] telemetry: enabled (log path: ${logDirFor()})`);
   } else {
@@ -389,34 +361,9 @@ async function main(): Promise<void> {
       : undefined,
   };
 
-  // #353: Teacher 1 (in-band mint) runs on its own trigger — it needs no
-  // model and must never depend on the reranker. Once shortly after boot
-  // (reaches accumulated while the daemon was down), then daily. After a
-  // write the pool reloads in place, so new bridges serve without a restart.
-  // Same opt-in gate as the pool itself: no shared recall, no background mint.
-  if (learnedBridges !== null) {
-    const runScheduledMint = async (trigger: "daemon-boot" | "daemon-interval"): Promise<void> => {
-      try {
-        const outcome = await runInBandMint({ vault, bridgesRoot: bridgesPath(), trigger });
-        if (outcome.written > 0) {
-          toolDeps.learnedBridges = BridgePool.load(bridgesPath());
-          console.error(
-            `[bastra-recall] in-band mint (${trigger}): ${outcome.minted} bridge(s) from ${outcome.reaches} acted-on reach(es) — pool reloaded (${toolDeps.learnedBridges.size()} bridges)`,
-          );
-        }
-      } catch (err) {
-        console.error(`[bastra-recall] in-band mint failed (non-fatal): ${err}`);
-      }
-    };
-    setTimeout(() => void runScheduledMint("daemon-boot"), 2 * 60_000).unref();
-    setInterval(() => void runScheduledMint("daemon-interval"), 24 * 60 * 60_000).unref();
-  }
-
   // Idle self-shutdown: the shared daemon is spawned on demand by the
   // mcp-forwarder, so it can safely self-terminate after a stretch of no
-  // activity — the next recall respawns it. Keeps the process table clean
-  // (no orphaned daemons after sessions end). 0 disables. Default 30 min.
-  const idleShutdownMs = envInt("BASTRA_DAEMON_IDLE_SHUTDOWN_MS", 30 * 60 * 1000);
+  // activity — the next recall respawns it (watchdog in daemon-jobs.ts).
   let lastActivityMs = Date.now();
   const markActivity = (): void => {
     lastActivityMs = Date.now();
@@ -655,129 +602,26 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
-  // Idle watchdog — terminate after `idleShutdownMs` without activity.
-  // `.unref()` so the timer itself never keeps the process alive.
-  //
-  // #78 Hebel C: Besitzt ein LaunchAgent (KeepAlive=true) den Daemon, ist
-  // Self-Terminate kontraproduktiv — launchd respawnt sofort, und jeder
-  // Zyklus reißt ein Cold-Start-Fenster auf (Desktop: "no access to MCP",
-  // weil der Forwarder-Health-Timeout während des Boots abläuft). Explizit
-  // gesetztes BASTRA_DAEMON_IDLE_SHUTDOWN_MS bleibt ein User-Override.
-  const idleEnvSet = (process.env.BASTRA_DAEMON_IDLE_SHUTDOWN_MS ?? "") !== "";
-  const launchAgentOwned = launchAgentOwnsDaemon();
-  if (idleShutdownMs > 0 && !idleEnvSet && launchAgentOwned) {
-    console.error(
-      "[bastra-recall] LaunchAgent registered — idle self-shutdown disabled (launchd owns the lifecycle, #78)",
-    );
-  } else if (idleShutdownMs > 0) {
-    const tick = Math.min(idleShutdownMs, 60_000);
-    const idleLabel =
-      idleShutdownMs >= 60_000
-        ? `${Math.round(idleShutdownMs / 60000)}min`
-        : `${Math.round(idleShutdownMs / 1000)}s`;
-    const idleTimer = setInterval(() => {
-      if (Date.now() - lastActivityMs >= idleShutdownMs) {
-        console.error(
-          `[bastra-recall] idle for ${idleLabel} — self-terminating (respawns on next recall)`,
-        );
-        void shutdown();
-      }
-    }, tick);
-    idleTimer.unref();
-  }
-
-  // #81: Ein warmer LaunchAgent-Daemon restartet nie von selbst — ein
-  // auto-staged Update würde nie live gehen. Nach dem Stage: bei ≥15 min
-  // Inaktivität sauber beenden; launchd (KeepAlive) respawnt sofort mit dem
-  // neuen Code. Im Forwarder-Mode erledigt das der Idle-Self-Shutdown.
-  if (launchAgentOwned) {
-    const stagedRestartTimer = setInterval(() => {
-      if (stagedRestartPending && Date.now() - lastActivityMs >= 15 * 60 * 1000) {
-        stagedRestartPending = false;
-        console.error(
-          "[bastra-recall] staged update applied — idle restart to load the new code (#81); launchd respawns",
-        );
-        void shutdown();
-      }
-    }, 60_000);
-    stagedRestartTimer.unref();
-  }
-
-  // Energie (#78): Embedding-Modell nach Embed-Idle aus dem Ollama-RAM
-  // entladen — der "Idle-Befehl". Greift in BEIDEN Daemon-Modi (LaunchAgent
-  // warm / forwarder-spawned): der Daemon bleibt reaktionsschnell, nur das
-  // ~600-MB-Modell verlässt den RAM; der nächste Embed (oder der SessionStart-
-  // Hook-Recall) lädt es in 1–2 s zurück. 0 disables. Default 10 min.
-  const ollamaUnloadMs = envInt("BASTRA_OLLAMA_IDLE_UNLOAD_MS", 10 * 60 * 1000);
-  if (ollama && ollamaUnloadMs > 0) {
-    const bootAt = Date.now();
-    let lastUnloadAt = 0;
-    const unloadTimer = setInterval(() => {
-      // Letzter erfolgreicher Provider-Call (search ODER Backfill-Batch);
-      // vor dem ersten Embed zählt der Boot (deckt das Prewarm-Load ab).
-      const lastUse = embIdxForHealth?.runtimeHealth().lastOkAt ?? bootAt;
-      if (lastUse > lastUnloadAt && Date.now() - lastUse >= ollamaUnloadMs) {
-        lastUnloadAt = Date.now();
-        void unloadOllamaModel(ollama.baseURL, ollama.model).then((ok) =>
-          telemetry.logOllamaLifecycle({
-            action: "unload",
-            model: ollama.model,
-            ok,
-            last_embed_age_ms: Date.now() - lastUse,
-            embed_calls_since_boot: embIdxForHealth?.providerCallCount() ?? null,
-          }),
-        );
-      }
-    }, 60_000);
-    unloadTimer.unref();
-  }
-
-  // Curator phase A (#155): 15-min-Tick, das echte Gate (7d-Intervall +
-  // Min-Idle) sitzt in shouldRunCurator — der Tick ist nur der billige Poll.
-  // Kein separater launchd-Job: LaunchAgent-Daemons laufen dauerhaft,
-  // forwarder-gespawnte leben lange genug für mindestens einen Tick, sofern
-  // eine Session sie wach hält. Acting path (dryRun:false) — der manuelle
-  // POST /curator/run bleibt default-dry.
-  const curatorTimer = setInterval(() => {
-    void runCuratorPass(
-      { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
-      { lastActivityMs, dryRun: false },
-    ).then((r) => {
-      if (r.error) {
-        console.error(`[bastra-recall] curator pass failed (non-fatal): ${r.error}`);
-      } else if (r.ran) {
-        console.error(
-          `[bastra-recall] curator pass (${r.mode}): ${r.demoted.length} demoted, ${r.reactivated.length} reactivated, ${r.pendingObservation.length} watching, ${r.staleTotal} stale total`,
-        );
-      }
-    }).catch((err) => {
-      // Belt + suspenders: runCuratorPass is never-throw by contract, but a
-      // background tick must never be able to kill the daemon regardless.
-      console.error(`[bastra-recall] curator tick error (non-fatal): ${(err as Error)?.message ?? err}`);
-    });
-  }, 15 * 60_000);
-  curatorTimer.unref();
-
-  // Log retention (#23): the event logs are the only thing here that grows
-  // without bound. Once at startup (a forwarder-spawned daemon may not live
-  // long enough for a timer to fire), then daily for long-lived ones.
-  const prune = (): void => {
-    void pruneEventLogs()
-      .then((r) => {
-        if (r.removed.length > 0) {
-          const mb = (r.freedBytes / 1024 / 1024).toFixed(1);
-          console.error(
-            `[bastra-recall] log retention: removed ${r.removed.length} event log(s) older than ${r.keptDays}d (${mb} MB)`,
-          );
-        }
-      })
-      .catch((err) => {
-        console.error(`[bastra-recall] log retention failed (non-fatal): ${(err as Error)?.message ?? err}`);
-      });
-  };
-  prune();
-  const retentionTimer = setInterval(prune, 24 * 60 * 60_000);
-  retentionTimer.unref();
+  // All periodic work — reconcile, forwarder sweep, mint schedule, idle
+  // watchdog, staged restart, ollama unload, curator tick, log retention —
+  // lives in daemon-jobs.ts; this is the single wiring point.
+  startBackgroundJobs({
+    vault,
+    vaultRoot: VAULT_PATH!,
+    search,
+    telemetry,
+    toolDeps,
+    bridgesEnabled: learnedBridges !== null,
+    launchAgentOwned: launchAgentOwnsDaemon(),
+    getLastActivity: () => lastActivityMs,
+    shutdown,
+    isStagedRestartPending: () => stagedRestartPending,
+    clearStagedRestartPending: () => {
+      stagedRestartPending = false;
+    },
+    ollama: ollama ? { baseURL: ollama.baseURL, model: ollama.model } : null,
+    embIdx: () => embIdxForHealth,
+  });
 }
 
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";
