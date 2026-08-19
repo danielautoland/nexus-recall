@@ -14,6 +14,7 @@
     "bridge-transfer": "tsx src/bridge-transfer.ts",
     "doc2query-lift": "tsx src/doc2query-lift.ts",
     "salience-lift": "tsx src/salience-lift.ts",
+    "trust-lift": "tsx src/trust-lift.ts",
     "check:types": "tsc --noEmit",
     "absence-honesty": "tsx src/absence-honesty.ts",
     "pool-depth": "tsx src/pool-depth.ts",
