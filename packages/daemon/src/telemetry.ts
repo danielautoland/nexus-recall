@@ -5,8 +5,6 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { readJoinStateSync, writeJoinState } from "./telemetry-join-store.js";
-import type { SalienceShadow } from "./salience-shadow.js";
-import type { TrustShadow } from "./trust-shadow.js";
 
 /**
  * Migration-aware default log directory: prefer `~/.bastra/logs`, aber
@@ -24,261 +22,22 @@ function defaultLogDir(): string {
   return next;
 }
 
-// Nur die Events, die DIESE Klasse via write() schreibt. Die Hook-CLIs
-// (hook_call, session_hook_call, prompt_hook_call, bash_hook_call,
-// bash_fail_hook_call, todo_hook_call, save_eval_call) sind eigene Prozesse
-// und schreiben mit ihren eigenen lokalen Telemetry-Interfaces direkt ins
-// JSONL — sie gehören NICHT in diese Union (sonst täuscht sie einen Producer
-// vor, den es hier nicht gibt). Reader (stats.ts, harvest.ts) parsen roh.
-export type TelemetryEvent =
-  | RecallEvent
-  | LoadMemoryEvent
-  | SaveMemoryEvent
-  | HookRecallEvent
-  | HookReflexEvent
-  | HookActEvent
-  | RecallEpisodeEvent
-  | OllamaLifecycleEvent;
-
-interface BaseEvent {
-  ts: string;
-  session_id: string;
-}
-
-/** Shared learned-recall (#120): the bridge expansion applied to a recall query.
- *  Absent when the layer is off or no bridge matched — so its presence and the
- *  `added` count are the metric for how often and how much bridges fired. */
-export interface BridgeExpansion {
-  lang: string;
-  added: string[];
-}
-
-export interface RecallEvent extends BaseEvent {
-  kind: "recall";
-  recall_id: string;
-  query: string;
-  /** #351: set when this recall is one phrasing of a batched call — the
-   *  batch width (2-4). Absent on plain single-query recalls. */
-  query_count?: number;
-  k: number | null;
-  scope: string | null;
-  type: string | null;
-  vault_size: number;
-  hit_count: number;
-  top_score: number | null;
-  hits: { id: string; score: number; type: string }[];
-  latency_ms: number;
-  /**
-   * Pro-Stage-Timings (#38). Optional — alte Events ohne Stage-Emitter
-   * haben das Feld nicht. `cache_hit: true` zeigt einen Query-Cache-Hit,
-   * dann fehlen die übrigen Stage-Felder (außer query_parse_ms).
-   */
-  recall_stages?: {
-    query_parse_ms?: number;
-    bm25_search_ms?: number;
-    vector_search_ms?: number;
-    rrf_fuse_ms?: number;
-    hops_expand_ms?: number;
-    staleness_rank_ms?: number;
-    cache_hit?: boolean;
-  };
-  /**
-   * Anzahl Hits, die unter dem Score-Floor (#50 / #9) lagen und nicht
-   * zurückgegeben wurden. Macht die Wirkung des Floors messbar. Optional —
-   * alte Events ohne Floor-Logik haben das Feld nicht.
-   */
-  dropped_below_floor?: number;
-  /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
-  bridge_expansion?: BridgeExpansion;
-  /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall,
-   *  so the far slice is observable for offline harvesting. Lean {id, score} only. */
-  candidate_pool?: { id: string; score: number }[];
-  /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
-   *  Recorded, not just returned: without it a stats run reports zero weak
-   *  recalls on every vault, which reads as health and is actually silence. */
-  weak_result?: boolean;
-  /** #230: stricter than weak_result — the top hit lives in one arm only, the
-   *  shape a genuinely absent fact takes. Strict subset, so no_home implies
-   *  weak_result. Recorded to make the no-home rate measurable at all. */
-  no_home?: boolean;
-  /** #165: served BM25-only because the embedding circuit breaker was open
-   *  (no embed attempt). Absent = healthy hybrid or embeddings off — lets
-   *  stats separate degraded from normal recalls. */
-  embedding_degraded?: boolean;
-  /** #342: served BM25-only because a leg of the hybrid dropped out, and which
-   *  one. `vector-arm-timeout` = the dense arm missed its per-arm deadline
-   *  (#305: a cold embedding model costs ~590ms it cannot make up); the embed
-   *  is left running so the next call is warm. `vector-arm-empty` = the arm
-   *  returned nothing, which predates the deadline.
-   *
-   *  Distinct from `embedding_degraded`: that one means no embed was attempted
-   *  at all (breaker open). This one means it was attempted and abandoned — the
-   *  two have different fixes, so counting them as one number hides both. */
-  degraded_reason?: string;
-  /** #217: would-be re-ranking under the salience multiplier (shadow mode).
-   *  Absent when no served hit carries salience or the mode isn't shadow. */
-  salience_shadow?: SalienceShadow;
-  /** #160: would-be re-ranking under the usage-driven trust multiplier
-   *  (shadow mode). Absent when every served hit sits at the trust ceiling —
-   *  i.e. nothing has been shown-and-ignored — or the mode isn't shadow. */
-  trust_shadow?: TrustShadow;
-}
-
-export interface LoadMemoryEvent extends BaseEvent {
-  kind: "load_memory";
-  id: string;
-  found: boolean;
-  follows_recall: string | null;
-  /** recall_id of a recent hook_recall whose hits[] contained this id, if any. */
-  from_hook_recall: string | null;
-  /** Rank (1-based) at which this id appeared in that hook_recall's hits[]. */
-  hook_hint_rank: number | null;
-}
-
-export type RecallBand = "required" | "optional" | "below_floor";
-export type TurnSource = "session" | "inferred";
-
-export interface RecallEpisodeEvent extends BaseEvent {
-  kind: "recall_episode";
-  turn_id: string;
-  turn_source: TurnSource;
-  recall_id: string | null;
-  memory_id: string;
-  surfaced_score: number | null;
-  band: RecallBand;
-  /** true = der Load folgte einem Hook-Hint (#77). false = Direkt-Load ohne
-   *  Hint — zählt NICHT in die USE-rate (sonst mischt das below_floor-Band
-   *  zwei fremde Populationen). Ersetzt das frühere, immer-wahre `loaded`. */
-  surfaced: boolean;
-  acted_on: boolean;
-  match_strength: number;
-  tool_name: string | null;
-}
-
-export interface SaveMemoryEvent extends BaseEvent {
-  kind: "save_memory";
-  id: string;
-  type: string;
-  scope: string;
-  title: string;
-  tag_count: number;
-  recall_when_count: number;
-  body_chars: number;
-  overwrite: boolean;
-  created: boolean;
-  follows_recall: string | null;
-}
-
-/** #144: lightweight act-signal from the PostToolUse:Bash hook — no recall,
- *  no injection; only widens the acted_on measuring surface so shell-driven
- *  applications of a memory can close their recall_episode. */
-export interface HookActEvent extends BaseEvent {
-  kind: "hook_act";
-  tool_name: string | null;
-  excerpt_chars: number;
-  /** How many open loadedMemories episodes this act-signal closed. */
-  matched_episodes: number;
-  exit_code: number | null;
-}
-
-/** Recall served from the HTTP /hook/recall endpoint (server-side view). */
-export interface HookRecallEvent extends BaseEvent {
-  kind: "hook_recall";
-  recall_id: string;
-  query: string;
-  /** #351: set when this recall is one phrasing of a batched call (2-4). */
-  query_count?: number;
-  topics: string[];
-  tool_name: string | null;
-  project: string | null;
-  k: number;
-  scope: string | null;
-  type: string | null;
-  vault_size: number;
-  hit_count: number;
-  top_score: number | null;
-  hits: { id: string; score: number; type: string }[];
-  latency_ms_recall: number;
-  latency_ms_total: number;
-  /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
-   *  Emitter haben das Feld nicht. */
-  recall_stages?: {
-    query_parse_ms?: number;
-    bm25_search_ms?: number;
-    vector_search_ms?: number;
-    rrf_fuse_ms?: number;
-    hops_expand_ms?: number;
-    staleness_rank_ms?: number;
-    cache_hit?: boolean;
-  };
-  /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
-  bridge_expansion?: BridgeExpansion;
-  /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */
-  candidate_pool?: { id: string; score: number }[];
-  /** #282: opt-in second recall over tool_input_excerpt. The excerpt itself is
-   *  intentionally not logged; only the arm's yield and cost are observable. */
-  content_recall?: {
-    hit_count: number;
-    added_count: number;
-    rescored_count: number;
-    latency_ms: number;
-    failed?: boolean;
-  };
-  /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
-   *  Recorded, not just returned: without it a stats run reports zero weak
-   *  recalls on every vault, which reads as health and is actually silence. */
-  weak_result?: boolean;
-  /** #230: stricter than weak_result — the top hit lives in one arm only, the
-   *  shape a genuinely absent fact takes. Strict subset, so no_home implies
-   *  weak_result. Recorded to make the no-home rate measurable at all. */
-  no_home?: boolean;
-  /** #165: served BM25-only because the embedding circuit breaker was open. */
-  embedding_degraded?: boolean;
-  /** #342: which leg dropped out — `vector-arm-timeout` (missed its per-arm
-   *  deadline) or `vector-arm-empty` (had nothing to say). See the hook event. */
-  degraded_reason?: string;
-  /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
-  salience_shadow?: SalienceShadow;
-  /** #160: same projection for the usage-driven trust multiplier. Present on
-   *  the hook path too, which is the busier caller of the two. */
-  trust_shadow?: TrustShadow;
-}
-
-/** #217 Phase 2: Reflex-Injektion ohne aktive Query (POST /hook/reflex) —
- *  jede Feuerung ist execution-traced: welcher Trigger hart gematcht hat,
- *  wie groß der Reflex-Pool war, was nach dem Budget-Cut serviert wurde. */
-export interface HookReflexEvent extends BaseEvent {
-  kind: "hook_reflex";
-  /** null = kein Hit serviert → bewusst keine recall_id gemintet, damit der
-   *  follows_recall-Join (≤5min) nicht von jedem Prompt verwässert wird. */
-  recall_id: string | null;
-  context_chars: number;
-  project: string | null;
-  /** Anzahl reflex-markierter Memories im Vault (Match-Grundmenge). */
-  reflex_pool: number;
-  /** alle harten Matches VOR dem Budget-Cut. */
-  matched: { id: string; phrase: string }[];
-  /** nach Budget-Cut tatsächlich zurückgegebene ids. */
-  served: string[];
-  latency_ms: number;
-}
-
-/**
- * Ollama-Modell-Lifecycle (#109): prewarm (Boot-Wakeup) und idle-unload.
- * Aus den Paaren prewarm→unload lässt sich die RAM-Residenz des Embedding-
- * Modells schätzen — die Messgröße hinter dem #78-Energie-Design.
- */
-export interface OllamaLifecycleEvent extends BaseEvent {
-  kind: "ollama_lifecycle";
-  action: "prewarm" | "unload";
-  model: string;
-  ok: boolean;
-  /** Beim unload: Alter des letzten erfolgreichen Embeds (ms); sonst null. */
-  last_embed_age_ms: number | null;
-  /** Provider-Calls (query + backfill batches) seit Daemon-Boot. */
-  embed_calls_since_boot: number | null;
-}
-
+// Event types live in telemetry-events.ts (pure types, split for file size);
+// re-exported here so every importer keeps `from "./telemetry.js"`.
+export * from "./telemetry-events.js";
+import type {
+  TelemetryEvent,
+  RecallEvent,
+  LoadMemoryEvent,
+  SaveMemoryEvent,
+  HookRecallEvent,
+  HookReflexEvent,
+  HookActEvent,
+  RecallEpisodeEvent,
+  OllamaLifecycleEvent,
+  RecallBand,
+  TurnSource,
+} from "./telemetry-events.js";
 
 const RECALL_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
 /**

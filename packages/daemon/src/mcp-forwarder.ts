@@ -42,10 +42,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { spawn } from "node:child_process";
-import * as path from "node:path";
 import * as fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import {
   pickPhrase,
   pickToolPhrase,
@@ -65,93 +62,16 @@ import {
   type StatuslineState,
 } from "./statusline-feed.js";
 
-const DAEMON_URL = (process.env.BASTRA_DAEMON_URL ?? "http://127.0.0.1:6723").replace(/\/+$/, "");
-const API_TOKEN = process.env.BASTRA_API_TOKEN ?? "";
-const SPAWN_ENABLED = (process.env.BASTRA_FORWARDER_SPAWN ?? "1") !== "0";
-// 60 s statt 10 s (#78): ein Cold-Start (Vault-Load + Ollama-Modell) kann
-// die alten 10 s reißen — der Call wird gehalten statt sofort zu erroren.
-const HEALTH_TIMEOUT_MS = 60_000;
-const HEALTH_POLL_INTERVAL_MS = 200;
-const REQUEST_TIMEOUT_MS = 30_000;
-
-async function probeHealth(): Promise<boolean> {
-  try {
-    const resp = await fetchWithTimeout(`${DAEMON_URL}/health`, {}, 1500);
-    if (!resp.ok) return false;
-    const body = (await resp.json()) as { ok?: boolean };
-    return body.ok === true;
-  } catch {
-    return false;
-  }
-}
-
-function spawnDaemon(): void {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const daemonScript = path.join(here, "index.js");
-  const child = spawn(process.execPath, [daemonScript], {
-    detached: true,
-    stdio: "ignore",
-    env: process.env,
-  });
-  child.unref();
-}
-
-async function waitForHealth(): Promise<boolean> {
-  const t0 = Date.now();
-  while (Date.now() - t0 < HEALTH_TIMEOUT_MS) {
-    if (await probeHealth()) return true;
-    await sleep(HEALTH_POLL_INTERVAL_MS);
-  }
-  return false;
-}
-
-async function ensureDaemonRunning(): Promise<boolean> {
-  if (await probeHealth()) return true;
-  if (!SPAWN_ENABLED) {
-    console.error(
-      "[bastra-recall-mcp] daemon not running and auto-spawn disabled (BASTRA_FORWARDER_SPAWN=0). Returning errors for tool calls until daemon is up.",
-    );
-    return false;
-  }
-  console.error("[bastra-recall-mcp] daemon not running, spawning…");
-  spawnDaemon();
-  const ready = await waitForHealth();
-  if (!ready) {
-    console.error(
-      `[bastra-recall-mcp] daemon did not become healthy within ${HEALTH_TIMEOUT_MS}ms. Tool calls will error.`,
-    );
-  }
-  return ready;
-}
-
-/** Boot-Promise des Daemons — Tool-Calls warten darauf statt zu erroren (#78). */
-let daemonReady: Promise<boolean> = Promise.resolve(false);
-
-/**
- * Hold-the-call (#78): erst den laufenden Boot abwarten, dann den Call
- * ausführen. Scheitert er mit "daemon unreachable" (Idle-Self-Terminate oder
- * Crash NACH dem ersten Boot), wird der Daemon einmal respawnt und der Call
- * wiederholt — statt dem Client "no access to the MCP server" zu zeigen.
- */
-async function holdForDaemon<T>(fn: () => Promise<T>): Promise<T> {
-  await daemonReady.catch(() => false);
-  try {
-    return await fn();
-  } catch (err) {
-    if (!String((err as Error).message).includes("unreachable")) throw err;
-    daemonReady = ensureDaemonRunning();
-    const ok = await daemonReady;
-    if (!ok) throw err;
-    return await fn();
-  }
-}
-
-/**
- * Session/Turn-Header (#74): die echte CC-session_id (vom prompt-hook in den
- * Feed gestempelt) + die Feed-turn_id. Der Daemon nutzt sie, um MCP-Loads dem
- * RICHTIGEN Turn zuzuordnen, statt auf den zuletzt rotierten zu raten —
- * relevant, sobald mehrere CC-Sessions denselben Daemon teilen.
- */
+import {
+  DAEMON_URL,
+  API_TOKEN,
+  SPAWN_ENABLED,
+  REQUEST_TIMEOUT_MS,
+  fetchWithTimeout,
+  holdForDaemon,
+  primeDaemon,
+  awaitDaemonReady,
+} from "./forwarder-daemon-client.js";
 function ccTurnHeaders(): Record<string, string> {
   const h: Record<string, string> = {};
   if (typeof liveStatusline.cc_session_id === "string" && liveStatusline.cc_session_id) {
@@ -187,7 +107,7 @@ async function callDaemon(tool: string, args: unknown): Promise<unknown> {
   } catch (err) {
     // Netzwerk-Fehler: einmaliger Retry — vielleicht ist der Daemon gerade
     // restartet. Beim zweiten Fehler durchreichen.
-    await sleep(300);
+    await new Promise((r) => setTimeout(r, 300));
     try {
       resp = await doFetch();
     } catch (err2) {
@@ -269,7 +189,7 @@ async function main(): Promise<void> {
   // Best-effort: Daemon hochziehen wenn er fehlt. NICHT awaited (#78): der
   // Stdio-Server connected sofort (Client-initialize hängt nicht am Boot);
   // Tool-Calls warten via holdForDaemon() bis der Daemon healthy ist.
-  daemonReady = ensureDaemonRunning();
+  const daemonReady = primeDaemon();
 
   // Seed the session statusline feed with the current vault size, so the
   // idle banner shows "N memories" from session start (not "0 memories"
@@ -324,7 +244,7 @@ async function main(): Promise<void> {
     // cold start would serve ALL_TOOL_DEFS and reintroduce the very forwarder↔
     // daemon skew this fixes. The fallback then only applies if the daemon is
     // genuinely unreachable after boot.
-    await daemonReady.catch(() => false);
+    await awaitDaemonReady();
     try {
       const resp = await fetchWithTimeout(`${DAEMON_URL}/tools`, {}, 2000);
       if (resp.ok) {
@@ -568,30 +488,6 @@ async function main(): Promise<void> {
 
 // ─── helpers ─────────────────────────────────────────────────────
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(tid);
-  }
-}
-
-interface HookRecallDonePayload {
-  hits: unknown[];
-  vault_size: number;
-  latency_ms: number;
-  recall_id: string;
-}
 
 const VALID_STAGE_NAMES: ReadonlySet<RecallStage["name"]> = new Set([
   "query.parse",
@@ -616,6 +512,13 @@ const VALID_STAGE_NAMES: ReadonlySet<RecallStage["name"]> = new Set([
  * gets logged for MCP recalls too; the `tool_name: "mcp-forwarder"`
  * marker lets us filter those out later.
  */
+interface HookRecallDonePayload {
+  hits: unknown[];
+  vault_size: number;
+  latency_ms: number;
+  recall_id: string;
+}
+
 async function callRecallStreaming(
   args: unknown,
   onStage: (s: RecallStage) => void | Promise<void>,
