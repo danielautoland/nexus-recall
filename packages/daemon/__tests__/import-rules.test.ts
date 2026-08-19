@@ -28,13 +28,30 @@ test("extractRulesCandidates: list lines only — prose, headings and fenced cod
     "* Prefer surgical edits over speculative refactors",
     "- ok", // too short after cleaning → out
   ].join("\n");
-  const c = extractRulesCandidates(md);
-  assert.deepEqual(c, [
+  const r = extractRulesCandidates(md);
+  assert.equal(r.emptyReason, null);
+  assert.deepEqual(r.candidates, [
     "Always answer in German, using the informal Du-Form",
     "Nested: keep replies terse and technical",
     "Never run git push without an explicit instruction",
     "Prefer surgical edits over speculative refactors",
   ]);
+});
+
+// #314: a file that yields nothing names WHY — file vs. parser is answerable
+// from the output alone.
+test("extractRulesCandidates: empty yields name their reason", () => {
+  assert.equal(extractRulesCandidates("").emptyReason, "empty file");
+  assert.equal(extractRulesCandidates("   \n\n").emptyReason, "empty file");
+
+  // the #314 repro: plain prose lines, no bullets — e.g. a hand-written .mdc
+  const prose = extractRulesCandidates("Immer erst lesen, dann ändern.\nKeine spekulativen Abstraktionen.");
+  assert.deepEqual(prose.candidates, []);
+  assert.match(prose.emptyReason ?? "", /no list lines/);
+
+  // list lines exist but nothing survives the cleaning pipeline
+  const short = extractRulesCandidates("- ok\n- ja");
+  assert.match(short.emptyReason ?? "", /none survived cleaning/);
 });
 
 test("findRulesFiles: picks up project files, .cursor/rules/ contents and the global CLAUDE.md", async () => {

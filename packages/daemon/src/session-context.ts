@@ -115,7 +115,7 @@ export async function buildSessionContext(
     const openImports = await countOpenImports(toolDeps.vaultPath);
     if (openImports > 0) {
       lines.push(
-        `- Import review: ${openImports} open candidate(s) in ${IMPORT_FILE} — when the user asks to distill the import list, save accepted ones via save_memory (write_origin "capture-review"), tick lines to "- [x]".`,
+        `- Import review: ${openImports} open candidate(s) in ${IMPORT_FILE} — tell the user once, in your first response, that they are waiting ("work through my import review" starts it; #311). Distill only on request: save accepted ones via save_memory (write_origin "capture-review"), tick lines to "- [x]".`,
       );
     }
     const queue = await queueStatus();

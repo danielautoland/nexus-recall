@@ -10,7 +10,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { extractCandidates } from "./import-review.js";
+import { extractCandidates, SelfImportError } from "./import-review.js";
 
 /** A rules file offered for import, with a short label for the CLI output. */
 export interface RulesFile {
@@ -55,12 +55,20 @@ export async function findRulesFiles(cwd: string, home: string = homedir()): Pro
 
 const LIST_LINE_RE = /^\s*(?:[-*•]|\d+[.)])\s+\S/;
 
+export interface RulesExtraction {
+  candidates: string[];
+  /** #314: set when candidates is empty — names WHY the file yielded nothing,
+   *  so "0 candidate(s)" never leaves the user guessing file vs. parser. */
+  emptyReason: string | null;
+}
+
 /**
  * Rules-file markdown → candidate facts: keep list lines only (bullets,
  * numbering — nested included), skip fenced code blocks, then run the
  * shared candidate pipeline (clean, cap, dedupe) from #208.
  */
-export function extractRulesCandidates(content: string): string[] {
+export function extractRulesCandidates(content: string): RulesExtraction {
+  if (content.trim().length === 0) return { candidates: [], emptyReason: "empty file" };
   const kept: string[] = [];
   let inFence = false;
   for (const line of content.split("\n")) {
@@ -71,5 +79,26 @@ export function extractRulesCandidates(content: string): string[] {
     if (inFence) continue;
     if (LIST_LINE_RE.test(line)) kept.push(line.trim());
   }
-  return extractCandidates(kept.join("\n"));
+  if (kept.length === 0) {
+    return {
+      candidates: [],
+      emptyReason: "no list lines — rules are taken from bullet/numbered lines only",
+    };
+  }
+  let candidates: string[];
+  try {
+    candidates = extractCandidates(kept.join("\n"));
+  } catch (err) {
+    if (err instanceof SelfImportError) {
+      return { candidates: [], emptyReason: "carries bastra's own staging format — never a source (#313)" };
+    }
+    throw err;
+  }
+  if (candidates.length === 0) {
+    return {
+      candidates: [],
+      emptyReason: `${kept.length} list line(s) found, none survived cleaning (too short or headings)`,
+    };
+  }
+  return { candidates, emptyReason: null };
 }

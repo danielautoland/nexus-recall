@@ -20,6 +20,7 @@ import {
   parseImportFile,
   countOpenImports,
   ConversationExportError,
+  SelfImportError,
   handleUiImport,
   IMPORT_FILE,
 } from "../src/import-review.js";
@@ -50,6 +51,25 @@ test("extractCandidates: JSON array of strings works, conversation export is rej
     { title: "chat 1", mapping: { a: { message: { content: "hi" } } } },
   ]);
   assert.throws(() => extractCandidates(conversations), ConversationExportError);
+});
+
+// #313: the staging file itself (or a copy under any name) is never a source —
+// re-staging would nest checkbox lines inside themselves.
+test("extractCandidates: bastra's own staging format is refused by content", () => {
+  const reviewCopy = [
+    "# Import Review",
+    "- [ ] 2026-08-01 · chatgpt · Reads diffs rather than summaries when reviewing work.",
+    "- [x] 2026-08-01 · text · Uses Homebrew on macOS and avoids global npm installs.",
+  ].join("\n");
+  assert.throws(() => extractCandidates(reviewCopy), SelfImportError);
+
+  // one staged line among ordinary bullets still identifies the file
+  const mixed = "- A perfectly ordinary exported memory line\n- [ ] 2026-08-01 · gemini · staged entry here";
+  assert.throws(() => extractCandidates(mixed), SelfImportError);
+
+  // ordinary checkboxes WITHOUT the date·source prefix stay importable
+  const todoList = extractCandidates("- [ ] Prefers concise replies without preamble");
+  assert.deepEqual(todoList, ["Prefers concise replies without preamble"]);
 });
 
 test("detectSource: override wins, filename hints, text fallback", () => {

@@ -54,6 +54,20 @@ export function parseImportFile(content: string): ImportEntry[] {
   return out;
 }
 
+/** #313: bastra's own staging format is never a source. Detected by content,
+ *  not filename — a copy of import-review.md under any name still carries the
+ *  `- [ ] <date> · <source> ·` prefix, and re-staging it nests checkbox lines
+ *  inside themselves. */
+export class SelfImportError extends Error {
+  constructor() {
+    super(
+      "this carries bastra's own staging format (import-review.md or a copy of it) — " +
+        "it is never an import source. To work the open candidates off, open an AI " +
+        'session and say "let\'s distill the import list".',
+    );
+  }
+}
+
 /** Conversation exports never stage raw — the CLI queues them for chunk-wise
  *  mining (#211, `bastra import mine`); the map dialog points there. */
 export class ConversationExportError extends Error {
@@ -70,9 +84,9 @@ export class ConversationExportError extends Error {
 /** One line of an exported memory list → one clean candidate string. */
 function cleanLine(line: string): string {
   return line
+    .replace(/^- \[[ x]\]\s+/, "") // checkboxes — before the bullet strip eats the dash
     .replace(/^[-*•]\s+/, "") // bullets
     .replace(/^\d+[.)]\s+/, "") // numbering
-    .replace(/^- \[[ x]\]\s+/, "") // checkboxes
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -103,6 +117,12 @@ export function extractCandidates(raw: string): string[] {
     }
   } else {
     lines = trimmed.split("\n");
+  }
+
+  // #313: refuse before cleaning — cleanLine would strip the very checkbox
+  // prefix that identifies the input as our own staging file.
+  if (lines.some((l) => IMPORT_LINE_RE.test(l.trimEnd()))) {
+    throw new SelfImportError();
   }
 
   const seen = new Set<string>();
@@ -236,7 +256,7 @@ export async function handleUiImport(
   try {
     candidates = extractCandidates(text);
   } catch (err) {
-    if (err instanceof ConversationExportError) {
+    if (err instanceof ConversationExportError || err instanceof SelfImportError) {
       sendJsonPlain(res, 422, { error: err.message });
       return;
     }

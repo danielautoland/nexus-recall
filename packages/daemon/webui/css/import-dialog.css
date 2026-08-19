@@ -78,13 +78,51 @@
 #import-actions button:hover { border-color: var(--accent); color: var(--accent); }
 #import-stage:disabled { opacity: 0.5; cursor: default; }
 
+/* #310: open-candidate badge on the topbar import button */
+#import-open { position: relative; }
+#import-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  line-height: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+#import-badge[hidden] { display: none; }
+
+/* #309: post-staging next step — visible only after a successful stage */
+#import-next {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 8px 12px;
+}
+#import-next[hidden] { display: none; }
+#import-next code { color: var(--text); }
+
+/* #309: the folder import is a different operation — collapsed by default,
+   named in its summary, so the two flows never read as one form */
 #import-vault-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
   padding-top: 14px;
   border-top: 1px solid var(--panel-border);
 }
+#import-vault-section > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+#import-vault-section > summary:hover { color: var(--accent); }
+#import-vault-section[open] > summary { margin-bottom: 10px; }
+#import-vault-section > :not(summary) { margin-top: 10px; }
 #import-vault-help {
   font-size: 12px;
   line-height: 1.5;

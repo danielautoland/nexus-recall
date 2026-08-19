@@ -240,8 +240,10 @@ async function main(): Promise<void> {
           `vocabulary, dedupe against existing memories first, admission rules apply (capture fixes ` +
           `not failures, declarative facts not imperatives, skip stale artifacts) — and stamp ` +
           `write_origin: "capture-review". Tick finished lines to "- [x]"; tick rejected ones too, ` +
-          `appending " — skipped". Never distill unprompted; if onboarding or importing comes up, ` +
-          `mention the open count.`,
+          `appending " — skipped". Never distill unprompted — but DO tell the user in your FIRST ` +
+          `response of this session, once and in one sentence, that ${imports.open} import ` +
+          `candidate(s) are waiting and that saying "work through my import review" starts the ` +
+          `review (#311: the user has no other way of knowing). Do not repeat it unless asked.`,
       );
     }
     if (imports.queued > 0) {
@@ -253,8 +255,9 @@ async function main(): Promise<void> {
           `facts (skip one-off tasks, stale facts, code/log dumps), stage them by piping the lines ` +
           `to \`bastra import - <source>\` as the chunk footer shows, and continue until the queue ` +
           `is drained; then offer to distill import-review.md together. Mining stages candidates ` +
-          `ONLY — never save_memory directly from mined chunks. If onboarding or importing comes ` +
-          `up, mention the queue.`,
+          `ONLY — never save_memory directly from mined chunks. Mention the queued export once in ` +
+          `your FIRST response of this session (one sentence, alongside the open-candidate note ` +
+          `if both exist); do not repeat it unless asked.`,
       );
     }
     if (parts.length > 0) {

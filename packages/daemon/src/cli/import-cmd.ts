@@ -17,6 +17,7 @@ import {
   detectSource,
   stageImport,
   ConversationExportError,
+  SelfImportError,
   IMPORT_FILE,
   IMPORT_SOURCES,
   type ImportSource,
@@ -31,6 +32,11 @@ import type { ParsedArgs } from "./types.js";
 /** JSON.parse peak memory is a multiple of the input — refuse absurd files
  *  instead of OOM-killing the CLI. Real exports are tens of MB. */
 const MAX_IMPORT_FILE_BYTES = 256 * 1024 * 1024;
+
+/** #313: files bastra itself writes into the vault are never import sources.
+ *  import-review.md is also caught by content (SelfImportError); the others
+ *  have formats a lenient parser would happily mis-stage. */
+const BASTRA_OWN_FILES = new Set(["import-review.md", "vault-care.md", "report.md"]);
 
 async function readStdin(): Promise<string> {
   let raw = "";
@@ -98,6 +104,12 @@ export async function cmdImport(args: ParsedArgs): Promise<number> {
       process.stderr.write(`error: cannot read ${fileArg}: ${(err as Error).message}\n`);
       return 1;
     }
+    if (BASTRA_OWN_FILES.has(fileName.toLowerCase())) {
+      process.stderr.write(
+        `error: ${fileName} is written by bastra itself — it is never an import source.\n`,
+      );
+      return 1;
+    }
   }
 
   let candidates: string[];
@@ -105,6 +117,10 @@ export async function cmdImport(args: ParsedArgs): Promise<number> {
     candidates = extractCandidates(raw);
   } catch (err) {
     if (err instanceof ConversationExportError) return queueConversations(raw);
+    if (err instanceof SelfImportError) {
+      process.stderr.write(`error: ${err.message}\n`);
+      return 1;
+    }
     throw err;
   }
   if (candidates.length === 0) {
@@ -167,18 +183,22 @@ async function cmdImportRules(args: ParsedArgs): Promise<number> {
   }
   const all: string[] = [];
   for (const f of files) {
-    let count = 0;
+    // #314: a 0 always names its reason — empty vs. no list lines vs. unreadable
+    let line: string;
     try {
-      const candidates = extractRulesCandidates(await readFile(f.path, "utf8"));
-      all.push(...candidates);
-      count = candidates.length;
-    } catch {
-      // unreadable file — reported as 0 candidates
+      const r = extractRulesCandidates(await readFile(f.path, "utf8"));
+      all.push(...r.candidates);
+      line =
+        r.candidates.length > 0
+          ? `${r.candidates.length} candidate(s)`
+          : `0 candidates: ${r.emptyReason}`;
+    } catch (err) {
+      line = `0 candidates: unreadable (${(err as Error).message})`;
     }
-    process.stdout.write(`  ${f.label} — ${count} candidate(s)\n`);
+    process.stdout.write(`  ${f.label} — ${line}\n`);
   }
   if (all.length === 0) {
-    process.stdout.write("no list lines found — candidates are taken from bullet/numbered lines only\n");
+    process.stdout.write("nothing to stage — see the per-file reasons above\n");
     return 1;
   }
   const result = await stageImport(vault.path, "rules", all);

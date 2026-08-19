@@ -94,6 +94,7 @@
           <path d="M12 3v10m0 0l-4-4m4 4l4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
+        <span id="import-badge" hidden></span>
       </button>
       <button id="live-toggle" aria-label="Toggle live updates" title="Live updates">
         <span class="live-dot"></span>
@@ -327,9 +328,12 @@
         <button id="import-cancel">Close</button>
         <button id="import-stage">Stage for review</button>
       </div>
+      <p id="import-next" hidden>✓ Staged in <code>import-review.md</code> — nothing is a memory yet.
+        <strong>Next:</strong> open any AI session and say <em>“work through my import review”</em>;
+        you accept or reject each candidate there. Closing this dialog is safe.</p>
 
-      <div id="import-vault-section">
-        <h2 class="section-title">…or import a whole folder</h2>
+      <details id="import-vault-section">
+        <summary>Different thing: import a whole <strong>folder</strong> — direct, isolated, no review</summary>
         <p id="import-vault-help">Point at a folder of memory files — e.g. a Claude Code memory dir
           (<code>~/.claude/projects/&lt;repo&gt;/memory</code>). It's converted and imported into its
           own isolated set under <code>memories/imported/</code>; <strong>nothing existing is touched</strong>,
@@ -350,7 +354,7 @@
           </div>
         </div>
         <span id="import-vault-status"></span>
-      </div>
+      </details>
     </div>
   </div>
 
