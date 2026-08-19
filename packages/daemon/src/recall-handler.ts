@@ -12,7 +12,7 @@ import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { commonsRankFactor } from "./cli/commons.js";
 import { expandQuery } from "./learned-recall/bridges.js";
-import { mergeBatchResults } from "./recall-batch.js";
+import { mergeBatchResults, dedupeQueries, batchDuplicateNote } from "./recall-batch.js";
 import type { ToolDeps } from "./tool-deps.js";
 
 export const RecallArgs = z.object({
@@ -23,6 +23,13 @@ export const RecallArgs = z.object({
   /** #351: set internally on batched sub-recalls so telemetry can count the
    *  batch width (query_count on the recall event). */
   batch_of: z.number().int().min(2).max(4).optional(),
+  /** Internal, batch only: highest pairwise content-token overlap across the
+   *  submitted queries — logged so "the model remixes instead of
+   *  paraphrasing" (zzalli) stays measurable, not anecdotal. */
+  batch_overlap: z.number().min(0).max(1).optional(),
+  /** Internal, batch only: how many near-duplicate queries the guard
+   *  collapsed before searching. */
+  batch_collapsed: z.number().int().min(0).optional(),
   k: z.number().int().min(1).max(20).optional(),
   scope: z.string().optional(),
   type: z.string().optional(),
@@ -175,19 +182,35 @@ export async function recallHandler(
   if (parsed.data.queries) {
     if (parsed.data.query) throw new Error("pass query OR queries, not both");
     const { queries, ...rest } = parsed.data;
+    // zzalli's #351 field report: on convoluted prompts models send concept
+    // remixes instead of paraphrases. Near-duplicates are collapsed BEFORE
+    // searching (they pay latency and buy no fusion gain); the note teaches.
+    const { kept, collapsed, max_overlap } = dedupeQueries(queries);
     const subs = await Promise.all(
-      queries.map((q) => recallHandler(deps, { ...rest, query: q, batch_of: queries.length })),
+      kept.map((q) =>
+        recallHandler(deps, {
+          ...rest,
+          query: q,
+          batch_of: queries.length,
+          batch_overlap: max_overlap,
+          batch_collapsed: collapsed.length,
+        }),
+      ),
     );
     const merged = mergeBatchResults(
-      queries,
+      kept,
       subs as Parameters<typeof mergeBatchResults>[1],
       parsed.data.k ?? 5,
     );
     return {
       ...merged,
+      query_count: queries.length,
       recall_id: merged.recall_id ?? "",
       vault_size: merged.vault_size ?? deps.vault.size(),
       latency_ms: subs.reduce((m, s) => Math.max(m, s.latency_ms ?? 0), 0),
+      ...(collapsed.length > 0
+        ? { queries_collapsed: collapsed.length, note: batchDuplicateNote(collapsed.length, queries.length) }
+        : {}),
     };
   }
   const query = parsed.data.query;
@@ -280,6 +303,8 @@ export async function recallHandler(
         query: query,
         // #351: batch width when this recall is one phrasing of a batch.
         query_count: parsed.data.batch_of,
+        batch_overlap: parsed.data.batch_overlap,
+        batch_collapsed: parsed.data.batch_collapsed,
         k: parsed.data.k ?? null,
         scope: parsed.data.scope ?? null,
         type: parsed.data.type ?? null,

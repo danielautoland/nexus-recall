@@ -43,6 +43,11 @@ export interface RecallEvent extends BaseEvent {
   /** #351: set when this recall is one phrasing of a batched call — the
    *  batch width (2-4). Absent on plain single-query recalls. */
   query_count?: number;
+  /** #351 guard: highest pairwise content-token overlap across the batch's
+   *  submitted queries — measures how paraphrase-shaped batches really are. */
+  batch_overlap?: number;
+  /** #351 guard: near-duplicate queries collapsed before searching. */
+  batch_collapsed?: number;
   k: number | null;
   scope: string | null;
   type: string | null;

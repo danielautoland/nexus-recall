@@ -91,3 +91,69 @@ test("mergeBatchResults: best score wins, weak_result only when ALL sub-results 
   assert.equal(allWeak.weak_result, true);
   assert.equal(allWeak.no_home, true);
 });
+
+test("dedupeQueries (zzalli's report): concept remixes collapse, real paraphrases and sub-questions survive", async () => {
+  const { dedupeQueries, queryOverlap, BATCH_DUPLICATE_MIN } = await import("../src/recall-batch.js");
+
+  // The failure mode: the same concepts remixed three times.
+  const remix = dedupeQueries([
+    "bp-logistics Spedition Fahrzeugtransport Autohaus Projekt",
+    "Fahrzeugtransport Spedition bp-logistics Autohaus",
+    "Projekt Autohaus bp-logistics Spedition Fahrzeugtransport",
+  ]);
+  assert.equal(remix.kept.length, 1, "remixes of the same tokens are one intent");
+  assert.equal(remix.collapsed.length, 2);
+  assert.ok(remix.max_overlap >= BATCH_DUPLICATE_MIN);
+
+  // The design hope: distinct vocabulary per intent — nothing collapses.
+  const good = dedupeQueries([
+    "Spedition Fahrzeugtransport Auftrag",
+    "Website App Anforderungen Spezifikation",
+    "Stack-Präferenzen neues Projekt aufsetzen",
+  ]);
+  assert.equal(good.kept.length, 3, "distinct intents all run");
+  assert.equal(good.collapsed.length, 0);
+
+  // Umlaut folding flows through the shared tokenizer.
+  assert.ok(queryOverlap("Präferenzen fürs Projekt", "Praeferenzen fuers Projekt") >= BATCH_DUPLICATE_MIN);
+});
+
+test("recallHandler (#351 guard): a duplicate query is collapsed, the result says so, telemetry counts it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-batch-guard-"));
+  try {
+    await writeFile(join(dir, "a.md"), memoryMd("panel-lesson", "NSPanel resignKey dismissal", "panel closes on resignKey observer"), "utf8");
+    const vault = new Vault(dir);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const deps = { vault, search, telemetry: new Telemetry(), vaultPath: dir } as ToolDeps;
+
+    const batched = await recallHandler(deps, {
+      queries: [
+        "panel resignKey observer dismissal",
+        "resignKey panel dismissal observer",
+        "scrollview trailing inset",
+      ],
+      min_score: 0,
+    });
+    const r = batched as {
+      query_count?: number;
+      queries_collapsed?: number;
+      note?: string;
+      recall_ids?: string[];
+    };
+    assert.equal(r.query_count, 3, "query_count reports what the model SENT");
+    assert.equal(r.queries_collapsed, 1);
+    assert.match(r.note ?? "", /ONE distinct intent/);
+    assert.equal(r.recall_ids?.length, 2, "only the distinct queries paid a search");
+
+    const clean = await recallHandler(deps, {
+      queries: ["panel resignKey observer", "scrollview trailing inset"],
+      min_score: 0,
+    });
+    assert.equal((clean as { queries_collapsed?: number }).queries_collapsed, undefined);
+    assert.equal((clean as { note?: string }).note, undefined, "no lecture when the batch is clean");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

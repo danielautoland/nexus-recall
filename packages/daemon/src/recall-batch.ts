@@ -11,6 +11,66 @@
  * on; every returned score must remain a real single-query score.
  */
 
+import { contentTokens } from "./save-similarity.js";
+
+// ─── near-duplicate guard (zzalli's field report on #351) ───────────────────
+// The design hope was 2-4 REAL paraphrases of one intent. What models send on
+// a convoluted prompt is the opposite: every concept packed into query 1,
+// then near-duplicate remixes of the same tokens. Those pay full search
+// latency per sub-query and buy no fusion gain — so they are collapsed
+// BEFORE searching, and the result carries a corrective note.
+
+/** Two queries whose content-token Jaccard reaches this are the same intent
+ *  in remixed words. Deliberately high: a GOOD paraphrase shares few content
+ *  tokens (different vocabulary is the whole point of paraphrasing). */
+export const BATCH_DUPLICATE_MIN = 0.6;
+
+/** Jaccard overlap of the content-token sets (unicode-aware, umlaut-folded,
+ *  stopword-free — same view the save-similarity lane compares with). */
+export function queryOverlap(a: string, b: string): number {
+  const ta = contentTokens(a);
+  const tb = contentTokens(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared += 1;
+  return shared / (ta.size + tb.size - shared);
+}
+
+export interface BatchDedupe {
+  /** Queries that actually run, in original order (first occurrence wins). */
+  kept: string[];
+  /** Near-duplicates that were collapsed away. */
+  collapsed: string[];
+  /** Highest pairwise overlap across ALL submitted queries — the telemetry
+   *  measure for how paraphrase-shaped the model's batches really are. */
+  max_overlap: number;
+}
+
+export function dedupeQueries(queries: string[]): BatchDedupe {
+  const kept: string[] = [];
+  const collapsed: string[] = [];
+  let maxOverlap = 0;
+  for (const q of queries) {
+    let duplicate = false;
+    for (const k of kept) {
+      const overlap = queryOverlap(q, k);
+      if (overlap > maxOverlap) maxOverlap = overlap;
+      if (overlap >= BATCH_DUPLICATE_MIN) duplicate = true;
+    }
+    (duplicate ? collapsed : kept).push(q);
+  }
+  return { kept, collapsed, max_overlap: Math.round(maxOverlap * 100) / 100 };
+}
+
+/** The corrective note a collapsed batch carries back to the model. */
+export function batchDuplicateNote(collapsedCount: number, total: number): string {
+  return (
+    `${collapsedCount} of ${total} queries were near-duplicates and were collapsed before searching. ` +
+    `Each query in a batch must carry ONE distinct intent: a real paraphrase in different vocabulary, ` +
+    `or a cleanly separated sub-question. Do not remix the same concepts into several queries.`
+  );
+}
+
 export interface BatchSubResult {
   hits?: Array<{ id: string; score: number } & Record<string, unknown>>;
   vault_size?: number;

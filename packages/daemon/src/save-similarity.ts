@@ -196,7 +196,9 @@ export function containedIn(text: string, inside: string): number {
   return shared / a.size;
 }
 
-function contentTokens(text: string): Set<string> {
+/** Exported for the #351 batch near-duplicate guard (recall-batch.ts) — a
+ *  similarity measure too, so it gets the folded, stopword-free view. */
+export function contentTokens(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of tokens(text)) {
     const token = contentToken(raw);
