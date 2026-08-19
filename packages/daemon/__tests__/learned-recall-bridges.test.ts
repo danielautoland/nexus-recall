@@ -14,6 +14,7 @@ import {
   bridgeId,
   distinctiveTerms,
   expandQuery,
+  isEphemeralTerm,
   mintBridge,
   scrubBridge,
   type Bridge,
@@ -52,6 +53,33 @@ test("distinctiveTerms drops short + generic words, dedupes", () => {
   assert.ok(!terms.includes("the"), "short word dropped");
   assert.ok(!terms.includes("with"), "generic word dropped");
   assert.equal(terms.filter((t) => t === "panel").length, 1, "deduped");
+});
+
+// Quality track (#353 addendum): ephemeral tokens never become bridge terms —
+// a trigger that can never recur is a dead pool slot.
+test("isEphemeralTerm: ids, snowflakes and date fragments are ephemeral; real vocabulary is not", () => {
+  // ephemeral
+  assert.ok(isEphemeralTerm("1538865250718318722"), "chat snowflake");
+  assert.ok(isEphemeralTerm("2026"), "bare year (ISO-date fragment)");
+  assert.ok(isEphemeralTerm("e77d7dc"), "commit sha");
+  assert.ok(isEphemeralTerm("0fc82b4f"), "uuid segment");
+  assert.ok(isEphemeralTerm("01k2x9abcdef"), "long alnum id");
+  // NOT ephemeral
+  assert.ok(!isEphemeralTerm("6723"), "short number (a port) may recur");
+  assert.ok(!isEphemeralTerm("decade"), "hex-alphabet WORD without digits");
+  assert.ok(!isEphemeralTerm("resignkey"), "real vocabulary");
+  assert.ok(!isEphemeralTerm("utf8"), "short alnum term");
+});
+
+test("distinctiveTerms filters ephemeral tokens out of trigger and expansion vocabulary", () => {
+  const terms = distinctiveTerms("recall_episode 1538865250718318722 from 2026 commit e77d7dc panel resignKey");
+  assert.deepEqual(
+    terms.filter((t) => t === "1538865250718318722" || t === "2026" || t === "e77d7dc"),
+    [],
+    "ephemeral tokens dropped",
+  );
+  assert.ok(terms.includes("panel"));
+  assert.ok(terms.includes("resignkey"));
 });
 
 test("bridgeId is deterministic and order-independent", () => {

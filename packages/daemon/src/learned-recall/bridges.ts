@@ -61,11 +61,26 @@ const GENERIC_TERMS = new Set([
 ]);
 
 /** Extract deduped distinctive terms from a free-text string. */
+/** Quality track (#353 addendum): ephemeral tokens — raw tool-call ids,
+ *  chat snowflakes, commit shas, date fragments — can never recur in a
+ *  future query. A bridge whose trigger carries one is a dead slot; an
+ *  expansion carrying one is noise. zzalli measured ~1/3 of a fresh mint
+ *  affected. Filtered at the term source, so trigger AND expansion (and the
+ *  near-terms overlap check) all stay clean. */
+export function isEphemeralTerm(t: string): boolean {
+  if (/^\d{5,}$/.test(t)) return true; // snowflakes, timestamps, big counters
+  if (/^(19|20)\d{2}$/.test(t)) return true; // bare years — ISO-date fragments
+  if (/^(?=.*\d)[0-9a-f]{6,}$/.test(t)) return true; // hex ids: shas, uuid/tool-call segments
+  if (/^(?=.*\d)[a-z0-9]{12,}$/.test(t)) return true; // long alnum ids (base36-ish)
+  return false;
+}
+
 export function distinctiveTerms(text: string): string[] {
   const seen = new Set<string>();
   for (const raw of text.toLowerCase().split(/[^a-zäöüß0-9]+/i)) {
     if (raw.length < MIN_TERM_LEN) continue;
     if (GENERIC_TERMS.has(raw)) continue;
+    if (isEphemeralTerm(raw)) continue;
     seen.add(raw);
   }
   return [...seen];
