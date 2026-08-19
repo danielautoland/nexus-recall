@@ -83,6 +83,14 @@ export interface RecallResult {
    *  die höhere Konfidenz-Stufe ist; zusammengelegt ginge genau die
    *  Unterscheidung verloren, die den Wert ausmacht. */
   no_home?: boolean;
+  /** #351 batch only: width the model SENT (not what ran after the guard). */
+  query_count?: number;
+  /** #351 batch only: one recall_id per executed sub-query. */
+  recall_ids?: string[];
+  /** #351 guard: near-duplicate queries collapsed before searching. */
+  queries_collapsed?: number;
+  /** #351 guard: corrective note when queries were collapsed. */
+  note?: string;
 }
 
 /**
