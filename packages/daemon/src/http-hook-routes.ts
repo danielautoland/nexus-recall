@@ -415,7 +415,14 @@ export function handleHookRecall(
       // matches" — the daemon computed the contradicting signal and simply did
       // not send it. Same computation as the MCP path, from the same module.
       const payload = {
-        hits: hits.map((h) => ({ ...toLeanHit(h), matched_recall_when: h.matched_recall_when ?? false })),
+        // recall_mode rides along only when the user wired the memory as
+        // reflex: the prompt lane's mode-"none" semantic filter keys on it
+        // (19.08. incident — see prompt-lane.ts).
+        hits: hits.map((h) => ({
+          ...toLeanHit(h),
+          matched_recall_when: h.matched_recall_when ?? false,
+          ...(vault.get(h.id)?.fm.recall_mode === "reflex" ? { recall_mode: "reflex" as const } : {}),
+        })),
         vault_size: vault.size(),
         latency_ms: totalLatencyMs,
         recall_id: recallId,

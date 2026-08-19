@@ -20,6 +20,7 @@ function memoryMarkdown(
   id: string,
   opts: {
     recall_when: string[];
+    recall_when_expanded?: string[];
     recall_mode?: string;
     salience?: number;
     sensitivity?: string;
@@ -40,6 +41,9 @@ function memoryMarkdown(
     "scope: reflex-test",
     "recall_when:",
     ...opts.recall_when.map((p) => `  - ${JSON.stringify(p)}`),
+    ...(opts.recall_when_expanded
+      ? ["recall_when_expanded:", ...opts.recall_when_expanded.map((p) => `  - ${JSON.stringify(p)}`)]
+      : []),
     ...(opts.recall_mode ? [`recall_mode: ${opts.recall_mode}`] : []),
     ...(opts.salience != null ? [`salience: ${opts.salience}`] : []),
     ...(opts.sensitivity ? [`sensitivity: ${opts.sensitivity}`] : []),
@@ -232,5 +236,60 @@ test("POST /hook/reflex serves budgeted hits and honors the kill switch", async 
     await vault.stop?.();
     await handle.close();
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test("phraseMatchesContext: 'oder'/'or' splits a phrase into alternatives (19.08. incident)", () => {
+  // „Nachricht oder Antwort entwerfen" verlangte vorher BEIDE Substantive —
+  // die Nachrichtenkonvention feuerte beim Nachricht-Entwerfen nie.
+  const context = ctx("dann noch die finale Antwort entwerfen und posten");
+  assert.equal(
+    phraseMatchesContext("Nachricht oder Antwort entwerfen", context),
+    true,
+    "one satisfied alternative is enough",
+  );
+  assert.equal(
+    phraseMatchesContext("Nachricht oder Antwort entwerfen", ctx("wir bauen das feature fertig")),
+    false,
+    "no alternative satisfied → no match",
+  );
+  // Jede Alternative spielt nach den normalen Regeln: ein einzelnes
+  // Freitext-Wort bleibt auch als Alternative ein Streutrigger und feuert nie.
+  assert.equal(
+    phraseMatchesContext("deployment oder rollout", ctx("das deployment läuft")),
+    false,
+    "single free-text alternatives stay muted",
+  );
+});
+
+test("collectReflexHits: recall_when_expanded counts — inflection survives via the generated variants", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-reflex-expanded-"));
+  const mem = join(dir, "memories");
+  await mkdir(mem, { recursive: true });
+  await writeFile(
+    join(mem, "konvention.md"),
+    memoryMarkdown("konvention", {
+      recall_when: ["Nachricht an einen Contributor entwerfen"],
+      recall_when_expanded: ["entwurf einer antwort erstellen"],
+      recall_mode: "reflex",
+      salience: 0.9,
+    }),
+  );
+  const vault = new Vault(dir);
+  await vault.init();
+  try {
+    // Der Prompt trifft keine Original-Phrase (Flexion: „entwirfst" statt
+    // „entwerfen"), aber eine expandierte Variante.
+    const { matched, served } = collectReflexHits(
+      vault,
+      "bitte den entwurf der antwort an zzalli erstellen",
+      2,
+    );
+    assert.equal(matched.length, 1, "the expanded variant fires");
+    assert.equal(served[0].memory.fm.id, "konvention");
+    assert.equal(served[0].phrase, "entwurf einer antwort erstellen");
+  } finally {
+    await vault.stop?.();
+    await rm(dir, { recursive: true, force: true });
   }
 });

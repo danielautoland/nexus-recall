@@ -84,6 +84,9 @@ export interface RecallHit {
   scope: string;
   summary: string;
   score: number;
+  /** Present (as "reflex") only when the user wired the memory to self-inject
+   *  — the mode-"none" semantic filter keys on it. */
+  recall_mode?: string;
 }
 
 interface RecallResponse {
@@ -348,7 +351,14 @@ export async function runPromptLane(
   let resp: RecallResponse | null = null;
   let status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" = "ok";
   let errMsg: string | null = null;
-  if (detectedMode !== "none") {
+  // Mode "none" no longer skips the recall (19.08. incident): a reflex-wired
+  // convention ("Nachrichtenkonvention", salience 0.9) never surfaced while a
+  // message was being drafted — the hard token-AND of the reflex lane cannot
+  // survive German inflection ("entwirfst" vs "entwerfen"), and the hybrid
+  // recall that DOES understand it never ran on ordinary work prompts. Now it
+  // runs on every non-trivial prompt; what may inject in mode "none" is
+  // filtered below to user-wired reflex memories at REQUIRED strength.
+  {
     try {
       resp = await postJson<RecallResponse>(
         selfBaseUrl,
@@ -377,6 +387,11 @@ export async function runPromptLane(
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < effectiveFloor) continue;
+      // Semantic reflex: in mode "none" only memories the USER wired as
+      // reflex may inject, and only at REQUIRED strength — the semantic arm
+      // gives them hearing beyond literal token matches, the reflex wiring
+      // and the 100-floor keep ordinary prompts free of noise.
+      if (detectedMode === "none" && !(h.recall_mode === "reflex" && h.score >= MUST_LOAD_SCORE)) continue;
       filtered.push(h);
     }
   }

@@ -9,10 +9,13 @@
  *
  * „Hart" heißt deterministisch, ohne Score: eine Phrase matcht, wenn alle
  * ihre Tokens (≥3 Zeichen, lowercase, tokenizeWithIdentifiers) im Kontext
- * vorkommen — mindestens 2 Tokens, oder genau 1 Identifier-Token exakt.
- * Bewusst NICHT matchedRecallWhen (MiniSearch: fuzzy/prefix) und ohne
- * recall_when_expanded: Reflexe feuern nur auf die vom User autorisierten
- * Formulierungen.
+ * vorkommen — mindestens 2 Tokens, oder genau 1 Identifier-Token exakt;
+ * „oder"/„or" teilt eine Phrase in Alternativen. Bewusst NICHT
+ * matchedRecallWhen (MiniSearch: fuzzy/prefix). recall_when_expanded zählt
+ * seit dem 19.08.-Vorfall MIT: deterministisch aus den autorisierten Phrasen
+ * generiert, erweitert es die Formulierung, nicht die Autorisierung — ohne
+ * das überlebt kein Token-AND die deutsche Flexion. Die semantische
+ * Absicherung derselben Lücke liegt in prompt-lane.ts (mode-"none"-Filter).
  *
  * Budget: BASTRA_REFLEX_MAX_PER_TURN bzw. reflex.maxPerTurn (default 2,
  * clamp 1..5). Kill-Switch: BASTRA_REFLEX=off (env) bzw.
@@ -69,6 +72,16 @@ const IDENTIFIER_TOKEN_RE = /[-_./#+@:]|\d/;
  *  im Kontext vorkommen — mindestens 2 Tokens, oder genau 1 Identifier-Token
  *  exakt. Kein Prefix, kein Fuzzy. */
 export function phraseMatchesContext(phrase: string, contextTokens: Set<string>): boolean {
+  // Ein „oder"/„or" in der Phrase ist eine Alternativen-Liste, kein
+  // Token-Paket: „Nachricht oder Antwort entwerfen" verlangte sonst BEIDE
+  // Substantive im Prompt und feuerte nie (19.08.-Vorfall: die
+  // Nachrichtenkonvention — reflex, salience 0.9 — blieb beim Entwerfen
+  // einer Nachricht stumm). Jede Alternative matcht für sich nach den
+  // normalen Regeln.
+  const alternatives = phrase.split(/\s+(?:oder|or)\s+/i);
+  if (alternatives.length > 1) {
+    return alternatives.some((alt) => phraseMatchesContext(alt, contextTokens));
+  }
   const tokens = tokenizeWithIdentifiers(phrase.toLowerCase());
   const meaningful = [
     ...new Set(tokens.filter((t) => t.length >= MIN_TOKEN_LEN && !PHRASE_STOPWORDS.has(t))),
@@ -105,7 +118,16 @@ export function collectReflexHits(
   );
   const matched: ReflexMatch[] = [];
   for (const m of pool) {
-    const phrases = (m.fm.recall_when ?? []).filter((p): p is string => typeof p === "string");
+    // recall_when_expanded zählt mit: die Expansion ist deterministisch aus
+    // den vom User autorisierten Phrasen generiert (recall_when_expanded_src
+    // pinnt die Quelle) — sie erweitert die FORMULIERUNG, nicht die
+    // Autorisierung. Nötig, weil Flexion und Frageform das exakte Token-AND
+    // sonst leer laufen lassen („entwirfst" matcht „entwerfen" nie).
+    const expanded = (m.fm as { recall_when_expanded?: unknown }).recall_when_expanded;
+    const phrases = [
+      ...(m.fm.recall_when ?? []),
+      ...(Array.isArray(expanded) ? expanded : []),
+    ].filter((p): p is string => typeof p === "string");
     const hit = phrases.filter((p) => phraseMatchesContext(p, contextTokens));
     if (hit.length > 0) matched.push({ memory: m, phrase: hit[0], matches: hit.length });
   }

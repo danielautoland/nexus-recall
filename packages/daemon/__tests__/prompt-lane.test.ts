@@ -347,8 +347,9 @@ test("integration — retrieval prompt yields recall-hints block", async () => {
 });
 
 test("integration — non-retrieval prompt emits empty object", async () => {
-  // #217: die Reflex-Lane pingt den Daemon jetzt bei JEDEM non-trivialen
-  // Prompt — nur der Recall-Endpoint darf ohne Retrieval-Signal still bleiben.
+  // Seit dem 19.08.-Vorfall ruft auch die "none"-Lane den Recall (semantic
+  // reflex) — aber ohne reflex-verdrahtete REQUIRED-Hits bleibt die Ausgabe
+  // leer: gewöhnliche Hits injizieren auf Arbeits-Prompts weiterhin nichts.
   let recallCalled = false;
   const daemon = await startMockDaemon((req, res) => {
     if (req.url === "/hook/recall") recallCalled = true;
@@ -357,7 +358,17 @@ test("integration — non-retrieval prompt emits empty object", async () => {
       res.end('{"hits":[],"recall_id":null}');
       return;
     }
-    res.end('{"hits":[],"vault_size":0,"latency_ms":1,"recall_id":"x"}');
+    // Ein starker, aber NICHT reflex-verdrahteter Hit — darf nicht durch.
+    res.end(
+      JSON.stringify({
+        hits: [
+          { id: "ordinary-fact", title: "T", type: "project-fact", scope: "p", summary: "s", score: 150 },
+        ],
+        vault_size: 1,
+        latency_ms: 1,
+        recall_id: "x",
+      }),
+    );
   });
   try {
     const { stdout } = await runHook(
@@ -369,9 +380,63 @@ test("integration — non-retrieval prompt emits empty object", async () => {
       { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
     );
     assert.equal(stdout.trim(), "{}");
-    assert.equal(recallCalled, false, "recall must not be called when no retrieval signal");
+    assert.equal(recallCalled, true, "the none lane now recalls — the filter, not the skip, keeps it quiet");
   } finally {
     await daemon.close();
+  }
+});
+
+test("integration — semantic reflex: a reflex-wired REQUIRED hit injects on a mode-none prompt (19.08. incident)", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-semref-state-"));
+  const daemon = await startMockDaemon((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/reflex") {
+      res.end('{"hits":[],"recall_id":null}');
+      return;
+    }
+    if (req.url === "/hook/hinted") {
+      res.end('{"ok":true}');
+      return;
+    }
+    // Der hybride Arm versteht die Flexion, die das Token-AND nie überlebt:
+    // die reflex-verdrahtete Konvention kommt mit REQUIRED-Score zurück,
+    // daneben ein gleichstarker gewöhnlicher Hit.
+    res.end(
+      JSON.stringify({
+        hits: [
+          {
+            id: "nachrichtenkonvention",
+            title: "Nachrichtenkonvention",
+            type: "meta-working",
+            scope: "all-projects",
+            summary: "Erst die deutsche Fassung, Plain-Text, Ich-Form.",
+            score: 163,
+            recall_mode: "reflex",
+          },
+          { id: "ordinary-fact", title: "T", type: "project-fact", scope: "p", summary: "s", score: 150 },
+        ],
+        vault_size: 2,
+        latency_ms: 1,
+        recall_id: "x",
+      }),
+    );
+  });
+  try {
+    const { stdout } = await runHook(
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt: "dann möchte ich dass du mir eine Nachricht entwirfst, kurz und knapp",
+        cwd: process.cwd(),
+      },
+      { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir },
+    );
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } };
+    const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
+    assert.match(ctx, /nachrichtenkonvention/, "the reflex-wired convention reaches the agent");
+    assert.ok(!ctx.includes("ordinary-fact"), "a non-reflex hit stays out of mode-none injection");
+  } finally {
+    await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
   }
 });
 
@@ -427,7 +492,9 @@ test("integration — reflex hit fires without a retrieval signal (#217)", async
     assert.match(ctx, /trigger="reflex"/);
     assert.match(ctx, /reflex-css-lesson/);
     assert.match(ctx, /trigger "tailwind grid"/);
-    assert.equal(recallCalled, false, "no retrieval signal → recall stays silent");
+    // Seit dem 19.08.-Vorfall läuft der Recall auch ohne Retrieval-Signal
+    // (semantic reflex) — still bleibt nur die Injektion gewöhnlicher Hits.
+    assert.equal(recallCalled, true, "the none lane recalls; its filter does the quieting");
     assert.deepEqual(hintedIds, ["reflex-css-lesson"], "reflex injection counts as surfaced");
   } finally {
     await daemon.close();
