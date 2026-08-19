@@ -424,18 +424,24 @@ test("integration — semantic reflex: a reflex-wired REQUIRED hit injects on a 
     );
   });
   try {
-    const { stdout } = await runHook(
-      {
-        hook_event_name: "UserPromptSubmit",
-        prompt: "dann möchte ich dass du mir eine Nachricht entwirfst, kurz und knapp",
-        cwd: process.cwd(),
-      },
-      { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir },
-    );
+    const payload = {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "semref-session",
+      prompt: "dann möchte ich dass du mir eine Nachricht entwirfst, kurz und knapp",
+      cwd: process.cwd(),
+    };
+    const env = { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir };
+    const { stdout } = await runHook(payload, env);
     const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } };
     const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
     assert.match(ctx, /nachrichtenkonvention/, "the reflex-wired convention reaches the agent");
     assert.ok(!ctx.includes("ordinary-fact"), "a non-reflex hit stays out of mode-none injection");
+
+    // Kontaminations-Guard (zzalli, 19.08.): dieselbe Session bekommt die
+    // Konvention nicht bei jedem Entwurfs-Prompt erneut — Session-Dedup
+    // wie in der harten Reflex-Lane, 1× pro 4h-Fenster.
+    const second = await runHook(payload, env);
+    assert.equal(second.stdout.trim(), "{}", "a re-prompt in the same session does not re-inject");
   } finally {
     await daemon.close();
     await rm(stateDir, { recursive: true, force: true });

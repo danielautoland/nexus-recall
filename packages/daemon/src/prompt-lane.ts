@@ -414,7 +414,21 @@ export async function runPromptLane(
     reflexKept.push(h);
   }
   const reflexIds = new Set(reflexKept.map((h) => h.id));
-  const recallHits = filtered.filter((h) => !reflexIds.has(h.id));
+  let recallHits = filtered.filter((h) => !reflexIds.has(h.id));
+  // Semantic-reflex hits share the reflex lane's per-memory session dedup
+  // (zzalli's context-contamination report, 19.08.): the same wired
+  // convention must not re-inject on every drafting prompt of a session.
+  // 1× per 4h window, and an already-loaded memory never re-injects. The
+  // ordinary hint modes stay backoff-governed as before.
+  if (detectedMode === "none") {
+    const kept: RecallHit[] = [];
+    for (const h of recallHits) {
+      const loadedMtime = await getLoadedMarkerMtime(h.id);
+      if (shouldDropHit(state.shown[h.id], loadedMtime)) continue;
+      kept.push(h);
+    }
+    recallHits = kept;
+  }
 
   let backoffStreak = 0;
   let suppressed = false;
@@ -463,6 +477,11 @@ export async function runPromptLane(
     recordSourceEmit(state, BACKOFF_SOURCE, recallHits.map((h) => h.id), consumedForEmit);
   }
   for (const h of reflexKept) bumpShown(state, h.id);
+  // Semantic-reflex injections book the same shown-state — without this the
+  // dedup above has nothing to count and the block repeats every prompt.
+  if (detectedMode === "none" && recallBlock) {
+    for (const h of recallHits) bumpShown(state, h.id);
+  }
   if (recallHits.length > 0 || reflexKept.length > 0) {
     await saveSessionState(sessionId, state);
   }
