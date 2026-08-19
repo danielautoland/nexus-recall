@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { listFloors } from "./floors.js";
+import { writeVaultJournal } from "./vault-journal.js";
 import { liveIntent, readActs } from "./floor-acts.js";
 import { listSkills } from "./skills-registry.js";
 import {
@@ -95,6 +96,8 @@ export interface CuratorRunResult {
   pendingObservation: string[];
   staleTotal: number;
   reportWritten: boolean;
+  /** #288: months whose journal projection was (re)written this pass. */
+  journalMonths?: string[];
   /** Set when the pass failed internally (never thrown — see contract). */
   error?: string;
 }
@@ -585,6 +588,9 @@ async function runCuratorPassInner(
     ...(mode !== "acting" ? { pendingReview: true } : {}),
   };
   const reportWritten = await writeVaultHealthReport(deps.vaultRoot, data);
+  // #288: monthly journal projection of the audit log — same cadence as the
+  // report, best-effort like it (writeVaultJournal never throws).
+  const journalMonths = await writeVaultJournal(deps.vaultRoot);
 
   return {
     ran: true,
@@ -595,6 +601,7 @@ async function runCuratorPassInner(
     pendingObservation: Object.keys(decision.pendingObservation),
     staleTotal: mode === "acting" ? Object.keys(nextState.stale).length : Object.keys(state.stale).length,
     reportWritten,
+    journalMonths,
   };
 }
 
