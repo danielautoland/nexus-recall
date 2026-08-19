@@ -524,7 +524,34 @@ export function collectFooterParts(
     }
   }
 
+  // #53: bastra parity with the powerline path — shown whenever the
+  // per-session feed answers (BastraProvider fail-opens to null).
+  const bastraText = formatBastraText(data);
+  if (bastraText) {
+    parts.push(colorize(bastraText, colors.bastraFg, reset, colors.bastraBold));
+  }
+
   return parts;
+}
+
+/** #53: compact TUI mirror of renderBastra's three states (idle / running /
+ *  done snapshot); banter phrases stay powerline-only to keep the panel calm. */
+function formatBastraText(data: TuiData): string | null {
+  const info = data.bastraInfo;
+  if (!info) return null;
+  if (info.state === "idle" || info.recallCount === 0) {
+    return `bastra · ${info.vaultSize} memories`;
+  }
+  if (info.currentStage && info.currentStageStartedAt) {
+    const live =
+      info.currentRecallStartedAt !== null
+        ? info.totalMs + Math.max(0, Date.now() - info.currentRecallStartedAt)
+        : info.totalMs;
+    return `bastra · ${info.recallCount} calls · ${info.totalHits} hits · ${live}ms · ${info.currentStage}`;
+  }
+  const hits = info.totalHits > 0 ? ` · ${info.totalHits} hits` : "";
+  const ms = info.totalMs > 0 ? ` · ${info.totalMs}ms` : "";
+  return `✓ bastra · ${info.recallCount} calls${hits}${ms}`;
 }
 
 export function formatBlockParts(

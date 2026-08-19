@@ -5,6 +5,7 @@ import type { ContextInfo } from "../segments/context";
 import type { MetricsInfo } from "../segments/metrics";
 import type { GitInfo } from "../segments/git";
 import type { CacheTimerInfo } from "../segments/cacheTimer";
+import type { BastraInfo } from "../segments/bastra";
 import type { ClaudeHookData } from "../utils/claude";
 import type { PowerlineColors } from "../themes";
 import type { PowerlineConfig } from "../config/loader";
@@ -31,6 +32,7 @@ export interface TuiData {
   metricsInfo: MetricsInfo | null;
   gitInfo: GitInfo | null;
   cacheTimerInfo: CacheTimerInfo | null;
+  bastraInfo: BastraInfo | null;
   tmuxSessionId: string | null;
   colors: PowerlineColors;
 }

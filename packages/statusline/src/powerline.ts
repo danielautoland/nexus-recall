@@ -384,6 +384,7 @@ export class PowerlineRenderer {
       metricsInfo,
       gitInfo,
       cacheTimerInfo,
+      bastraInfo: this.bastraProvider.getBastraInfo(), // #53: TUI parity
       tmuxSessionId,
       colors,
     };
