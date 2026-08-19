@@ -482,7 +482,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         .then(async (body) => {
           const payload = (body.payload ?? {}) as WriteHookPayload;
           const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
-          const out = await runWriteLane(payload, self);
+          const out = await runWriteLane(payload, self, toolDeps.vaultPath);
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(out);
         })

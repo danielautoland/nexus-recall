@@ -29,6 +29,7 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { passesScopeFilter } from "./hook-skip.js";
 import { fileSizeNote } from "./file-size-check.js";
+import { memoryLocationNote } from "./memory-location.js";
 import { reportHinted } from "./hook-hinted.js";
 import {
   bumpShown,
@@ -106,7 +107,11 @@ const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
  * client writes to stdout. Never throws; every failure degrades to `{}` plus
  * telemetry, matching the CLI's fail-open contract.
  */
-export async function runWriteLane(payload: WriteHookPayload, selfBaseUrl: string): Promise<string> {
+export async function runWriteLane(
+  payload: WriteHookPayload,
+  selfBaseUrl: string,
+  vaultRoot: string | null = null,
+): Promise<string> {
   const startedAt = Date.now();
 
   if (payload.hook_event_name !== "PreToolUse") return "{}";
@@ -124,6 +129,12 @@ export async function runWriteLane(payload: WriteHookPayload, selfBaseUrl: strin
   // assumption is safe: daemon and hook share the filesystem by definition
   // of a loopback-only endpoint.
   const sizeNote = await fileSizeNote(filePath, undefined, payload.cwd).catch(() => null);
+
+  // #297: memory-shaped .md outside the vault root — same discipline as the
+  // size note: deterministic, rides through suppression, fail-open. The two
+  // combine into one deterministic block for every emit path.
+  const locationNote = await memoryLocationNote(filePath, toolInput, vaultRoot).catch(() => null);
+  const detNote = [sizeNote, locationNote].filter((n): n is string => n !== null).join("\n") || null;
 
   const intent = {
     tool_name: toolName,
@@ -243,19 +254,19 @@ export async function runWriteLane(payload: WriteHookPayload, selfBaseUrl: strin
     });
   let stdout: string;
   if (totalHints === 0) {
-    // no recall hints — the deterministic size note still goes out
-    if (sizeNote) {
-      stdout = envelope(sizeNote);
-      hintTokensEst = Math.ceil(sizeNote.length / 4);
+    // no recall hints — the deterministic notes (size, #297 location) still go out
+    if (detNote) {
+      stdout = envelope(detNote);
+      hintTokensEst = Math.ceil(detNote.length / 4);
     } else {
       stdout = "{}";
     }
   } else if (suppressed) {
-    // Suppression is a recall-noise valve — the size note is deterministic
-    // convention enforcement and rides through it.
-    if (sizeNote) {
-      stdout = envelope(sizeNote);
-      hintTokensEst = Math.ceil(sizeNote.length / 4);
+    // Suppression is a recall-noise valve — the deterministic notes are
+    // convention enforcement and ride through it.
+    if (detNote) {
+      stdout = envelope(detNote);
+      hintTokensEst = Math.ceil(detNote.length / 4);
     } else {
       stdout = "{}";
     }
@@ -264,7 +275,7 @@ export async function runWriteLane(payload: WriteHookPayload, selfBaseUrl: strin
     recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
     const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true);
-    const block = sizeNote ? `${sizeNote}\n${hintsBlock}` : hintsBlock;
+    const block = detNote ? `${detNote}\n${hintsBlock}` : hintsBlock;
     hintTokensEst = Math.ceil(block.length / 4);
     hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
     stdout = envelope(block);

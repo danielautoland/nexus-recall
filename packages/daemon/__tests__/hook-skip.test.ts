@@ -77,6 +77,22 @@ test("shouldSkipPath: cwd parameter is accepted but currently informational", ()
   assert.equal(shouldSkipPath("issue-1.md", "/some/cwd"), true);
 });
 
+// #297: a memory-shaped .md never skips, wherever it lives — the write must
+// reach the daemon so the vault-location check can run there.
+test("shouldSkipPath (#297): memory-shaped .md outside docs/ is NOT skipped", () => {
+  const memoryContent = "---\nid: x\ntitle: X\ntype: lesson\n---\n\nBody.\n";
+  // Write carries the content inline via tool_input
+  assert.equal(shouldSkipPath("/tmp/some/notes/x.md", undefined, { content: memoryContent }), false);
+  // quoted type value counts too
+  assert.equal(shouldSkipPath("/tmp/x.md", undefined, { content: '---\ntype: "decision"\n---\n' }), false);
+  // plain .md without memory frontmatter keeps skipping
+  assert.equal(shouldSkipPath("/tmp/plan.md", undefined, { content: "# Plan\n- step 1\n" }), true);
+  // unknown type value is not memory-shaped
+  assert.equal(shouldSkipPath("/tmp/x.md", undefined, { content: "---\ntype: banana\n---\n" }), true);
+  // Edit on a nonexistent file (no inline content, unreadable head) → fail-open skip
+  assert.equal(shouldSkipPath("/nonexistent/dir/x.md", undefined, { old_string: "a", new_string: "b" }), true);
+});
+
 test("isScopeCompatible (#107): foreign project scopes are filtered, family/global scopes pass", () => {
   // Das beobachtete Problem: bastra-io-Hint bei einem bastra-recall-Edit.
   assert.equal(isScopeCompatible("bastra-io", "bastra-recall"), false);

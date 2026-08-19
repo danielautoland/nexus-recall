@@ -190,7 +190,8 @@ async function main(): Promise<void> {
   const url = httpURL ?? `http://127.0.0.1:${httpPort}`;
 
   // SKIP-GATE (#20/#28): the cheap path ends here, without any HTTP.
-  if (shouldSkipPath(filePath, payload.cwd)) {
+  // toolInput feeds the #297 memory-shape exception (lazy, .md branch only).
+  if (shouldSkipPath(filePath, payload.cwd, toolInput)) {
     emitEmpty();
     await writeClientTelemetry({
       session_id: payload.session_id ?? null,
