@@ -632,7 +632,9 @@ interface PromptHookTelemetry {
   reflex_hint_count?: number;
   top_score: number | null;
   latency_ms_total: number;
-  /** #161: resolved streak of this event's backoff decision. */
+  /** #161: resolved streak of this event's backoff decision. NOT a
+   *  connectivity counter (#352): it is the empty-injection suppression
+   *  cadence and climbs on perfectly healthy `status:"ok"` responses. */
   backoff_streak?: number;
   /** #161: true when the empty-streak backoff suppressed the injection. */
   suppressed?: boolean;

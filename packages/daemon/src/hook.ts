@@ -143,7 +143,9 @@ async function writeClientTelemetry(fields: {
       topics: [],
       query_chars: 0,
       daemon_url: fields.daemon_url,
-      daemon_reachable: false,
+      // #352: null = never asked (skip-gate) — false is reserved for a path
+      // that actually POSTed and got no response.
+      daemon_reachable: fields.status === "skipped" ? null : false,
       hint_count: 0,
       required_count: 0,
       top_score: null,

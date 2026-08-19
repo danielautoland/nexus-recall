@@ -147,7 +147,9 @@ async function writeClientTelemetry(
       ts,
       session_id: randomUUID(),
       hook_version: STUB_VERSION,
-      daemon_reachable: false,
+      // #352: null = never asked (skip-gate) — false is reserved for a path
+      // that actually POSTed and got no response.
+      daemon_reachable: fields.status === "skipped" ? null : false,
       latency_ms_total: Date.now() - startedAt,
       error: null,
       ...base,

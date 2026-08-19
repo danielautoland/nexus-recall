@@ -191,7 +191,8 @@ async function main(): Promise<void> {
       todo_count: extraction.todoCount,
       query_chars: extraction.query.length,
       daemon_url: null,
-      daemon_reachable: false,
+      // #352: null = never asked (gate branch, no POST)
+      daemon_reachable: null,
       hit_count: 0,
       top_score: null,
       latency_ms_total: Date.now() - startedAt,
@@ -433,7 +434,9 @@ interface TodoHookTelemetry {
   todo_count: number;
   query_chars: number;
   daemon_url: string | null;
-  daemon_reachable: boolean;
+  /** #352: true/false = asked the daemon (and it answered / did not);
+   *  null = never asked (gate branch). */
+  daemon_reachable: boolean | null;
   hit_count: number;
   top_score: number | null;
   latency_ms_total: number;
