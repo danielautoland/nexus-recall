@@ -67,8 +67,14 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
           description:
             "Natural-language query OR a description of what you are " +
             "about to do (e.g. 'creating new input component', " +
-            "'about to give a multi-option plan'). For several angles in " +
-            "one turn, use `queries` instead.",
+            "'about to give a multi-option plan'). Ask the vault what " +
+            "only memory can answer — durable preferences, lessons, " +
+            "decisions, past facts, documents. Do NOT query for what is " +
+            "already in the prompt or an upload, or findable by reading " +
+            "the project's files and logs: recall is memory, not a " +
+            "search over the current context. Decide what you are " +
+            "looking for, then phrase THAT. For several angles in one " +
+            "turn, use `queries` instead.",
         },
         queries: {
           type: "array",

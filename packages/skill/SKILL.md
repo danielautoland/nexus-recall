@@ -30,6 +30,8 @@ Call `recall(query, k=5)` proactively in these moments:
 | **User prompt touches a stored topic** | the prompt itself, optionally with project context |
 | **Before `save_memory`** | the title/topic — duplicate check |
 
+**What goes into a query:** ask the vault what only memory can answer — durable preferences, lessons, decisions, past facts and documents. What is already in the prompt or an upload, or findable by reading the project's files and logs, is not a recall — it is context you already have. Decide what you are looking for, then phrase THAT; never shovel a convoluted prompt's background into queries.
+
 `recall` is **step 1 of two**: it returns lean candidates, no bodies. Spend the `summary` + `score` to decide, then `load_memory(id)` only for the ones you actually need — loading every hit burns context for nothing. Never ignore a `lesson` hit that matched on `recall_when` or title. Don't reload a memory you already loaded this turn. (Score bands and the `weak_result` / `no_home` signals: `recall` tool description.)
 
 **Claims that leave the machine are the strictest case.** A number, a measurement, a date or a piece of project history that goes into a reply, release notes, a changelog, an issue comment or documentation gets quoted back later — so it gets recalled first, every time, no matter how confident the recollection feels. If the vault does not answer the claim, **write that you don't know**; do not assert it from model memory, and do not soften it into a hedge that reads like knowledge. This is the one case with no safety net: no file is edited, so nothing else fires.
