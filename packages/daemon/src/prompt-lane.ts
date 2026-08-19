@@ -388,10 +388,13 @@ export async function runPromptLane(
     for (const h of resp.hits) {
       if (h.score < effectiveFloor) continue;
       // Semantic reflex: in mode "none" only memories the USER wired as
-      // reflex may inject, and only at REQUIRED strength — the semantic arm
-      // gives them hearing beyond literal token matches, the reflex wiring
-      // and the 100-floor keep ordinary prompts free of noise.
-      if (detectedMode === "none" && !(h.recall_mode === "reflex" && h.score >= MUST_LOAD_SCORE)) continue;
+      // reflex may inject — the semantic arm gives them hearing beyond
+      // literal token matches. Deliberately at the normal floor, not
+      // MUST_LOAD_SCORE: the 19.08. real prompt ranked the wired convention
+      // at 84 (a long convoluted prompt dilutes the rank), and the pool is
+      // tiny and explicitly authorized — the wiring is the noise gate, the
+      // backoff still dampens sub-REQUIRED repeats.
+      if (detectedMode === "none" && h.recall_mode !== "reflex") continue;
       filtered.push(h);
     }
   }

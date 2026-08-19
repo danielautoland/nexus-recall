@@ -410,7 +410,9 @@ test("integration — semantic reflex: a reflex-wired REQUIRED hit injects on a 
             type: "meta-working",
             scope: "all-projects",
             summary: "Erst die deutsche Fassung, Plain-Text, Ich-Form.",
-            score: 163,
+            // Realwert vom 19.08.: der verworrene Original-Prompt rankte die
+            // Konvention auf 84 — sub-REQUIRED, aber sie MUSS durchkommen.
+            score: 84,
             recall_mode: "reflex",
           },
           { id: "ordinary-fact", title: "T", type: "project-fact", scope: "p", summary: "s", score: 150 },
