@@ -176,7 +176,7 @@ state (the audit log, usage sidecar, curator state); the event log sits
 outside the vault so it never syncs with it. Read it with `bastra logs`
 rather than by hand.
 
-Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, …).
+Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, `hint_tokens_est`, …). Every lane event carries the Claude Code `session_id` from the hook payload, so injections can be summed per session across lanes (#356).
 
 ### `bastra-recall-todo-hook` (#36)
 
