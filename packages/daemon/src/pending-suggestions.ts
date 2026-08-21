@@ -37,7 +37,9 @@ export async function writePendingSuggestion(blocks: string): Promise<void> {
     } catch {
       /* missing/corrupt → start fresh */
     }
-    entries.push({ ts: Date.now(), blocks });
+    const dup = entries.find((e) => e.blocks === blocks);
+    if (dup) dup.ts = Date.now();
+    else entries.push({ ts: Date.now(), blocks });
     const tmp = `${path}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify(entries.slice(-MAX_ENTRIES)), "utf8");
     await rename(tmp, path);
