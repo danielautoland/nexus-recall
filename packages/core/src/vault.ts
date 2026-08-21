@@ -46,6 +46,11 @@ export class Vault {
   private fileStats = new Map<string, { mtimeMs: number; size: number }>();
   private listeners = new Set<VaultListener>();
   private watcher?: FSWatcher;
+  /** Paths we already reported as a duplicate-id skip, so reconcile's 60s
+   *  retry does not reprint the same warning. Cleared when the path leaves
+   *  the tree — a leftover copy must be free to claim the id if the winner
+   *  is gone. */
+  private duplicateSkipLogged = new Set<string>();
 
   constructor(public readonly root: string) {}
 
@@ -98,10 +103,7 @@ export class Vault {
       if (claimed) {
         skipped.push({
           path: r.file,
-          err:
-            `duplicate id '${r.memory.fm.id}' — already claimed by ${claimed.filePath}. ` +
-            `Not indexed. Give one of the two files a different id (a cloud-sync ` +
-            `conflict copy is the usual cause).`,
+          err: duplicateIdSkipMessage(r.memory.fm.id, claimed.filePath),
         });
         continue;
       }
@@ -306,6 +308,24 @@ export class Vault {
   ): Promise<void> {
     try {
       const m = await this.read(filePath);
+      // #240/A2.3 add-half: init quarantines a second path with the same id.
+      // reconcile() treats "not in filePathToId" as new and used to emit add,
+      // which overwrote the winner in the map and crashed MiniSearch
+      // (`duplicate ID`) on every tick. A second path must not steal the
+      // claim. If the winner is gone, handleRemove already dropped it, and
+      // this path is free to take the id — that is how a leftover conflict
+      // copy becomes the memory.
+      const claimed = this.memorys.get(m.fm.id);
+      if (claimed && claimed.filePath !== filePath) {
+        if (!this.duplicateSkipLogged.has(filePath)) {
+          this.duplicateSkipLogged.add(filePath);
+          console.warn(
+            `[vault] ${kind} skipped (${basename(filePath)}): ` +
+              duplicateIdSkipMessage(m.fm.id, claimed.filePath),
+          );
+        }
+        return;
+      }
       // #240/A2.1: If the id changed, the vault dropped the old mapping but
       // emitted only `change(new)` — so SearchIndex and EmbeddingIndex never
       // learned the old id must go. The stale entry outlived reconcile() and
@@ -368,6 +388,7 @@ export class Vault {
 
   private handleRemove(filePath: string): void {
     this.fileStats.delete(filePath);
+    this.duplicateSkipLogged.delete(filePath);
     const id = this.filePathToId.get(filePath);
     if (!id) return;
     this.filePathToId.delete(filePath);
@@ -391,4 +412,12 @@ export class Vault {
       }
     }
   }
+}
+
+function duplicateIdSkipMessage(id: string, claimedBy: string): string {
+  return (
+    `duplicate id '${id}' — already claimed by ${claimedBy}. ` +
+    `Not indexed. Give one of the two files a different id (a cloud-sync ` +
+    `conflict copy is the usual cause).`
+  );
 }

@@ -11,6 +11,9 @@
  *     pre-edit content as current.
  *  3. two files carrying one id both pointed at the same map entry; removing
  *     the shadowed one deleted the winner while its file sat on disk.
+ *  4. reconcile() treated the quarantined path as new, overwrote the winner
+ *     in the map, and MiniSearch threw `duplicate ID` on the add — recall
+ *     and load_memory then disagreed about which body the id held.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -157,4 +160,44 @@ test("removing a shadowed duplicate does not delete the winner", async (t) => {
   assert.equal(vault.size(), 1, "the winner must survive its shadow being deleted");
   assert.equal(vault.get("dup-id")?.filePath, path.join(dir, "a-first.md"));
   assert.equal(search.recall("AAAWORD", { k: 5 })[0]?.id, "dup-id");
+});
+
+test("reconcile does not promote a quarantined duplicate into the index", async (t) => {
+  const { dir, vault, search } = await indexed(t, {
+    "a-first.md": memoryMd("dup-id", "AAAWORD"),
+    "z-second.md": memoryMd("dup-id", "ZZZWORD"),
+  });
+  assert.equal(vault.get("dup-id")?.filePath, path.join(dir, "a-first.md"));
+  assert.match(vault.get("dup-id")?.body ?? "", /AAAWORD/);
+
+  await vault.reconcile();
+
+  assert.equal(vault.size(), 1, "the shadow must stay out of the map");
+  assert.equal(
+    vault.get("dup-id")?.filePath,
+    path.join(dir, "a-first.md"),
+    "first path keeps the claim — load_memory must not start serving the copy",
+  );
+  assert.match(vault.get("dup-id")?.body ?? "", /AAAWORD/);
+  assert.equal(search.recall("AAAWORD", { k: 5 })[0]?.id, "dup-id");
+  assert.deepEqual(
+    search.recall("ZZZWORD", { k: 5 }).map((h) => h.id),
+    [],
+    "the copy's body must not enter BM25 either",
+  );
+});
+
+test("when the winner vanishes, reconcile lets the remaining duplicate claim the id", async (t) => {
+  const { dir, vault, search } = await indexed(t, {
+    "a-first.md": memoryMd("dup-id", "AAAWORD"),
+    "z-second.md": memoryMd("dup-id", "ZZZWORD"),
+  });
+
+  await unlink(path.join(dir, "a-first.md"));
+  await vault.reconcile();
+
+  assert.equal(vault.size(), 1, "the leftover copy becomes the memory");
+  assert.equal(vault.get("dup-id")?.filePath, path.join(dir, "z-second.md"));
+  assert.match(vault.get("dup-id")?.body ?? "", /ZZZWORD/);
+  assert.equal(search.recall("ZZZWORD", { k: 5 })[0]?.id, "dup-id");
 });

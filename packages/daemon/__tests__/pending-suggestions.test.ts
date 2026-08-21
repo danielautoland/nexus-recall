@@ -31,6 +31,14 @@ test("pending-suggestions (#48): write → consume-once round-trip, stale entrie
     // consume-once: die Datei ist weg, zweiter Aufruf liefert nichts.
     assert.deepEqual(await consumePendingSuggestions(), []);
 
+    // Same body written twice is one entry, not a stack the next session
+    // consumes five times. Refresh the timestamp so the row stays fresh.
+    await writePendingSuggestion("<save-eval>same</save-eval>");
+    await writePendingSuggestion("<save-eval>same</save-eval>");
+    const deduped = await consumePendingSuggestions();
+    assert.equal(deduped.length, 1);
+    assert.match(deduped[0].blocks, /same/);
+
     // Staleness: ein Eintrag älter als das Fenster wird verworfen.
     await writePendingSuggestion("<save-eval>old</save-eval>");
     const later = Date.now() + PENDING_MAX_AGE_MS + 60_000;
