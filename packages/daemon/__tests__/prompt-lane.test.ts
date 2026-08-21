@@ -448,6 +448,62 @@ test("integration — semantic reflex: a reflex-wired REQUIRED hit injects on a 
   }
 });
 
+test("integration — semantic reflex: a wired convention below the top-k cut arrives via reflex_hits (20.08. incident)", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-semref-pool-"));
+  const daemon = await startMockDaemon((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/reflex") {
+      res.end('{"hits":[],"recall_id":null}');
+      return;
+    }
+    if (req.url === "/hook/hinted") {
+      res.end('{"ok":true}');
+      return;
+    }
+    // 20.08.: the top-5 were five unrelated hits; the wired convention sat at
+    // pool rank 6 (score 61) and the lane never saw it. The route now ships
+    // reflex-wired pool members separately.
+    res.end(
+      JSON.stringify({
+        hits: Array.from({ length: 5 }, (_, i) => ({
+          id: `unrelated-${i}`, title: "T", type: "project-fact", scope: "p", summary: "s", score: 150 - i,
+        })),
+        reflex_hits: [
+          {
+            id: "nachrichtenkonvention",
+            title: "Nachrichtenkonvention",
+            type: "meta-working",
+            scope: "all-projects",
+            summary: "Erst die deutsche Fassung, Plain-Text, Ich-Form.",
+            score: 61,
+            recall_mode: "reflex",
+          },
+        ],
+        vault_size: 6,
+        latency_ms: 1,
+        recall_id: "x",
+      }),
+    );
+  });
+  try {
+    const payload = {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "semref-pool-session",
+      prompt: "antwortentwurf bitte. ich freue mich das komplett zu testen sobald ich die freie zeit finde",
+      cwd: process.cwd(),
+    };
+    const env = { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir };
+    const { stdout } = await runHook(payload, env);
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } };
+    const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
+    assert.match(ctx, /nachrichtenkonvention/, "the wired convention reaches the agent from below the cut");
+    assert.ok(!ctx.includes("unrelated-"), "the ordinary top-k stays out of mode-none injection");
+  } finally {
+    await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("integration — reflex hit fires without a retrieval signal (#217)", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "bastra-reflex-state-"));
   let recallCalled = false;

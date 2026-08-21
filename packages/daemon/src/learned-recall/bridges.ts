@@ -36,7 +36,8 @@ export interface Bridge {
   id: string;
   /** Language of the far query this bridge serves; selects which pool it lives in. */
   lang: SupportedLanguage;
-  /** Distinctive tokens of the far query — at least one must appear for the bridge to fire. */
+  /** Distinctive tokens of the far query — at least two must appear for the
+   *  bridge to fire (all of them for a one-term bridge), see MIN_TRIGGER_OVERLAP. */
   trigger_terms: string[];
   /** Vocabulary the bridge adds to a matching query to broaden recall. */
   expansion_terms: string[];
@@ -58,6 +59,26 @@ const GENERIC_TERMS = new Set([
   "eine", "einen", "einem", "einer", "dann", "noch", "auch", "sehr", "wenn",
   "wieder", "schon", "nicht", "machen", "soll", "sollte", "werden", "diese",
   "dieser", "dieses", "beim", "dass", "weil",
+  // 20.08.: Alltagswörter, die der In-band-Mint als Trigger geprägt hatte —
+  // „bitte" allein zog bei jedem höflichen Prompt zehn Fremdterme nach. Ein
+  // Trigger muss ein Thema benennen, nicht eine Satzform.
+  "bitte", "habe", "haben", "hast", "hatte", "kann", "kannst", "können", "muss",
+  "müssen", "will", "willst", "möchte", "gerne", "jetzt", "erstmal", "nochmal",
+  "einmal", "heute", "morgen", "gestern", "hier", "dort", "mehr", "alles",
+  "alle", "allem", "etwas", "nichts", "immer", "stand", "steht", "liegt",
+  "gibt", "kurz", "kurze", "neue", "neuen", "neues", "neuer", "fertig",
+  "aktuell", "aktuelle", "aktueller", "aktuellen", "geschrieben", "gemacht",
+  "schauen", "schau", "bauen", "baue", "prüfen", "prüfe", "nutzen", "nutze",
+  "danke", "hallo", "okay", "genau", "passt", "sonst", "oder", "aber", "doch",
+  "also", "dafür", "damit", "darauf", "davon", "dazu", "denn", "ohne", "über",
+  "unter", "nach", "dein", "deine", "deinen", "mein", "meine", "meinen",
+  "sind", "wird", "wurde", "waren", "gewesen", "worden",
+  "please", "just", "need", "needs", "want", "wants", "make", "makes", "like",
+  "more", "some", "then", "there", "here", "will", "been", "were", "they",
+  "them", "than", "only", "very", "really", "thing", "things", "something",
+  "going", "know", "think", "sure", "done", "right", "still", "again",
+  "today", "first", "next", "last", "take", "look", "check", "help", "each",
+  "every", "much", "many", "most", "such", "same",
 ]);
 
 /** Extract deduped distinctive terms from a free-text string. */
@@ -166,6 +187,25 @@ export function scrubBridge(b: Bridge): Bridge | null {
 
 const MAX_QUERY_EXPANSION = 12; // cap how much a single query can be widened
 
+/** 20.08.: one shared word is not a topic. A bridge fires when at least two of
+ *  its trigger terms appear in the query — a single term („bitte", „nutzen",
+ *  „konventionen") dragged up to 12 foreign terms into unrelated prompts and
+ *  pushed the memories the prompt was actually about out of the top-k. A
+ *  one-term bridge still fires on its one term: it was minted that specific. */
+const MIN_TRIGGER_OVERLAP = 2;
+const requiredOverlap = (b: Bridge): number => Math.min(MIN_TRIGGER_OVERLAP, b.trigger_terms.length);
+function triggerOverlap(b: Bridge, queryTerms: Set<string>): number {
+  let n = 0;
+  for (const t of b.trigger_terms) if (queryTerms.has(t)) n++;
+  return n;
+}
+
+/** 20.08.: a bridge needs two independent reaches before it may widen a query.
+ *  The first in-band mint wrote 116 evidence-1 bridges from single reaches;
+ *  one reach is an anecdote, not vocabulary. Applied at load (a cloned pool is
+ *  foreign input) and at write (the local mint keeps its dir clean). */
+export const MIN_BRIDGE_EVIDENCE = 2;
+
 // #162: the base query is capped BEFORE expansion terms are appended, so the
 // appended terms always survive core's downstream QUERY_MAX_CHARS (8000)
 // defense cap — otherwise a long base pushes the tail-appended expansions
@@ -199,6 +239,7 @@ export class BridgePool {
           try {
             const b = JSON.parse(readFileSync(join(base, lang, f), "utf8")) as Bridge;
             if (!isValidBridge(b) || b.lang !== lang) continue;
+            if (b.evidence < MIN_BRIDGE_EVIDENCE) continue;
             // Defense-in-depth: a cloned repo is foreign input. Cap term length so
             // no oversized token from a hostile bridge ever reaches the search query
             // (the contribution path scrubs; the load path must not trust more).
@@ -247,7 +288,7 @@ export class BridgePool {
     const added = new Set<string>();
     for (const b of bridges) {
       // bucket is pre-sorted by descending evidence at load time
-      if (!b.trigger_terms.some((t) => queryTerms.has(t))) continue;
+      if (triggerOverlap(b, queryTerms) < requiredOverlap(b)) continue;
       for (const e of b.expansion_terms) {
         if (!queryTerms.has(e)) added.add(e);
         if (added.size >= MAX_QUERY_EXPANSION) break;

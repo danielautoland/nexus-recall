@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import {
   BridgePool,
+  MIN_BRIDGE_EVIDENCE,
   bridgeId,
   distinctiveTerms,
   expandQuery,
@@ -40,7 +41,8 @@ async function withPool<T>(
 function bridge(partial: Partial<Bridge> & Pick<Bridge, "lang" | "trigger_terms" | "expansion_terms">): Bridge {
   return {
     id: partial.id ?? bridgeId(partial.lang, partial.trigger_terms, partial.expansion_terms),
-    evidence: partial.evidence ?? 1,
+    // 20.08.: the pool only loads confirmed bridges — fixtures default to the gate.
+    evidence: partial.evidence ?? MIN_BRIDGE_EVIDENCE,
     ...partial,
   };
 }
@@ -142,8 +144,8 @@ test("BridgePool.load partitions by language and only matching-language bridges 
     assert.equal(pool.size(), 2);
     assert.equal(pool.size("de"), 1);
     assert.equal(pool.size("en"), 1);
-    // German query → only the German bridge's expansion
-    const de = pool.expansionsFor("wie schließt das Panel", "de");
+    // German query → only the German bridge's expansion (both trigger terms present, 20.08.)
+    const de = pool.expansionsFor("wie schließt das Panel mit dem Sheet", "de");
     assert.ok(de.includes("resignkey"));
     assert.ok(!de.includes("dismiss"), "English expansion must not leak into a German query");
   });
@@ -247,4 +249,31 @@ test("configuredLang override forces a pool regardless of detection", async () =
     assert.equal(r.lang, "de");
     assert.ok(r.added.includes("resignkey"));
   });
+});
+
+test("BridgePool.load drops bridges below MIN_BRIDGE_EVIDENCE — one reach is an anecdote (20.08.)", async () => {
+  const anecdote = bridge({ lang: "de", trigger_terms: ["panel", "sheet"], expansion_terms: ["resignkey"], evidence: 1 });
+  const confirmed = bridge({ lang: "de", trigger_terms: ["fenster", "schließt"], expansion_terms: ["observer"], evidence: MIN_BRIDGE_EVIDENCE });
+  await withPool([anecdote, confirmed], async (pool) => {
+    assert.equal(pool.size("de"), 1, "the single-reach bridge never enters the pool");
+    assert.deepEqual(pool.expansionsFor("warum schließt das Fenster", "de"), ["observer"]);
+    assert.deepEqual(pool.expansionsFor("das Panel mit dem Sheet", "de"), []);
+  });
+});
+
+test("expansionsFor needs two shared trigger terms; a one-term bridge fires on its one term (20.08.)", async () => {
+  // The real 20.08. bridge shape: one everyday word („bitte", „issue") used to pull
+  // „agenten harness plan …" into every prompt that happened to contain it.
+  const wide = bridge({ lang: "de", trigger_terms: ["milestone", "committen", "issue"], expansion_terms: ["harness", "vollstrecker"] });
+  const narrow = bridge({ lang: "de", trigger_terms: ["lösungsschlüssel"], expansion_terms: ["holdout"] });
+  await withPool([wide, narrow], async (pool) => {
+    assert.deepEqual(pool.expansionsFor("antwortentwurf zum issue", "de"), [], "one shared word is not a topic");
+    assert.deepEqual(pool.expansionsFor("issue zum milestone committen", "de"), ["harness", "vollstrecker"]);
+    assert.deepEqual(pool.expansionsFor("wo liegt der lösungsschlüssel", "de"), ["holdout"], "a one-term bridge keeps firing");
+  });
+});
+
+test("distinctiveTerms drops everyday words so they can never become trigger terms (20.08.)", () => {
+  const terms = distinctiveTerms("antwortentwurf bitte, ich habe den aktuellen stand kurz geprüft");
+  assert.deepEqual(terms, ["antwortentwurf", "geprüft"]);
 });

@@ -29,7 +29,7 @@ import {
 } from "../settings.js";
 import { envFirst } from "../env.js";
 import { commonsPath, COMMONS_REPO_URL } from "./commons.js";
-import { BridgePool, distinctiveTerms } from "../learned-recall/bridges.js";
+import { BridgePool, distinctiveTerms, MIN_BRIDGE_EVIDENCE } from "../learned-recall/bridges.js";
 import { readEventLog, writeBridges, extractCandidatePools, harvestFarBridges } from "../learned-recall/harvest.js";
 import { runInBandMint, readLastMint } from "../learned-recall/mint-job.js";
 import { ollamaChat, DEFAULT_RERANK_MODEL, listOllamaModels, resolveRerankModel } from "../learned-recall/reranker.js";
@@ -181,7 +181,11 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat({ model }), {
         onProgress: (done, total) => process.stderr.write(`  judged ${done}/${total}\r`),
       });
-      const written = await writeBridges(bridgesPath(), result.bridges);
+      // 20.08.: same evidence gate as the in-band mint — one judged reach stays an anecdote.
+      const written = await writeBridges(
+        bridgesPath(),
+        result.bridges.filter((b) => b.evidence >= MIN_BRIDGE_EVIDENCE),
+      );
       process.stdout.write(
         `\n✓ judged ${result.judged} far case(s) → minted ${result.minted} bridge(s) — ${written} written to ${join(bridgesPath(), "bridges")}\n` +
           "  restart the daemon to load them\n",

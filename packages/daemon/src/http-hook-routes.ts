@@ -16,7 +16,7 @@ import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { envBool, envInt } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
-import { toLeanHit } from "./tool-handlers.js";
+import { toLeanHit, truncateSummary } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
@@ -172,6 +172,12 @@ export function handleHookRecall(
       // related_via befüllt ist (über RelatedEnricher). Default 1 — der
       // Caller kann explizit 0 schicken um es zu deaktivieren.
       const expand_hops = body.expand_hops === 0 ? 0 : 1;
+      // 20.08.: the caller may widen the dense arm's deadline. The 150ms
+      // default is sized for the 600ms hook budget; the MCP forwarder reuses
+      // this route with a waiting model behind it and was paying the hook's
+      // deadline for nothing — 15 of 19 MCP recalls on 20.08. came back
+      // BM25-only because a 3-query batch (#351) serialises on one Ollama.
+      const vectorDeadlineMs = clampInt(body.vector_deadline_ms, 50, 10_000, hookVectorDeadlineMs());
 
       const stageTimings: NonNullable<Parameters<Telemetry["logHookRecall"]>[0]["recall_stages"]> = {};
       // #342: why the hit list came back one-armed, if it did. Recorded rather
@@ -246,7 +252,7 @@ export function handleHookRecall(
             expand_hops,
             onStage,
             onCandidatePool: onQueryCandidatePool,
-            vector_deadline_ms: hookVectorDeadlineMs(),
+            vector_deadline_ms: vectorDeadlineMs,
           })
         : search.recall(expansion.query, {
             k,
@@ -287,7 +293,7 @@ export function handleHookRecall(
                 // runs the query recall above has either warmed the model (so
                 // this costs ~120ms) or is still loading it (so this expires
                 // too and degrades the same way). Both are the right outcome.
-                vector_deadline_ms: hookVectorDeadlineMs(),
+                vector_deadline_ms: vectorDeadlineMs,
               })
             : search.recall(contentQuery, {
                 k,
@@ -414,6 +420,28 @@ export function handleHookRecall(
       // and without the flag the formatters label pure noise as "Strong
       // matches" — the daemon computed the contradicting signal and simply did
       // not send it. Same computation as the MCP path, from the same module.
+      // 20.08.: reflex-wired memories (recall_mode "reflex") from the deeper
+      // candidate pool that the top-k cut left out. The prompt lane's semantic
+      // reflex filter only ever saw `hits`; on 20.08. the wired convention sat
+      // at pool rank 6 behind a k of 5 and never reached the agent. The pool is
+      // the user's explicit wiring — two memories — so scanning it is cheap,
+      // and the lane keeps every floor and dedup it already applies.
+      const hitIds = new Set(hits.map((h) => h.id));
+      const reflexHits = candidatePool.flatMap((c) => {
+        if (hitIds.has(c.id)) return [];
+        const mem = vault.get(c.id);
+        if (mem?.fm.recall_mode !== "reflex") return [];
+        return [{
+          id: c.id,
+          title: mem.fm.title,
+          type: mem.fm.type,
+          scope: mem.fm.scope,
+          summary: truncateSummary(mem.fm.summary),
+          score: c.score,
+          matched_recall_when: false,
+          recall_mode: "reflex" as const,
+        }];
+      });
       const payload = {
         // recall_mode rides along only when the user wired the memory as
         // reflex: the prompt lane's mode-"none" semantic filter keys on it
@@ -423,6 +451,7 @@ export function handleHookRecall(
           matched_recall_when: h.matched_recall_when ?? false,
           ...(vault.get(h.id)?.fm.recall_mode === "reflex" ? { recall_mode: "reflex" as const } : {}),
         })),
+        ...(reflexHits.length > 0 ? { reflex_hits: reflexHits } : {}),
         vault_size: vault.size(),
         latency_ms: totalLatencyMs,
         recall_id: recallId,

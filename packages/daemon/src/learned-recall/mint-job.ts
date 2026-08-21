@@ -16,7 +16,7 @@ import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Vault } from "@bastra-recall/core";
-import { distinctiveTerms } from "./bridges.js";
+import { distinctiveTerms, MIN_BRIDGE_EVIDENCE } from "./bridges.js";
 import { readEventLog, reconstructReaches, harvestBridges, writeBridges } from "./harvest.js";
 import { envFirst } from "../env.js";
 
@@ -66,7 +66,11 @@ export async function runInBandMint(opts: {
   let outcome: MintOutcome = { minted: 0, reaches: reaches.length, written: 0 };
   if (reaches.length > 0) {
     const result = harvestBridges(reaches, memoryTermsGetter(opts.vault));
-    const written = await writeBridges(opts.bridgesRoot, result.bridges);
+    // 20.08.: only confirmed bridges reach the disk (MIN_BRIDGE_EVIDENCE).
+    // `minted` keeps counting every candidate, so the gap between minted and
+    // written in last-mint.json is the number of single-reach anecdotes held back.
+    const confirmed = result.bridges.filter((b) => b.evidence >= MIN_BRIDGE_EVIDENCE);
+    const written = await writeBridges(opts.bridgesRoot, confirmed);
     outcome = { minted: result.minted, reaches: result.reaches, written };
   }
   const record: LastMintRecord = {

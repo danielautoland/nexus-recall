@@ -57,9 +57,13 @@ class SlowProvider implements EmbeddingProvider {
   }
 }
 
-function hookRecall(port: number, query: string): Promise<{ status: number; body: Record<string, unknown> }> {
+function hookRecall(
+  port: number,
+  query: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ status: number; body: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ query, k: 3, tool_name: "Write", session_id: "deadline-test" });
+    const payload = JSON.stringify({ query, k: 3, tool_name: "Write", session_id: "deadline-test", ...extra });
     const req = request(
       {
         hostname: "127.0.0.1",
@@ -173,4 +177,22 @@ test("#342: the deadline is read per call, so the kill switch needs no restart",
     undefined,
     "0 restores the pre-#342 wait without a daemon restart",
   );
+});
+
+test("20.08.: a caller's vector_deadline_ms widens the dense arm past the hook default", async (t) => {
+  const { port, provider } = await fixture(t);
+  provider.delayMs = 150;
+  process.env.BASTRA_VECTOR_DEADLINE_MS = "30";
+
+  const cut = await hookRecall(port, "ANCHORWORD");
+  assert.equal(cut.body.degraded, "vector-arm-timeout", "precondition: the hook default bites");
+
+  // The MCP forwarder's shape: a waiting model, not a 600ms hook budget.
+  const waited = await hookRecall(port, "ANCHORWORD", { vector_deadline_ms: 1500 });
+  assert.equal(waited.body.degraded, undefined, "the model-triggered recall gets the fused answer");
+  assert.equal(waited.body.unfused, undefined, "fusion ran; the bands mean what they say");
+
+  // Garbage in the body falls back to the env default — never disables the deadline.
+  const junk = await hookRecall(port, "ANCHORWORD", { vector_deadline_ms: "forever" });
+  assert.equal(junk.body.degraded, "vector-arm-timeout", "a non-number keeps the hook default");
 });

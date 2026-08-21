@@ -56,6 +56,7 @@ import { mergeBatchResults } from "./recall-batch.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import { DAEMON_VERSION } from "./version.js";
+import { envInt } from "./env.js";
 import {
   adoptTurn,
   defaultStatuslineState,
@@ -519,6 +520,9 @@ interface HookRecallDonePayload {
   recall_id: string;
 }
 
+/** Dense-arm deadline for model-triggered recalls (see body.vector_deadline_ms). */
+const MCP_VECTOR_DEADLINE_MS = envInt("BASTRA_MCP_VECTOR_DEADLINE_MS", 1500);
+
 async function callRecallStreaming(
   args: unknown,
   onStage: (s: RecallStage) => void | Promise<void>,
@@ -557,6 +561,10 @@ async function callRecallStreaming(
   // ausgelösten recall verdoppeln die Nachbarn nur den Context. Das Modell
   // kann expand_hops:1 explizit anfordern, wenn es Related-Memories will.
   body.expand_hops = typeof a.expand_hops === "number" ? a.expand_hops : 0;
+  // 20.08.: a model is waiting on this call, not a 600ms hook budget — give
+  // the dense arm room. At the hook default (150ms) a 3-query batch (#351)
+  // serialised on one Ollama and 15 of 19 MCP recalls came back BM25-only.
+  body.vector_deadline_ms = MCP_VECTOR_DEADLINE_MS;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

@@ -293,3 +293,38 @@ test("collectReflexHits: recall_when_expanded counts — inflection survives via
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("phraseMatchesContext: a user-authored phrase that collapses to one content token matches literally (20.08. incident)", () => {
+  const prompt = "antwortentwurf bitte. ich freue mich das komplett zu testen sobald ich die freie zeit finde#";
+  const tokens = tokenizeWithIdentifiers(prompt.toLowerCase());
+  const context = new Set(tokens);
+  const sequence = ` ${tokens.join(" ")} `;
+  // „bitte" is a stopword: the phrase used to collapse to one token and be dropped silently.
+  assert.equal(phraseMatchesContext("antwortentwurf bitte", context, sequence), true, "the literal phrase fires");
+  assert.equal(phraseMatchesContext("antwortentwurf bitte", context), false, "without a sequence the old rule holds");
+  assert.equal(phraseMatchesContext("antwortentwurf", context, sequence), false, "a bare single word stays a scatter trigger");
+  assert.equal(phraseMatchesContext("bitte antwortentwurf", context, sequence), false, "literal means literal — token order counts");
+  assert.equal(phraseMatchesContext("deployment", ctx("das deployment läuft"), " das deployment läuft "), false);
+});
+
+test("collectReflexHits: the literal-phrase fallback reaches the served list end to end (20.08.)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-reflex-literal-"));
+  const mem = join(dir, "memories");
+  await mkdir(mem, { recursive: true });
+  await writeFile(
+    join(mem, "konvention.md"),
+    memoryMarkdown("konvention", { recall_when: ["antwortentwurf bitte"], recall_mode: "reflex", salience: 0.9 }),
+  );
+  const vault = new Vault(dir);
+  await vault.init();
+  try {
+    const hit = collectReflexHits(vault, "antwortentwurf bitte. ich freue mich das komplett zu testen", 2);
+    assert.equal(hit.served.length, 1, "Daniel's literal prompt opener fires the wired convention");
+    assert.equal(hit.served[0].phrase, "antwortentwurf bitte");
+    const miss = collectReflexHits(vault, "der antwortentwurf liegt im ordner", 2);
+    assert.equal(miss.matched.length, 0, "the single content word alone does not fire");
+  } finally {
+    await vault.stop?.();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

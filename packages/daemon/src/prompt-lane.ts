@@ -91,6 +91,9 @@ export interface RecallHit {
 
 interface RecallResponse {
   hits: RecallHit[];
+  /** 20.08.: reflex-wired memories from the deeper candidate pool that the
+   *  top-k cut left out — same lean shape, filtered by the same floors. */
+  reflex_hits?: RecallHit[];
   vault_size: number;
   latency_ms: number;
   recall_id: string;
@@ -385,7 +388,10 @@ export async function runPromptLane(
 
   const filtered: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
-    for (const h of resp.hits) {
+    // Wired reflex memories ride along from below the top-k cut (20.08.: the
+    // convention sat at pool rank 6 behind k=5). They pass the same floor.
+    const candidates = [...resp.hits, ...(Array.isArray(resp.reflex_hits) ? resp.reflex_hits : [])];
+    for (const h of candidates) {
       if (h.score < effectiveFloor) continue;
       // Semantic reflex: in mode "none" only memories the USER wired as
       // reflex may inject — the semantic arm gives them hearing beyond

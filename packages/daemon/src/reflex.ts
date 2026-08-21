@@ -10,6 +10,8 @@
  * „Hart" heißt deterministisch, ohne Score: eine Phrase matcht, wenn alle
  * ihre Tokens (≥3 Zeichen, lowercase, tokenizeWithIdentifiers) im Kontext
  * vorkommen — mindestens 2 Tokens, oder genau 1 Identifier-Token exakt;
+ * eine mehrwortige Phrase, von der nur ein Inhaltstoken übrig bleibt
+ * („antwortentwurf bitte"), matcht wörtlich als Tokenfolge (20.08.);
  * „oder"/„or" teilt eine Phrase in Alternativen. Bewusst NICHT
  * matchedRecallWhen (MiniSearch: fuzzy/prefix). recall_when_expanded zählt
  * seit dem 19.08.-Vorfall MIT: deterministisch aus den autorisierten Phrasen
@@ -71,7 +73,11 @@ const IDENTIFIER_TOKEN_RE = /[-_./#+@:]|\d/;
  *  ALLE Inhaltstokens der Phrase (≥3 Zeichen, ohne Funktionswörter) müssen
  *  im Kontext vorkommen — mindestens 2 Tokens, oder genau 1 Identifier-Token
  *  exakt. Kein Prefix, kein Fuzzy. */
-export function phraseMatchesContext(phrase: string, contextTokens: Set<string>): boolean {
+export function phraseMatchesContext(
+  phrase: string,
+  contextTokens: Set<string>,
+  contextSequence?: string,
+): boolean {
   // Ein „oder"/„or" in der Phrase ist eine Alternativen-Liste, kein
   // Token-Paket: „Nachricht oder Antwort entwerfen" verlangte sonst BEIDE
   // Substantive im Prompt und feuerte nie (19.08.-Vorfall: die
@@ -80,14 +86,24 @@ export function phraseMatchesContext(phrase: string, contextTokens: Set<string>)
   // normalen Regeln.
   const alternatives = phrase.split(/\s+(?:oder|or)\s+/i);
   if (alternatives.length > 1) {
-    return alternatives.some((alt) => phraseMatchesContext(alt, contextTokens));
+    return alternatives.some((alt) => phraseMatchesContext(alt, contextTokens, contextSequence));
   }
   const tokens = tokenizeWithIdentifiers(phrase.toLowerCase());
   const meaningful = [
     ...new Set(tokens.filter((t) => t.length >= MIN_TOKEN_LEN && !PHRASE_STOPWORDS.has(t))),
   ];
   if (meaningful.length === 0) return false;
-  if (meaningful.length === 1 && !IDENTIFIER_TOKEN_RE.test(meaningful[0])) return false;
+  if (meaningful.length === 1 && !IDENTIFIER_TOKEN_RE.test(meaningful[0])) {
+    // 20.08.-Vorfall: „antwortentwurf bitte" — vom User wörtlich als Trigger
+    // eingetragen, „bitte" ist Funktionswort, übrig blieb EIN Inhaltstoken,
+    // und die Regel gegen Streutrigger („css") verwarf die Phrase still. Die
+    // Regel schützt vor einem losen Einzelwort, nicht vor einer Formulierung,
+    // die der User so aufgeschrieben hat: eine mehrwortige Phrase matcht dann
+    // wörtlich — als zusammenhängende Tokenfolge, Funktionswörter inklusive.
+    // Ohne Sequenz (Alt-Aufrufer) bleibt es beim Verwerfen.
+    if (tokens.length < 2 || contextSequence === undefined) return false;
+    return contextSequence.includes(` ${tokens.join(" ")} `);
+  }
   return meaningful.every((t) => contextTokens.has(t));
 }
 
@@ -109,7 +125,10 @@ export function collectReflexHits(
   context: string,
   budget: number,
 ): { pool: number; matched: ReflexMatch[]; served: ReflexMatch[] } {
-  const contextTokens = new Set(tokenizeWithIdentifiers(context.toLowerCase()));
+  const contextTokenList = tokenizeWithIdentifiers(context.toLowerCase());
+  const contextTokens = new Set(contextTokenList);
+  // Tokenfolge für den wörtlichen Phrasen-Match (siehe phraseMatchesContext).
+  const contextSequence = ` ${contextTokenList.join(" ")} `;
   const pool = vault.list().filter(
     (m) =>
       m.fm.recall_mode === "reflex" &&
@@ -128,7 +147,7 @@ export function collectReflexHits(
       ...(m.fm.recall_when ?? []),
       ...(Array.isArray(expanded) ? expanded : []),
     ].filter((p): p is string => typeof p === "string");
-    const hit = phrases.filter((p) => phraseMatchesContext(p, contextTokens));
+    const hit = phrases.filter((p) => phraseMatchesContext(p, contextTokens, contextSequence));
     if (hit.length > 0) matched.push({ memory: m, phrase: hit[0], matches: hit.length });
   }
   matched.sort(
