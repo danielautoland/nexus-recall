@@ -317,6 +317,14 @@ export class Vault {
       // copy becomes the memory.
       const claimed = this.memorys.get(m.fm.id);
       if (claimed && claimed.filePath !== filePath) {
+        // #355 follow-up: the skip fires before the A2.1 block below, so a
+        // file this vault knew under ANOTHER id — and whose id was just
+        // edited onto a claimed one — kept its old node in the map and in
+        // BM25 with the pre-edit body, while the file on disk no longer
+        // carried that id. Drop the file's old claim first (handleRemove
+        // already knows whether this path owns it and emits the remove);
+        // for a path that was never indexed this is a no-op.
+        this.handleRemove(filePath);
         if (!this.duplicateSkipLogged.has(filePath)) {
           this.duplicateSkipLogged.add(filePath);
           console.warn(

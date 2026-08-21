@@ -14,6 +14,9 @@
  *  4. reconcile() treated the quarantined path as new, overwrote the winner
  *     in the map, and MiniSearch threw `duplicate ID` on the add — recall
  *     and load_memory then disagreed about which body the id held.
+ *  5. an id edited onto an already-claimed id was skipped before the old
+ *     mapping was released, so the file's previous id lived on as a ghost
+ *     with the pre-edit body.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -200,4 +203,36 @@ test("when the winner vanishes, reconcile lets the remaining duplicate claim the
   assert.equal(vault.get("dup-id")?.filePath, path.join(dir, "z-second.md"));
   assert.match(vault.get("dup-id")?.body ?? "", /ZZZWORD/);
   assert.equal(search.recall("ZZZWORD", { k: 5 })[0]?.id, "dup-id");
+});
+
+test("an id edited onto a claimed id releases the file's old id instead of leaving a ghost", async (t) => {
+  const { dir, vault, search } = await indexed(t, {
+    "note.md": memoryMd("foo", "FOOWORD"),
+    "other.md": memoryMd("bar", "BARWORD"),
+  });
+  assert.equal(search.recall("FOOWORD", { k: 5 })[0]?.id, "foo");
+
+  // The edit turns note.md into a second claimant of `bar`. The skip is
+  // right — other.md keeps the claim — but `foo` must not survive it.
+  await writeFile(path.join(dir, "note.md"), memoryMd("bar", "FOOWORD"), "utf8");
+  await vault.reindexFile(path.join(dir, "note.md"));
+
+  assert.equal(vault.size(), 1);
+  assert.equal(vault.get("foo"), undefined, "the old id must not outlive the edit");
+  assert.deepEqual(
+    search.recall("FOOWORD", { k: 5 }).map((h) => h.id),
+    [],
+    "the pre-edit body must leave BM25 with the old id",
+  );
+  assert.equal(
+    vault.get("bar")?.filePath,
+    path.join(dir, "other.md"),
+    "the claim stays with the first path",
+  );
+
+  // Once the winner is gone, the edited file is a free claimant again.
+  await unlink(path.join(dir, "other.md"));
+  await vault.reconcile();
+  assert.equal(vault.get("bar")?.filePath, path.join(dir, "note.md"));
+  assert.equal(search.recall("FOOWORD", { k: 5 })[0]?.id, "bar");
 });
