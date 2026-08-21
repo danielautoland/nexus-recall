@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import { strict as assert } from "node:assert";
-import { unlink } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, unlink } from "node:fs/promises";
 import {
   invokesOwnBinary,
   readExitCode,
@@ -108,6 +108,8 @@ describe("bash-fail-hook: throttle", () => {
 // ─── #144: act-signal integration (mock daemon + spawned hook) ────────────
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 
 interface SeenRequest {
@@ -283,5 +285,57 @@ describe("bash-fail-hook: invokesOwnBinary (self-exclusion guard)", () => {
   it("does not match unrelated programs with similar prefixes", () => {
     assert.equal(invokesOwnBinary("bastra-recallish --help"), false);
     assert.equal(invokesOwnBinary("mybastra-recall run"), false);
+  });
+});
+
+/** #356: read every telemetry event a lane wrote into a throwaway log dir. */
+async function readTelemetryEvents(dir: string): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const f of (await readdir(dir)).filter((n) => n.startsWith("events-") && n.endsWith(".jsonl"))) {
+    for (const line of (await readFile(join(dir, f), "utf8")).split("\n")) {
+      if (line.trim()) out.push(JSON.parse(line) as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
+describe("bash-fail-hook: telemetry session (#356)", () => {
+  it("bash_fail_hook_call carries the payload session_id, not a synthetic one", async () => {
+    const daemon = await startRecordingDaemon();
+    const logDir = await mkdtemp(join(tmpdir(), "bastra-bashfail-telemetry-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashfail-state-"));
+    const applied: Record<string, string | undefined> = {};
+    const env: Record<string, string> = {
+      BASTRA_TELEMETRY: "on",
+      BASTRA_LOG_PATH: logDir,
+      BASTRA_HOOK_STATE_DIR: stateDir,
+    };
+    for (const [k, v] of Object.entries(env)) {
+      applied[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      await runBashFailLane(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          session_id: `bashfail-sess-356-${Date.now()}`,
+          tool_input: { command: "npm test" },
+          tool_response: { exit_code: 1 },
+        } as Parameters<typeof runBashFailLane>[0],
+        `http://127.0.0.1:${daemon.port}`,
+      );
+      const ev = (await readTelemetryEvents(logDir)).find((e) => e.kind === "bash_fail_hook_call");
+      assert.ok(ev, "a bash_fail_hook_call event must be written");
+      assert.match(String(ev.session_id), /^bashfail-sess-356-/);
+    } finally {
+      for (const [k, v] of Object.entries(applied)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      await daemon.close();
+      await rm(logDir, { recursive: true, force: true });
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

@@ -11,7 +11,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -699,6 +699,80 @@ test("integration — #161: retrieval lookup is NEVER suppressed, even in a hot 
     assert.match(parsed.hookSpecificOutput?.additionalContext ?? "", /lease-2024/);
   } finally {
     await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+/** #356: read every telemetry event a lane wrote into a throwaway log dir. */
+async function readTelemetryEvents(dir: string): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const f of (await readdir(dir)).filter((n) => n.startsWith("events-") && n.endsWith(".jsonl"))) {
+    for (const line of (await readFile(join(dir, f), "utf8")).split("\n")) {
+      if (line.trim()) out.push(JSON.parse(line) as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
+test("#356 — prompt_hook_call carries the payload session_id and the injected token estimate", async () => {
+  // Before the fix every event stamped a fresh randomUUID(), so 69 prompt
+  // calls on one day looked like 69 sessions and the context tax (#354)
+  // could not be summed per session. hint_tokens_est was missing entirely.
+  const daemon = await startMockDaemon((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/reflex") {
+      res.end('{"hits":[],"recall_id":null}');
+      return;
+    }
+    if (req.url === "/hook/recall") {
+      res.end(
+        JSON.stringify({
+          hits: [
+            {
+              id: "parkticket-2025",
+              title: "Strafzettel März 2025",
+              type: "project-fact",
+              scope: "personal",
+              summary: "Parkverstoß Berlin Mitte, 35€, bezahlt 2025-03-12.",
+              score: 142,
+            },
+          ],
+          vault_size: 100,
+          latency_ms: 12,
+          recall_id: "test-recall",
+        }),
+      );
+      return;
+    }
+    res.end("{}");
+  });
+  const logDir = await mkdtemp(join(tmpdir(), "bastra-prompt-telemetry-"));
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-prompt-state-"));
+  try {
+    const { stdout } = await runHook(
+      {
+        hook_event_name: "UserPromptSubmit",
+        prompt: "such mal meinen Strafzettel",
+        cwd: process.cwd(),
+        session_id: "prompt-sess-356",
+      },
+      {
+        BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+        BASTRA_HOOK_STATE_DIR: stateDir,
+        BASTRA_TELEMETRY: "on",
+        BASTRA_LOG_PATH: logDir,
+      },
+    );
+    assert.match(stdout, /parkticket-2025/, "the hint must have been injected");
+
+    const ev = (await readTelemetryEvents(logDir)).find((e) => e.kind === "prompt_hook_call");
+    assert.ok(ev, "a prompt_hook_call event must be written");
+    assert.equal(ev.session_id, "prompt-sess-356", "the event carries the payload's session, not a synthetic one");
+    assert.equal(typeof ev.hint_tokens_est, "number");
+    assert.ok((ev.hint_tokens_est as number) > 0, "injected block must be counted");
+  } finally {
+    await daemon.close();
+    await rm(logDir, { recursive: true, force: true });
     await rm(stateDir, { recursive: true, force: true });
   }
 });

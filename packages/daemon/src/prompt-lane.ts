@@ -307,12 +307,14 @@ export async function runPromptLane(
   // via status:"gated" + gated:true.
   if (isTrivialPrompt(prompt)) {
     await writeTelemetry({
+      session_id: payload.session_id ?? null,
       detected_mode: "none",
       gated: true,
       prompt_chars: prompt.length,
       daemon_url: selfBaseUrl,
       daemon_reachable: true,
       hint_count: 0,
+      hint_tokens_est: 0,
       top_score: null,
       latency_ms_total: Date.now() - startedAt,
       status: "gated",
@@ -501,12 +503,14 @@ export async function runPromptLane(
   }
 
   await writeTelemetry({
+    session_id: payload.session_id ?? null,
     detected_mode: detectedMode,
     prompt_chars: prompt.length,
     daemon_url: selfBaseUrl,
     daemon_reachable: resp !== null || reflexResp !== null,
     hint_count: suppressed ? 0 : recallHits.length,
     reflex_hint_count: reflexKept.length,
+    hint_tokens_est: blocks.length === 0 ? 0 : Math.ceil(blocks.join("\n").length / 4),
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     backoff_streak: backoffStreak,
@@ -664,6 +668,10 @@ function postJson<T>(
 // ─── telemetry ──────────────────────────────────────────────────────────────
 
 interface PromptHookTelemetry {
+  /** #356: the Claude Code session this call belongs to — the payload's
+   *  session_id, so per-session aggregation (context tax, #354) is possible.
+   *  A synthetic UUID is the fallback only when the payload carried none. */
+  session_id?: string | null;
   detected_mode: DetectedMode;
   /** #151: true when the trivial-prompt gate suppressed injection. */
   gated?: boolean;
@@ -673,6 +681,10 @@ interface PromptHookTelemetry {
   hint_count: number;
   /** #217: Reflex-Hits, die nach Session-Dedup injiziert wurden. */
   reflex_hint_count?: number;
+  /** #356: est. tokens of what was ACTUALLY injected (recall + reflex
+   *  blocks, ~4 chars/token) — the cost side of the context tax (#354).
+   *  0 when nothing reached stdout. */
+  hint_tokens_est?: number;
   top_score: number | null;
   latency_ms_total: number;
   /** #161: resolved streak of this event's backoff decision. NOT a
@@ -693,12 +705,15 @@ async function writeTelemetry(payload: PromptHookTelemetry): Promise<void> {
     const logDir = envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? defaultLogDir();
     await mkdir(logDir, { recursive: true });
     const ts = new Date().toISOString();
+    // The session_id from the Claude payload is real session state — fall
+    // back to a synthetic UUID only if no payload session was given (#356).
+    const { session_id: payloadSessionId, ...rest } = payload;
     const event = {
       kind: "prompt_hook_call",
       ts,
-      session_id: randomUUID(),
+      session_id: payloadSessionId ?? randomUUID(),
       hook_version: HOOK_VERSION,
-      ...payload,
+      ...rest,
     };
     const file = join(logDir, `events-${ts.slice(0, 10)}.jsonl`);
     await appendFile(file, JSON.stringify(event) + "\n", "utf8");

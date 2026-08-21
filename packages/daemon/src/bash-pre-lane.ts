@@ -181,6 +181,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
   });
 
   await writeTelemetry({
+    session_id: payload.session_id ?? null,
     matched_pattern: match.label,
     severity: match.severity,
     daemon_url: selfBaseUrl,
@@ -241,6 +242,10 @@ function formatHintBlock(
 }
 
 interface BashHookCallTelemetry {
+  /** #356: the Claude Code session this call belongs to — the payload's
+   *  session_id, so per-session aggregation (context tax, #354) is possible.
+   *  A synthetic UUID is the fallback only when the payload carried none. */
+  session_id?: string | null;
   matched_pattern: string;
   severity: "destructive" | "risky";
   daemon_url: string;
@@ -266,12 +271,15 @@ async function writeTelemetry(payload: BashHookCallTelemetry): Promise<void> {
     const logDir = envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? defaultLogDir();
     await mkdir(logDir, { recursive: true });
     const ts = new Date().toISOString();
+    // #356: the payload's session_id is real session state — synthetic UUID
+    // only when the payload carried none.
+    const { session_id: payloadSessionId, ...rest } = payload;
     const event = {
       kind: "bash_hook_call",
       ts,
-      session_id: randomUUID(),
+      session_id: payloadSessionId ?? randomUUID(),
       hook_version: HOOK_VERSION,
-      ...payload,
+      ...rest,
     };
     const file = join(logDir, `events-${ts.slice(0, 10)}.jsonl`);
     await appendFile(file, JSON.stringify(event) + "\n", "utf8");

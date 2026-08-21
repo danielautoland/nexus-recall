@@ -122,6 +122,7 @@ async function main(): Promise<void> {
 
   const totalMs = Date.now() - startedAt;
   await writeTelemetry({
+    session_id: payload.session_id ?? null,
     heuristic: suggestions.map((s) => s.heuristic).join(",") || null,
     suggested_count: suggestions.length,
     drift_clusters: drift.length,
@@ -589,6 +590,10 @@ function readStdin(): Promise<string> {
 }
 
 interface StopHookTelemetry {
+  /** #356: the Claude Code session this Stop belongs to — the payload's
+   *  session_id, so per-session aggregation is possible. A synthetic UUID
+   *  is the fallback only when the payload carried none. */
+  session_id?: string | null;
   heuristic: string | null;
   suggested_count: number;
   drift_clusters: number;
@@ -602,12 +607,15 @@ async function writeTelemetry(payload: StopHookTelemetry): Promise<void> {
     const logDir = envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? defaultLogDir();
     await mkdir(logDir, { recursive: true });
     const ts = new Date().toISOString();
+    // #356: the payload's session_id is real session state — synthetic UUID
+    // only when the payload carried none.
+    const { session_id: payloadSessionId, ...rest } = payload;
     const event = {
       kind: "save_eval_call",
       ts,
-      session_id: randomUUID(),
+      session_id: payloadSessionId ?? randomUUID(),
       hook_version: HOOK_VERSION,
-      ...payload,
+      ...rest,
     };
     const file = join(logDir, `events-${ts.slice(0, 10)}.jsonl`);
     await appendFile(file, JSON.stringify(event) + "\n", "utf8");

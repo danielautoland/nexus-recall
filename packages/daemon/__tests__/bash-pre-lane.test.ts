@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { matchPattern, formatHintBlock, runBashPreLane } from "../src/bash-pre-lane.js";
@@ -267,6 +267,71 @@ describe("bash-pre-hook: backoff exemption (#161)", () => {
       assert.match(ctx, /safety-1/);
     } finally {
       await daemon.close();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** #356: read every telemetry event a lane wrote into a throwaway log dir. */
+async function readTelemetryEvents(dir: string): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const f of (await readdir(dir)).filter((n) => n.startsWith("events-") && n.endsWith(".jsonl"))) {
+    for (const line of (await readFile(join(dir, f), "utf8")).split("\n")) {
+      if (line.trim()) out.push(JSON.parse(line) as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
+describe("bash-pre-hook: telemetry session (#356)", () => {
+  it("bash_hook_call carries the payload session_id, not a synthetic one", async () => {
+    const daemon = await startMockDaemon((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === "/hook/recall") {
+        res.end(
+          JSON.stringify({
+            hits: [
+              {
+                id: "safety-1",
+                title: "no rm -rf",
+                type: "user-preference",
+                scope: "all-projects",
+                summary: "Never rm -rf without explicit ok.",
+                score: 80,
+              },
+            ],
+            vault_size: 10,
+            latency_ms: 1,
+            recall_id: "t",
+          }),
+        );
+      } else {
+        res.end("{}");
+      }
+    });
+    const logDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-telemetry-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-state-"));
+    try {
+      await runHook(
+        {
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          session_id: "bashpre-sess-356",
+          tool_input: { command: "rm -rf /tmp/whatever" },
+        },
+        {
+          BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+          BASTRA_HOOK_STATE_DIR: stateDir,
+          BASTRA_TELEMETRY: "on",
+          BASTRA_LOG_PATH: logDir,
+        },
+      );
+      const ev = (await readTelemetryEvents(logDir)).find((e) => e.kind === "bash_hook_call");
+      assert.ok(ev, "a bash_hook_call event must be written");
+      assert.equal(ev.session_id, "bashpre-sess-356");
+    } finally {
+      await daemon.close();
+      await rm(logDir, { recursive: true, force: true });
       await rm(stateDir, { recursive: true, force: true });
     }
   });
