@@ -24,7 +24,14 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
-import { invokesOwnBinary } from "./bash-fail-lane.js";
+import { extractCommandHead, invokesOwnBinary } from "./bash-fail-lane.js";
+import {
+  bumpShown,
+  getLoadedMarkerMtime,
+  loadSessionState,
+  saveSessionState,
+  shouldDropHit,
+} from "./session-state.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const HOOK_VERSION = "0.2.0"; // 0.2.0 = daemon-side lane (#343)
@@ -95,7 +102,11 @@ const RISKY_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: "find ... -exec rm", re: /\bfind\b[^\n]*-exec\s+rm\b/ },
   // Overwrite redirect: `> file` (not `>>` append, not `2>` stderr, not `>&`).
   // Require a non-`>` char before `>` and at least one whitespace+filename after.
-  { label: "> overwrite redirect", re: /(?:^|[^>&0-9])>\s+[^\s>&]/ },
+  // `> overwrite redirect` was a pattern here until 22.08.2026. Measured over
+  // Jul–Aug: 90% of all tripwire calls, 1.1M injected tokens, the same three
+  // unrelated memories in 99% of the hints, 12 loads in two months (0.4%).
+  // A shell idiom, not a destructive act — it carried the noise, not the
+  // value. Destructive patterns above keep the STOP warning.
 ];
 
 function matchPattern(cmd: string): { label: string; severity: "destructive" | "risky" } | null {
@@ -135,6 +146,13 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
 
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
 
+  // The query is the command itself, not a label padded with filler words.
+  // `${label} safety workflow user-preference` matched generic meta-working
+  // memos via "workflow"/"user-preference" in every call (22.08.2026
+  // measurement) — the command head is what a stored rule would name.
+  const head = extractCommandHead(command);
+  const query = head.startsWith(match.label) ? head : `${match.label} ${head}`.trim();
+
   let resp: RecallResponse | null = null;
   let status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" = "ok";
   let errMsg: string | null = null;
@@ -144,7 +162,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
         selfBaseUrl,
         "/hook/recall",
         {
-          query: `${match.label} safety workflow user-preference`,
+          query,
           topics: ["bash", match.severity, "safety"],
           project: null,
           tool_name: "Bash",
@@ -176,9 +194,32 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
   }
   if (resp && hits.length === 0) status = "no-hits";
 
+  // Session dedup, same clock as the write lane (#106 MAX_SHOW inside the
+  // 4h window, a load_memory marker resets it): the same memory was hinted
+  // 2–9× per session before (22.08.2026 measurement). The backoff exemption
+  // (#161) stays — dedup drops repeated memory LINES, never the warning.
+  const sessionId = payload.session_id ?? "";
+  let droppedDedupCount = 0;
+  let emitted: RecallHit[] = hits;
+  if (sessionId && hits.length > 0) {
+    const state = await loadSessionState(sessionId);
+    const kept: RecallHit[] = [];
+    for (const h of hits) {
+      const loadedMtime = await getLoadedMarkerMtime(h.id);
+      if (shouldDropHit(state.shown[h.id], loadedMtime)) droppedDedupCount += 1;
+      else kept.push(h);
+    }
+    emitted = kept;
+    if (kept.length > 0) {
+      const now = Date.now();
+      for (const h of kept) bumpShown(state, h.id, now);
+      await saveSessionState(sessionId, state);
+    }
+  }
+
   // Emit hint even if no memories match — the warning itself is the point.
   // #161 CONSTRAINT (see top of file): the tripwire is exempt from backoff.
-  const block = formatHintBlock(match.label, match.severity, hits);
+  const block = formatHintBlock(match.label, match.severity, emitted);
   const stdout = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -192,11 +233,12 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
     severity: match.severity,
     daemon_url: selfBaseUrl,
     daemon_reachable: resp !== null,
-    hint_count: hits.length,
+    hint_count: emitted.length,
+    dropped_dedup_count: droppedDedupCount,
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     hint_tokens_est: Math.ceil(block.length / 4),
-    hinted_ids: hits.map((h) => h.id),
+    hinted_ids: emitted.map((h) => h.id),
     backoff_streak: 0,
     suppressed: false,
     suppressed_tokens_est: 0,
@@ -204,7 +246,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
     error: errMsg,
   });
   // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-  await reportHinted(selfBaseUrl, hits.map((h) => h.id));
+  await reportHinted(selfBaseUrl, emitted.map((h) => h.id));
 
   return stdout;
 }
@@ -257,6 +299,8 @@ interface BashHookCallTelemetry {
   daemon_url: string;
   daemon_reachable: boolean;
   hint_count: number;
+  /** Memory lines dropped by the session dedup (same clock as the write lane). */
+  dropped_dedup_count: number;
   top_score: number | null;
   latency_ms_total: number;
   /** Geschätzte Tokens des injizierten Tripwire-Blocks (#72). */

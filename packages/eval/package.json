@@ -18,7 +18,8 @@
     "check:types": "tsc --noEmit",
     "absence-honesty": "tsx src/absence-honesty.ts",
     "pool-depth": "tsx src/pool-depth.ts",
-    "rrf-k-beir": "tsx src/rrf-k-beir.ts"
+    "rrf-k-beir": "tsx src/rrf-k-beir.ts",
+    "tripwire-usage": "tsx src/tripwire-usage.ts"
   },
   "dependencies": {
     "@bastra-recall/core": "0.9.0",

@@ -71,20 +71,10 @@ describe("bash-pre-hook: matchPattern", () => {
     assert.equal(m!.severity, "risky");
   });
 
-  it("matches > overwrite redirect as risky", () => {
-    const m = matchPattern("echo hi > /etc/hosts");
-    assert.ok(m);
-    assert.equal(m!.severity, "risky");
+  it("does NOT match > overwrite redirect any more (dropped 22.08.2026 — 90% of all tripwire calls, 0.4% follow-through)", () => {
+    assert.equal(matchPattern("echo hi > out.txt"), null);
+    assert.equal(matchPattern("cat > /tmp/file.txt <<EOF"), null);
   });
-
-  it("does NOT match ls -la", () => {
-    assert.equal(matchPattern("ls -la"), null);
-  });
-
-  it("does NOT match git status", () => {
-    assert.equal(matchPattern("git status"), null);
-  });
-
   it("does NOT match >> append redirect", () => {
     assert.equal(matchPattern("echo hi >> log.txt"), null);
   });
@@ -370,14 +360,14 @@ describe("bash-pre-hook: self-exclusion guard is a basename check, not a substri
     const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-guard-"));
     try {
       for (const command of [
-        "echo x > /Users/x/Projekte/bastra-recall/scratch/out.txt",
-        "S=/tmp/claude-501/-Users-x-Projekte-bastra-recall/scratch; cat > $S/draft.txt",
+        "rm -rf /Users/x/Projekte/bastra-recall/scratch/out",
+        "S=/tmp/claude-501/-Users-x-Projekte-bastra-recall/scratch; rm -rf $S/tmp",
       ]) {
         const { stdout } = await runHook(
           { hook_event_name: "PreToolUse", tool_name: "Bash", session_id: "guard-sess", tool_input: { command } },
           { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir },
         );
-        assert.match(stdout, /overwrite redirect/, `must hint for: ${command}`);
+        assert.match(stdout, /STOP — destructive Bash command detected \(pattern: `rm -rf`\)/, `must hint for: ${command}`);
       }
     } finally {
       await daemon.close();
@@ -393,13 +383,75 @@ describe("bash-pre-hook: self-exclusion guard is a basename check, not a substri
           hook_event_name: "PreToolUse",
           tool_name: "Bash",
           session_id: "guard-sess",
-          tool_input: { command: "node_modules/.bin/bastra-recall-bash-pre-hook > /tmp/hook.log" },
+          tool_input: { command: "node_modules/.bin/bastra-recall-bash-pre-hook; rm -rf /tmp/x" },
         },
         { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
       );
       assert.equal(stdout.trim(), "{}");
     } finally {
       await daemon.close();
+    }
+  });
+});
+
+describe("bash-pre-hook: query is the command head, hints dedup per session (22.08.2026 measurement)", () => {
+  function recordingDaemon(hitId: string) {
+    const seen: Array<Record<string, unknown>> = [];
+    const p = startMockDaemon((req, res) => {
+      let raw = "";
+      req.on("data", (c: Buffer) => (raw += c.toString()));
+      req.on("end", () => {
+        if (req.url === "/hook/recall") seen.push(JSON.parse(raw) as Record<string, unknown>);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (req.url === "/hook/recall") {
+          res.end(
+            JSON.stringify({
+              hits: [
+                { id: hitId, title: "never rm -rf node_modules", type: "user-preference", scope: "all-projects", summary: "Ask first.", score: 120 },
+              ],
+              vault_size: 10,
+              latency_ms: 1,
+              recall_id: "t",
+            }),
+          );
+        } else {
+          res.end("{}");
+        }
+      });
+    });
+    return p.then((d) => ({ ...d, seen }));
+  }
+
+  it("recalls with the command head — no 'safety workflow user-preference' filler", async () => {
+    const daemon = await recordingDaemon("safety-2");
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-query-"));
+    try {
+      await runHook(
+        { hook_event_name: "PreToolUse", tool_name: "Bash", session_id: "query-sess", tool_input: { command: "rm -rf node_modules && npm install" } },
+        { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir },
+      );
+      assert.equal(daemon.seen.length, 1);
+      assert.equal(daemon.seen[0].query, "rm -rf node_modules");
+    } finally {
+      await daemon.close();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("the same memory is hinted once per session; the STOP warning survives the dedup", async () => {
+    const daemon = await recordingDaemon("safety-3");
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-dedup-"));
+    const env = { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir };
+    const payload = { hook_event_name: "PreToolUse", tool_name: "Bash", session_id: "dedup-sess", tool_input: { command: "rm -rf /tmp/scratch" } };
+    try {
+      const first = (await runHook(payload, env)).stdout;
+      assert.match(first, /safety-3/, "first emit carries the memory line");
+      const second = (await runHook(payload, env)).stdout;
+      assert.match(second, /STOP — destructive Bash command detected/, "the warning is never deduped");
+      assert.doesNotMatch(second, /safety-3/, "the memory line is deduped within the session window");
+    } finally {
+      await daemon.close();
+      await rm(stateDir, { recursive: true, force: true });
     }
   });
 });
