@@ -24,6 +24,7 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
+import { invokesOwnBinary } from "./bash-fail-lane.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const HOOK_VERSION = "0.2.0"; // 0.2.0 = daemon-side lane (#343)
@@ -121,8 +122,13 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
   const command = typeof toolInput.command === "string" ? toolInput.command : "";
   if (!command.trim()) return "{}";
 
-  // Defensive: never recurse on our own hook binaries.
-  if (/\bbastra-recall(?:-[a-z-]+)?\b/.test(command)) return "{}";
+  // Defensive: never recurse on our own hook binaries — checked on the
+  // basename of the invoked program (bash-fail-lane's guard), NOT as a
+  // substring. The substring form skipped every command that merely carried
+  // the repo name in a path (/Users/…/bastra-recall/…, the session
+  // scratchpad): 30 of 35 tripwire matches in one dogfood session went
+  // silently unhinted and unlogged.
+  if (invokesOwnBinary(command)) return "{}";
 
   const match = matchPattern(command);
   if (!match) return "{}";

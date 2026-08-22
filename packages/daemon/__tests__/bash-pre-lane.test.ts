@@ -336,3 +336,70 @@ describe("bash-pre-hook: telemetry session (#356)", () => {
     }
   });
 });
+
+describe("bash-pre-hook: self-exclusion guard is a basename check, not a substring", () => {
+  function hitDaemon() {
+    return startMockDaemon((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url === "/hook/recall") {
+        res.end(
+          JSON.stringify({
+            hits: [
+              {
+                id: "safety-1",
+                title: "no silent overwrite",
+                type: "user-preference",
+                scope: "all-projects",
+                summary: "Check the target before overwriting.",
+                score: 120,
+              },
+            ],
+            vault_size: 10,
+            latency_ms: 1,
+            recall_id: "t",
+          }),
+        );
+      } else {
+        res.end("{}");
+      }
+    });
+  }
+
+  it("a tripwire command that merely carries the repo name in a path still gets its hint", async () => {
+    const daemon = await hitDaemon();
+    const stateDir = await mkdtemp(join(tmpdir(), "bastra-bashpre-guard-"));
+    try {
+      for (const command of [
+        "echo x > /Users/x/Projekte/bastra-recall/scratch/out.txt",
+        "S=/tmp/claude-501/-Users-x-Projekte-bastra-recall/scratch; cat > $S/draft.txt",
+      ]) {
+        const { stdout } = await runHook(
+          { hook_event_name: "PreToolUse", tool_name: "Bash", session_id: "guard-sess", tool_input: { command } },
+          { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`, BASTRA_HOOK_STATE_DIR: stateDir },
+        );
+        assert.match(stdout, /overwrite redirect/, `must hint for: ${command}`);
+      }
+    } finally {
+      await daemon.close();
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("an actual invocation of our own binary stays silent", async () => {
+    const daemon = await hitDaemon();
+    try {
+      const { stdout } = await runHook(
+        {
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          session_id: "guard-sess",
+          tool_input: { command: "node_modules/.bin/bastra-recall-bash-pre-hook > /tmp/hook.log" },
+        },
+        { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
+      );
+      assert.equal(stdout.trim(), "{}");
+    } finally {
+      await daemon.close();
+    }
+  });
+});
