@@ -321,7 +321,9 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           const payload = (body.payload ?? {}) as ClaudeHookPayload;
           const ppid = typeof body.client_ppid === "number" ? body.client_ppid : null;
           const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
-          const out = await runPromptLane(payload, ppid, self);
+          // #361: the prewarmer rides in from toolDeps — the lane fires it at
+          // turn start and never awaits the embed behind it.
+          const out = await runPromptLane(payload, ppid, self, toolDeps.prewarmEmbedding);
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(out);
         })

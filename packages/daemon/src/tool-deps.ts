@@ -9,6 +9,7 @@ import type { Vault, SearchIndex } from "@bastra-recall/core";
 import type { Telemetry } from "./telemetry.js";
 import type { BridgePool } from "./learned-recall/bridges.js";
 import type { SupportedLanguage } from "./learned-recall/language.js";
+import type { Prewarmer } from "./embedding-prewarm.js";
 
 export interface ToolDeps {
   vault: Vault;
@@ -33,6 +34,10 @@ export interface ToolDeps {
    *  is silently served BM25-only (no embed attempt). Recall telemetry flags
    *  those events as embedding_degraded. Absent = no breaker (embeddings off). */
   embeddingDegraded?: () => boolean;
+  /** #361: fires the turn-start embedding prewarm and reports what it did.
+   *  Injected by index.ts where the provider lives; the prompt lane calls it
+   *  and never awaits the embed behind it. Absent = no embedding provider. */
+  prewarmEmbedding?: Prewarmer;
   /** #231 (language-first recall): the user's primary authoring language
    *  (settings `language.primary`), resolved once at daemon startup like
    *  `sharedRecallLang`. When set and ≠ "en", scoreSaveQuality advises when a

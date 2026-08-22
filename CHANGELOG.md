@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The embedding model is warmed at turn start — one small embed on
+  `UserPromptSubmit`, fire-and-forget, so the assertion lane never lands
+  cold** (#361). #305 is reopened for that lane: n=12, median 348 ms, p90
+  749 ms, 25 % timeouts (19.–21.08.), while the prompt lane holds the ceiling
+  at 191 ms median. The cold embedding model was the measured source of that
+  variance before the per-arm deadline landed (#342: cold ~860 ms → 341 ms),
+  and the deadline made a cold call *cheap*, not *good* — past 150 ms the
+  dense arm is dropped (`degraded: "vector-arm-timeout"`) and the hit list
+  comes back BM25-only. The lane arrives on time and says less.
+
+  A turn has a known start: `UserPromptSubmit` fires before any tool call, and
+  since #343 the daemon serves that lane itself, so it already sees every turn
+  start — the warm call needs no new client call, no new budget line and no
+  configuration. The lane never awaits it, never delays its response for it,
+  and a failure is swallowed; by the time the turn's first assertion call
+  fires seconds later, the model is resident. Not `keep_alive: -1`, which is
+  what #78 rejected: that pins ~600 MB across idle gaps, whereas this model is
+  only ever warm while a turn is actually running. A turn starting within 60 s
+  of the last warm skips it — under the keep_alive the daemon already sends
+  per embed (#78, default 10m) the model is certainly still resident, so the
+  call would be pure noise, and a burst of short turns costs one embed per
+  minute of work. It fires only when the dense arm is genuinely available,
+  asked exactly as the recall path asks it: embedding index attached, and the
+  #165 breaker not open (half-open passes — the warm call is a real embed and
+  may serve as the breaker's single probe). And only against a local provider:
+  the cold model this exists for is one whose residency the daemon governs via
+  its per-request `keep_alive`, which a hosted embedding API is not — warming
+  that one is one egress request per minute of active work for nothing.
+
+  `prompt_hook_call` now carries `prewarm`: `"fired"`, `"skipped-debounce"`,
+  `"skipped-hosted"` or `"skipped-no-provider"`. What decides the feature is the before/after on the
+  same host over a week from `bastra logs --stats` — assertion-lane median /
+  p90 / timeouts, and the count of `degraded: "vector-arm-timeout"` on the
+  FIRST assertion call of a turn, which the prewarm is supposed to drive to
+  zero. Whether the reopened 749 ms p90 is the cold model again or something
+  else is the first thing that measurement answers; the prewarm removes the
+  variable either way.
+
 - **The compiled hook client ships per platform — `bastra install claude-code`
   downloads it on demand, sha256-verified against a manifest inside the
   package** (#350). #344 compiled the thin hook client with deno so every

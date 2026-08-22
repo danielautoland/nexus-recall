@@ -168,6 +168,24 @@ sentence-length `recall_when` entries never fire; the stopword list that
 trims function words is German + English only. Authoring guidance:
 [docs/memory-schema.md](./memory-schema.md#recall-fields).
 
+**Embedding prewarm (#361):** `UserPromptSubmit` is the one moment a turn is
+known to start, and since #343 the daemon serves that lane itself. On every
+such request it kicks off ONE small embed against the configured embedding
+provider — fire-and-forget: the lane never awaits it, never delays its
+response for it, and a failure is swallowed. By the time the turn's first
+assertion call fires seconds later, the model is resident instead of paying
+the cold dense arm and losing it to the 150 ms vector deadline (#342,
+`degraded: "vector-arm-timeout"`). Deliberately not `keep_alive: -1`, which
+would pin the model across idle gaps — the objection #78 raised: the warm
+happens only at turn start, and a turn starting within 60 s of the last one
+skips it (the model is certainly still resident). Only fires when the dense
+arm is actually available: embeddings on, embedding index attached, and the
+#165 circuit breaker not open — and only against a LOCAL provider (Ollama),
+whose model residency the daemon's per-request `keep_alive` governs. A hosted
+embedding API keeps no model of ours warm, so warming it would be one egress
+request per minute of active work for nothing. No configuration, no extra
+client call.
+
 **Where the events land:** hook and daemon telemetry — `hook_reflex`,
 `prompt_hook_call`, the reach records the bridge layer mints from — are
 written to `BASTRA_LOG_PATH` (default `~/.bastra/logs/events-YYYY-MM-DD.jsonl`),
@@ -176,7 +194,7 @@ state (the audit log, usage sidecar, curator state); the event log sits
 outside the vault so it never syncs with it. Read it with `bastra logs`
 rather than by hand.
 
-Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, `hint_tokens_est`, …). Every lane event carries the Claude Code `session_id` from the hook payload, so injections can be summed per session across lanes (#356).
+Telemetry event: `prompt_hook_call` (`detected_mode`, `prompt_chars`, `hint_count`, `reflex_hint_count`, `hint_tokens_est`, …). Every lane event carries the Claude Code `session_id` from the hook payload, so injections can be summed per session across lanes (#356). `prewarm` records what the turn-start embedding prewarm did (#361): `"fired"`, `"skipped-debounce"` (a turn started inside the 60 s window), `"skipped-hosted"` (a hosted provider has no cold model to warm) or `"skipped-no-provider"` (embeddings off, or the #165 breaker open); the field is absent when the daemon wired no prewarmer at all.
 
 ### `bastra-recall-todo-hook` (#36)
 

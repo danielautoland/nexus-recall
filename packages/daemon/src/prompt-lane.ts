@@ -39,6 +39,7 @@ import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
+import type { Prewarmer, PrewarmOutcome } from "./embedding-prewarm.js";
 import {
   bumpShown,
   decideBackoff,
@@ -289,10 +290,23 @@ export async function runPromptLane(
   payload: ClaudeHookPayload,
   clientPpid: number | null,
   selfBaseUrl: string,
+  /** #361: turn-start embedding prewarm, injected by the route. Fire-and-
+   *  forget by contract — this lane never awaits it (see below). Absent =
+   *  no embedding provider wired at all. */
+  prewarm?: Prewarmer,
 ): Promise<string> {
   const startedAt = Date.now();
 
   if (payload.hook_event_name !== "UserPromptSubmit") return "{}";
+
+  // #361: the turn has started — warm the embedding model NOW, so the first
+  // assertion call of this turn (seconds from here, PreToolUse) finds it
+  // resident instead of paying the cold dense arm and losing it to the 150ms
+  // deadline (#342). Runs before the trivial gate on purpose: an "ok" or a
+  // slash command starts a turn full of tool calls just as much as a question
+  // does, and the debounce is what keeps the warm cheap, not the gate.
+  // Synchronous by construction — the call inside is never awaited here.
+  const prewarmOutcome: PrewarmOutcome | undefined = prewarm?.();
 
   // New user turn → reset statusline counters to idle. Needs the client's
   // process-tree position; without a resolvable ppid the reset is skipped
@@ -319,6 +333,7 @@ export async function runPromptLane(
       latency_ms_total: Date.now() - startedAt,
       status: "gated",
       error: null,
+      prewarm: prewarmOutcome,
     });
     return "{}";
   }
@@ -518,6 +533,7 @@ export async function runPromptLane(
     suppressed_tokens_est: suppressedTokensEst,
     status: suppressed ? "suppressed" : status,
     error: errMsg,
+    prewarm: prewarmOutcome,
   });
 
   return stdout;
@@ -697,6 +713,14 @@ interface PromptHookTelemetry {
   suppressed_tokens_est?: number;
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" | "gated" | "suppressed";
   error: string | null;
+  /** #361: what the turn-start embedding prewarm did — "fired",
+   *  "skipped-debounce" (a turn started inside the keep-alive window),
+   *  "skipped-hosted" (a hosted provider has no cold model to warm) or
+   *  "skipped-no-provider" (embeddings off, or breaker open). Absent when no
+   *  prewarmer was injected. Pairs with the recall event's `degraded:
+   *  "vector-arm-timeout"` (#342): the count of those on the FIRST assertion
+   *  call of a turn is what the prewarm is supposed to drive to zero. */
+  prewarm?: PrewarmOutcome;
 }
 
 async function writeTelemetry(payload: PromptHookTelemetry): Promise<void> {

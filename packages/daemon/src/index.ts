@@ -80,6 +80,7 @@ import { DAEMON_VERSION } from "./version.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
 import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
+import { createEmbeddingPrewarmer } from "./embedding-prewarm.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
 
@@ -236,8 +237,13 @@ async function main(): Promise<void> {
   // (BM25-only, kein Timeout pro Query gegen ein wedged Ollama); nach dem
   // Cooldown testet genau EIN Probe-Call, ob der Provider wieder lebt.
   const embeddingBreaker = rawProvider ? new EmbeddingBreaker() : null;
+  // #361: the breaker-guarded provider, hoisted so the turn-start prewarm can
+  // reach it. Null with embeddings off — the prewarm then reports
+  // "skipped-no-provider" instead of silently not existing.
+  let guardedProvider: EmbeddingProvider | null = null;
   if (rawProvider && embeddingBreaker) {
     const provider = new BreakerGuardedProvider(rawProvider, embeddingBreaker);
+    guardedProvider = provider;
     const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
     const embIdx = new EmbeddingIndex(vault, provider, persistPath);
     embIdxForHealth = embIdx;
@@ -344,6 +350,31 @@ async function main(): Promise<void> {
   // the save-time language-mismatch advisory. Absent = feature dormant.
   const primaryLanguage = await getPrimaryLanguage();
 
+  // #361: one small embed at each turn start, so the first assertion call of
+  // the turn meets a warm model instead of losing the dense arm to the 150ms
+  // deadline (#342). It goes through the BREAKER-GUARDED provider on purpose:
+  // the warm call is a real embed, so a failing one is real evidence the
+  // provider is down (it counts toward the breaker, and may serve as its single
+  // half-open probe) — the same boundary every other embed crosses. And
+  // availability is asked exactly as the recall path asks it: an attached
+  // embedding index, and a breaker that is not open (half-open passes).
+  const prewarmEmbedding = createEmbeddingPrewarmer({
+    // `ollama` is set exactly when the resolved provider is an Ollama one —
+    // the only case with a model that goes cold and that our per-request
+    // keep_alive (#78) governs. A hosted API keeps no model of ours resident,
+    // so warming it is one egress request per minute of work for nothing.
+    hostedProvider: () => rawProvider !== null && ollama === undefined,
+    denseArmAvailable: () => search.hasEmbeddings() && embeddingBreaker?.state(Date.now()) !== "open",
+    warm: async () => {
+      await guardedProvider?.embed(["warm"]);
+    },
+    onError: () => {
+      // Silent by design: the prewarm is an optimisation, and a provider that
+      // is genuinely down surfaces through the breaker and /health — not
+      // through one log line per turn.
+    },
+  });
+
   const toolDeps: ToolDeps = {
     vault,
     search,
@@ -359,6 +390,8 @@ async function main(): Promise<void> {
     embeddingDegraded: embeddingBreaker
       ? () => embeddingBreaker.state(Date.now()) === "open"
       : undefined,
+    // #361: the prompt lane fires this at turn start (fire-and-forget).
+    prewarmEmbedding,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
