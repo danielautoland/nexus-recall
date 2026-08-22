@@ -96,3 +96,10 @@ packages/daemon/webui/js/demo.js
 # under ~/.bastra/eval-runs/ instead.
 packages/daemon/scripts/stress-report.md
 packages/daemon/stub/bastra-hook
+# #350: cross-compiled outputs, an interrupted download, the per-target
+# checksums and the release manifest — written by the release workflow or the
+# installer, never by hand.
+packages/daemon/stub/bastra-hook-*
+packages/daemon/stub/bastra-hook.partial
+packages/daemon/stub/checksums/
+packages/daemon/stub/manifest.json

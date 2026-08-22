@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The compiled hook client ships per platform — `bastra install claude-code`
+  downloads it on demand, sha256-verified against a manifest inside the
+  package** (#350). #344 compiled the thin hook client with deno so every
+  hook call starts in ~15–25 ms instead of node's ~86–89 ms — but only on
+  hosts that ran `npm run build:stub`: a 168 MB binary does not fit npm. Two
+  thirds of those 168 MB turned out to be the workspace's `node_modules`,
+  which `deno compile` embeds whenever it finds a package.json next to the
+  entry point — the stub imports none of it, and `--no-npm` brings the binary
+  down to the deno runtime plus ~150 KB of our code (68 MB on arm64 macOS).
+  The release workflow now builds `bastra-hook-<target>` for darwin arm64/x64 and
+  linux x64/arm64 (the darwin pair on a macOS runner, where `codesign` proves
+  the ad-hoc signature deno applies), attaches them to the GitHub release
+  with `.sha256` files and a build-provenance attestation, and writes
+  `stub/manifest.json` into the daemon package from the same run — so the
+  installer verifies a download against the manifest it was installed with,
+  never against something fetched next to the binary. The install asks once
+  (`[Y/n]`), remembers the answer in `~/.bastra/hook-stub.json` so
+  `bastra update` neither asks again nor silently loses the client, and takes
+  `--stub` / `--no-stub` for scripts. Anything short of a verified binary —
+  no manifest, no asset for the host, an npx runtime, a checksum mismatch —
+  leaves the node client registered: the stub is acceleration, never a
+  requirement. No Windows asset: the stub spawns `sh`/`ps`, which the Windows
+  milestone owns. The deno flags moved from a package.json string into
+  `scripts/build-stub.mjs`, the one place the workflow and the local build
+  share — which is also where `--no-npm` now lives.
+
 - **`packages/eval/src/band-occupancy.ts` — what the hook's two constants
   select, measured at the call the hook makes** (#302). #302 measured the bands
   once, at `RRF_K = 60`; #335 changed the scale under them and the closing

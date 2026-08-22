@@ -34,6 +34,8 @@ Seven quiet hooks ship by default, all speaking to the daemon's loopback HTTP en
 
 The **`Stop`** save-eval hook is on by default: since the #48 redesign it is silent — suggestions go to a file the next session reads, with no chat noise. Opt out with `bastra install claude-code --no-stop-hook`. Telemetry (`scripts/stats.ts`) tracks per-hook latency, hint-quality, and follow-through (did the AI actually `load_memory` after a hint).
 
+The hook entry points can run as a **compiled client** (`bastra-hook`, built with `deno compile`, #344) instead of a `node` process, which takes the interpreter start out of every hook call. Plain npm installs get it on demand: `bastra install claude-code` asks once whether to download it (~70 MB, one GitHub Release asset per platform — macOS arm64/x64, Linux x64/arm64 — verified against the sha256 manifest shipped inside the package), `--stub` takes it without asking, `--no-stub` keeps the node client. The answer is remembered across updates. Without the binary every hook runs on the node client: same daemon lanes, just a slower start.
+
 More: [architecture.md](./architecture.md), [hooks.md](./hooks.md), [triggers.md](./triggers.md).
 
 ### Fully manual install — fallback
@@ -217,6 +219,8 @@ Sieben ruhige Hooks werden standardmäßig installiert, alle über den lokalen H
 - **`UserPromptSubmit`**, **`TodoWrite`**, **Bash-Safety** und **Bash-Failure** decken Lookup-Prompts, Topology-Recall vor Plänen, Safety bei riskanten Shell-Befehlen und Lesson-Recall bei fehlgeschlagenen Commands ab.
 
 Der **`Stop`** Save-Eval-Hook ist standardmäßig an: seit dem #48-Redesign ist er still — Vorschläge landen in einer Datei, die die nächste Session liest, ohne Chat-Rauschen. Abwählen mit `bastra install claude-code --no-stop-hook`. Die Telemetrie (`scripts/stats.ts`) misst pro Hook Latenz, Hint-Qualität und Follow-Through (hat die AI nach einem Hint wirklich `load_memory` gemacht).
+
+Die Hook-Einstiegspunkte können statt als `node`-Prozess als **kompilierter Client** laufen (`bastra-hook`, gebaut mit `deno compile`, #344) — das nimmt jedem Hook-Aufruf den Interpreter-Start. Normale npm-Installationen bekommen ihn auf Wunsch: `bastra install claude-code` fragt einmal, ob er geladen werden soll (~70 MB, ein GitHub-Release-Asset pro Plattform — macOS arm64/x64, Linux x64/arm64 — geprüft gegen das sha256-Manifest im Paket), `--stub` lädt ohne Nachfrage, `--no-stub` bleibt beim node-Client. Die Antwort wird über Updates hinweg gemerkt. Ohne die Binary laufen alle Hooks auf dem node-Client: dieselben Daemon-Lanes, nur ein langsamerer Start.
 
 Mehr: [architecture.md](./architecture.md), [hooks.md](./hooks.md), [triggers.md](./triggers.md).
 

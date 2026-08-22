@@ -68,6 +68,10 @@ export interface ParsedArgs {
   // `install claude-desktop --extension`: hand the .mcpb Desktop Extension
   // to Claude Desktop instead of writing the config-file registration.
   extension: boolean;
+  // `install --stub` → "yes" (download the compiled hook client without
+  // asking); `--no-stub` → "skip" (node client, remembered); null → ask once
+  // on a TTY and remember the answer (#350).
+  stub: "yes" | "skip" | null;
   // `import vault --exclude <dir>` (#220, repeatable): additional directory
   // names to skip anywhere in the source tree.
   exclude: string[];

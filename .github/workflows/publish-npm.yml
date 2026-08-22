@@ -25,8 +25,97 @@ permissions:
   id-token: write
 
 jobs:
+  stub:
+    # #350: the compiled hook client (#344), one binary per platform, attached
+    # to the release. The npm package never carries the binary — only
+    # stub/manifest.json with the sha256 of every asset, generated in `publish`
+    # from this job's checksums — and `bastra install claude-code` downloads
+    # the host's asset on demand and verifies it against that manifest.
+    # Two runners, two targets each: the darwin pair on macOS so `codesign`
+    # can prove the ad-hoc signature deno applies (without it the binary does
+    # not exec on Apple Silicon at all — measured in #350), the linux pair
+    # cross-compiled on ubuntu. No Windows asset: the stub spawns sh/ps, which
+    # the Windows milestone owns. Runs on dry-run dispatches too, so the build
+    # can be rehearsed without a release.
+    name: stub (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+            native: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            native: aarch64-apple-darwin
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.14"
+          cache: npm
+      - run: npm ci
+      # The stub embeds the statusline bundle (`bastra-hook statusline`, #347)
+      # through a static import — the workspace build has to come first.
+      - run: npm run build
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - name: Compile per target
+        working-directory: packages/daemon
+        run: |
+          for t in ${{ matrix.targets }}; do
+            node scripts/build-stub.mjs --target "$t"
+          done
+      - name: Checksums
+        working-directory: packages/daemon/stub
+        run: |
+          mkdir -p checksums
+          for t in ${{ matrix.targets }}; do
+            shasum -a 256 "bastra-hook-$t" | tee "checksums/bastra-hook-$t.sha256"
+          done
+      - name: Verify the macOS signature (ad-hoc, applied by deno compile)
+        if: runner.os == 'macOS'
+        working-directory: packages/daemon/stub
+        run: |
+          for t in ${{ matrix.targets }}; do
+            codesign --verify --verbose=2 "bastra-hook-$t"
+            codesign -dv "bastra-hook-$t" 2>&1 | grep -q 'Signature=adhoc'
+          done
+      - name: Smoke-run the native binary (an unknown lane must fail open with "{}")
+        working-directory: packages/daemon/stub
+        run: |
+          out=$(printf '' | "./bastra-hook-${{ matrix.native }}" nope)
+          test "$out" = "{}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stub-checksums-${{ matrix.os }}
+          path: packages/daemon/stub/checksums/*.sha256
+          if-no-files-found: error
+      - name: Attest build provenance
+        if: ${{ github.event_name == 'release' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: packages/daemon/stub/bastra-hook-*
+      - name: Attach to release
+        if: ${{ github.event_name == 'release' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        working-directory: packages/daemon/stub
+        run: gh release upload "$TAG" bastra-hook-* checksums/*.sha256 --clobber
+
   publish:
     runs-on: ubuntu-latest
+    # The manifest below needs every platform's checksum: a release whose
+    # fast path silently failed to build is the failure shape this project is
+    # named against, so a broken stub build blocks the publish.
+    needs: stub
     environment: npm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,6 +129,14 @@ jobs:
       - run: npm install -g npm@11.5.1
       - run: npm ci
       - run: npm run build
+      # #350: stub/manifest.json — the sha256 of every release asset the `stub`
+      # job built, shipped inside the daemon package (package.json `files`).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: stub-checksums-*
+          path: stub-checksums
+          merge-multiple: true
+      - run: node packages/daemon/scripts/stub-manifest.mjs stub-checksums --out packages/daemon/stub/manifest.json
       - run: npm run check:types
       - run: npm test
       - run: npm run test:update

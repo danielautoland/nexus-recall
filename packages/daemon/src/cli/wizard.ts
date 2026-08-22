@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { ADAPTERS } from "./registry.js";
+import { ensureHookStub } from "./stub-install.js";
 import {
   VERSION,
   resolveVault,
@@ -524,6 +525,33 @@ export async function runInstallWizard(args: ParsedArgs): Promise<number> {
   }
 
   const surfaces = chosen as string[];
+
+  // #350: the compiled hook client — asked here, before the spinner, because
+  // registration prefers the stub only when the binary is already on disk.
+  // A cancel at this question cancels the wizard like at every other one.
+  if (surfaces.includes("claude-code")) {
+    const CANCELLED = Symbol("cancelled");
+    try {
+      const stub = await ensureHookStub(
+        { dryRun: false, mode: "ask", interactive: true },
+        {
+          ask: async (question, o) => {
+            const a = await p.confirm({ message: question, initialValue: o.defaultYes ?? false });
+            if (bailed(a)) throw CANCELLED;
+            return a === true;
+          },
+          log: (line) => p.log.info(line.trim()),
+        },
+      );
+      if (stub.status === "failed") p.log.warn(`hook client: ${stub.detail}`);
+      else p.log.info(`hook client: ${stub.detail}`);
+    } catch (err) {
+      if (err !== CANCELLED) throw err;
+      p.cancel(CANCEL_MSG);
+      return 1;
+    }
+  }
+
   const results: { surface: string; r: InstallResult }[] = [];
   const s = p.spinner();
   s.start("Registering the memory tool…");

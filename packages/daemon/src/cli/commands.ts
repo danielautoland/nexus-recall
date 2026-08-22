@@ -19,6 +19,7 @@ import { FORWARDER_SCRIPT_PATH } from "./paths.js";
 import { findExecutable } from "./exec.js";
 import { runInstallWizard, shouldRunWizard } from "./wizard.js";
 import { cmdInstallExtension } from "./extension-install.js";
+import { ensureHookStub } from "./stub-install.js";
 import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import { showHelp } from "./help-text.js";
@@ -49,6 +50,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     ollama: null,
     origin: null,
     extension: false,
+    stub: null,
     exclude: [],
     follow: false,
     since: null,
@@ -95,6 +97,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       result.lines = a.slice("--lines=".length);
     }
     else if (a === "--extension") result.extension = true;
+    else if (a === "--stub") result.stub = "yes";
+    else if (a === "--no-stub") result.stub = "skip";
     else if (a === "--ollama") result.ollama = "auto";
     else if (a === "--no-ollama") result.ollama = "skip";
     else if (a === "--vault") {
@@ -219,6 +223,15 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
   });
   if (firstRun.exit !== null) return firstRun.exit;
   if (firstRun.vaultPath) opts.vaultPath = firstRun.vaultPath;
+
+  // #350: the compiled hook client for Claude Code. Runs before the adapters
+  // plan their hook entries, because registration prefers the stub only when
+  // the binary already exists on disk (buildHookEntry). Nothing here fails the
+  // install — the node client serves the same daemon lanes, just slower.
+  if (targets.some((a) => a.surface === "claude-code")) {
+    const stub = await ensureHookStub({ dryRun: args.dryRun, mode: args.stub ?? "ask", interactive: isInteractive() });
+    process.stdout.write(`${stub.status === "failed" ? "⚠" : "·"} hook client: ${stub.detail}\n\n`);
+  }
 
   let hadError = false;
   for (const adapter of targets) {

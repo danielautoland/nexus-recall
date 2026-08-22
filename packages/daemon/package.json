@@ -33,6 +33,7 @@
     "dist",
     "webui",
     "skill",
+    "stub/manifest.json",
     "README.md"
   ],
   "scripts": {
@@ -50,7 +51,7 @@
     "test:update": "tsx --test scripts/update-check.test.ts",
     "build:mcpb": "node scripts/build-mcpb.mjs",
     "build:mcpb:local": "node scripts/build-mcpb.mjs --local",
-    "build:stub": "deno compile --sloppy-imports --allow-net=127.0.0.1 --allow-env --allow-read --allow-write --allow-sys --allow-run=sh,/bin/sh,ps --output stub/bastra-hook stub/bastra-hook.ts"
+    "build:stub": "node scripts/build-stub.mjs"
   },
   "dependencies": {
     "@bastra-recall/core": "0.9.0",
