@@ -170,3 +170,42 @@ test("a sequential overwrite is atomic and leaves no commit artifacts behind", a
   );
   assert.deepEqual(leftovers, [], "no temp or commit-lock files may survive");
 });
+
+/**
+ * The same guarantee, but for the dates as they are actually written on disk.
+ *
+ * `matter.stringify` quotes what it emits, so every case above seeds
+ * `created: "2020-01-01"`. Obsidian Properties and a hand edit write the bare
+ * form, and YAML 1.1 hands a bare `2020-01-01` back as a JS `Date` — which the
+ * carry-over's string check rejects. The refresh then stamped `created` to
+ * today and dropped `valid_until` / `last_reviewed_at` entirely: the loss the
+ * roundtrip above exists to prevent, reachable through the vault's own editor.
+ */
+test("bare YAML dates survive a refresh the same way quoted ones do", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-save-roundtrip-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = await seed(dir);
+
+  // Rewrite the three date fields unquoted — byte-for-byte what Obsidian leaves.
+  const seeded = await readFile(file, "utf8");
+  await writeFile(
+    file,
+    seeded
+      .replace(/^created: .*$/m, "created: 2020-01-01")
+      .replace(/^valid_until: .*$/m, "valid_until: 2030-01-01")
+      .replace(/^last_reviewed_at: .*$/m, "last_reviewed_at: 2024-06-01"),
+    "utf8",
+  );
+  assert.ok(
+    matter(await readFile(file, "utf8")).data.created instanceof Date,
+    "precondition: the bare date must reach the save as a Date, or this proves nothing",
+  );
+
+  await saveMemory(dir, minimalRefresh());
+  const fm = matter(await readFile(file, "utf8")).data;
+
+  assert.equal(fm.created, "2020-01-01", "created must survive a bare-date refresh");
+  assert.equal(fm.valid_until, "2030-01-01", "valid_until must not be dropped");
+  assert.equal(fm.last_reviewed_at, "2024-06-01", "last_reviewed_at must not be dropped");
+  assert.notEqual(fm.updated, "2020-01-01", "updated must still advance");
+});
