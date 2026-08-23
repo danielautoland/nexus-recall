@@ -565,6 +565,19 @@ export async function saveMemory(
       // captured above; the commit comparison still protects that preimage.
     }
   }
+  // YAML 1.1 hands a bare `created: 2026-05-01` back as a JS `Date`, and the
+  // bare form is exactly what Obsidian Properties and a hand edit write. The
+  // carry-over below tests for a string, so a Date failed every check: the
+  // refresh restamped `created` to today and dropped `valid_until` /
+  // `last_reviewed_at` from the file — the #240/A6 loss, reachable through the
+  // vault's own editor. `schema.ts` already coerces on the read path; the write
+  // path has to do the same before the type checks see the value.
+  for (const key of ["created", "updated", "valid_until", "last_reviewed_at"]) {
+    const value = prev[key];
+    if (value instanceof Date && Number.isFinite(value.getTime())) {
+      prev[key] = value.toISOString().slice(0, 10);
+    }
+  }
   /** Übernimmt den Bestandswert nur, wenn er den erwarteten Typ hat. */
   const kept = <T>(value: unknown, ok: (v: unknown) => boolean): T | undefined =>
     ok(value) ? (value as T) : undefined;
