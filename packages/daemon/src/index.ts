@@ -422,7 +422,13 @@ async function main(): Promise<void> {
           // Such-Copilot (#207): gleiche lokale Gen-Model-Auflösung wie
           // doc2query; ohne Ollama bleibt /ui/chat aus (503).
           uiChat: ollama
-            ? ollamaChat({ baseURL: ollama.baseURL, model: await resolveGenerationModel(), timeoutMs: 45_000 })
+            // 8192 statt des 4096-Defaults (#366): die Lane feuert zwei
+            // getrennte Calls. buildQueryPrompt nimmt history.slice(-4) ×
+            // MAX_MESSAGE 2000 Zeichen + die Frage (webui-chat.ts:34,42) ≈ 10k
+            // Zeichen ≈ 3k Tokens; buildAnswerPrompt läuft ohne History, dafür
+            // mit HITS_TOTAL 8 × 600 Zeichen Body (:38,69) ≈ 1,5k Tokens. Der
+            // Query-Prompt passt knapp in 4096 — 8192 ist der Headroom.
+            ? ollamaChat({ baseURL: ollama.baseURL, model: await resolveGenerationModel(), timeoutMs: 45_000, numCtx: 8192 })
             : null,
           curator: { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
         });

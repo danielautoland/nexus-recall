@@ -104,6 +104,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   it is the replication, why an absent query set is mandatory and has to be
   written per corpus, and why the harness prints two medians instead of one.
 
+### Fixed
+
+- **Every generation call now names its own context window, and asks the model
+  not to think** (#366, #367). `ollamaChat` is the only live chat client in the
+  repo — the doc2query expander, the `/ui/chat` copilot, the far-bridge harvest
+  and the expander compare tool all share it — and it sent neither
+  `options.num_ctx` nor `think`. Without `num_ctx` the server default applies,
+  and on the machine this was measured on that default is
+  `OLLAMA_CONTEXT_LENGTH=262144` — above every installed model's maximum, so
+  each one loads at its own ceiling: 262144 for `qwen3:4b`, a 36 GB KV cache on
+  a 24 GB machine, 21.5 GB of it on the CPU side, 56.87 s to load — longer than
+  the client's own timeout, which is why #143 recorded two models as failures
+  that were never actually measured on expansion quality.
+
+  Calls now send 4096 (the recipe `qwen3-recall`'s Modelfile already pinned —
+  the one model that escaped the env, and only for that reason), overridable per
+  call and via `BASTRA_OLLAMA_NUM_CTX`. Two lanes ask for more, each because its
+  prompt is measurably bigger: the copilot (`buildQueryPrompt` carries the last
+  4 messages at 2000 chars each ≈ 3k tokens) and the far-bridge harvest, whose
+  rerank prompt is the largest in the repo — the candidate pool is
+  `max(k*4, 20)` entries, uncapped downstream, at 200 chars each ≈ up to 5.4k
+  tokens. That one was the sharper risk: over the limit Ollama truncates from
+  the front, taking the query and the top candidates with it, and the harvest
+  would have minted bridges from a silently shortened list.
+  `packages/eval/src/persona-gen.ts` sends its own `num_ctx` on the same
+  grounds. The request body is the right place for all of this rather than the
+  server env: `options.num_ctx` overrides both that env and a Modelfile
+  `PARAMETER`, while the env is a system-wide default governing every other
+  Ollama use on the machine.
+
+  `think: false` is the other half. A thinking model puts its entire reply into
+  `message.thinking` and returns an empty `content` — `gemma4:12b` did exactly
+  that on 8 of 8 sampled memories, `done_reason: "length"`, no error anywhere.
+  Verified against the local Ollama that non-thinking models accept the field
+  without complaint, so it is sent unconditionally rather than probed.
+
+- **A failed expansion is no longer stamped into the vault as a finished one**
+  (#367). `TriggerExpander.expand` wrote `recall_when_expanded` and the
+  `recall_when_expanded_src` hash whenever it got that far, including when the
+  model had returned nothing at all. The stamp is what made it unrecoverable:
+  both `expand()` and `backfill()` skip a memory whose source hash matches, so
+  an empty expansion written against an unchanged source is never regenerated —
+  not by a restart, not by a reindex, not by a sweep, only by an author editing
+  the memory. Pointed at a thinking model, the two paths that legitimately
+  regenerate (every save from then on, and a deliberate
+  `strip-trigger-expand.ts` re-expand) would have replaced the vault's ~4300
+  phrases with empty arrays and frozen them there, silently.
+
+  An empty *reply* is now treated as the failure it is: nothing written, nothing
+  stamped, a log line naming the memory, and the next sweep retries it. The test
+  is the raw reply, not the parse result — text that parses to nothing (the
+  model echoed the existing triggers, or wrote only over-long lines) is a real
+  answer for that source and still gets its stamp, because generation here is
+  deterministic and retrying it would regenerate the identical nothing on every
+  sweep. The self-test case is likewise untouched: when the model answered but
+  no phrase survived filtering, the empty result and its stamp still persist,
+  which is what keeps the reindex→embed→expand loop broken.
+
+  A backfill sweep now also stops after five consecutive failed generations
+  instead of discovering a broken model one call at a time — it runs on every
+  daemon start, and a vault this size is hours of them. And the two swallowed
+  errors on that path now log: an Ollama that rejects the request outright (an
+  older server refusing `think`, a model no longer pulled) took doc2query out of
+  service without a single line anywhere, which is quieter than the bug above.
+
 ## [0.9.0] — 2026-08-02
 
 **Honest numbers, nothing silently lost.** The milestone this release closes is

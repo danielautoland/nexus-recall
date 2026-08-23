@@ -178,7 +178,15 @@ export async function cmdBridges(opts: { sub: string | null; positional?: string
       }
       const model = choice.model;
       process.stdout.write(`harvesting far slice with local reranker (${model}) over ${pools.length} pools…\n`);
-      const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat({ model }), {
+      // 8192 statt des 4096-Defaults (#366): der Rerank-Prompt ist der größte
+      // im Repo. Der geloggte candidate_pool ist `Math.max(k*4, 20)` groß
+      // (core/src/search.ts:310), k geht bis 20 (recall-handler.ts:33) → bis zu
+      // 80 Kandidaten, und harvest.ts cappt nicht. buildRerankPrompt schneidet
+      // jeden auf 200 Zeichen (reranker.ts:144) ⇒ bis ~16k Zeichen ≈ 4–5,4k
+      // Tokens. In 4096 schneidet Ollama vorn ab — also Query und Top-
+      // Kandidaten — und `parseRerankAnswer(answer, 80)` mintet die Bridge
+      // stillschweigend aus der beschnittenen Liste.
+      const result = await harvestFarBridges(pools, getMemoryInfo, ollamaChat({ model, numCtx: 8192 }), {
         onProgress: (done, total) => process.stderr.write(`  judged ${done}/${total}\r`),
       });
       // 20.08.: same evidence gate as the in-band mint — one judged reach stays an anecdote.
