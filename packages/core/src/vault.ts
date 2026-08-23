@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, basename, extname } from "node:path";
+import { join, basename, extname, relative } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import matter from "gray-matter";
 import { type Memory, parseMemoryWith, NotAMemoryFile } from "./schema.js";
@@ -129,9 +129,22 @@ export class Vault {
       awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
       usePolling: isCloudMount,
       interval: isCloudMount ? 1500 : undefined,
-      ignored: (path: string) => {
-        // Skip dotfolders (.obsidian, .git, .trash, …) and node_modules
-        const segments = path.split(/[/\\]/);
+      ignored: (p: string) => {
+        // Skip dotfolders (.obsidian, .git, .trash, …) and node_modules —
+        // but only ones the vault actually contains. #365: this used to split
+        // the ABSOLUTE path, so a vault under ~/.local/share/bastra/vault or
+        // ~/.bastra/vault matched on a PARENT segment it does not own and
+        // chokidar ignored the whole tree: no events, no error, forever.
+        // `init()` still looked healthy (walkDir starts inside the root and
+        // never sees the parent), which is what made it silent.
+        const rel = relative(this.root, p);
+        // "" is the root itself; a leading ".." SEGMENT means outside the root
+        // (a symlinked or realpath'd hand-back) — neither is ours to filter.
+        // The segment boundary is the whole point: `..sync/hidden.md` is a
+        // dot-CHILD of the vault, not an escape from it, and a bare
+        // `startsWith("..")` would wave it past the dot filter below.
+        if (rel === "" || /^\.\.([/\\]|$)/.test(rel)) return false;
+        const segments = rel.split(/[/\\]/);
         return segments.some(
           (s) => (s.startsWith(".") && s.length > 1) || s === "node_modules",
         );
