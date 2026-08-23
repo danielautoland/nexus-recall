@@ -559,7 +559,13 @@ export async function saveMemory(
   let prev: Record<string, unknown> = {};
   if (exists) {
     try {
-      prev = (matter(observedTarget).data as Record<string, unknown> | undefined) ?? {};
+      // Copy, don't alias: gray-matter caches matter(content) by string, so the
+      // object handed back here is shared with every other parse of identical
+      // content. The Date coercion below writes into `prev` — without this copy
+      // it would poison that cache entry and hand a later parser a string where
+      // the file says Date. Same reasoning as related-enrich.ts:230 and
+      // trigger-expand.ts:322.
+      prev = { ...((matter(observedTarget).data as Record<string, unknown> | undefined) ?? {}) };
     } catch {
       // Corrupt frontmatter is replaced only after the raw file itself was
       // captured above; the commit comparison still protects that preimage.
@@ -572,7 +578,9 @@ export async function saveMemory(
   // `last_reviewed_at` from the file — the #240/A6 loss, reachable through the
   // vault's own editor. `schema.ts` already coerces on the read path; the write
   // path has to do the same before the type checks see the value.
-  for (const key of ["created", "updated", "valid_until", "last_reviewed_at"]) {
+  // `updated` fehlt hier bewusst: es wird nie aus `prev` gelesen, `updated: today`
+  // stempelt es bei jedem Schreibvorgang neu.
+  for (const key of ["created", "valid_until", "last_reviewed_at"]) {
     const value = prev[key];
     if (value instanceof Date && Number.isFinite(value.getTime())) {
       prev[key] = value.toISOString().slice(0, 10);
@@ -684,12 +692,24 @@ export async function saveMemory(
   // Bookmark-specific fields, only set when type === "bookmark" so memory
   // files don't get bookmark-shaped frontmatter pollution.
   if (input.type === "bookmark") {
-    if (input.url) fm.url = input.url;
-    if (input.categories) fm.categories = input.categories;
-    if (input.read_status) fm.read_status = input.read_status;
-    if (input.og_image) fm.og_image = input.og_image;
-    if (input.source_app) fm.source_app = input.source_app;
-    fm.saved_at = input.saved_at ?? new Date().toISOString();
+    // #240/A6 gilt auch hier: diese Felder wurden ausschließlich aus dem Input
+    // gesetzt, ohne Blick auf den Bestand — ein Refresh, der nur `summary` oder
+    // `read_status` schickt, warf url/og_image/categories/source_app aus dem
+    // File. Dieselbe Patch-Semantik wie oben: Input gewinnt, sonst Bestand,
+    // sonst bleibt das Feld weg.
+    Object.assign(
+      fm,
+      optional("url", input.url, isStr),
+      optional("categories", input.categories, isArr),
+      optional("read_status", input.read_status, isStr),
+      optional("og_image", input.og_image, isStr),
+      optional("source_app", input.source_app, isStr),
+    );
+    // #240/A6 auch hier: `saved_at` ist die Erfassungszeit des Bookmarks (das
+    // Bookmark-Pendant zu `created`), nicht die letzte Schreibzeit — niemand im
+    // Stack leitet daraus Staleness ab. Ohne Carry-over restampte jedes
+    // Overwrite den Importzeitpunkt des Bookmarks auf jetzt.
+    fm.saved_at = input.saved_at ?? kept<string>(prev.saved_at, isStr) ?? new Date().toISOString();
   }
 
   const body = input.body.startsWith("\n") ? input.body : `\n${input.body}`;

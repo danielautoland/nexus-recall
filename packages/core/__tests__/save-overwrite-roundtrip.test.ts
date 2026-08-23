@@ -209,3 +209,102 @@ test("bare YAML dates survive a refresh the same way quoted ones do", async (t) 
   assert.equal(fm.last_reviewed_at, "2024-06-01", "last_reviewed_at must not be dropped");
   assert.notEqual(fm.updated, "2020-01-01", "updated must still advance");
 });
+
+/**
+ * The coercion that makes the test above pass writes into the object
+ * `matter()` handed back — and gray-matter caches that object per input string
+ * (`matter.cache[file.content]`, and the shallow `Object.assign({}, cached)`
+ * copy shares `.data`). Mutating it in place would poison the cache entry:
+ * every later parse of byte-identical content — a concurrent RelatedEnricher
+ * or trigger-expand read, a second save of the same file — would see a string
+ * where the file says `Date`. related-enrich.ts:230 and trigger-expand.ts:322
+ * carry the same warning; the save path is the third writer that has to copy.
+ */
+test("the save does not mutate gray-matter's cached parse of the file", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-save-roundtrip-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = await seed(dir);
+
+  const seeded = await readFile(file, "utf8");
+  await writeFile(file, seeded.replace(/^created: .*$/m, "created: 2020-01-01"), "utf8");
+
+  // Prime the cache exactly the way another reader would, and keep the very
+  // object the save is about to be handed for the identical string.
+  const raw = await readFile(file, "utf8");
+  const cached = matter(raw).data;
+  assert.ok(cached.created instanceof Date, "precondition: cached parse holds a Date");
+
+  await saveMemory(dir, minimalRefresh());
+
+  assert.ok(
+    cached.created instanceof Date,
+    "the cached parse must still hold a Date — the save coerced it in place",
+  );
+  assert.equal(matter(raw).data.created instanceof Date, true, "and a re-parse agrees");
+});
+
+/**
+ * #240/A6 for the bookmark half: `saved_at` is when the bookmark was captured
+ * (its `created`), not when the file was last written. A refresh that only
+ * updates the summary sent no `saved_at`, so every overwrite restamped the
+ * import timestamp to now and the original capture time was gone for good.
+ */
+test("saved_at survives a bookmark overwrite that does not send it", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-save-roundtrip-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const bookmark = (over: Partial<SaveMemoryInput> = {}): SaveMemoryInput =>
+    ({
+      title: "MCP Specification",
+      type: "bookmark",
+      summary: "original summary",
+      topic_path: ["references", "mcp"],
+      tags: ["mcp"],
+      scope: "all-projects",
+      recall_when: ["checking MCP protocol details"],
+      body: "Reference bookmark.",
+      ...over,
+    }) as SaveMemoryInput;
+
+  const res = await saveMemory(
+    dir,
+    bookmark({
+      saved_at: "2020-03-04T05:06:07.000Z",
+      source_app: "raindrop",
+      url: "https://modelcontextprotocol.io/",
+      og_image: "https://modelcontextprotocol.io/og.png",
+      read_status: "read",
+      categories: ["ai", "protocol"],
+    }),
+  );
+
+  // A refresh of the summary alone — the shape the skill prescribes.
+  await saveMemory(dir, bookmark({ summary: "updated summary", overwrite: true }));
+  const fm = matter(await readFile(res.file_path, "utf8")).data;
+
+  assert.equal(fm.saved_at, "2020-03-04T05:06:07.000Z", "capture time must survive");
+  assert.equal(fm.summary, "updated summary");
+
+  // The rest of the bookmark half was set from the input only, with no look at
+  // the stored file — the same #240/A6 loss, one block further down.
+  assert.equal(fm.source_app, "raindrop");
+  assert.equal(fm.url, "https://modelcontextprotocol.io/");
+  assert.equal(fm.og_image, "https://modelcontextprotocol.io/og.png");
+  assert.equal(fm.read_status, "read");
+  assert.deepEqual(fm.categories, ["ai", "protocol"]);
+
+  // Deletion/correction stays expressible — an explicit value still wins.
+  await saveMemory(
+    dir,
+    bookmark({
+      saved_at: "2026-01-01T00:00:00.000Z",
+      read_status: "archived",
+      categories: [],
+      overwrite: true,
+    }),
+  );
+  const patched = matter(await readFile(res.file_path, "utf8")).data;
+  assert.equal(patched.saved_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(patched.read_status, "archived");
+  assert.deepEqual(patched.categories, []);
+});
