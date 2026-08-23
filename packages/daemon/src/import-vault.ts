@@ -96,7 +96,11 @@ export interface ImportVaultResult {
    *  breakdown always sums to `imported`. `index` is the synthetic
    *  curated-index node (#217) — it is a written memory like any other, but it
    *  comes from no source file and therefore from no adapter, which is why it
-   *  used to fall out of the itemisation while still inflating the total. */
+   *  used to fall out of the itemisation while still inflating the total.
+   *  #365/7: counted is the import that LANDED, not the attempt. A dry-run and
+   *  the real run therefore still predict the same numbers as long as no save
+   *  fails; a failed write shows up in `skipped` and in no counter — deliberate,
+   *  because the breakdown must keep summing to `imported`. */
   byAdapter: { claudeCode: number; generic: number; index: number };
   skipped: ImportVaultSkip[];
   ids: string[];
@@ -399,8 +403,6 @@ export async function importVault(
       }
       expectedTarget = check.target;
     }
-    if (mapped.input.source?.startsWith("claude-code-memory")) byAdapter.claudeCode++;
-    else byAdapter.generic++;
     if (!dryRun) {
       try {
         await saveMemoryWithAuditTrail({
@@ -419,6 +421,16 @@ export async function importVault(
         continue;
       }
     }
+    // #365/7: erst zählen, wenn der Save wirklich gelandet ist. Vorher stand das
+    // Inkrement VOR dem Write — ein nicht beschreibbarer Vault meldete
+    // `byAdapter.generic: 80` neben `imported: 0, ids: []` und brach damit genau
+    // die Invariante, die der Header dieser Datei zusichert. Der Dry-Run bleibt
+    // unberührt: ohne Write gibt es kein Fehler-`continue`, und der
+    // Ownership-Check darüber ist per `if (!dryRun)` ohnehin übersprungen — eine
+    // gemappte Datei erreicht diese Zeile im Dry-Run wie zuvor. Pass D unten
+    // zählt bereits nach demselben Muster.
+    if (mapped.input.source?.startsWith("claude-code-memory")) byAdapter.claudeCode++;
+    else byAdapter.generic++;
     ids.push(mapped.input.id as string);
   }
 
