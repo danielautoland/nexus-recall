@@ -86,6 +86,11 @@ export interface RecallOptions {
    * so the "far slice" — relevant memories that ranked below the returned k or below
    * the floor and would otherwise be dropped from telemetry — becomes observable for
    * offline bridge harvesting. Null-overhead when unset.
+   *
+   * #365/16: die Scores sind die GEDÄMPFTEN (post-staleness/curator/doc) —
+   * dieselbe Skala und dieselbe Reihenfolge wie die servierten Hits.
+   * #365/5: feuert auch bei einem Query-Cache-Hit, mit derselben Tiefe wie
+   * auf dem kalten Pfad.
    */
   onCandidatePool?: (pool: RecallHit[]) => void;
   /**
@@ -160,7 +165,12 @@ export class SearchIndex {
   // `recall()` neu. Hooks rufen häufig mit identischer Query auf
   // (detectTopics() ist deterministisch). LRU via Map-insertion-order,
   // hard cap 100 Einträge, TTL 30s. Vault-Change leert komplett.
-  private queryCache = new Map<string, { hits: RecallHit[]; at: number }>();
+  // #365/5: der Eintrag trägt den TIEFEN Pool mit, nicht nur die servierten k
+  // Hits. `onCandidatePool` ist der einzige Weg nach draußen für die Kandidaten
+  // unterhalb von k (Reflex-/Hop-Seeds, far-slice-Harvest) — ohne Pool im Cache
+  // lieferte ein Hit für die volle TTL nichts (BM25) bzw. Tiefe k statt
+  // max(k*4, 20) (Hybrid). Rein In-Memory, ~20 flache Objekte pro Eintrag.
+  private queryCache = new Map<string, { hits: RecallHit[]; pool: RecallHit[]; at: number }>();
   private static readonly QUERY_CACHE_MAX = 100;
   private static readonly QUERY_CACHE_TTL_MS = 30_000;
 
@@ -256,14 +266,20 @@ export class SearchIndex {
     const cacheKey = `recall|${query}|${JSON.stringify(opts)}`;
     const cached = this.lookupQueryCache(cacheKey);
     if (cached) {
-      stage.emit("cache.hit", recallStart, { cache: "query", hit_count: cached.length });
+      stage.emit("cache.hit", recallStart, { cache: "query", hit_count: cached.hits.length });
+      // #365/5: der Hit kehrte hier zurück, BEVOR irgendein `onCandidatePool`
+      // lief — auf dem BM25-Pfad feuerte er also gar nicht. Ein einziger
+      // primender Caller reichte, um Reflex- und Hop-Seeds für die volle TTL
+      // verschwinden zu lassen. Replay vor `done`, damit die Reihenfolge
+      // dieselbe ist wie auf dem kalten Pfad.
+      this.emitCachedPool(opts, cached.pool);
       stage.emit("done", recallStart, {
-        hit_count: cached.length,
+        hit_count: cached.hits.length,
         vault_size: this.mini.documentCount,
         total_ms: Date.now() - recallStart,
         cached: true,
       });
-      return cached;
+      return cached.hits;
     }
 
     const tBm = stage.start("bm25.search");
@@ -275,9 +291,9 @@ export class SearchIndex {
       return true;
     });
 
-    const ranked = this.rankBm25(filtered, k, opts, stage);
+    const { ranked, pool } = this.rankBm25(filtered, k, opts, stage);
 
-    this.storeQueryCache(cacheKey, ranked);
+    this.storeQueryCache(cacheKey, ranked, pool);
 
     stage.emit("done", recallStart, {
       hit_count: ranked.length,
@@ -303,7 +319,7 @@ export class SearchIndex {
     k: number,
     opts: RecallOptions,
     stage: StageEmitter,
-  ): RecallHit[] {
+  ): { ranked: RecallHit[]; pool: RecallHit[] } {
     // Pool-Size für Hop-Seeds: max(k*4, 20). Multi-Hop soll Nachbarn auch
     // für Hits sehen, die knapp unter dem k-Cut liegen — sonst gehen die
     // related_via-Kanten der Positionen 6–20 verloren.
@@ -321,8 +337,6 @@ export class SearchIndex {
       mode: "bm25" as const,
       hop: "direct" as const,
     }));
-    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
-    opts.onCandidatePool?.(directFull);
 
     // #240/A7: apply the lifecycle/curator/doc/salience multipliers to the
     // FULL candidate pool and re-sort BEFORE cutting to k. Cutting first meant
@@ -341,6 +355,15 @@ export class SearchIndex {
     const direct = rankedFull.slice(0, k);
     stage.end("staleness.rank", tStale, { reranked_count: direct.length });
 
+    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
+    // #365/16: DAMPED pool, hinter dem Damping. Vorher ging `directFull` mit
+    // rohen Scores raus, während die servierten Hits gedämpft waren — zwei
+    // Skalen in derselben Telemetrie, und da das Damping umsortiert, kippte
+    // auch die Reihenfolge gegen die servierte. Die Hop-Seeds hängen NICHT am
+    // Callback (sie greifen unten direkt auf `directFull` zu), der Pool darf
+    // hier also gedämpft sein; `rankedFull` ist derselbe tiefe Pool.
+    opts.onCandidatePool?.(rankedFull);
+
     let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
       const tHops = stage.start("hops.expand");
@@ -355,7 +378,9 @@ export class SearchIndex {
     } else {
       ranked = direct;
     }
-    return ranked;
+    // #365/5: der Pool geht mit zurück, damit der Caller ihn in den
+    // Query-Cache legen und bei einem Hit erneut ausliefern kann.
+    return { ranked, pool: rankedFull };
   }
 
   /** Hybrid-Recall: BM25 + Vector via Reciprocal-Rank-Fusion. Wenn kein
@@ -400,15 +425,18 @@ export class SearchIndex {
       // #240/B2: the sync path emits cache.hit + done on a hit; this one
       // returned before any emission, so SSE progress and the candidate-pool
       // harvest silently saw nothing.
-      stage.emit("cache.hit", recallStart, { cache: "query", hit_count: cached.length });
-      opts.onCandidatePool?.(cached);
+      stage.emit("cache.hit", recallStart, { cache: "query", hit_count: cached.hits.length });
+      // #365/5: bisher gingen hier die SERVIERTEN k Hits als „Pool" raus —
+      // bei k=2 also Tiefe 2 statt der 8, die derselbe Call kalt geliefert
+      // hätte. Jetzt der mitgecachte tiefe Pool.
+      this.emitCachedPool(opts, cached.pool);
       stage.emit("done", recallStart, {
-        hit_count: cached.length,
+        hit_count: cached.hits.length,
         vault_size: this.mini.documentCount,
         total_ms: Date.now() - recallStart,
         cached: true,
       });
-      return cached;
+      return cached.hits;
     }
 
     // BM25 — top 50 für RRF-Pool.
@@ -430,11 +458,27 @@ export class SearchIndex {
     // embed in flight, which is the point: the model finishes loading on the
     // call that gave up on it, so the NEXT call is warm. Cancelling here would
     // re-pay the cold load every single time.
+    // #365/4: `EmbeddingIndex.search()` fängt JEDEN Provider-Fehler ab und
+    // returnt `[]` — byte-identisch zu „dieser Vault hat keine Vektoren".
+    // Diskriminiert wird über `runtimeHealth().errorCount`, der ausschließlich
+    // in `markProviderError()` hochzählt. NICHT über `lastErrorAt`: der hat
+    // ms-Auflösung, und zwei Fehler in derselben Millisekunde (zwei Lanes an
+    // demselben toten Ollama) sind darüber nicht trennbar — der zweite Leser
+    // sähe seinen eigenen Fehler als „stand schon vorher da" und würde die
+    // einarmige Antwort cachen. Zwei Property-Reads um den ohnehin
+    // vorhandenen await — kein zusätzlicher Call, kein I/O.
+    const errBefore = this.embeddings.runtimeHealth().errorCount;
     const vecOrTimeout = await abandonAfter(
       this.embeddings.search(query, filtered ? 1000 : 100),
       opts.vector_deadline_ms ?? 0,
     );
     const vectorArmTimedOut = vecOrTimeout === null;
+    const errAfter = this.embeddings.runtimeHealth().errorCount;
+    // Ein gewachsener Zähler heißt: über diesem await ist mindestens ein
+    // Provider-Call gescheitert. Beim Timeout ist der Arm noch in-flight, der
+    // Fehler gehört dann nicht zu diesem Ergebnis — `vectorArmTimedOut` hat
+    // deshalb Vorrang.
+    const vectorArmErrored = !vectorArmTimedOut && errAfter > errBefore;
     const vec = vecOrTimeout ?? [];
     const vectorTop = vec
       .map((h) => ({ hit: h, mem: this.vault.get(h.id) }))
@@ -466,7 +510,7 @@ export class SearchIndex {
       // Reuse the BM25 results this call already computed — no recursion into
       // the public pipeline, so the stage sequence stays monotonic and emits
       // exactly one `done` and one candidate-pool callback.
-      const bm25Only = this.rankBm25(bm25, k, opts, stage);
+      const { ranked: bm25Only, pool: bm25Pool } = this.rankBm25(bm25, k, opts, stage);
       // #342: a timeout degradation must NOT be cached. The cache key varies on
       // `embeddings.size()`, which a cold model does not change — so caching
       // here would freeze the one-armed answer for the full TTL and every
@@ -474,12 +518,23 @@ export class SearchIndex {
       // machine. Same trap #240/B2 closed for the boot window, arriving through
       // a different door. An empty vector arm still caches: that is a property
       // of the vault, not of this call's timing.
-      if (!vectorArmTimedOut) this.storeQueryCache(cacheKey, bm25Only);
+      // #365/4: ein Provider-FEHLER ist ebenfalls eine Eigenschaft dieses
+      // Calls, nicht des Vaults. `embeddings.size()` im Key bewegt sich dabei
+      // nicht, also fror ein 5xx die einarmige Antwort für die volle TTL ein —
+      // die Erholung des Providers kam nicht durch. Gleiche Falle wie #342,
+      // durch die Nachbartür.
+      if (!vectorArmTimedOut && !vectorArmErrored) {
+        this.storeQueryCache(cacheKey, bm25Only, bm25Pool);
+      }
       stage.emit("done", recallStart, {
         hit_count: bm25Only.length,
         vault_size: this.mini.documentCount,
         total_ms: Date.now() - recallStart,
-        degraded: vectorArmTimedOut ? "vector-arm-timeout" : "vector-arm-empty",
+        degraded: vectorArmTimedOut
+          ? "vector-arm-timeout"
+          : vectorArmErrored
+            ? "vector-arm-error"
+            : "vector-arm-empty",
       });
       return bm25Only;
     }
@@ -528,9 +583,6 @@ export class SearchIndex {
     }
     stage.end("rrf.fuse", tFuse, { fused_count: outFull.length });
 
-    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
-    opts.onCandidatePool?.(outFull);
-
     // #240/A7: same ordering fix as the BM25 path — multipliers and re-sort
     // over the full pool, THEN cut to k. Damping runs on a clone so `outFull`
     // keeps raw scores for the hop seeds (see the BM25 path for why).
@@ -538,6 +590,11 @@ export class SearchIndex {
     const rankedFull = this.applyStaleness(outFull.map((h) => ({ ...h })), opts);
     const out = rankedFull.slice(0, k);
     stage.end("staleness.rank", tStale, { reranked_count: out.length });
+
+    // #121: expose the deeper pool (incl. below-floor candidates) before slicing to k.
+    // #365/16: gedämpfter Pool, hinter dem Damping — gleiche Skala und gleiche
+    // Reihenfolge wie die servierten Hits (siehe rankBm25).
+    opts.onCandidatePool?.(rankedFull);
 
     let ranked: RecallHit[];
     if (opts.expand_hops === 1) {
@@ -552,7 +609,7 @@ export class SearchIndex {
       ranked = out;
     }
 
-    this.storeQueryCache(cacheKey, ranked);
+    this.storeQueryCache(cacheKey, ranked, rankedFull);
 
     stage.emit("done", recallStart, {
       hit_count: ranked.length,
@@ -712,7 +769,9 @@ export class SearchIndex {
    * sieht. TTL 30s — frische Edits sollen den Cache nicht zu lange
    * dominieren, auch wenn der Watcher nicht feuert.
    */
-  private lookupQueryCache(key: string): RecallHit[] | undefined {
+  private lookupQueryCache(
+    key: string,
+  ): { hits: RecallHit[]; pool: RecallHit[] } | undefined {
     const cached = this.queryCache.get(key);
     if (!cached) return undefined;
     if (Date.now() - cached.at > SearchIndex.QUERY_CACHE_TTL_MS) {
@@ -725,18 +784,34 @@ export class SearchIndex {
     this.queryCache.set(key, cached);
     // Defensive Kopie — Caller könnte das Array mutieren (sortieren,
     // pushen). Cache-Werte bleiben damit stabil über Calls hinweg.
-    return cached.hits.map((h) => ({ ...h }));
+    // #365/5: `pool` ist bewusst die CACHE-INTERNE Referenz und darf so nie
+    // nach außen — der defensive Klon liegt in `emitCachedPool()`, damit ein
+    // Cache-Hit ohne `onCandidatePool` keine einzige Allokation mehr kostet
+    // als vor #365 (Hook-Budget #305/#362).
+    return { hits: cached.hits.map((h) => ({ ...h })), pool: cached.pool };
   }
 
-  private storeQueryCache(key: string, hits: RecallHit[]): void {
+  /** #365/5: den mitgecachten tiefen Pool bei einem Query-Cache-Hit
+   *  nachliefern. Defensiver Klon nur hier, und nur wenn jemand zuhört. */
+  private emitCachedPool(opts: RecallOptions, pool: RecallHit[]): void {
+    if (!opts.onCandidatePool) return;
+    opts.onCandidatePool(pool.map((h) => ({ ...h })));
+  }
+
+  private storeQueryCache(key: string, hits: RecallHit[], pool: RecallHit[]): void {
     if (this.queryCache.size >= SearchIndex.QUERY_CACHE_MAX) {
       // Oldest first — Map preserved insertion order.
       const oldest = this.queryCache.keys().next().value;
       if (oldest !== undefined) this.queryCache.delete(oldest);
     }
-    // Tiefen-Kopie der Hits, gleicher Grund wie in lookupQueryCache.
+    // Kopie der Hit-Objekte, gleicher Grund wie in lookupQueryCache. Bewusst
+    // FLACH: `topic_path`, `matched_terms` und `rrf` bleiben mit dem Original
+    // geteilt. Das reicht, weil die Pipeline nur `score` schreibt (in
+    // applyStaleness) und Consumer die Arrays lesen; ein tiefer Klon wäre auf
+    // dem Hook-Pfad reiner Overhead.
     this.queryCache.set(key, {
       hits: hits.map((h) => ({ ...h })),
+      pool: pool.map((h) => ({ ...h })),
       at: Date.now(),
     });
   }
@@ -909,6 +984,12 @@ export function computeStaleness(
   const validUntil = parseDateValue(fm.valid_until);
   if (validUntil != null) {
     if (now.getTime() >= validUntil) return "expired";
+    // #365/14: unbekanntes `touch` (weder `updated` noch `last_reviewed_at`
+    // parsebar) ist 0 = Unix-Epoche. `elapsed/total` misst dann den Abstand
+    // zu 1970 statt zur letzten Bearbeitung und landet für jedes Ablaufdatum
+    // nahe heute bei ≈0.99 → immer „aging". Der Zweig ohne `valid_until` hat
+    // denselben Guard (unten, vor der Ratio) — beide müssen dasselbe sagen.
+    if (touch <= 0) return "fresh";
     const total = validUntil - touch;
     const elapsed = now.getTime() - touch;
     if (total > 0 && elapsed / total >= AGING_THRESHOLD_FRACTION) {
