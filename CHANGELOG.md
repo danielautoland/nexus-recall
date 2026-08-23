@@ -169,6 +169,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   older server refusing `think`, a model no longer pulled) took doc2query out of
   service without a single line anywhere, which is quieter than the bug above.
 
+- **A bare YAML date is still a date — an overwrite stops eating `created` and
+  `valid_until`** (#364, #240). #240/A6 made overwrite a PATCH: every field a
+  refresh does not send has to survive it, and `packages/core/src/save.ts`
+  decided that with a type check against the value gray-matter parsed out of
+  the file. YAML 1.1 parses a bare `created: 2020-01-01` into a JS `Date`, so
+  the check said "not a string", the carry-over dropped the value, and the
+  assembly fell through to its default: `created` restamped to today,
+  `valid_until` and `last_reviewed_at` gone from the file entirely. The bare
+  form is not an edge case — it is what Obsidian Properties writes and what a
+  hand edit leaves; only files written by our own `matter.stringify` carry the
+  quoted form the roundtrip test seeds, which is why the suite that exists
+  precisely for this loss never saw it. The write path now coerces `Date` back
+  to `YYYY-MM-DD` once, before any type check sees the value, the way
+  `schema.ts` has always done on the read path; an unparsable date is left
+  untouched rather than crashing `toISOString()`. Patch by zzallirog.
+
+- **An overwrite stops eating `saved_at` — and stops poisoning gray-matter's
+  parse cache** (#364, #240). Three leftovers from the fix above, all in
+  `packages/core/src/save.ts`. The `Date`→`YYYY-MM-DD` coercion wrote into the
+  object gray-matter caches per input string, so any later parse of identical
+  content would have inherited a string where the file says `Date` — the very
+  trap `related-enrich.ts` and `trigger-expand.ts` already warn about; the
+  carry-over works on a copy now. `updated` left that coercion list, where it
+  sat without a reader — `updated: today` restamps it on every write anyway.
+  And the bookmark half never carried anything over: `saved_at` is a bookmark's
+  capture time, not its write time, yet every overwrite restamped it — along
+  with `url`, `og_image`, `read_status`, `categories` and `source_app`, which a
+  summary-only refresh dropped from the file entirely. All six follow the same
+  PATCH semantics as the rest of the frontmatter now.
+
+- **The patch rollback copies bytes back and verifies them — `rolledBack` stops
+  being a constant** (#365, item 1). `applySeries` in
+  `packages/daemon/src/patch-registry.ts` discarded the `GitRun` of the reverse
+  and reported `rolledBack: true` unconditionally — and a `--3way` merge cannot
+  be undone by reversing the patch, so the operator was told the install runs
+  unpatched while patched files sat on disk. The snapshot now lives at run level
+  (first write wins, mode bits included), the reverse checks its exit status,
+  and the copy-back has the last word: every file is read back and compared byte
+  for byte. `rolledBack` is a measurement, `unrestored[]` names what did not go
+  back, and `pendingPatchNotice` points at `~/.bastra/update-backups`;
+  `last-run.json` grows additively. Reported by zzallirog.
+
+- **The Ollama loopback guard classifies the host instead of its spelling, and
+  fence-marker stripping runs to a fixpoint** (#365, items 8 and 10).
+  `packages/core/src/ollama-egress.ts` tested the hostname text against
+  `/^127\./`, so `127.evil.example` and `127.0.0.1.nip.io` read as loopback and
+  memory text could leave the box, while `0.0.0.0`, `localhost.` and
+  IPv4-mapped IPv6 were refused although they are local; `net.isIP` decides
+  after a bracket strip now. In `scrub.ts`, `stripFenceMarkers` re-formed a
+  working marker out of the halves of a nested spoof
+  (`<recall-hints<recall-hints>>`) — it now iterates to a fixpoint, and an input
+  that outruns the cap loses its angle brackets instead of handing back the
+  fence the cap was meant to close. Reported by zzallirog.
+
+- **A dead provider stops looking like an empty vault, and a warm query cache
+  stops eating the deep pool** (#365, items 4, 5, 14 and 16). A provider error
+  was indistinguishable from an empty vector arm, and the one-armed result was
+  cached — `runtimeHealth()` now carries a monotonic `errorCount`,
+  `packages/core/src/search.ts` compares it around the vector call, skips the
+  cache and labels the result `vector-arm-error`. A query-cache hit fired
+  `onCandidatePool` not at all (BM25) or with the served k hits (hybrid)
+  instead of the deep pool; the pool travels in the cache entry now and is
+  emitted on every hit, cloned only when a callback is set. Staleness treats a
+  non-positive touch window as fresh on the `valid_until` branch too, and the
+  ranking callback runs after damping, on the ranked list. No new await and no
+  new I/O on the hot path. Reported by zzallirog.
+
+- **The audit cache follows the file, and trash lookups stop at the id
+  boundary** (#365, items 3 and 11). The ledger is cross-process, but
+  `packages/core/src/audit-log.ts` held a per-instance `readAll` cache that hid
+  foreign appends, so `lastDeleteFor` missed a delete sitting in the file. The
+  cache is keyed on mtime + size instead; only `ENOENT` counts as a missing
+  ledger, and any other stat error serves the warm cache or throws rather than
+  reporting an unreadable log as an empty one. `latestTrashPathFor` matched by
+  prefix, so `foo.bar.md` passed as a version of `foo`; it requires the exact
+  stamp format now. Reported by zzallirog.
+
+- **A vault under a dot-root is watched again, column-zero lists keep their key,
+  and a finished recall stops saying it drags** (#365, items 2, 9 and 15). The
+  watcher's dot filter in `packages/core/src/vault.ts` ran on the absolute path,
+  so a vault under `~/.local/share` watched nothing at all; it filters relative
+  to the root now, with a leading `..` only counting as an escape as a whole
+  segment (`..sync/` stays ignored). `frontmatter-rescue.ts` treated a
+  column-zero list item carrying `": "` as a key, silently dropping
+  `recall_when` and logging a misleading damage entry. And the banter's duration
+  checks skip terminal stages now (`done`, `cache.hit`, `error`), so a recall
+  that is already finished no longer narrates itself as dragging. Reported by
+  zzallirog.
+
+- **`bridges harvest` judges with the configured model, `import vault` counts
+  landings, and the update docstring stops denying its own body** (#365, items
+  6, 7 and 12). The far-slice reranker in `packages/daemon/src/cli/bridges.ts`
+  ignored the persisted generation model and read only the env/default pair —
+  it calls `resolveGenerationModel()` the way the daemon does now
+  (`BASTRA_EXPAND_MODEL` outranks `BASTRA_RERANK_MODEL` when both are set).
+  `import-vault.ts` counted attempts in `byAdapter`, not imports; the increment
+  moved next to the save. And the `update-check.ts` docstring described an
+  auto-apply that has lived elsewhere since #81. Reported by zzallirog.
+
 ## [0.9.0] — 2026-08-02
 
 **Honest numbers, nothing silently lost.** The milestone this release closes is
