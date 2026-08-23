@@ -9,7 +9,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, mkdir, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, readdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -106,4 +106,62 @@ test("a crafted id cannot escape the trash folder", async (t) => {
   await mkdir(path.join(dir, "sub"), { recursive: true });
 
   assert.throws(() => trashPathFor(dir, "../../escape"), /refusing trash path/);
+});
+
+/**
+ * #365/11 — `latestTrashPathFor` matched by prefix, so a dotted neighbour id
+ * looked like a timestamp version. For the id `foo`, `foo.bar.md` was a
+ * candidate, and a restore of `foo` could put `foo.bar`s trashed content on
+ * `foo`s original path. Dotted ids never come out of `slugify()`, but they do
+ * come out of hand-written or imported `id:` frontmatter, which
+ * `isPathSafeComponent` lets through.
+ */
+
+test("a dotted neighbour id is not mistaken for a trashed version", async (t) => {
+  const { dir, file } = await vaultWith(t, "NEIGHBOUR");
+  await moveToTrash(dir, file, "foo.bar");
+
+  assert.equal(
+    await latestTrashPathFor(dir, "foo"),
+    undefined,
+    "`foo` was never trashed — `foo.bar.md` must not stand in for it",
+  );
+});
+
+test("the newest neighbour never outranks the id's own trashed file", async (t) => {
+  const { dir, file } = await vaultWith(t, "OWN");
+  const own = await moveToTrash(dir, file, "foo");
+
+  await writeFile(file, "NEIGHBOUR", "utf8");
+  await moveToTrash(dir, file, "foo.bar");
+
+  // Make the neighbour strictly newer, so a prefix match would prefer it.
+  const past = new Date(Date.now() - 60_000);
+  await utimes(own, past, past);
+
+  const latest = await latestTrashPathFor(dir, "foo");
+  assert.equal(latest, own);
+  assert.equal(await readFile(latest!, "utf8"), "OWN");
+});
+
+test("a dotted id still finds its own timestamped versions", async (t) => {
+  const { dir, file } = await vaultWith(t, "VERSION-ONE");
+  await moveToTrash(dir, file, "foo.bar");
+
+  await writeFile(file, "VERSION-TWO", "utf8");
+  const second = await moveToTrash(dir, file, "foo.bar");
+
+  const latest = await latestTrashPathFor(dir, "foo.bar");
+  assert.equal(latest, second);
+  assert.equal(await readFile(latest!, "utf8"), "VERSION-TWO");
+});
+
+test("an unrelated file in the trash folder is never a candidate", async (t) => {
+  const { dir, file } = await vaultWith(t, "OWN");
+  const own = await moveToTrash(dir, file, "victim");
+
+  // Neither a version stamp nor the base name — e.g. a stray editor artefact.
+  await writeFile(path.join(path.dirname(own), "victim.backup.md"), "STRAY", "utf8");
+
+  assert.equal(await latestTrashPathFor(dir, "victim"), own);
 });

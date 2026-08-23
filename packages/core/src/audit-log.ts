@@ -1,4 +1,4 @@
-import { mkdir, readFile, appendFile, rename, access, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, appendFile, rename, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 
@@ -55,6 +55,8 @@ const AUDIT_FILE = "audit-log.ndjson";
 
 export class AuditLog {
   private cache: AuditEntry[] | null = null;
+  /** `<mtimeMs>:<size>` der Datei, aus der `cache` stammt — siehe `readAll()`. */
+  private cacheKey: string | null = null;
 
   constructor(public readonly vaultRoot: string) {}
 
@@ -83,17 +85,46 @@ export class AuditLog {
     await mkdir(dirname(filePath), { recursive: true });
     await appendFile(filePath, JSON.stringify(entry) + "\n", "utf8");
     this.cache = null;
+    this.cacheKey = null;
     return entry;
   }
 
-  /** Alle Einträge (sortiert nach Timestamp aufsteigend), lazy geladen. */
+  /**
+   * Alle Einträge (sortiert nach Timestamp aufsteigend), lazy geladen.
+   *
+   * Das Ledger ist cross-process: Daemon, Bridge und CLI schreiben in
+   * dieselbe Datei. Ein Cache, der nur an der Lebensdauer der Instanz hängt,
+   * sieht fremde Appends nie — `lastDeleteFor()` findet dann einen Delete
+   * nicht, der in der Datei steht, und ein einmal leer gelesenes Log bleibt
+   * für den ganzen Prozess leer. Deshalb ist der Cache am Datei-Stand
+   * (`mtimeMs` + `size`) gekeyt: ein `stat()` pro Read statt eines
+   * Full-Reread, und bei unveränderter Datei trifft der Cache weiterhin.
+   */
   async readAll(): Promise<AuditEntry[]> {
-    if (this.cache) return this.cache;
     const filePath = this.filePath();
-    if (!(await fileExists(filePath))) {
-      this.cache = [];
-      return this.cache;
+    let key: string;
+    try {
+      const st = await stat(filePath);
+      key = `${st.mtimeMs}:${st.size}`;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        // Nur ENOENT heißt „die Datei ist nicht da". Ein EIO-/EACCES-Blip auf
+        // einem Netz- oder Cloud-Mount ist ein LESEFEHLER — dafür einen
+        // gültigen Cache wegzuwerfen macht daraus ein falsches Ergebnis:
+        // `lastDeleteFor()` gäbe undefined zurück und `auditedRestore` würfe
+        // `no delete audit-entry found` für einen Delete, der in der Datei
+        // steht. Warm weiterliefern; kalt ehrlich scheitern, statt ein
+        // unlesbares Ledger als leeres auszugeben.
+        if (this.cache) return this.cache;
+        throw err;
+      }
+      // Datei (noch) nicht vorhanden — bewusst NICHT cachen, sonst bleibt
+      // ein Create aus einem anderen Prozess dauerhaft unsichtbar.
+      this.cache = null;
+      this.cacheKey = null;
+      return [];
     }
+    if (this.cache && this.cacheKey === key) return this.cache;
     const raw = await readFile(filePath, "utf8");
     const out: AuditEntry[] = [];
     for (const line of raw.split("\n")) {
@@ -107,6 +138,7 @@ export class AuditLog {
     }
     out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     this.cache = out;
+    this.cacheKey = key;
     return out;
   }
 
@@ -146,15 +178,6 @@ function makeAuditID(): string {
   const t = Date.now().toString(36);
   const r = Math.random().toString(36).slice(2, 8);
   return `${t}-${r}`;
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await access(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // ─── Trash-Folder helpers ─────────────────────────────────────────
@@ -201,6 +224,13 @@ async function uniqueTrashPath(vaultRoot: string, id: string): Promise<string> {
 }
 
 /**
+ * Das Suffix, das `uniqueTrashPath()` an den Basis-Pfad hängt:
+ * `2026-08-23T16-20-37-857Z`, bei Kollision in derselben Millisekunde
+ * zusätzlich `-<n>`.
+ */
+const TRASH_VERSION_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?$/;
+
+/**
  * Neueste Trash-Fassung einer id. Nötig, seit `moveToTrash` versioniert:
  * der Basis-Pfad `<id>.md` ist dann die ÄLTESTE Fassung, und ein Restore,
  * der stur `trashPathFor()` nimmt, holte die falsche zurück.
@@ -219,9 +249,19 @@ export async function latestTrashPathFor(
   }
   const baseName = `${id}.md`;
   const versionPrefix = `${id}.`;
-  const candidates = entries.filter(
-    (e) => e === baseName || (e.startsWith(versionPrefix) && e.endsWith(".md")),
-  );
+  // Ein reines `startsWith(`${id}.`)` matcht über die id-Grenze hinweg: für
+  // die id `foo` sah `foo.bar.md` wie eine Zeitstempel-Version von `foo` aus,
+  // und ein Restore hätte den Trash-Stand von `foo.bar` auf `foo`s
+  // Originalpfad zurückgeschrieben. Gepunktete ids entstehen zwar nie aus
+  // `slugify()`, wohl aber aus hand- oder fremdgeschriebenem `id:`-
+  // Frontmatter. Der Rest hinter der id muss deshalb exakt das von
+  // `uniqueTrashPath()` erzeugte Stempel-Format tragen — über `slice()`
+  // geprüft, damit die id selbst nicht escaped werden muss.
+  const candidates = entries.filter((e) => {
+    if (e === baseName) return true;
+    if (!e.startsWith(versionPrefix) || !e.endsWith(".md")) return false;
+    return TRASH_VERSION_STAMP.test(e.slice(versionPrefix.length, -".md".length));
+  });
   if (candidates.length === 0) return undefined;
   const withTime = await Promise.all(
     candidates.map(async (name) => {
