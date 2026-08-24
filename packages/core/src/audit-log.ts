@@ -1,4 +1,4 @@
-import { mkdir, readFile, appendFile, rename, readdir, stat } from "node:fs/promises";
+import { mkdir, appendFile, rename, readdir, stat, open } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 
@@ -102,10 +102,9 @@ export class AuditLog {
    */
   async readAll(): Promise<AuditEntry[]> {
     const filePath = this.filePath();
-    let key: string;
+    let handle: Awaited<ReturnType<typeof open>>;
     try {
-      const st = await stat(filePath);
-      key = `${st.mtimeMs}:${st.size}`;
+      handle = await open(filePath, "r");
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
         // Nur ENOENT heißt „die Datei ist nicht da". Ein EIO-/EACCES-Blip auf
@@ -124,22 +123,31 @@ export class AuditLog {
       this.cacheKey = null;
       return [];
     }
-    if (this.cache && this.cacheKey === key) return this.cache;
-    const raw = await readFile(filePath, "utf8");
-    const out: AuditEntry[] = [];
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        out.push(JSON.parse(trimmed) as AuditEntry);
-      } catch {
-        // Korrupte Zeile ignorieren — append-only-Log darf nicht abbrechen.
+    // stat + read über denselben Filehandle statt getrennt über den Pfad —
+    // ein Replace/Rename zwischen den beiden Schritten kann die Datei unter
+    // uns nicht mehr wegziehen (TOCTOU).
+    try {
+      const st = await handle.stat();
+      const key = `${st.mtimeMs}:${st.size}`;
+      if (this.cache && this.cacheKey === key) return this.cache;
+      const raw = await handle.readFile("utf8");
+      const out: AuditEntry[] = [];
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          out.push(JSON.parse(trimmed) as AuditEntry);
+        } catch {
+          // Korrupte Zeile ignorieren — append-only-Log darf nicht abbrechen.
+        }
       }
+      out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      this.cache = out;
+      this.cacheKey = key;
+      return out;
+    } finally {
+      await handle.close();
     }
-    out.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    this.cache = out;
-    this.cacheKey = key;
-    return out;
   }
 
   /** Alle Einträge zu einer bestimmten Memory-ID, neueste zuerst. */
