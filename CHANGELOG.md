@@ -211,6 +211,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   back, and `pendingPatchNotice` points at `~/.bastra/update-backups`;
   `last-run.json` grows additively. Reported by zzallirog.
 
+- **A `private` memory is no longer named in someone else's file** (#365, item
+  13). The auto-related enricher is the one write path that puts foreign ids
+  into foreign memories, and `packages/core/src/related-enrich.ts` was the one
+  place that never read `sensitivity` — every read path does (`search.ts`,
+  `graph.ts`, the tool handlers), and `graph.ts` already suppresses exactly this
+  edge rather than drawing it as a ghost silhouette. Any cosine neighbour above
+  the threshold got a `related_via` entry plus a `- [[<id>]]` line in the body
+  of whatever memory it sat near, and the id **is** the title
+  (`id = slugify(title)`) — so the leak was the private title in plaintext,
+  served to external MCP clients through `verbosity: 'full'`, through
+  `read_document`'s raw body, and drawn as an edge in the Obsidian graph, two
+  lines under a `sensitivity: team` nobody consulted.
+
+  Private neighbours are dropped before the topN cut now, so they neither
+  surface nor cost a visible neighbour its slot. The filter is one-directional:
+  a private memory keeps its own `related_via` and its own auto-section,
+  private neighbours included — that file carries the classification, and its
+  content does not leave it; only the mention elsewhere was the leak. Existing
+  edges heal without a migration script: the enricher's target/actual
+  comparison sees the difference on the next embed (which fires on every save,
+  cache hits included), rewrites the file exactly once, and is a no-op from
+  there on. Reported by zzallirog.
+
 - **The Ollama loopback guard classifies the host instead of its spelling, and
   fence-marker stripping runs to a fixpoint** (#365, items 8 and 10).
   `packages/core/src/ollama-egress.ts` tested the hostname text against

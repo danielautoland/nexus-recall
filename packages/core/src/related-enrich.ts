@@ -13,6 +13,7 @@
  *   EmbeddingIndex.onEmbed(id)
  *     → findSimilarById(id, topN+self)
  *     → cosine ≥ threshold filtern
+ *     → `private`-Nachbarn verwerfen, außer das Memory ist selbst private
  *     → mit existing related_via UND existing body-section vergleichen
  *     → wenn etwas abweicht: file rewrite (frontmatter + body), vault.reindexFile
  *
@@ -115,8 +116,21 @@ export class RelatedEnricher {
     // Nachbar, der zwischen zwei Prozessen um die Schwelle pendelt (0.699 vs
     // 0.701), als add/remove-Ping-Pong.
     const keepIds = new Set(existing.map((e) => e.id));
+    // #365/13: ein `private`-Nachbar wird nie in eine Datei anderer
+    // sensitivity geschrieben — weder als related_via-Kante noch als
+    // [[slug]]-Wikilink. Der Slug IST der Titel (`id = slugify(title)`,
+    // save.ts), die Kante trägt also Klartext an jeden Leser der fremden
+    // Datei: `verbosity:'full'`, `read_document`, Obsidian-Graph. graph.ts
+    // unterdrückt dieselbe Kante schon als Ghost-Node.
+    // Umgekehrt gilt der Filter NICHT: im privaten Memory selbst dürfen
+    // private Nachbarn stehen — die Datei trägt die Einstufung, ihr Inhalt
+    // verlässt sie nicht. Der Filter läuft vor `.slice(0, topN)`, damit ein
+    // ausgeschlossener Nachbar keinen Slot verbraucht, und nach der
+    // Hysterese, damit eine Bestandskante ihn nicht überlebt.
+    const hostIsPrivate = memory.fm.sensitivity === "private";
     const filtered = similar
       .filter((h) => h.score >= this.threshold - (keepIds.has(h.id) ? SCORE_EPSILON : 0))
+      .filter((h) => hostIsPrivate || this.vault.get(h.id)?.fm.sensitivity !== "private")
       .slice(0, this.topN)
       .map<RelatedViaEntry>((h) => ({
         id: h.id,
