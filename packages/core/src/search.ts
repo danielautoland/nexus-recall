@@ -1,10 +1,11 @@
-import MiniSearch from "minisearch";
 import type { Memory } from "./schema.js";
 import type { Vault, VaultEvent } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
 import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
+import { DocFreqMiniSearch } from "./doc-freq-index.js";
+import { capBm25Query } from "./bm25-query-cap.js";
 import { abandonAfter } from "./deadline.js";
 
 export interface RecallHit {
@@ -108,6 +109,15 @@ export interface RecallOptions {
    * Unset or 0 = wait indefinitely, the pre-#342 behaviour.
    */
   vector_deadline_ms?: number;
+  /**
+   * #362: Zeichen-Budget für die Query des LEXIKALISCHEN Arms. Unset/`0` =
+   * Cap AUS (Default, siehe `bm25Query()` unten für die Begründung). Nur ein
+   * EXPLIZIT gesetzter Wert > 0 aktiviert ihn — z.B. `BM25_QUERY_MAX_CHARS`
+   * für den in #362 gemessenen 200er-Cap.
+   *
+   * Betrifft nur BM25. Der Dense-Arm sieht immer die vollständige Query.
+   */
+  bm25_query_max_chars?: number;
 }
 
 interface IndexDoc {
@@ -134,7 +144,7 @@ interface IndexDoc {
  * Field weights chosen so title + recall_when + tags > body.
  */
 export class SearchIndex {
-  private mini: MiniSearch<IndexDoc>;
+  private mini: DocFreqMiniSearch<IndexDoc>;
   private detach?: () => void;
   private embeddings?: EmbeddingIndex;
 
@@ -175,7 +185,7 @@ export class SearchIndex {
   private static readonly QUERY_CACHE_TTL_MS = 30_000;
 
   constructor(private readonly vault: Vault) {
-    this.mini = new MiniSearch<IndexDoc>({
+    this.mini = new DocFreqMiniSearch<IndexDoc>({
       // #162: Identifier-erhaltender Tokenizer (Dual-Emission: `my-app.config.ts`
       // + `my app config ts`). Gilt für Index- UND Query-Seite — MiniSearch fällt
       // ohne `searchOptions.tokenize` auf diese Funktion zurück; KEIN separates
@@ -243,6 +253,37 @@ export class SearchIndex {
     return this.embeddings !== undefined;
   }
 
+  /**
+   * Query für den LEXIKALISCHEN Arm (#362). Über dem Zeichen-Budget werden die
+   * seltensten Wörter behalten statt vorne abgeschnitten — Seltenheit kommt aus
+   * der Document-Frequency dieses Index, es wird also nichts zusätzlich
+   * gebaut oder gepflegt.
+   *
+   * Der Cap sitzt hier in core und nicht in der aufrufenden Lane: er wirkt
+   * damit für JEDEN Transport (MCP-`recall`, alle Hook-Lanes, Bridge, Dedup)
+   * statt nur für den einen, der gerade gemessen wurde — die Assertion-Lane
+   * mit ihren 1718-Zeichen-Medianen ist nur der lauteste Fall, nicht der
+   * einzige. Kosten unter dem Budget: ein `length`-Vergleich.
+   *
+   * Nur der BM25-Arm. Der Dense-Arm sieht weiter die vollständige Query
+   * (`recallHybrid`), denn Embedding-Kosten sind über alle Längenbänder
+   * konstant und dort ist der ganze Kontext das Signal.
+   *
+   * Default AUS, bis kalibriert (#362): der Akzeptanztest (15 Probe-Queries,
+   * injektionsrelevante Ids markiert) zeigt beim 200-Zeichen-Budget aus der
+   * ursprünglichen #362-Messung 15/15 Queries mit verlorenen injektionsrele-
+   * vanten Ids (Ø 2,27 pro Query); ein 2000-Zeichen-Budget verbessert auf
+   * 12/15 identisch (Ø 0,47 verloren), reißt die Ship-Regel damit aber
+   * ebenfalls (kein verlorener Id UND ≥90 % identische injizierbare Sets).
+   * Nur ein explizit gesetzter `bm25_query_max_chars` aktiviert den Cap —
+   * die Mechanik selbst bleibt unverändert und einsatzbereit.
+   */
+  private bm25Query(query: string, opts: RecallOptions): string {
+    return capBm25Query(query, (term) => this.mini.docFreq(term), {
+      maxChars: opts.bm25_query_max_chars ?? 0,
+    });
+  }
+
   recall(query: string, opts: RecallOptions = {}): RecallHit[] {
     // #162: Query-Hygiene für ALLE Caller (MCP-Recall, Hooks, Bridge, Dedup) —
     // Längen-Cap, Whitespace-Kollaps, dangling Operatoren. Vor dem Cache-Key,
@@ -283,8 +324,13 @@ export class SearchIndex {
     }
 
     const tBm = stage.start("bm25.search");
-    const raw = this.mini.search(query);
-    stage.end("bm25.search", tBm, { raw_hit_count: raw.length });
+    const lexQuery = this.bm25Query(query, opts);
+    const raw = this.mini.search(lexQuery);
+    stage.end("bm25.search", tBm, {
+      raw_hit_count: raw.length,
+      query_chars: query.length,
+      bm25_query_chars: lexQuery.length,
+    });
 
     const filtered = raw.filter((r) => {
       if (!passesRecallFilters(r, opts)) return false;
@@ -315,7 +361,7 @@ export class SearchIndex {
    * The caller owns `query.parse`, `bm25.search`, `done` and the cache.
    */
   private rankBm25(
-    filtered: ReturnType<MiniSearch<IndexDoc>["search"]>,
+    filtered: ReturnType<DocFreqMiniSearch<IndexDoc>["search"]>,
     k: number,
     opts: RecallOptions,
     stage: StageEmitter,
@@ -439,14 +485,23 @@ export class SearchIndex {
       return cached.hits;
     }
 
-    // BM25 — top 50 für RRF-Pool.
-    const tBm = stage.start("bm25.search");
-    const bm25 = this.mini.search(query).filter((r) => passesRecallFilters(r, opts));
-    const bm25Top = bm25.slice(0, 50);
-    stage.end("bm25.search", tBm, { raw_hit_count: bm25.length });
-
-    // Vector — top 50 für RRF-Pool, plus type/scope/sensitivity-Filter über vault.
-    const tVec = stage.start("vector.search");
+    // #370: der Dense-Arm wird ZUERST abgefeuert und erst nach dem BM25-Pass
+    // awaited. Er ist ein Netzwerk-Roundtrip zu Ollama, BM25 ist CPU-Arbeit
+    // in-process, und zwischen den Armen besteht keine Datenabhängigkeit —
+    // `fuseRRF` konsumiert beide Rank-Listen ohnehin erst danach. Vorher lief
+    // `this.mini.search()` vollständig durch, bevor der Embed überhaupt
+    // dispatched wurde: die Wanduhr zahlte die SUMME statt des MAXIMUMS
+    // (gemessen über n=1545 `hook_recall`, 19.–24.08.: `latency_ms_recall −
+    // (bm25 + vector)` p50 1 ms / p90 2 ms — die Stages addierten sich exakt
+    // zum Total, es überlappte nichts).
+    //
+    // Reines Reordering: identische Eingaben in beide Arme, identisches
+    // RRF-Ergebnis. Die eine Invariante, die dabei nicht kippen darf: die
+    // Deadline muss ab dem ABFEUERN laufen, nicht ab dem `await`.
+    // `abandonAfter` startet seinen Timer synchron beim Aufruf — deshalb steht
+    // der Aufruf hier oben und nicht unten am `await`. Unten aufgerufen bekäme
+    // der Arm sein Budget PLUS die BM25-Zeit, und seine Timeout-Rate wäre
+    // nicht mehr messbar.
     // #240/A8: ask for a deeper pool when a filter is active. The vault/scope/
     // type/private filter below runs AFTER the provider's global top-k, so a
     // fixed 100 silently truncated eligible candidates for every scoped query
@@ -468,10 +523,28 @@ export class SearchIndex {
     // einarmige Antwort cachen. Zwei Property-Reads um den ohnehin
     // vorhandenen await — kein zusätzlicher Call, kein I/O.
     const errBefore = this.embeddings.runtimeHealth().errorCount;
-    const vecOrTimeout = await abandonAfter(
+    const tVec = stage.start("vector.search");
+    const vectorArm = abandonAfter(
       this.embeddings.search(query, filtered ? 1000 : 100),
       opts.vector_deadline_ms ?? 0,
     );
+
+    // BM25 — top 50 für RRF-Pool. Läuft jetzt IM Schatten des Dense-Arms.
+    // #362: der lexikalische Arm bekommt die gekappte Query (siehe
+    // `bm25Query`), der Dense-Arm oben bewusst die vollständige — Embedding-
+    // Kosten sind längenunabhängig konstant (104–153 ms über alle Bänder),
+    // und der semantische Arm lebt vom ganzen Kontext.
+    const tBm = stage.start("bm25.search");
+    const lexQuery = this.bm25Query(query, opts);
+    const bm25 = this.mini.search(lexQuery).filter((r) => passesRecallFilters(r, opts));
+    const bm25Top = bm25.slice(0, 50);
+    stage.end("bm25.search", tBm, {
+      raw_hit_count: bm25.length,
+      query_chars: query.length,
+      bm25_query_chars: lexQuery.length,
+    });
+
+    const vecOrTimeout = await vectorArm;
     const vectorArmTimedOut = vecOrTimeout === null;
     const errAfter = this.embeddings.runtimeHealth().errorCount;
     // Ein gewachsener Zähler heißt: über diesem await ist mindestens ein
@@ -496,7 +569,14 @@ export class SearchIndex {
         return true;
       })
       .slice(0, 50);
-    stage.end("vector.search", tVec, { vector_hit_count: vectorTop.length });
+    // #370: die Spanne deckt dispatch→settle und ÜBERLAPPT `bm25.search`.
+    // `overlapped` sagt jedem Leser dieser Telemetrie, dass die Stages keine
+    // Partition des Totals mehr sind — genau die Residuum-Rechnung, mit der
+    // die Sequentialität nachgewiesen wurde, gilt danach nicht mehr.
+    stage.end("vector.search", tVec, {
+      vector_hit_count: vectorTop.length,
+      overlapped: true,
+    });
 
     // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF
     // on one arm produced a different score space, not the BM25 one. A
