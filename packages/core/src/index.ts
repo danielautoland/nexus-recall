@@ -17,6 +17,12 @@ export {
   capAtWordBoundary,
   QUERY_MAX_CHARS,
 } from "./query-normalize.js";
+export {
+  capBm25Query,
+  BM25_QUERY_MAX_CHARS,
+  BM25_QUERY_MAX_TERMS,
+} from "./bm25-query-cap.js";
+export type { DocFreqFn, Bm25QueryCap } from "./bm25-query-cap.js";
 
 export type { RecallStage, StageListener } from "./recall-stages.js";
 export { RECALL_STAGE_ORDER, progressIndexFor } from "./recall-stages.js";

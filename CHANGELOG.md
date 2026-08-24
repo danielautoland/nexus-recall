@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **BM25 query cap (#362) lands as groundwork, off by default pending
+  calibration** — the acceptance harness (15 probe queries, injection-relevant
+  ids marked) found both measured budgets short of the ship bar (zero ids lost
+  AND ≥90 % identical injectable sets): 200 chars lost an injection-relevant id
+  on 15/15 queries (avg 2.27), 2000 chars still lost on 12/15 (avg 0.47), so
+  `bm25_query_max_chars` stays unset — the mechanism (`bm25-query-cap.ts`)
+  ships ready, only an explicit value activates it.
+
+- **Stop, session and todo hook lanes join the compiled stub — the last three
+  hook clients drop from ~80 ms node start to under 50 ms end-to-end** (#369).
+  The lane logic moves from the CLI entries into stop/session/todo-lane
+  modules behind `/hook/stop`, `/hook/session` and `/hook/todo` — the same
+  daemon-side pattern the pre-lanes took in #343/#344. The thin clients and
+  the compiled stub call them over HTTP with the #350 opt-in marker; without
+  the marker, or against an old daemon, they degrade to the node fallback
+  unchanged.
+
 - **The embedding model is warmed at turn start — one small embed on
   `UserPromptSubmit`, fire-and-forget, so the assertion lane never lands
   cold** (#361). #305 is reopened for that lane: n=12, median 348 ms, p90
@@ -105,6 +122,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   written per corpus, and why the harness prints two medians instead of one.
 
 ### Fixed
+
+- **The two recall arms now overlap instead of running sequentially — BM25
+  fires in the shadow of the dense arm's network roundtrip instead of after
+  it** (#370). `recallHybrid` dispatched the dense-arm embed only after
+  `this.mini.search()` had run to completion, even though the two arms share
+  no data dependency (`fuseRRF` consumes both rank lists only after both
+  return) — the wall clock paid their SUM instead of their MAX. Measured over
+  n=1545 `hook_recall` events (19.–24.08.): `latency_ms_recall − (bm25 +
+  vector)` sat at p50 1 ms / p90 2 ms, i.e. the stage timers summed exactly to
+  the total and nothing overlapped. The dense arm is now dispatched first and
+  awaited only after the BM25 pass, dropping the wall clock from p50 157 ms to
+  p50 137 ms (prompt lane: 200 ms → 144 ms). Pure reordering — identical
+  inputs into both arms, identical RRF result — with one invariant preserved:
+  the dense-arm deadline (`abandonAfter`) is armed synchronously at dispatch,
+  not at the `await`, so the reordering cannot silently widen its timeout
+  budget. `vector.search`'s stage event now carries `overlapped: true`, since
+  the two stage timers no longer partition the total.
+
+- **`mode: none` only pays for a recall that could contribute — the wired pool
+  and its 4h dedup are checked first** (#371). Since a50f849 (#217), `mode:
+  none` — 91 % of prompts — ran a full-vault recall over ~955 memories and
+  threw away everything not reflex-wired: p50 210 ms against p50 10 ms before
+  19.08., with 83.5 % of those recalls injecting nothing. The lane now asks
+  two query-independent questions first — is any memory wired reflex at all,
+  and is at least one of them outside its 4h suppression window — and only
+  then runs the recall; when it runs, it is byte-identical, so no hit that
+  injects today is lost. Skips are visible as `recall_skipped` in
+  `prompt_hook_call`.
+
+- **`hook_recall` carries the session from the hook payload, and
+  `ollama_lifecycle` says `session_id: null` instead of the boot id** (#363).
+  cf411ca (#356) fixed the four hook-CLI lanes but not the daemon-side recall
+  emitter: `logHookRecall` declared `Omit<…, 'session_id'>`, the type forbade
+  the caller a session, and the boot UUID always won — on 22.08. 194
+  `hook_recall` events sat under exactly 4 ids, the same 4 as
+  `ollama_lifecycle`, i.e. 4 daemon boots. The value had long been in the
+  route (`hookSessionId`) and fell out at the emitter. `ollama_lifecycle` has
+  no session — `null` instead of a boot-id lie; the boot id stays as `run_id`
+  so prewarm→unload pairing and boots-per-day stay readable.
 
 - **Every generation call now names its own context window, and asks the model
   not to think** (#366, #367). `ollamaChat` is the only live chat client in the
