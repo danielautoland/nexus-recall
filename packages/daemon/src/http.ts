@@ -67,7 +67,7 @@ import type {
 } from "@bastra-recall/core";
 import type { EmbeddingBreakerSnapshot } from "./embedding-breaker.js";
 import { type Telemetry } from "./telemetry.js";
-import { handleHookReflex } from "./reflex.js";
+import { handleHookReflex, reflexPoolIds } from "./reflex.js";
 import { runPromptLane, type ClaudeHookPayload } from "./prompt-lane.js";
 import { runWriteLane, type WriteHookPayload } from "./write-lane.js";
 import { runBashPreLane, type BashHookPayload } from "./bash-pre-lane.js";
@@ -324,7 +324,13 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
           const self = `http://127.0.0.1:${req.socket.localPort ?? 6723}`;
           // #361: the prewarmer rides in from toolDeps — the lane fires it at
           // turn start and never awaits the embed behind it.
-          const out = await runPromptLane(payload, ppid, self, toolDeps.prewarmEmbedding);
+          // #371: the wired reflex pool rides in from the vault index. Mode
+          // "none" — 91% of prompts — can inject nothing else, so the lane
+          // uses it to decide whether the full-vault recall is worth paying
+          // for at all.
+          const out = await runPromptLane(payload, ppid, self, toolDeps.prewarmEmbedding, () =>
+            reflexPoolIds(vault),
+          );
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(out);
         })

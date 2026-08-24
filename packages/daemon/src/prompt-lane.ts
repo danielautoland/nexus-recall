@@ -294,6 +294,12 @@ export async function runPromptLane(
    *  forget by contract — this lane never awaits it (see below). Absent =
    *  no embedding provider wired at all. */
   prewarm?: Prewarmer,
+  /** #371: the ids of the memories the user wired as `recall_mode: reflex`,
+   *  read straight off the vault index by the route (in-memory, no I/O). Mode
+   *  "none" can inject nothing else, so this list is what decides whether the
+   *  recall below is worth paying for. Absent = no accessor wired (an older
+   *  caller, a unit test): the lane then recalls exactly as it did before. */
+  reflexPool?: () => string[],
 ): Promise<string> {
   const startedAt = Date.now();
 
@@ -368,6 +374,45 @@ export async function runPromptLane(
   const k = detectedMode === "generic" ? 3 : 5;
   const effectiveFloor = effectiveScoreFloor(detectedMode);
 
+  const sessionId = payload.session_id ?? "";
+  const state = await loadSessionState(sessionId);
+
+  // #371: in mode "none" the recall can only ever contribute a memory that
+  // the user wired as `recall_mode: reflex` (the filter below) and that this
+  // session has not already shown inside the 4h window (the dedup further
+  // down). Both questions are independent of the query and answerable in
+  // microseconds — the vault index and the session-state file are already in
+  // hand. Asked BEFORE the recall they turn ~210ms of full-vault hybrid search
+  // into nothing on exactly the prompts whose result was going to be thrown
+  // away. Measured on the 19.–24.08. log: 91% of prompts run in mode "none",
+  // 83.5% of those inject nothing, and 10.9% ran inside a window in which
+  // every wired memory was already suppressed.
+  //
+  // What this deliberately is NOT: a restriction of the recall's CANDIDATE
+  // SPACE to the wired pool. The floor of 50 in mode "none" means "top 4 of an
+  // arm over the WHOLE vault" — RRF_SCALE/(RRF_K + rank) ≥ 50 ⇔ rank ≤ 4 —
+  // and ranked against a two-document pool every wired memory scores 70–164 by
+  // construction, so the gate would stop gating and both conventions would
+  // inject on the first prompt of every 4h window instead of on the prompt
+  // they belong to (#371). The recall that still runs here is byte-identical
+  // to the one that ran before; only whether it runs at all is new.
+  let recallSkipped: "reflex-pool-empty" | "reflex-all-suppressed" | undefined;
+  if (detectedMode === "none" && reflexPool) {
+    const wired = reflexPool();
+    if (wired.length === 0) {
+      recallSkipped = "reflex-pool-empty";
+    } else {
+      let anyEligible = false;
+      for (const id of wired) {
+        if (!shouldDropHit(state.shown[id], await getLoadedMarkerMtime(id))) {
+          anyEligible = true;
+          break;
+        }
+      }
+      if (!anyEligible) recallSkipped = "reflex-all-suppressed";
+    }
+  }
+
   let resp: RecallResponse | null = null;
   let status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" = "ok";
   let errMsg: string | null = null;
@@ -378,7 +423,14 @@ export async function runPromptLane(
   // recall that DOES understand it never ran on ordinary work prompts. Now it
   // runs on every non-trivial prompt; what may inject in mode "none" is
   // filtered below to user-wired reflex memories at REQUIRED strength.
-  {
+  // #371 narrowed "every non-trivial prompt" to "every non-trivial prompt on
+  // which a wired memory could actually be injected" — see the gate above.
+  if (recallSkipped !== undefined) {
+    // The same outcome the filter below would have produced, without the
+    // search: no hits, and the status the telemetry series already carries for
+    // this case (`resp` stays null, so the `no-hits` line below cannot fire).
+    status = "no-hits";
+  } else {
     try {
       resp = await postJson<RecallResponse>(
         selfBaseUrl,
@@ -422,9 +474,6 @@ export async function runPromptLane(
     }
   }
   if (resp && filtered.length === 0) status = "no-hits";
-
-  const sessionId = payload.session_id ?? "";
-  const state = await loadSessionState(sessionId);
 
   // #217: Session-Dedup für Reflex-Hits (max 1×/4h pro Memory, wie hook.ts).
   // Danach id-Dedup gegen die Recall-Liste — Reflex ist das vom User
@@ -522,7 +571,9 @@ export async function runPromptLane(
     detected_mode: detectedMode,
     prompt_chars: prompt.length,
     daemon_url: selfBaseUrl,
-    daemon_reachable: resp !== null || reflexResp !== null,
+    // A skipped recall (#371) is not an unreachable daemon: the lane IS the
+    // daemon and the vault answered the question locally.
+    daemon_reachable: resp !== null || reflexResp !== null || recallSkipped !== undefined,
     hint_count: suppressed ? 0 : recallHits.length,
     reflex_hint_count: reflexKept.length,
     hint_tokens_est: blocks.length === 0 ? 0 : Math.ceil(blocks.join("\n").length / 4),
@@ -534,6 +585,7 @@ export async function runPromptLane(
     status: suppressed ? "suppressed" : status,
     error: errMsg,
     prewarm: prewarmOutcome,
+    recall_skipped: recallSkipped,
   });
 
   return stdout;
@@ -721,6 +773,14 @@ interface PromptHookTelemetry {
    *  "vector-arm-timeout"` (#342): the count of those on the FIRST assertion
    *  call of a turn is what the prewarm is supposed to drive to zero. */
   prewarm?: PrewarmOutcome;
+  /** #371: why mode "none" did not run a recall on this prompt —
+   *  "reflex-pool-empty" (no memory is wired as `recall_mode: reflex`, so the
+   *  mode-"none" filter could not have passed anything) or
+   *  "reflex-all-suppressed" (every wired memory is inside its 4h session
+   *  dedup window, so every hit would have been dropped). Absent means the
+   *  recall ran. This is the field that measures the fix: on a skipped prompt
+   *  `latency_ms_total` should sit in the pre-19.08. band. */
+  recall_skipped?: "reflex-pool-empty" | "reflex-all-suppressed";
 }
 
 async function writeTelemetry(payload: PromptHookTelemetry): Promise<void> {
