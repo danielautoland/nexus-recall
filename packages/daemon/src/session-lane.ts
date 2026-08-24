@@ -449,6 +449,7 @@ export async function runSessionLane(
   }
 
   await writeTelemetry({
+    session_id: payload.session_id ?? null,
     source: payload.source ?? null,
     project,
     queries: queries.length,
@@ -545,6 +546,10 @@ function formatTaxonomyBlock(conventions: ConventionLean[]): string {
 // Throttle, damit Hook und Daemon nicht am selben Tag doppelt stagen.
 
 interface SessionHookTelemetry {
+  /** #356: the Claude Code session this call belongs to — the payload's
+   *  session_id, so per-session aggregation is possible. A synthetic UUID is
+   *  the fallback only when the payload carried none. */
+  session_id?: string | null;
   source: string | null;
   project: string | null;
   queries: number;
@@ -569,12 +574,15 @@ async function writeTelemetry(payload: SessionHookTelemetry): Promise<void> {
     const logDir = envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? defaultLogDir();
     await mkdir(logDir, { recursive: true });
     const ts = new Date().toISOString();
+    // The session_id from the Claude payload is real session state — fall
+    // back to a synthetic UUID only if no payload session was given (#356).
+    const { session_id: payloadSessionId, ...rest } = payload;
     const event = {
       kind: "session_hook_call",
       ts,
-      session_id: randomUUID(),
+      session_id: payloadSessionId ?? randomUUID(),
       hook_version: HOOK_VERSION,
-      ...payload,
+      ...rest,
     };
     const file = join(logDir, `events-${ts.slice(0, 10)}.jsonl`);
     await appendFile(file, JSON.stringify(event) + "\n", "utf8");

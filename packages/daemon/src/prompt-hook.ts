@@ -115,6 +115,7 @@ async function writeClientTelemetry(
   status: "daemon-unreachable" | "timeout" | "error",
   error: string | null,
   startedAt: number,
+  sessionId: string | null,
 ): Promise<void> {
   if ((envFirst("BASTRA_TELEMETRY", "NEXUS_TELEMETRY") ?? "on").toLowerCase() === "off") return;
   try {
@@ -125,7 +126,9 @@ async function writeClientTelemetry(
     const event = {
       kind: "prompt_hook_call",
       ts,
-      session_id: randomUUID(),
+      // The session_id from the Claude payload is real session state — fall
+      // back to a synthetic UUID only if no payload session was given (#356).
+      session_id: sessionId ?? randomUUID(),
       hook_version: HOOK_VERSION,
       detected_mode: "none",
       prompt_chars: 0,
@@ -171,7 +174,15 @@ async function main(): Promise<void> {
         : e.message === "timeout"
           ? "timeout"
           : "error";
-    await writeClientTelemetry(url, status, status === "error" ? (e.message ?? String(err)) : null, startedAt);
+    const p = payload as { session_id?: unknown } | null;
+    const hookSessionId = typeof p?.session_id === "string" ? p.session_id : null;
+    await writeClientTelemetry(
+      url,
+      status,
+      status === "error" ? (e.message ?? String(err)) : null,
+      startedAt,
+      hookSessionId,
+    );
   }
 }
 
