@@ -9,7 +9,7 @@ import {
   parseTranscriptFile,
   normalizeTurns,
   type TranscriptTurn,
-} from "../src/stop-hook.js";
+} from "../src/stop-lane.js";
 
 function userTurn(content: string): TranscriptTurn {
   return { role: "user", content };

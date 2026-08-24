@@ -72,6 +72,7 @@ import { runPromptLane, type ClaudeHookPayload } from "./prompt-lane.js";
 import { runWriteLane, type WriteHookPayload } from "./write-lane.js";
 import { runBashPreLane, type BashHookPayload } from "./bash-pre-lane.js";
 import { runBashFailLane, type BashFailPayload } from "./bash-fail-lane.js";
+import { dispatchLaneRoutes } from "./http-lane-routes.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
@@ -389,6 +390,11 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
         });
       return;
     }
+
+    // #369, same pattern, three more lanes: /hook/stop, /hook/session,
+    // /hook/todo. Their routes live in http-lane-routes.ts (file-size
+    // convention) — the contract is identical to the four above.
+    if (dispatchLaneRoutes(req, res, method, url)) return;
 
     // #144: lightweight act-signal (PostToolUse:Bash). No recall, no injection —
     // only matches the excerpt against open loadedMemories episodes so

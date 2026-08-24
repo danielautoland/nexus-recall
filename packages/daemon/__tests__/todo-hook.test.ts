@@ -1,25 +1,25 @@
 /**
- * Tests for todo-hook.ts (Issue #36).
+ * Tests for the TodoWrite lane (Issue #36).
  *
  * Strategy: unit-test the pure helpers (extractTopicsFromTodos,
  * isLowConfidence, formatHintBlock) directly, then end-to-end against a
  * mock daemon HTTP server.
+ *
+ * #369 moved the pipeline out of todo-hook.ts into todo-lane.ts (the hook is a
+ * thin client now), so the end-to-end cases call `runTodoLane` against the mock
+ * daemon instead of spawning the CLI: same payloads, same assertions, no tsx
+ * process per case — and it covers the path the compiled stub reaches.
  */
-import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   extractTopicsFromTodos,
   isLowConfidence,
   formatHintBlock,
+  runTodoLane,
   type RecallHit,
-} from "../src/todo-hook.ts";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH = resolve(__dirname, "..", "src", "todo-hook.ts");
+} from "../src/todo-lane.ts";
 
 // ─── Pure unit tests ─────────────────────────────────────────────────────
 
@@ -126,24 +126,16 @@ function startMockDaemon(handler: (req: IncomingMessage, res: ServerResponse) =>
   });
 }
 
-function runHook(
-  payload: object,
-  env: Record<string, string>,
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((ok, ko) => {
-    const child = spawn("npx", ["tsx", HOOK_PATH], {
-      env: { ...process.env, ...env, BASTRA_TELEMETRY: "off" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
-    child.on("error", ko);
-    child.on("close", (code) => ok({ stdout, stderr, code: code ?? -1 }));
-    child.stdin.write(JSON.stringify(payload));
-    child.stdin.end();
-  });
+/** The lane call as the route makes it, with telemetry off for the duration. */
+async function runLane(payload: object, daemonUrl: string): Promise<{ stdout: string }> {
+  const before = process.env.BASTRA_TELEMETRY;
+  process.env.BASTRA_TELEMETRY = "off";
+  try {
+    return { stdout: await runTodoLane(payload, daemonUrl) };
+  } finally {
+    if (before === undefined) delete process.env.BASTRA_TELEMETRY;
+    else process.env.BASTRA_TELEMETRY = before;
+  }
 }
 
 test("integration — TodoWrite with topical todos yields hints + type=project-fact filter", async () => {
@@ -178,7 +170,7 @@ test("integration — TodoWrite with topical todos yields hints + type=project-f
   });
 
   try {
-    const { stdout } = await runHook(
+    const { stdout } = await runLane(
       {
         hook_event_name: "PreToolUse",
         tool_name: "TodoWrite",
@@ -191,7 +183,7 @@ test("integration — TodoWrite with topical todos yields hints + type=project-f
           ],
         },
       },
-      { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
+      `http://127.0.0.1:${daemon.port}`,
     );
 
     const parsed = JSON.parse(stdout) as {
@@ -221,13 +213,13 @@ test("integration — low-confidence todos emit empty object", async () => {
     res.end('{"hits":[],"vault_size":0,"latency_ms":1,"recall_id":"x"}');
   });
   try {
-    const { stdout } = await runHook(
+    const { stdout } = await runLane(
       {
         hook_event_name: "PreToolUse",
         tool_name: "TodoWrite",
         tool_input: { todos: [{ content: "ok", status: "pending" }] },
       },
-      { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
+      `http://127.0.0.1:${daemon.port}`,
     );
     assert.equal(stdout.trim(), "{}");
     assert.equal(hit, false, "daemon must not be called for low-confidence todos");
@@ -242,13 +234,13 @@ test("integration — wrong tool_name emits empty object", async () => {
     res.end("{}");
   });
   try {
-    const { stdout } = await runHook(
+    const { stdout } = await runLane(
       {
         hook_event_name: "PreToolUse",
         tool_name: "Write",
         tool_input: { file_path: "/tmp/x.ts" },
       },
-      { BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}` },
+      `http://127.0.0.1:${daemon.port}`,
     );
     assert.equal(stdout.trim(), "{}");
   } finally {

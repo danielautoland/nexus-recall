@@ -3,7 +3,12 @@
  *
  * One binary, every hook entry point as a subcommand: `bastra-hook prompt`
  * (UserPromptSubmit) and `bastra-hook write` (PreToolUse Write/Edit). New
- * lanes join as new subcommands and inherit the fast start for free.
+ * lanes join as new subcommands and inherit the fast start for free — which
+ * is what #369 did for `stop`, `session` and `todo`: those three were still
+ * spawning a full node interpreter (~75-78ms measured, against ~25ms here)
+ * because they had no daemon-side lane to POST to. Stop fires at the end of
+ * EVERY answer, so it was paying that per turn.
+ *
  * The statusline rides along the same way (#347 stage 2): `bastra-hook
  * statusline` lazily imports the built statusline bundle — not a lane, just
  * an entry point that inherits the compiled start.
@@ -36,11 +41,34 @@ import { shouldSkipPath } from "../src/hook-skip.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
-const STUB_VERSION = "0.4.0-stub";
+const STUB_VERSION = "0.5.0-stub"; // 0.5.0 = + stop/session/todo lanes (#369)
 
-type Lane = "prompt" | "write" | "bash-pre" | "bash-fail";
-const LANES = new Set<Lane>(["prompt", "write", "bash-pre", "bash-fail"]);
+type Lane = "prompt" | "write" | "bash-pre" | "bash-fail" | "stop" | "session" | "todo";
+const LANES = new Set<Lane>([
+  "prompt", "write", "bash-pre", "bash-fail", "stop", "session", "todo",
+]);
 const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+/** The lanes whose failure the CLIENT logs. The three lanes added in #369 have
+ *  their own event kinds (save_eval_call / session_hook_call / todo_hook_call)
+ *  that describe a pipeline which did not run at all when the daemon is
+ *  unreachable — writing a `hook_call` row for them would pollute a series
+ *  that measures something else. Their node clients stay silent too. */
+const CLIENT_TELEMETRY_LANES = new Set<Lane>(["prompt", "write", "bash-pre", "bash-fail"]);
+
+/**
+ * Per-lane wall-clock budget. Two lanes do not fit the 600ms recall budget:
+ *
+ *  · `stop` scans a transcript, and its node client has always used its own
+ *    1000ms (BASTRA_STOP_HOOK_TIMEOUT_MS). Its answer is `{}` either way, so
+ *    an early client timeout would only orphan work the daemon then finishes.
+ *  · `session` mirrors what the fat session hook allowed itself: the lane
+ *    budget plus 100ms, which is where its kill switch used to fire.
+ */
+function laneBudgetMs(lane: string): number {
+  if (lane === "stop") return envInt("BASTRA_STOP_HOOK_TIMEOUT_MS", 1000);
+  if (lane === "session") return envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS") + 100;
+  return HOOK_TIMEOUT_MS;
+}
 
 interface HookPayload {
   session_id?: string;
@@ -215,19 +243,24 @@ async function main(): Promise<void> {
     path = "/hook/prompt";
     body = { payload, client_ppid: process.ppid };
   } else {
-    // bash-pre / bash-fail: no client-side content gates — the pattern
-    // tables and invokesOwnBinary are hot-swappable lane logic (#344).
+    // bash-pre / bash-fail / stop / session / todo: no client-side content
+    // gates. The pattern tables, invokesOwnBinary, the Stop heuristics'
+    // event/stop_hook_active gates and the TodoWrite confidence threshold are
+    // hot-swappable lane logic (#344) — and for the three #369 lanes the
+    // registration already guarantees the event, so a gate here would only
+    // duplicate a check the lane makes in microseconds.
     path = `/hook/${lane}`;
     body = { payload };
   }
 
-  const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+  const remainingMs = Math.max(50, laneBudgetMs(lane) - (Date.now() - startedAt));
   try {
     const out = await postLane(url, path, body, remainingMs);
     emitOnce(out);
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     emitOnce("{}");
+    if (!CLIENT_TELEMETRY_LANES.has(lane)) return;
     const status = classifyError(e);
     await writeClientTelemetry(
       lane,
@@ -256,7 +289,7 @@ if (process.argv[2] === "statusline") {
   const killSwitch = setTimeout(() => {
     emitOnce("{}");
     process.exit(0);
-  }, HOOK_TIMEOUT_MS + 50);
+  }, laneBudgetMs(process.argv[2] ?? "") + 50);
   killSwitch.unref?.();
 
   main()

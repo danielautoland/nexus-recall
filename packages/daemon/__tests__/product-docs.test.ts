@@ -20,7 +20,7 @@ import { Telemetry } from "../src/telemetry.js";
 import type { ToolDeps } from "../src/tool-handlers.js";
 import { saveProductDocHandler } from "../src/product-doc-handler.js";
 import { formatDokuBlock } from "../src/doku-block.js";
-import { appendProductDocHint, type SaveSuggestion } from "../src/stop-hook.js";
+import { appendProductDocHint, type SaveSuggestion } from "../src/stop-lane.js";
 
 async function makeDeps(): Promise<{ deps: ToolDeps; dir: string; close: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "bastra-product-docs-"));
