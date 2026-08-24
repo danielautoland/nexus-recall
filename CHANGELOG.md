@@ -4,7 +4,7 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.1] — 2026-08-24
 
 ### Added
 
@@ -346,6 +346,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `import-vault.ts` counted attempts in `byAdapter`, not imports; the increment
   moved next to the save. And the `update-check.ts` docstring described an
   auto-apply that has lived elsewhere since #81. Reported by zzallirog.
+
+- **The audit log reads stat and content through one file handle, and
+  `abandonAfter()` clamps its timer at the sink** — the release CodeQL pass
+  flagged both: the ledger's separate `stat` + `readFile` left a TOCTOU window
+  a concurrent rotate could fall into, and the deadline timer trusted its
+  caller to bound the duration. `readAll()` now opens once and stats/reads the
+  same descriptor; no timer outlives `MAX_DEADLINE_MS` (10 s) regardless of
+  what a future caller passes.
 
 ## [0.9.0] — 2026-08-02
 
