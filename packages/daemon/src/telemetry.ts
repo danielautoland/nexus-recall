@@ -464,7 +464,13 @@ export class Telemetry {
   }
 
   async logHookRecall(
-    payload: Omit<HookRecallEvent, "kind" | "ts" | "session_id">,
+    // #363: session_id optional wie bei logHookReflex/logHookAct. Der Hook
+    // liefert die echte Claude-Session-id mit (prompt-lane sendet sie im
+    // /hook/recall-Body, die Route reicht sie durch) — sie überschreibt via
+    // Spread die Daemon-Boot-UUID. Ohne diesen Hatch stempelte jeder der 194
+    // hook_recall-Events eines Tages dieselben 4 Boot-ids: keine Auswertung
+    // auf Recall-Ebene konnte nach Session oder Turn gruppieren (#305, #361).
+    payload: Omit<HookRecallEvent, "kind" | "ts" | "session_id"> & { session_id?: string },
   ): Promise<void> {
     // "surfaced"-Notice VOR dem enabled-Gate — der Hook-Pfad ist der
     // Löwenanteil des Traffics; die Map-Notice ist UI, nicht Persistenz. Das Band filtert.
@@ -513,13 +519,19 @@ export class Telemetry {
   }
 
   async logOllamaLifecycle(
-    payload: Omit<OllamaLifecycleEvent, "kind" | "ts" | "session_id">,
+    payload: Omit<OllamaLifecycleEvent, "kind" | "ts" | "session_id" | "run_id">,
   ): Promise<void> {
     if (!this.enabled) return;
     await this.write({
       kind: "ollama_lifecycle",
       ts: new Date().toISOString(),
-      session_id: this.sessionId,
+      // #363: hier gibt es keine Session — der prewarm läuft im Boot-Pfad, der
+      // unload auf einem Timer. `null` sagt das; die Boot-UUID behauptete
+      // stattdessen eine Session, die nie existierte. Die Boot-id bleibt
+      // erhalten, aber als run_id: nur so bleibt das prewarm→unload-Pairing
+      // über Daemon-Starts hinweg auswertbar (#109).
+      session_id: null,
+      run_id: this.sessionId,
       ...payload,
     });
   }

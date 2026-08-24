@@ -256,8 +256,24 @@ export interface HookReflexEvent extends BaseEvent {
  * Aus den Paaren prewarm→unload lässt sich die RAM-Residenz des Embedding-
  * Modells schätzen — die Messgröße hinter dem #78-Energie-Design.
  */
-export interface OllamaLifecycleEvent extends BaseEvent {
+export interface OllamaLifecycleEvent extends Omit<BaseEvent, "session_id"> {
   kind: "ollama_lifecycle";
+  /**
+   * #363: immer `null` — und das ist die Aussage, nicht ein fehlendes Feld.
+   * Beide Emitter laufen ohne jede Claude-Session: der prewarm im Boot-Pfad
+   * (index.ts), der unload auf einem 60-s-Timer (daemon-jobs.ts). Vorher
+   * stempelte der Sink hier seine Boot-UUID; die sah in `events-*.jsonl` wie
+   * eine Session aus und war der Grund, dass "4 Sessions" am 22.08. in
+   * Wahrheit 4 Daemon-Starts waren.
+   */
+  session_id: null;
+  /**
+   * #363: die Daemon-Boot-id, jetzt unter dem Namen, der sie beschreibt.
+   * Nötig, weil das prewarm→unload-Pairing (siehe Doc-Kommentar oben) sonst
+   * mit dem session_id-Feld verschwinden würde — die id war echt, nur falsch
+   * beschriftet. Identisch mit `Telemetry.runId()` / `AuditEntry.session_id`.
+   */
+  run_id: string;
   action: "prewarm" | "unload";
   model: string;
   ok: boolean;

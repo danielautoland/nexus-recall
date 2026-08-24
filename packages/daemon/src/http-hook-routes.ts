@@ -364,6 +364,13 @@ export function handleHookRecall(
         telemetry.logHookRecall({
           recall_id: recallId,
           query,
+          // #363: die Claude-Session-id aus dem Hook-Payload ins Event — ohne
+          // sie stempelt der Sink seine Boot-UUID und keine Auswertung auf
+          // Recall-Ebene kann nach Session oder Turn gruppieren. Der Wert war
+          // längst hier (oben als hookSessionId gelesen, für rotateTurn und
+          // matchLoadedMemories genutzt), nur nicht am Event. Gleiche Form wie
+          // logHookAct/logHookReflex: fehlt sie, bleibt die Boot-UUID.
+          ...(hookSessionId ? { session_id: hookSessionId } : {}),
           // #351: batch width when this recall is one phrasing of a batch.
           query_count: typeof body.batch_of === "number" ? body.batch_of : undefined,
           topics: Array.isArray(body.topics)
