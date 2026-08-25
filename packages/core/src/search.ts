@@ -44,15 +44,40 @@ export interface RecallHit {
   };
 }
 
-/** Hat ein Query-Term auf dem hand-geschriebenen `recall_when_flat` gematcht?
- *  MiniSearch `match` ist `{ term: fields[] }`. `recall_when_expanded_flat`
- *  zählt bewusst NICHT — das ist doc2query-generiert, nicht vom Autor als
- *  Trigger deklariert (#148: nur „deliberate" Cross-Scope-Relevanz). */
-function matchedRecallWhen(r: { match?: Record<string, string[]> }): boolean {
+/**
+ * Hat ein Query-Term EXAKT auf dem hand-geschriebenen `recall_when_flat`
+ * gematcht?
+ *
+ * MiniSearch `match` ist `{ term: fields[] }`, wobei `term` der **Dokument**-
+ * Term ist, nicht der Query-Term — bei einem Prefix- oder Fuzzy-Treffer stehen
+ * dort Wörter, die in der Query gar nicht vorkommen. Die frühere Fassung fragte
+ * nur, ob irgendein solcher Term im Trigger-Feld lag, und beantwortete damit
+ * eine andere Frage als die, für die das Flag existiert.
+ *
+ * Der Unterschied ist keine Feinheit: Das Flag bedeutet „der Autor hat GENAU
+ * diesen Kontext als Auslöser deklariert" und schaltet daran zwei Dinge frei —
+ * den Cross-Scope-Bypass (`hook-skip.ts`) und die Unterdrückung von
+ * `weak_result` (`weak-result.ts`). Beides sind Aussagen über Absicht, und
+ * Absicht lässt sich nicht aus einer Tippfehler-Nachbarschaft ableiten:
+ * gemessen setzte `obsidan` (ein Edit) und `tripwir` (ein Präfix) das Flag auf
+ * Memories, deren Trigger diese Wörter nie enthielten.
+ *
+ * Deshalb zählt ab jetzt nur, was auch in der Query steht. `queryTerms` sind
+ * die produktiv tokenisierten, gefalteten Terme der Query; ist das Set leer
+ * (kein Caller-Kontext), bleibt das Flag false — lieber ein Anker zu wenig als
+ * einer, der Absicht behauptet, die es nicht gibt.
+ *
+ * `recall_when_expanded_flat` zählt weiterhin NICHT: doc2query-generiert, vom
+ * Autor nicht als Trigger geschrieben (#148).
+ */
+function matchedRecallWhen(
+  r: { match?: Record<string, string[]> },
+  queryTerms: ReadonlySet<string>,
+): boolean {
   const match = r.match;
-  if (!match) return false;
-  for (const fields of Object.values(match)) {
-    if (fields.includes("recall_when_flat")) return true;
+  if (!match || queryTerms.size === 0) return false;
+  for (const [term, fields] of Object.entries(match)) {
+    if (fields.includes("recall_when_flat") && queryTerms.has(term.toLowerCase())) return true;
   }
   return false;
 }
@@ -310,6 +335,16 @@ export class SearchIndex {
     return fuzzy ? { fuzzy } : undefined;
   }
 
+  /**
+   * Die gefalteten Query-Terme, wie MiniSearch sie sieht — Grundlage für den
+   * exakten Anker (`matchedRecallWhen`). Derselbe Tokenizer wie auf der
+   * Index-Seite, plus MiniSearchs Default-`processTerm` (`toLowerCase`), sonst
+   * verfehlte ein großgeschriebener Query-Term seinen eigenen Dokumentterm.
+   */
+  private queryTermSet(lexQuery: string): Set<string> {
+    return new Set(tokenizeWithIdentifiers(lexQuery).map((t) => t.toLowerCase()));
+  }
+
   recall(query: string, opts: RecallOptions = {}): RecallHit[] {
     // #162: Query-Hygiene für ALLE Caller (MCP-Recall, Hooks, Bridge, Dedup) —
     // Längen-Cap, Whitespace-Kollaps, dangling Operatoren. Vor dem Cache-Key,
@@ -352,6 +387,7 @@ export class SearchIndex {
     const tBm = stage.start("bm25.search");
     const lexQuery = this.bm25Query(query, opts);
     const raw = this.mini.search(lexQuery, this.bm25SearchOptions(opts));
+    const queryTerms = this.queryTermSet(lexQuery);
     stage.end("bm25.search", tBm, {
       raw_hit_count: raw.length,
       query_chars: query.length,
@@ -363,7 +399,7 @@ export class SearchIndex {
       return true;
     });
 
-    const { ranked, pool } = this.rankBm25(filtered, k, opts, stage);
+    const { ranked, pool } = this.rankBm25(filtered, k, opts, stage, queryTerms);
 
     this.storeQueryCache(cacheKey, ranked, pool);
 
@@ -391,6 +427,8 @@ export class SearchIndex {
     k: number,
     opts: RecallOptions,
     stage: StageEmitter,
+    /** Gefaltete Query-Terme für den exakten Anker — siehe `matchedRecallWhen`. */
+    queryTerms: ReadonlySet<string>,
   ): { ranked: RecallHit[]; pool: RecallHit[] } {
     // Pool-Size für Hop-Seeds: max(k*4, 20). Multi-Hop soll Nachbarn auch
     // für Hits sehen, die knapp unter dem k-Cut liegen — sonst gehen die
@@ -405,7 +443,7 @@ export class SearchIndex {
       topic_path: r.topic_path as string[],
       score: round(r.score),
       matched_terms: r.terms ?? [],
-      matched_recall_when: matchedRecallWhen(r),
+      matched_recall_when: matchedRecallWhen(r, queryTerms),
       mode: "bm25" as const,
       hop: "direct" as const,
     }));
@@ -565,6 +603,7 @@ export class SearchIndex {
     const bm25 = this.mini
       .search(lexQuery, this.bm25SearchOptions(opts))
       .filter((r) => passesRecallFilters(r, opts));
+    const queryTerms = this.queryTermSet(lexQuery);
     const bm25Top = bm25.slice(0, 50);
     stage.end("bm25.search", tBm, {
       raw_hit_count: bm25.length,
@@ -618,7 +657,7 @@ export class SearchIndex {
       // Reuse the BM25 results this call already computed — no recursion into
       // the public pipeline, so the stage sequence stays monotonic and emits
       // exactly one `done` and one candidate-pool callback.
-      const { ranked: bm25Only, pool: bm25Pool } = this.rankBm25(bm25, k, opts, stage);
+      const { ranked: bm25Only, pool: bm25Pool } = this.rankBm25(bm25, k, opts, stage, queryTerms);
       // #342: a timeout degradation must NOT be cached. The cache key varies on
       // `embeddings.size()`, which a cold model does not change — so caching
       // here would freeze the one-armed answer for the full TTL and every
@@ -682,7 +721,7 @@ export class SearchIndex {
         matched_terms: bm?.terms ?? [],
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.
-        matched_recall_when: bm ? matchedRecallWhen(bm) : false,
+        matched_recall_when: bm ? matchedRecallWhen(bm, queryTerms) : false,
         mode: inBoth ? "hybrid" : bm ? "bm25" : "vector",
         hop: "direct" as const,
         // #230: Rang-Herkunft des skalierten Scores durchreichen (nur Hybrid).

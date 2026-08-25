@@ -1066,3 +1066,121 @@ test("#371 — once every wired memory is session-suppressed, the recall stops r
     await rm(logDir, { recursive: true, force: true });
   }
 });
+
+/**
+ * P0 (docs/recall-performance-handoff.md §4.6): Fällt der Vector-Arm aus, liefert
+ * `recallHybrid` rohe MiniSearch-Scores statt fusionierter. Die sind nach oben
+ * offen — im belegten Incident stand 405.584 dort, wo fusioniert höchstens
+ * 163,934 möglich sind. Die Lane las den `unfused`-Marker nicht und maß die
+ * rohen Werte an MUST_LOAD_SCORE: alles wurde REQUIRED, umging den Backoff und
+ * wurde als „beide Suchpfade waren sich einig" angekündigt.
+ */
+test("formatHintBlock — unfused never claims both search paths agreed", () => {
+  const hits: RecallHit[] = [
+    { id: "raw-bm25-hit", title: "R", type: "lesson", scope: "p", summary: "s", score: 405584.777 },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", "generic", false, true);
+  assert.doesNotMatch(block, /both search paths agreed/);
+  assert.match(block, /semantic search is off/i);
+  assert.match(block, /raw-bm25-hit/, "the hit itself must still be offered");
+});
+
+test("formatHintBlock — unfused shows no REQUIRED band and no score number", () => {
+  const hits: RecallHit[] = [
+    { id: "big", title: "B", type: "lesson", scope: "p", summary: "s", score: 405584.777 },
+    { id: "small", title: "S", type: "lesson", scope: "p", summary: "s", score: 61.2 },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", "generic", false, true);
+  assert.doesNotMatch(block, /REQUIRED/, "an open-ended scale cannot produce a REQUIRED band");
+  assert.doesNotMatch(block, /OPTIONAL \(score/, "nor an OPTIONAL band");
+  assert.doesNotMatch(block, /405584|405585/, "the raw number invites a comparison it cannot support");
+  assert.match(block, /big/);
+  assert.match(block, /small/, "below the old floor is meaningless here — the hit stays");
+});
+
+test("formatHintBlock — the fused path keeps its bands and its number", () => {
+  const hits: RecallHit[] = [
+    { id: "fused", title: "F", type: "lesson", scope: "p", summary: "s", score: 152.4 },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", "generic", false, false);
+  assert.match(block, /both search paths agreed/);
+  assert.match(block, /score 152/, "on the fused scale the number is comparable and stays");
+});
+
+test("integration — P0: an unfused recall gets no REQUIRED bypass out of the backoff", async () => {
+  // Der belegte Incident: Vector-Arm in die Deadline gelaufen, `score` roh bei
+  // 405.584. Die alte Lane las das als REQUIRED (>= 100), umging damit den
+  // Backoff und behauptete Einigkeit zweier Suchpfade, von denen nur einer lief.
+  // Ein heißes Suppression-Fenster ist hier der Prüfstand: Ohne Bypass MUSS die
+  // Unterdrückung greifen.
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const stateDir = await mkdtemp(join(tmpdir(), "bastra-prompt-unfused-"));
+  const sessionId = "prompt-unfused-no-bypass";
+  await writeFile(
+    join(stateDir, `${sessionId}.json`),
+    JSON.stringify({
+      shown: {},
+      sources: {
+        "prompt-lookup": { streak: 6, at: Date.now() - 1000, ids: ["old-hit"], skipped: 0 },
+      },
+    }),
+    "utf8",
+  );
+
+  const daemon = await startMockDaemon((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/hook/recall") {
+      res.end(
+        JSON.stringify({
+          hits: [
+            {
+              id: "raw-scale-hit",
+              title: "Raw",
+              type: "lesson",
+              scope: "other-project",
+              summary: "reached the lane on the unfused scale",
+              score: 405584.777,
+            },
+          ],
+          vault_size: 989,
+          latency_ms: 400,
+          recall_id: "t",
+          unfused: true,
+          degraded: "vector-arm-timeout",
+        }),
+      );
+    } else {
+      res.end("{}");
+    }
+  });
+
+  try {
+    const { stdout } = await runHook(
+      {
+        hook_event_name: "UserPromptSubmit",
+        // Kein Retrieval-Wortlaut: Die Retrieval-Ausnahme darf den Test nicht
+        // von hinten retten, geprüft wird allein der fehlende REQUIRED-Bypass.
+        prompt: "ich baue hier gerade eine funktion um und schaue mir den code an",
+        session_id: sessionId,
+        cwd: process.cwd(),
+      },
+      {
+        BASTRA_HTTP_URL: `http://127.0.0.1:${daemon.port}`,
+        BASTRA_HOOK_STATE_DIR: stateDir,
+        BASTRA_PROMPT_HINTS: "all",
+      },
+    );
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } };
+    const ctx = parsed.hookSpecificOutput?.additionalContext ?? "";
+    assert.doesNotMatch(ctx, /both search paths agreed/, "only one path ran — do not claim two");
+    if (ctx.includes("raw-scale-hit")) {
+      assert.doesNotMatch(ctx, /REQUIRED/, "a raw score must not be presented as a REQUIRED band");
+      assert.doesNotMatch(ctx, /405584|405585/, "the raw number must not be shown as a comparable score");
+    }
+  } finally {
+    await daemon.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});

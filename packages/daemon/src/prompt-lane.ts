@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto";
 import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
-import { requiredHeadline } from "./band-wording.js";
+import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
@@ -103,6 +103,21 @@ interface RecallResponse {
   weak_result?: boolean;
   /** #230: stricter subset of weak_result — the fact has no home in this vault. */
   no_home?: boolean;
+  /**
+   * #302/P0: RRF lief NICHT — der Vector-Arm fehlte, lief in seine Deadline
+   * oder fiel aus, und `score` trägt rohe MiniSearch-Werte statt der fusionierten
+   * Skala. Die sind nach oben offen (sechsstellig auf einem echten Vault), also
+   * beschreiben die Floors 50/100 dort gar nichts.
+   *
+   * Die Lane las das Feld bisher nicht und maß rohe Werte trotzdem an
+   * MUST_LOAD_SCORE: alles wurde REQUIRED, umging den Backoff und wurde als
+   * „beide Suchpfade waren sich einig" angekündigt, während nur einer lief.
+   */
+  unfused?: boolean;
+  /** #342: warum die Fusion ausfiel — `vector-arm-timeout` | `vector-arm-error`
+   *  | `vector-arm-empty`. Trennt „diese Maschine degradiert gerade" von
+   *  „Embeddings sind hier aus". */
+  degraded?: string;
 }
 
 /** #217 Reflex-Lane: lean hit vom /hook/reflex-Endpoint. */
@@ -517,11 +532,22 @@ export async function runPromptLane(
     // an diesem Backoff komplett vorbei (#217): vom User verdrahtet = nie Noise.
     const entry = state.sources?.[BACKOFF_SOURCE];
     consumedForEmit = await wasEmitConsumed(entry);
-    const hasRequired = recallHits.some((h) => h.score >= MUST_LOAD_SCORE);
+    // P0: Auf der unfused Skala ist `>= MUST_LOAD_SCORE` keine Aussage — rohe
+    // BM25-Werte reißen die 100 fast immer. Ein Bypass daraus hieße: Der
+    // Backoff hört genau dann auf zu greifen, wenn der Recall am wenigsten
+    // weiß. Ohne Fusion gibt es deshalb kein REQUIRED und keinen Bypass.
+    const hasRequired =
+      resp?.unfused !== true && recallHits.some((h) => h.score >= MUST_LOAD_SCORE);
     const decision = decideBackoff(entry, consumedForEmit, hasRequired);
     backoffStreak = decision.streak;
     suppressed = detectedMode === "retrieval" ? false : decision.suppress;
-    const block = formatHintBlock(recallHits, project, detectedMode, resp?.weak_result === true);
+    const block = formatHintBlock(
+      recallHits,
+      project,
+      detectedMode,
+      resp?.weak_result === true,
+      resp?.unfused === true,
+    );
     if (suppressed) {
       // Suppressed drops only the recall block (#161); reflex still emits.
       suppressedTokensEst = Math.ceil(block.length / 4);
@@ -580,6 +606,8 @@ export async function runPromptLane(
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     backoff_streak: backoffStreak,
+    ...(resp?.unfused === true ? { unfused: true } : {}),
+    ...(resp?.degraded ? { degraded: resp.degraded } : {}),
     suppressed,
     suppressed_tokens_est: suppressedTokensEst,
     status: suppressed ? "suppressed" : status,
@@ -593,18 +621,32 @@ export async function runPromptLane(
 
 // ─── formatting ─────────────────────────────────────────────────────────────
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
+  // P0: Auf der unfused Skala ist die Zahl nicht vergleichbar — weder mit den
+  // Bändern noch zwischen zwei Aufrufen. Sie wegzulassen ist ehrlicher, als
+  // eine Größenordnung zu zeigen, die zum Vergleichen einlädt.
+  return hideScore
+    ? `- ${h.id} (${h.type}): ${summary}`
+    : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-export function formatHintBlock(hits: RecallHit[], project: string | null, mode: DetectedMode, weak = false): string {
+export function formatHintBlock(
+  hits: RecallHit[],
+  project: string | null,
+  mode: DetectedMode,
+  weak = false,
+  unfused = false,
+): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const head = `<recall-hints surface="claude-code" trigger="prompt-lookup"${projAttr}>`;
   const tail = `</recall-hints>`;
 
-  const required = hits.filter((h) => h.score >= MUST_LOAD_SCORE);
-  const optional = hits.filter((h) => h.score < MUST_LOAD_SCORE);
+  // P0: Ohne Fusion gibt es keine Bänder. Die Werte stammen aus einer offenen
+  // Skala, auf der die 100 kein Signal ist — also wird nicht gebandet, sondern
+  // gesagt, woran das Modell die Treffer stattdessen misst: Titel und Summary.
+  const required = unfused ? [] : hits.filter((h) => h.score >= MUST_LOAD_SCORE);
+  const optional = unfused ? [] : hits.filter((h) => h.score < MUST_LOAD_SCORE);
   const sections: string[] = [];
 
   if (mode === "retrieval") {
@@ -624,11 +666,20 @@ export function formatHintBlock(hits: RecallHit[], project: string | null, mode:
         `if the vault does not answer it, write that you do not know instead of guessing. ` +
         `Pre-recalled candidates for this prompt:`,
     );
-  } else {
+  } else if (!unfused) {
     sections.push(
       `Pre-recall found memories both search paths agreed on for this prompt ` +
         `(score >=${MUST_LOAD_SCORE}). Load them via bastra-recall:load_memory before answering.`,
     );
+  }
+
+  if (unfused) {
+    // Die Ankündigung darf nicht behaupten, ein zweiter Pfad habe zugestimmt —
+    // es lief nur einer. `unfusedHeadline` sagt genau das, in derselben
+    // Wortwahl, die die Write-Lane bereits benutzt.
+    sections.push(unfusedHeadline("this prompt"));
+    sections.push("");
+    for (const h of hits) sections.push(formatHintLine(h, true));
   }
 
   if (required.length > 0) {
@@ -781,6 +832,20 @@ interface PromptHookTelemetry {
    *  recall ran. This is the field that measures the fix: on a skipped prompt
    *  `latency_ms_total` should sit in the pre-19.08. band. */
   recall_skipped?: "reflex-pool-empty" | "reflex-all-suppressed";
+  /**
+   * P0: Dieser Aufruf lief OHNE Fusion — nur der lexikalische Arm, `score` auf
+   * roher Skala, keine Bänder, kein REQUIRED, kein Backoff-Bypass. Absent =
+   * regulär fusioniert.
+   *
+   * Die Lane las den Zustand vorher nicht, also war ein degradierter Aufruf in
+   * ihrer eigenen Telemetrie von einem gesunden nicht zu unterscheiden — nur
+   * die Recall-Telemetrie wusste davon. Genau diese Lücke macht eine Maschine,
+   * die bei JEDEM Aufruf degradiert, unsichtbar.
+   */
+  unfused?: boolean;
+  /** P0/#342: der Grund dafür — `vector-arm-timeout` | `vector-arm-error` |
+   *  `vector-arm-empty`. Trennt „zu langsam" von „aus" von „kein Vektor da". */
+  degraded?: string;
 }
 
 async function writeTelemetry(payload: PromptHookTelemetry): Promise<void> {

@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two correctness fixes in what reaches the model: the deliberate-trigger
+  anchor stops accepting typos, and a degraded recall stops posing as a fused
+  one** (P0 from `docs/recall-performance-handoff.md`).
+
+  `matched_recall_when` means "the author declared exactly this situation as a
+  trigger", and two permissions hang off it: the cross-scope bypass
+  (`hook-skip.ts`) and the suppression of `weak_result` (`weak-result.ts`). It
+  was read out of MiniSearch's `match` map, whose keys are DOCUMENT terms — so
+  a prefix or fuzzy hit set it with a word the query never contained. Measured
+  against the real vault, `obsidan` (one edit) and `tripwir` (a prefix) both
+  claimed authored intent. It now requires a query term verbatim.
+
+  When the dense arm times out, errors or is absent, `recallHybrid` returns raw
+  MiniSearch scores instead of fused ones — an open-ended scale where the
+  telemetry recorded 405,584 against a fused ceiling of 163.934. The endpoint
+  says so via `unfused`/`degraded`; the prompt lane did not carry either field
+  and measured the raw numbers against the 100 floor anyway: everything became
+  REQUIRED, bypassed the backoff, and was announced as "both search paths
+  agreed" while only one had run. The lane now carries both fields through to
+  backoff, formatter and telemetry — no REQUIRED band, no bypass, no
+  two-path claim, and the number is omitted rather than shown on a scale that
+  cannot support a comparison. `write-lane.ts` already knew the field; this
+  closes the same hole on the surface that was still open.
+
 ### Added
 
 - **A rarity-based fuzzy switch for the lexical arm, plus the acceptance
