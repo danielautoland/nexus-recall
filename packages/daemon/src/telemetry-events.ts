@@ -215,6 +215,36 @@ export interface HookRecallEvent extends BaseEvent {
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
    *  Emitter haben das Feld nicht. */
   recall_stages?: RecallStageBuckets;
+  /**
+   * #362 Phase 0: Wie lange der Event Loop während dieses Recalls am Stück
+   * blockiert war (ms). MiniSearch läuft synchron im Hauptthread — solange es
+   * rechnet, kommt weder die Ollama-Antwort noch ein Timer dran.
+   */
+  event_loop_block_ms?: number;
+  /**
+   * Woher `event_loop_block_ms` stammt. `"probe"` = ein Timer hat die
+   * Verzögerung gemessen. `"sync-fallback"` = der Timer kam nie dran, weil der
+   * ganze Recall synchron lief (kein dichter Arm, also kein `await`
+   * dazwischen) — dann steht dort die BM25-Zeit, die in diesem Fall exakt die
+   * Blockade IST.
+   *
+   * Ohne diese Unterscheidung sähe der schlimmste Fall — durchgehend blockiert —
+   * aus wie der beste: gar kein Feld.
+   */
+  event_loop_block_source?: "probe" | "sync-fallback";
+  /**
+   * #362 Phase 2: Welchen Suchmodus der Router GEWÄHLT HÄTTE, plus seine
+   * Kostenschätzung. Reiner Schatten — die Suche lief unverändert.
+   *
+   * Der Wert dieser Spalte liegt darin, dass sie nichts tut: Sie sagt, wie oft
+   * ein Modus gegriffen hätte, bevor ihn jemand scharf schaltet.
+   */
+  shadow_route?: {
+    mode: string;
+    estimated_lexical_ms: number;
+    lexical_fits: boolean;
+    unique_terms: number;
+  };
   /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
   bridge_expansion?: BridgeExpansion;
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */

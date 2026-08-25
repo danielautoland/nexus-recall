@@ -884,3 +884,81 @@ selbst kann niemand erzeugen, der die Antwort nicht kennt. Solange sie fehlen,
 bleibt der Router im Schatten und Phase 3 eine Option, kein Standard: Beide
 verschieben Ränge, und die Einblendschwelle sitzt auf einem rangabgeleiteten
 Score.
+
+---
+
+## 15. Gegenprüfung durch Codex und die vier Korrekturen (25.08.2026)
+
+Vier Befunde, alle nachvollzogen, alle umgesetzt. Zwei davon waren echte Fehler
+im gebauten Code.
+
+**1. Die Budgetrechnung addierte, obwohl die Arme überlappen.** `56c7358` sendet
+den dichten Arm vor BM25 ab; die Wanduhr ist damit `max(BM25, Dense)` plus 3–7 ms
+Overhead, nicht die Summe. `lexicalFitsBudget()` zog trotzdem die Dense-Reserve
+vom Budget ab und ließ BM25 nur 50 der 200 ms — der Router wäre im interessanten
+Mittelfeld unnötig früh auf `dense-primary` gegangen und hätte dort lexikalische
+Qualität für eine Zeit verschenkt, die gar nicht anfällt. Korrigiert auf `max()`.
+
+**2. Die Event-Loop-Sonde verpasste ausgerechnet den schlimmsten Fall.** Ohne
+Embeddings läuft `search.recall()` durchgehend synchron; der Timer bekam bis zum
+`clearInterval` nie eine Gelegenheit zu feuern und meldete 0 — vollständige
+Blockade sah aus wie gar keine. Jetzt fällt die Messung in diesem Fall auf
+`bm25_search_ms` zurück und sagt über `event_loop_block_source`, woher die Zahl
+stammt.
+
+**3. Die Ankerschwelle war zu großzügig, und die Begründung stimmte nicht.**
+Nachgemessen am Vault (992 Memories): 8946 distinkte authored Trigger-Terme,
+davon **7580 unter `df <= 40`** — 85 % der distinkten Terme, 36 % der Vorkommen,
+DF-Median 6. Die Schwelle beschrieb die Regel, nicht die Ausnahme. Zudem zählt
+`docFreq()` Feld-Dokument-Paare über sieben Felder, nicht distinkte Memories;
+die alte Kommentarbegründung „~4 % der Memories" war schlicht falsch.
+
+Neu, und näher an dem, was `reflex.ts` seit dem 20.08.-Vorfall tut:
+
+- zwei exakte Terme aus **derselben** authored Phrase (vorher genügte das flach
+  zusammengefügte Feld, also zwei zufällige Wörter aus zwei unabhängigen
+  Situationen — Statistik, keine Absicht), **oder**
+- ein exakter Term, der wie ein Bezeichner aussieht **und** `df <= 5`.
+
+Die Identifier-Prüfung musste dabei umgeschrieben werden: Terme kommen bereits
+durch `processTerm` gefaltet an, `NSHostingController` ist zu dem Zeitpunkt
+`nshostingcontroller` — camelCase ist als Kriterium strukturell blind. Was den
+Tokenizer überlebt, sind Trenner, Ziffern und die Länge.
+
+Die `5` ist eine konservative Setzung, keine kalibrierte Zahl, und steht so auch
+im Code. Der Preis ist bewusst gewählt: Eine legitime Cross-Project-Erinnerung an
+einem einzelnen natürlichen Wort kommt nicht mehr durch. Bei einem Bypass ist
+diese Richtung die billigere.
+
+**4. Dem Kandidaten-Set fehlten Quellen — und dann waren es zu viele.** Ergänzt
+sind der schnelle Lexikpfad als eigener Modus, die Randzone unter dem Floor von
+30 aus dem tiefen Pool, und eine deterministische Kontrollstichprobe aus dem
+Vault, die kein Retriever vorgeschlagen hat. `injected-today` heißt jetzt
+`above-inject-floor`, weil danach noch Scope-Filter, `weak_result`, Backoff und
+Session-Dedup kommen.
+
+Der erste Lauf mit allen Quellen ergab 1305 Kandidaten — 109 je Query, ein
+Arbeitsblatt, das niemand labelt. Die Randzone ist deshalb auf die fünf
+Kandidaten direkt unter dem Floor begrenzt. Ebenso war die Exklusiv-Statistik
+falsch gerechnet: gegen ALLE Provenienzen fiel sie auf 2 und 0 zusammen, weil
+`below-floor` fast jeden Kandidaten mit einsammelt. Gerechnet wird jetzt gegen
+die Arm-Quellen.
+
+Stand des Sets: **788 Kandidaten über 12 Queries (66 je Query)** — 164 nur vom
+dichten Arm, 442 nur von einem lexikalischen Modus, 106 von keinem Retriever
+(Randzone plus Kontrolle). Die letzte Zahl ist der gemeinsame blinde Fleck, den
+ohne die Kontrollstichprobe niemand sehen könnte.
+
+### Was aus der Gegenprüfung offen bleibt
+
+- `estimateBm25Ms()` ist an zwei Punkten kalibriert und trifft sie nur grob
+  (25 Terme: 27 geschätzt / 43 gemessen; 768: 584 / 644). Für den Schatten
+  reicht das; vor einer Aktivierung gehören einige hundert Aufrufe über
+  Termzahl-Bänder gesammelt, p90 statt Mittelwert vorhergesagt und eine
+  Unsicherheitszone eingeführt, in der nicht umgeschaltet wird.
+- Die Queryklassen im Set sind nach Länge gestreut, nicht nach Art. Kurze
+  Identifier, Dateinamen, Tippfehler und BM25-only sollten explizit vertreten
+  sein, bevor jemand daraus ein Ship-Gate ableitet.
+- Der Worker bleibt zurückgestellt. Nächster sinnvoller Test dafür ist nicht die
+  Einzellatenz, sondern „langer Recall, 10 ms später ein kurzer" — dort zeigt
+  sich, ob die Blockade Queue- oder Timeout-Schäden verursacht.

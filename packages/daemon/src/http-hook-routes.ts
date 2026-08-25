@@ -263,10 +263,18 @@ export function handleHookRecall(
       // Die Zahl ist die Vorbedingung dafür, einen Worker später überhaupt
       // bewerten zu können: Er macht die Rechnung nicht schneller, er gibt nur
       // den Loop frei. Ohne Vorher-Wert ist der Nachher-Wert bedeutungslos.
+      // ACHTUNG, gemessene Grenze dieser Sonde: Sie sieht nur Blockaden, die ein
+      // `await` überspannen. Auf einer Maschine OHNE Embeddings läuft
+      // `search.recall()` durchgehend synchron — der Timer bekommt bis zum
+      // `clearInterval` nie eine Gelegenheit zu feuern und meldet 0, obwohl der
+      // Loop die ganze Zeit stand. Für diesen Fall ist `bm25_search_ms` der
+      // ehrlichere Blockade-Wert, und genau so wird er unten auch verwendet.
       const loopProbeEveryMs = 10;
+      let loopTicks = 0;
       let loopBlockMs = 0;
       let lastTick = Date.now();
       const loopProbe = setInterval(() => {
+        loopTicks++;
         const now = Date.now();
         const lag = now - lastTick - loopProbeEveryMs;
         if (lag > loopBlockMs) loopBlockMs = lag;
@@ -438,7 +446,18 @@ export function handleHookRecall(
           recall_stages: stageTimings,
           // #362 Phase 0: nur melden, wenn überhaupt spürbar blockiert wurde —
           // eine 0 in jedem Event wäre Rauschen, das die Auswertung verwässert.
-          ...(loopBlockMs >= loopProbeEveryMs ? { event_loop_block_ms: loopBlockMs } : {}),
+          // Hat die Sonde überhaupt getickt? Wenn nicht, lief alles synchron und
+          // die Blockade ist die Rechenzeit selbst — sonst stünde hier eine 0,
+          // die wie „kein Problem" aussieht und genau den Fall verschweigt, für
+          // den die Zahl gedacht war.
+          ...(loopTicks === 0
+            ? {
+                event_loop_block_ms: stageTimings.bm25_search_ms ?? recallLatencyMs,
+                event_loop_block_source: "sync-fallback" as const,
+              }
+            : loopBlockMs >= loopProbeEveryMs
+              ? { event_loop_block_ms: loopBlockMs, event_loop_block_source: "probe" as const }
+              : {}),
           ...(shadowRoute
             ? {
                 shadow_route: {

@@ -48,14 +48,29 @@ export function estimateBm25Ms(uniqueTerms: number): number {
 }
 
 /**
- * Passt der volle lexikalische Arm in das Budget, das nach dem dichten Arm
- * übrig bleibt?
+ * Passt der volle lexikalische Arm in das Budget?
  *
- * `budgetMs` ist das Gesamtbudget der Lane, `denseReservedMs` das, was der
- * dichte Arm davon braucht. Beide Arme laufen nebenläufig, aber der
- * lexikalische blockiert den Event Loop — der dichte kann seine Antwort also
- * erst verarbeiten, wenn BM25 fertig ist. Solange das so ist, addieren sich
- * die Zeiten praktisch, und die Reserve ist keine Vorsicht, sondern Arithmetik.
+ * **Die Arme überlappen — sie addieren sich nicht.** Der dichte Arm wird VOR
+ * BM25 abgesendet (`search.ts`), läuft also währenddessen beim Provider. Die
+ * Wanduhr eines Aufrufs ist damit `max(BM25, Dense)` plus etwas Overhead, nicht
+ * die Summe. Gemessen über vier Aufrufe (BM25 / Vector-Stage / Gesamt):
+ *
+ * ```
+ * 644 / 646 / 651   →  Gesamt − max = 5 ms
+ *  43 / 154 / 161   →                 7 ms
+ *  13 /  84 /  87   →                 3 ms
+ *   5 /  76 /  79   →                 3 ms
+ * ```
+ *
+ * Die erste Fassung zog die Dense-Reserve vom Budget ab und ließ BM25 damit nur
+ * 50 der 200 ms — das hätte den Router im interessanten Mittelfeld unnötig früh
+ * auf `dense-primary` geschickt und dort lexikalische Qualität verschenkt, für
+ * eine Zeit, die gar nicht anfällt.
+ *
+ * Achtung bei der Interpretation der Vector-Stage: Sie misst von Absenden bis
+ * Verarbeiten, nicht die Modellarbeit. Solange BM25 den Event Loop hält, kann
+ * Node ein längst fertiges Ollama-Ergebnis nicht entgegennehmen — die 646 ms
+ * oben sind überwiegend Wartezeit auf den lexikalischen Arm, keine Rechenzeit.
  */
 export function lexicalFitsBudget(
   uniqueTerms: number,
@@ -63,5 +78,13 @@ export function lexicalFitsBudget(
   denseReservedMs: number,
 ): boolean {
   if (budgetMs <= 0) return true; // kein Budget gesetzt = keine Beschränkung
-  return estimateBm25Ms(uniqueTerms) <= budgetMs - denseReservedMs;
+  const lexical = estimateBm25Ms(uniqueTerms);
+  // Der teurere Arm bestimmt die Wanduhr; der dichte kostet nur dann etwas
+  // zusätzlich, wenn er länger braucht als der lexikalische.
+  const wallClock = Math.max(lexical, denseReservedMs) + OVERLAP_OVERHEAD_MS;
+  return wallClock <= budgetMs;
 }
+
+/** Was neben `max(BM25, Dense)` an Fusion, Dämpfung und Sortierung anfällt.
+ *  Gemessen 3–7 ms über die vier Aufrufe oben; konservativ die Obergrenze. */
+export const OVERLAP_OVERHEAD_MS = 7;

@@ -203,3 +203,59 @@ test("no trigger match leaves the strength unset", async (t) => {
   assert.ok(hit);
   assert.equal(hit.anchor_strength, undefined, "absent, not 'weak' — nothing anchored at all");
 });
+
+test("two terms from DIFFERENT authored phrases are not a declaration", async (t) => {
+  // Ein Memory mit vielen Triggern sammelt sonst zwei zufällige Wörter aus zwei
+  // unabhängigen Situationen ein — das ist Statistik, keine Absicht.
+  const entries = [
+    { id: "many-triggers", recall_when: ["arbeit an sache", "datei umbenennen"] },
+    ...Array.from({ length: 40 }, (_, i) => ({ id: `a-${i}`, recall_when: [`arbeit ${i}`] })),
+    ...Array.from({ length: 40 }, (_, i) => ({ id: `d-${i}`, recall_when: [`datei ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("arbeit datei", { k: 5 }).find((h) => h.id === "many-triggers");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.matched_recall_when, true, "both terms ARE authored triggers");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "but they come from two separate situations — that is not one declared context",
+  );
+});
+
+test("a rare ordinary word alone is not enough — it must look like an identifier", async (t) => {
+  // Genau ein Memory trägt das Wort, DF also minimal. Trotzdem ist "quitte"
+  // ein gewöhnliches Wort, das jemand beiläufig schreibt.
+  const entries = [
+    { id: "rare-word", recall_when: ["quitte ernten"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("quitte", { k: 5 }).find((h) => h.id === "rare-word");
+  assert.ok(hit, "precondition: the rare word must retrieve the memory");
+  assert.equal(hit.anchor_strength, "weak", "rare alone does not carry a cross-scope bypass");
+});
+
+test("an identifier with separators carries intent even when short-ish", async (t) => {
+  const { dir, search } = await vaultWith([
+    { id: "cfg-memo", recall_when: ["bm25_query_max_chars setzen"] },
+  ]);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("bm25_query_max_chars", { k: 5 }).find((h) => h.id === "cfg-memo");
+  assert.ok(hit, "precondition: the identifier must retrieve the memory");
+  assert.equal(hit.anchor_strength, "strong", "separators and digits mark a name, not a word");
+});

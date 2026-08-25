@@ -261,3 +261,27 @@ test("routeRetrieval picks the mode from cost and availability", async () => {
     "hybrid",
   );
 });
+
+test("the budget uses max(lexical, dense), not their sum", async () => {
+  const { routeRetrieval } = await import("../src/retrieval-mode.js");
+  const { estimateBm25Ms } = await import("../src/query-cost.js");
+
+  // Die Arme überlappen: Der dichte wird vor BM25 abgesendet und läuft
+  // währenddessen. Eine Addition hätte hier `dense-primary` gewählt und dem
+  // lexikalischen Arm 150 der 200 ms weggerechnet, die er nie kostet.
+  const terms = 150;
+  assert.ok(estimateBm25Ms(terms) < 150, "precondition: lexical is the cheaper arm here");
+  assert.equal(
+    routeRetrieval({ uniqueTerms: terms, denseAvailable: true, budgetMs: 200, denseReservedMs: 150 }).mode,
+    "hybrid",
+    "a lexical arm cheaper than the dense one costs no extra wall clock at all",
+  );
+
+  // Erst wenn der lexikalische Arm den dichten ÜBERHOLT, wird er zum Problem.
+  const many = 400;
+  assert.ok(estimateBm25Ms(many) > 200, "precondition: now lexical exceeds the budget by itself");
+  assert.equal(
+    routeRetrieval({ uniqueTerms: many, denseAvailable: true, budgetMs: 200, denseReservedMs: 150 }).mode,
+    "dense-primary",
+  );
+});

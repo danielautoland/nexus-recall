@@ -94,46 +94,106 @@ function matchedRecallWhen(
 }
 
 /**
- * Wie TRAGFÄHIG ist der Anker? (P0, Punkt 6 der Übergabe.)
+ * Wie TRAGFÄHIG ist der Anker? (P0, Punkt 6.)
  *
  * `matched_recall_when` sagt nur, DASS ein Query-Term wörtlich in einer
- * autorisierten Triggerphrase stand. Das genügt für Telemetrie, aber nicht für
- * die eine Entscheidung, die daran am teuersten hängt: Ein Memory aus einem
- * FREMDEN Projekt darf sich in diese Session drängen (`hook-skip.ts`). Ein
- * einzelnes Allerweltswort — „arbeit", „datei", „test" — kommt in Dutzenden
- * Triggerphrasen vor und ist als Absichtserklärung wertlos.
+ * autorisierten Triggerphrase stand. Für Telemetrie genügt das; für die eine
+ * Entscheidung, die daran am teuersten hängt, nicht: Ein Memory aus einem
+ * FREMDEN Projekt darf sich in diese Session drängen (`hook-skip.ts`).
  *
- * `"strong"` verlangt deshalb dasselbe, was der Reflex-Pfad seit dem
- * 20.08.-Vorfall verlangt (`reflex.ts`): **zwei** exakte Trigger-Terme, ODER
- * **einen seltenen** — ein Bezeichner, ein Dateiname, ein Projektname, der im
- * Vault kaum vorkommt und deshalb für sich spricht. Seltenheit ist hier die
- * Document-Frequency aus dem laufenden Index, nicht eine Wortliste: Was in
- * DIESEM Vault selten ist, weiß nur dieser Vault.
+ * **Was `strong` verlangt** — dieselbe Regel, die der Reflex-Pfad seit dem
+ * 20.08.-Vorfall anwendet (`reflex.ts`):
+ *
+ *  - zwei signifikante exakte Terme aus **derselben** authored Phrase, oder
+ *  - ein exakter Term, der wie ein Bezeichner aussieht UND im Vault selten ist.
+ *
+ * „Derselben Phrase" ist der Punkt, an dem die erste Fassung zu schwach war:
+ * Sie zählte Treffer über das flach zusammengefügte `recall_when_flat`, also
+ * quer über alle Phrasen eines Memories. Ein Memory mit zehn Triggern sammelt
+ * so leicht zwei zufällige Wörter aus zwei unabhängigen Situationen ein — was
+ * keine Absichtserklärung ist, sondern Statistik. Deshalb kommen die Phrasen
+ * hier einzeln aus dem Vault.
+ *
+ * **Zur Seltenheitsschwelle, offen gesagt:** Sie ist nicht kalibriert, weil es
+ * dafür noch keine Labels gibt. Gemessen am echten Vault (992 Memories, 8946
+ * distinkte Trigger-Terme) fallen unter `df <= 40` **85 %** aller distinkten
+ * Trigger-Terme — die Schwelle beschrieb also die Regel, nicht die Ausnahme.
+ * Der DF-Median liegt bei 6. Deshalb jetzt `5` (47 % der distinkten Terme,
+ * 14 % der Vorkommen) UND zusätzlich die Identifier-Form: Ein gewöhnliches
+ * Wort, das zufällig selten ist, belegt keine Absicht — `NSHostingController`
+ * schon.
+ *
+ * Der Preis ist ein bewusster: Eine legitime Cross-Project-Erinnerung, die an
+ * einem einzelnen natürlichen Wort hängt, kommt nicht mehr durch. Bei einem
+ * Bypass ist dieser Fehler die billigere Richtung — ein themenfremdes REQUIRED
+ * kostet Kontext und Vertrauen, ein fehlender Hinweis nur eine Nachfrage.
  */
 function anchorStrength(
-  r: { match?: Record<string, string[]> },
+  r: { id: unknown; match?: Record<string, string[]> },
   queryTerms: ReadonlySet<string>,
   docFreq: (term: string) => number,
+  phrasesOf: (id: string) => string[],
 ): "strong" | "weak" | undefined {
   const match = r.match;
   if (!match || queryTerms.size === 0) return undefined;
-  let hits = 0;
-  let rare = false;
+
+  const matchedTriggerTerms: string[] = [];
   for (const [term, fields] of Object.entries(match)) {
     const folded = term.toLowerCase();
-    if (!fields.includes("recall_when_flat") || !queryTerms.has(folded)) continue;
-    hits++;
-    const df = docFreq(folded);
-    if (df > 0 && df <= ANCHOR_RARE_DF_MAX) rare = true;
+    if (fields.includes("recall_when_flat") && queryTerms.has(folded)) {
+      matchedTriggerTerms.push(folded);
+    }
   }
-  if (hits === 0) return undefined;
-  return hits >= 2 || rare ? "strong" : "weak";
+  if (matchedTriggerTerms.length === 0) return undefined;
+
+  // Ein einzelner Term trägt nur, wenn er wie ein Bezeichner aussieht UND
+  // selten ist. Beides zusammen, nicht eines von beiden.
+  for (const t of matchedTriggerTerms) {
+    const df = docFreq(t);
+    if (looksLikeIdentifier(t) && df > 0 && df <= ANCHOR_RARE_DF_MAX) return "strong";
+  }
+
+  // Zwei Terme zählen nur, wenn sie in DERSELBEN autorisierten Phrase stehen.
+  const hit = new Set(matchedTriggerTerms);
+  for (const phrase of phrasesOf(String(r.id))) {
+    let inThisPhrase = 0;
+    for (const raw of tokenizeWithIdentifiers(phrase)) {
+      if (hit.has(raw.toLowerCase())) inThisPhrase++;
+      if (inThisPhrase >= 2) return "strong";
+    }
+  }
+  return "weak";
 }
 
-/** DF-Grenze, unter der ein einzelner Trigger-Term für sich Absicht belegt.
- *  Bewusst dieselbe Größenordnung wie die Seltenheitsschwelle in
- *  `bm25-expansion.ts`: „kommt in höchstens ~4 % der Memories vor". */
-const ANCHOR_RARE_DF_MAX = 40;
+/**
+ * DF-Grenze, unter der ein identifierartiger Trigger-Term für sich Absicht
+ * belegt. `5` von 992 Memories — siehe die Messung oben; die Zahl ist eine
+ * konservative Setzung ohne Labels, kein kalibrierter Wert.
+ */
+const ANCHOR_RARE_DF_MAX = 5;
+
+/**
+ * Trägt dieser eine Term für sich, oder ist er nur ein Wort?
+ *
+ * Die naheliegende Prüfung auf camelCase geht hier NICHT: Die Terme kommen
+ * bereits durch `processTerm` gefaltet an, `NSHostingController` ist zu diesem
+ * Zeitpunkt `nshostingcontroller`. Was den Tokenizer überlebt, ist die Länge
+ * und — bei zusammengesetzten Bezeichnern, die als Ganzes emittiert wurden —
+ * Trenner und Ziffern.
+ *
+ * Beides zusammen beschreibt dieselbe Klasse: Wörter, die niemand beiläufig
+ * schreibt. `nshostingcontroller` (19 Zeichen) und `bm25_query_max_chars`
+ * (Unterstriche) sind Bezeichner; `arbeit`, `datei`, `wieder` sind es nicht,
+ * auch wenn sie in einem kleinen Vault selten sein mögen.
+ */
+function looksLikeIdentifier(term: string): boolean {
+  if (term.length < 4) return false;
+  if (/[./_-]/.test(term) || /\d/.test(term)) return true;
+  // Ein sehr langes Einzelwort ist praktisch immer ein zusammengesetzter
+  // Bezeichner — kein natürliches Wort dieser Länge landet zufällig in einer
+  // Query UND in einer fremden Triggerphrase.
+  return term.length >= 12;
+}
 
 export interface RecallOptions {
   k?: number;
@@ -510,7 +570,9 @@ export class SearchIndex {
       matched_terms: r.terms ?? [],
       matched_recall_when: matchedRecallWhen(r, queryTerms),
       ...(() => {
-        const a = anchorStrength(r, queryTerms, (t) => this.mini.docFreq(t));
+        const a = anchorStrength(r, queryTerms, (t) => this.mini.docFreq(t), (id) =>
+          this.vault.get(id)?.fm.recall_when ?? [],
+        );
         return a ? { anchor_strength: a } : {};
       })(),
       mode: "bm25" as const,
@@ -795,7 +857,11 @@ export class SearchIndex {
         // lexikalisches recall_when-Match → false.
         matched_recall_when: bm ? matchedRecallWhen(bm, queryTerms) : false,
         ...(() => {
-          const a = bm ? anchorStrength(bm, queryTerms, (t) => this.mini.docFreq(t)) : undefined;
+          const a = bm
+            ? anchorStrength(bm, queryTerms, (t) => this.mini.docFreq(t), (id) =>
+                this.vault.get(id)?.fm.recall_when ?? [],
+              )
+            : undefined;
           return a ? { anchor_strength: a } : {};
         })(),
         mode: inBoth ? "hybrid" : bm ? "bm25" : "vector",
