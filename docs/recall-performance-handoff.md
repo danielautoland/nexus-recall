@@ -805,3 +805,82 @@ alten Verhalten, damit ein älterer Daemon nicht still strenger wird.
 Damit ist P0 abgeschlossen. Offen bleiben Phase 0 (Messgrundlage und gelabeltes
 Qualitätsset) und Phase 1 (Termgruppierung, Worker) — beide unverändert wie
 oben beschrieben.
+
+---
+
+## 14. Umsetzung des Plans (25.08.2026, Claude Code)
+
+### Gebaut und gemessen
+
+**Phase 1 — Termgruppierung.** Gebaut wie beschrieben, mit `processTerm` VOR
+dem Zählen und einem Identitäts-Tokenizer für die gruppierte Query.
+Rangneutralität ist als Test festgenagelt, nicht nur gemessen: gruppiert und
+ungruppiert müssen über einen echten Index dieselbe Rangliste liefern,
+inklusive Reihenfolge.
+
+Produktionspfad, 30 echte Prompts, 991 Memories:
+
+| | vorher | nachher |
+|---|---:|---:|
+| lexikalischer Arm p50 | 1137 ms | **461 ms** |
+| Gesamtaufruf p50 | 1327 ms | **689 ms** |
+
+Live gegen den laufenden Daemon, echter 7962-Zeichen-Prompt (1296 emittierte,
+768 eindeutige Terme): **651 ms** gesamt.
+
+**Phase 0 — Messgrundlage.** `terms_emitted` / `terms_unique` auf beiden
+Recall-Oberflächen (Hook und MCP, über einen gemeinsamen Typ, damit die Listen
+nicht auseinanderlaufen) und `event_loop_block_ms` um den Recall-Aufruf.
+`score_kind`, `unfused` und `degraded` sind bereits in P0 gelandet. Das
+Kandidaten-Union-Werkzeug für das gelabelte Set steht als
+`npm run candidate-union --workspace @bastra-recall/eval`.
+
+**Phase 2 — Router im Schatten.** `routeRetrieval()` entscheidet an den
+geschätzten Kosten (`terms_unique`, nicht Zeichen) und an der Verfügbarkeit des
+dichten Arms. Die Entscheidung wird als `shadow_route` in die Telemetrie
+geschrieben und ändert nichts. Live auf dem 7962-Zeichen-Prompt: `dense-primary`,
+geschätzt 584 ms gegen tatsächlich gemessene 644 ms — die Schätzung liegt 10 %
+daneben und ist damit für eine Budget-Entscheidung brauchbar.
+
+**Phase 3 — schneller Lexikpfad.** `bm25_no_fuzzy` liefert exact + prefix ohne
+Expansion, default aus, mit einem Test, der den Preis explizit macht: Der
+Tippfehler findet sein Memory nicht mehr.
+
+### Nicht gebaut: der Worker — und warum
+
+Der Plan begründet ihn mit der Event-Loop-Blockade. Die ist real und jetzt
+gemessen: auf dem 7962-Zeichen-Prompt 638 ms, bei einem dichten Arm, der
+646 ms meldet — er verbringt also praktisch seine gesamte Zeit damit, auf den
+synchronen lexikalischen Arm zu warten, statt neben ihm zu laufen.
+
+Nur folgt daraus nicht der erwartete Gewinn. Die Wanduhr liegt bereits bei
+`max(BM25, Dense)`, weil der dichte Arm nur ~150 ms echte Arbeit hat und BM25
+ihn dominiert. Über 22 aufgezeichnete Aufrufe:
+
+| bm25 | vector | total | `max(bm25, 150)` | Gewinn eines Workers |
+|---:|---:|---:|---:|---:|
+| 644 | 646 | 651 | 644 | **7 ms** |
+| 43 | 154 | 161 | 150 | 11 ms |
+| 13 | 84 | 87 | 150 | negativ |
+| 5 | 76 | 79 | 150 | negativ |
+
+Dem stehen ein async-Umbau durch sieben Produktionsdateien gegenüber —
+`schema.ts`, `search.ts`, `bridge.ts`, `documents-handler.ts`,
+`http-hook-routes.ts`, `recall-handler.ts`, `save-quality.ts`, letztere im
+Save-Pfad hinter dem Claim-Gate — plus Queue, Request-IDs, Crash- und
+Rebuild-Pfad.
+
+Der Worker löst also nicht die Latenz DIESES Aufrufs, sondern die
+Reaktionsfähigkeit des Daemons für PARALLELE Anfragen. Das ist ein echter, aber
+anderer Nutzen als der, mit dem er im Plan steht. Vorgelegt statt gebaut — die
+Entscheidung gehört zu den Zahlen, und die gab es vorher nicht.
+
+### Weiterhin offen
+
+Das **Labeln** des Kandidaten-Sets. Das Werkzeug baut die Vereinigung
+(dichter Arm, lexikalischer Arm, heute eingeblendet, knapp unter dem Floor,
+exakte Identifier) und schreibt ein Arbeitsblatt mit `label: null` — die Labels
+selbst kann niemand erzeugen, der die Antwort nicht kennt. Solange sie fehlen,
+bleibt der Router im Schatten und Phase 3 eine Option, kein Standard: Beide
+verschieben Ränge, und die Einblendschwelle sitzt auf einem rangabgeleiteten
+Score.

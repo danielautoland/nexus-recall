@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A cost-based retrieval router, a fast lexical path, and the candidate set
+  that has to judge them — all three deliberately inert for now** (#362
+  Phases 0, 2 and 3).
+
+  `routeRetrieval()` picks between hybrid, dense-primary, lexical-full and
+  lexical-fast from what the search will COST (`terms_unique`, estimated at
+  ~0.75 ms per unique term) and whether a dense arm exists — not from prompt
+  length, which is a poor proxy: one live prompt carried 502 emitted but only
+  25 unique terms. The decision is written to telemetry as `shadow_route` and
+  changes nothing. On a real 7962-char prompt it chose `dense-primary` and
+  estimated 584 ms against 644 ms measured.
+
+  `bm25_no_fuzzy` is the fast lexical path (exact + prefix, 140 ms p50 /
+  194 ms p90 against 1137 ms), default off, with a test that states the price
+  outright: the typo stops finding its memory.
+
+  `npm run candidate-union --workspace @bastra-recall/eval` builds the set both
+  can finally be judged against — the union of dense top-N, lexical top-N,
+  what is injected today, what sits just under the floor, and exact identifier
+  hits. Over 12 queries it produced 545 candidates of which **19** are what
+  today's answer contains, with 84 proposed only by the dense arm and 74 only
+  by the lexical one. Those 158 are precisely what a set built from today's
+  hits cannot contain, which is why every measurement so far was circular.
+
+  All three stay inert until those candidates carry labels: they move ranks,
+  and admission still hangs on a rank-derived score.
+
 ### Fixed
 
 - **A recall that degrades mid-call now says so, names its score space, and

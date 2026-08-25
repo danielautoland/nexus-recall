@@ -20,7 +20,8 @@
     "pool-depth": "tsx src/pool-depth.ts",
     "rrf-k-beir": "tsx src/rrf-k-beir.ts",
     "tripwire-usage": "tsx src/tripwire-usage.ts",
-    "bm25-expansion": "tsx src/bm25-expansion.ts"
+    "bm25-expansion": "tsx src/bm25-expansion.ts",
+    "candidate-union": "tsx src/candidate-union.ts"
   },
   "dependencies": {
     "@bastra-recall/core": "0.9.1",
