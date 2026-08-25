@@ -19,7 +19,8 @@
     "absence-honesty": "tsx src/absence-honesty.ts",
     "pool-depth": "tsx src/pool-depth.ts",
     "rrf-k-beir": "tsx src/rrf-k-beir.ts",
-    "tripwire-usage": "tsx src/tripwire-usage.ts"
+    "tripwire-usage": "tsx src/tripwire-usage.ts",
+    "bm25-expansion": "tsx src/bm25-expansion.ts"
   },
   "dependencies": {
     "@bastra-recall/core": "0.9.1",

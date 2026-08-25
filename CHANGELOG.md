@@ -4,6 +4,31 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A rarity-based fuzzy switch for the lexical arm, plus the acceptance
+  harness that measured it — and the measurement says it does not carry**
+  (#362). The premise was that the BM25 time is the prefix/fuzzy EXPANSION of
+  each query term rather than the term COUNT, so steering the expansion of
+  common terms would be free where capping the query was not: no term is
+  removed, so no document leaves the candidate set. In isolation that held
+  (540 → 238 ms on the real vault, every baseline top-10 hit still inside the
+  top 50). Through the production path it does not: `npm run bm25-expansion
+  --workspace @bastra-recall/eval` runs 30 real prompts (2000–8000 chars) over
+  the full hybrid pipeline and reports 1137 → 966 ms p50 at best, with one
+  injectable id lost at every threshold that saves anything. Only `df ≤ 400`
+  passes the ship rule, and it saves ~8 % against a ~3 % noise floor measured
+  by running the baseline twice. The reason is structural: injection is
+  decided by a rank-derived RRF score, so anything that permutes ranks moves
+  hits across the floor of 100 — reordering is not qualitatively free, only
+  cheaper-looking than removing. `bm25_fuzzy_rare_df_max` therefore ships
+  default off, as the knob the harness measures with, not as a
+  recommendation. The baseline it leaves behind is the usable result: the
+  lexical arm sits at 1137 ms p50 / 1621 ms p90 on ordinary long prompts
+  against a 200 ms target (#305).
+
 ## [0.9.1] — 2026-08-24
 
 ### Added

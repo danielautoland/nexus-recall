@@ -5,6 +5,7 @@ import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
 import { DocFreqMiniSearch } from "./doc-freq-index.js";
+import { rareTermFuzzy } from "./bm25-expansion.js";
 import { capBm25Query } from "./bm25-query-cap.js";
 import { abandonAfter } from "./deadline.js";
 
@@ -118,6 +119,17 @@ export interface RecallOptions {
    * Betrifft nur BM25. Der Dense-Arm sieht immer die vollständige Query.
    */
   bm25_query_max_chars?: number;
+  /**
+   * #362: DF-Schwelle, ab der ein Query-Term seine Fuzzy-Expansion verliert.
+   * Unset/`0` = Verhalten vor #362 (Fuzzy für ALLE Terme), der Default. Ein
+   * gesetzter Wert — z.B. `BM25_FUZZY_RARE_DF_MAX` — expandiert nur noch
+   * seltene Terme.
+   *
+   * Anders als `bm25_query_max_chars` entfernt das KEINEN Term: Jeder sucht
+   * weiter exakt und mit Präfix, nur die Fuzzy-Nachbarschaft häufiger Terme
+   * entfällt. Begründung und Messung in `bm25-expansion.ts`.
+   */
+  bm25_fuzzy_rare_df_max?: number;
 }
 
 interface IndexDoc {
@@ -284,6 +296,20 @@ export class SearchIndex {
     });
   }
 
+  /**
+   * Such-Optionen für den lexikalischen Arm (#362).
+   *
+   * Gibt `undefined` zurück, solange `bm25_fuzzy_rare_df_max` nicht gesetzt
+   * ist — der Aufrufer hängt dann nichts an `mini.search()` an und es gilt
+   * unverändert, was im Konstruktor steht. Ein leeres Optionsobjekt wäre
+   * NICHT dasselbe: MiniSearch merged es über die `searchOptions` des Index,
+   * und ein explizites `fuzzy: undefined` schaltet die Expansion dort ab.
+   */
+  private bm25SearchOptions(opts: RecallOptions): { fuzzy: (t: string) => number | false } | undefined {
+    const fuzzy = rareTermFuzzy((term) => this.mini.docFreq(term), opts.bm25_fuzzy_rare_df_max);
+    return fuzzy ? { fuzzy } : undefined;
+  }
+
   recall(query: string, opts: RecallOptions = {}): RecallHit[] {
     // #162: Query-Hygiene für ALLE Caller (MCP-Recall, Hooks, Bridge, Dedup) —
     // Längen-Cap, Whitespace-Kollaps, dangling Operatoren. Vor dem Cache-Key,
@@ -325,7 +351,7 @@ export class SearchIndex {
 
     const tBm = stage.start("bm25.search");
     const lexQuery = this.bm25Query(query, opts);
-    const raw = this.mini.search(lexQuery);
+    const raw = this.mini.search(lexQuery, this.bm25SearchOptions(opts));
     stage.end("bm25.search", tBm, {
       raw_hit_count: raw.length,
       query_chars: query.length,
@@ -536,7 +562,9 @@ export class SearchIndex {
     // und der semantische Arm lebt vom ganzen Kontext.
     const tBm = stage.start("bm25.search");
     const lexQuery = this.bm25Query(query, opts);
-    const bm25 = this.mini.search(lexQuery).filter((r) => passesRecallFilters(r, opts));
+    const bm25 = this.mini
+      .search(lexQuery, this.bm25SearchOptions(opts))
+      .filter((r) => passesRecallFilters(r, opts));
     const bm25Top = bm25.slice(0, 50);
     stage.end("bm25.search", tBm, {
       raw_hit_count: bm25.length,

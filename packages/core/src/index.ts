@@ -23,6 +23,7 @@ export {
   BM25_QUERY_MAX_TERMS,
 } from "./bm25-query-cap.js";
 export type { DocFreqFn, Bm25QueryCap } from "./bm25-query-cap.js";
+export { rareTermFuzzy, BM25_FUZZY_RARE_DF_MAX, BM25_FUZZY } from "./bm25-expansion.js";
 
 export type { RecallStage, StageListener } from "./recall-stages.js";
 export { RECALL_STAGE_ORDER, progressIndexFor } from "./recall-stages.js";
