@@ -640,3 +640,41 @@ test("#360: a cycle in the version edges does not hang the pass", async (t) => {
   const pairs = collectClaimedTwice({ list: () => deps.vault.list() }, 100);
   assert.deepEqual(pairs, [], "a cycle is still a chain — and must terminate");
 });
+
+test("#360: appending to a running chain is not held by its ancestors", async (t) => {
+  const { deps, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // Three status notes on one workstream, each superseding the last — the
+  // shape every "Arbeitsstand" family has.
+  const T = ["den Stand der Sache pruefen"];
+  await saveMemoryHandler(deps, memo("Stand eins", T));
+  await saveMemoryHandler(deps, memo("Stand zwei", T, { replaces: "stand-eins" }));
+  await saveMemoryHandler(deps, memo("Stand drei", T, { replaces: "stand-zwei" }));
+
+  // The fourth link answers for its predecessor. The grandparents carry the
+  // same trigger, but they are on the chain it just joined.
+  const fourth = await saveMemoryHandler(deps, memo("Stand vier", T, { replaces: "stand-drei" }));
+  assert.ok(
+    !("claim_gate" in fourth),
+    `joining a chain must not be held by its ancestors, got ${JSON.stringify((fourth as { claim_gate?: unknown }).claim_gate)}`,
+  );
+  assert.equal(fourth.created, true);
+
+  // But a memory OUTSIDE the chain still holds it.
+  resetSaveFailures();
+  // Quittiert gegen die ganze Kette, sonst haelt das Gate diesen Fixture-Save
+  // selbst — Siblings schliessen nicht ueber die Kette (bewusst).
+  await saveMemoryHandler(
+    deps,
+    memo("Fremder Stand", ["den Stand der Sache pruefen und melden"], {
+      sibling_of: ["stand-eins", "stand-zwei", "stand-drei", "stand-vier"],
+    }),
+  );
+  const held = await saveMemoryHandler(deps, memo("Stand fuenf", T, { replaces: "stand-vier" }));
+  assert.ok("claim_gate" in held, "a colliding memory off the chain must still be reported");
+  assert.deepEqual(
+    (held as { claim_gate: { claimed: Array<{ id: string }> } }).claim_gate.claimed.map((c) => c.id),
+    ["fremder-stand"],
+  );
+});

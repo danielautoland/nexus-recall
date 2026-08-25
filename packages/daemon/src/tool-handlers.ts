@@ -371,10 +371,25 @@ async function saveMemoryInner(
   // from an author, so there is no declaration to reconcile — and a bulk import
   // must not stall on the first repeated phrase.
   if (!parsed.data.overwrite && !GENERATED_TRIGGER_TYPES.has(parsed.data.type)) {
-    const claimed = unansweredClaims(parsed.data, saveQuality, (id) => {
-      const m = deps.vault.get(id);
-      return m ? { summary: m.fm.summary, body: m.body } : undefined;
-    });
+    const claimed = unansweredClaims(
+      parsed.data,
+      saveQuality,
+      (id) => {
+        const m = deps.vault.get(id);
+        return m ? { summary: m.fm.summary, body: m.body } : undefined;
+      },
+      (id) => {
+        // Walk down the version chain. `seen` guards a hand-written cycle.
+        const out = new Set<string>();
+        let cursor: string | undefined = id;
+        while (cursor !== undefined && !out.has(cursor)) {
+          out.add(cursor);
+          const predecessor: unknown = deps.vault.get(cursor)?.fm.replaces;
+          cursor = typeof predecessor === "string" ? predecessor : undefined;
+        }
+        return out;
+      },
+    );
     if (claimed.length > 0) return claimGateResult(finalId, claimed, saveQuality);
   }
 

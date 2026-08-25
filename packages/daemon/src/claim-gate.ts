@@ -129,16 +129,33 @@ export function unansweredClaims(
   /** Reads the colliding memory so the refusal can carry its text. Optional so
    *  the pure collision logic stays testable without a vault. */
   read?: (id: string) => { summary?: string; body?: string } | undefined,
+  /** Every id on the version chain below `id`, itself included. Optional; the
+   *  gate degrades to direct answers without it. */
+  chainBelow?: (id: string) => Iterable<string>,
 ): ClaimedSituation[] {
   const answered = new Set<string>([
-    ...(input.replaces ? [input.replaces] : []),
     ...(input.conflict_with ? [input.conflict_with] : []),
     ...(input.sibling_of ?? []),
   ]);
+  // A `replaces` answers for the WHOLE chain it joins, not just its immediate
+  // predecessor — the sweep has read chains that way since the transitivity
+  // fix, and a gate that does not would hold every new link in a running chain
+  // against each of its ancestors. Measured on a real save: appending to a
+  // three-deep chain of status notes was refused because the grandparent
+  // carried the same trigger, and the only ways past were a false `sibling_of`
+  // or dropping a trigger the newest note legitimately owns.
+  //
+  // Siblings deliberately get no such closure (see `closeOverVersionChains`).
+  if (input.replaces) {
+    answered.add(input.replaces);
+    for (const id of chainBelow?.(input.replaces) ?? []) answered.add(id);
+  }
   const seen = new Set<string>();
   const out: ClaimedSituation[] = [];
   for (const collision of quality.trigger_collisions) {
-    for (const id of collision.examples) {
+    // `claimants` is the full set; `examples` is the three-item display slice
+    // and would silently narrow what the gate can see.
+    for (const id of collision.claimants ?? collision.examples) {
       if (answered.has(id) || seen.has(id)) continue;
       seen.add(id);
       const existing = read?.(id);
