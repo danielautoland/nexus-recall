@@ -22,25 +22,36 @@
  *   - eine query-gehashte, scope-kompatible Kontrollstichprobe aus dem Vault —
  *     sonst misst das Set nur, wie einig sich die Retriever sind.
  *
- * Schlägt die Projekt-Erkennung für eine Query fehl (kein scope-kompatibles
- * Memory im Vault gefunden), fällt die Kontrolle auf eine UNGEFILTERTE
- * Stichprobe zurück, statt die Query ganz ohne Kontrolle zu lassen — eine
- * einzelne Fehlerkennung soll nicht das ganze Sample killen. Das beantwortet
- * aber eine ANDERE Frage als eine scope-kompatible Kontrolle (kein
- * Projektbezug), deshalb eigene Provenienz `random-control-unscoped` statt
- * stiller Vermischung mit `random-control` — sichtbar in der Konsolenausgabe
- * und in der Provenienz jedes betroffenen Kandidaten.
+ * Die Projekt-Erkennung für die Kontrolle nutzt die echte `cwd`, die Claude
+ * Code auf jeden User-Turn im Transkript mitschreibt (kein Raten mehr aus dem
+ * #-codierten Session-Ordnernamen). „Erkannt" heißt zusätzlich: das Segment
+ * ist im Vault tatsächlich ein vorkommender Projekt-Scope, nicht irgendein
+ * Pfadsegment. Drei Lagen, drei Provenienzen, damit keine mit einer anderen
+ * Frage verwechselt wird:
+ *   - `random-control`              Projekt erkannt, Pool enthält projekt-
+ *                                   eigene Memories — die eigentlich
+ *                                   interessante Kontrolle.
+ *   - `random-control-global-only`  Projekt erkannt, aber der scope-
+ *                                   kompatible Pool bestand nur aus globalen
+ *                                   Scopes (all-projects, user-preference,
+ *                                   taxonomy, commons) — es gibt zu diesem
+ *                                   Projekt schlicht noch nichts Eigenes.
+ *   - `random-control-unscoped`     Erkennung gescheitert oder unsicher —
+ *                                   ungefilterte Stichprobe statt die Query
+ *                                   ganz ohne Kontrolle zu lassen.
  *
  * Ausgegeben werden ZWEI Dateien, verknüpft über `query_index` + `id`:
  *
- *   - `--out foo.json`      das BLINDE Arbeitsblatt zum Labeln — id, title,
- *                           Provenienz, label. Kandidaten sind je Query
- *                           deterministisch (query-gehasht) gemischt, damit
- *                           die Reihenfolge selbst keinen Hinweis gibt.
- *   - `foo.meta.json`       die AUSWERTUNGSDATEI mit den Zahlen, die beim
- *                           Labeln verstecken müssen: Score, Rang unter dem
- *                           Floor, Abstand zu Score 30. Wer beim Labeln die
- *                           Zahl sieht, labelt die Zahl — deshalb getrennt.
+ *   - `--out foo.json`      das BLINDE Arbeitsblatt zum Labeln — NUR id,
+ *                           title, label. Auch die Provenienz bleibt draußen:
+ *                           "above-inject-floor" vs. "random-control" färbt
+ *                           ein menschliches Relevanzurteil genauso wie ein
+ *                           Score. Kandidaten sind je Query deterministisch
+ *                           (query-gehasht) gemischt, damit die Reihenfolge
+ *                           selbst keinen Hinweis gibt.
+ *   - `foo.meta.json`       die AUSWERTUNGSDATEI mit allem, was beim Labeln
+ *                           verstecken muss: Provenienz, Score, Rang unter
+ *                           dem Floor, Abstand zu Score 30.
  *
  * ```
  * BASTRA_VAULT_PATH=~/vault npx tsx src/candidate-union.ts --n 20 --out set.json
@@ -61,6 +72,7 @@ import {
   OllamaEmbeddingProvider,
   groupQueryTerms,
   tokenizeWithIdentifiers,
+  detectProject,
 } from "@bastra-recall/core";
 
 const MUST_LOAD_SCORE = 100;
@@ -100,18 +112,26 @@ type Provenance =
    *  Fleck. Ohne sie misst das Set, wie gut die Retriever untereinander
    *  übereinstimmen, nicht wie gut sie sind. */
   | "random-control"
-  /** Wie `random-control`, aber OHNE Scope-Filter — die Projekt-Erkennung
-   *  fand kein kompatibles Memory im Vault. Beantwortet eine andere Frage
+  /** Projekt erkannt (Scope existiert im Vault), aber der scope-kompatible
+   *  Pool bestand ausschließlich aus globalen Scopes — es gibt zu diesem
+   *  Projekt im Vault schlicht noch keine eigenen Memories. Eigene
+   *  Provenienz, weil das etwas anderes aussagt als eine Kontrolle mit
+   *  echtem Projektbezug. */
+  | "random-control-global-only"
+  /** Wie `random-control`, aber OHNE verlässliche Scope-Erkennung — die
+   *  Projekt-Erkennung ist gescheitert, oder das erkannte Segment ist gar
+   *  kein tatsächlicher Vault-Scope. Beantwortet eine andere Frage
    *  (irgendein Vault-Rest statt Projekt-Kontext) und wird deshalb nicht mit
    *  `random-control` vermischt, siehe Header. */
   | "random-control-unscoped";
 
-/** Was ein Mensch beim Labeln sieht: keine Scores, keine Ränge, keine
- *  Reihenfolge, die die Antwort verrät (siehe Header). */
+/** Was ein Mensch beim Labeln sieht: NUR id, title, label. Auch die
+ *  Provenienz bleibt draußen — "above-inject-floor" vs. "random-control"
+ *  beeinflusst ein menschliches Relevanzurteil genauso wie ein Score oder ein
+ *  Rang, siehe Header. Provenienz lebt ausschließlich in `CandidateMeta`. */
 interface Candidate {
   id: string;
   title: string;
-  provenance: Provenance[];
   label: null | "required" | "optional" | "irrelevant";
 }
 
@@ -147,24 +167,34 @@ interface MetaSet {
 
 interface Prompt {
   text: string;
-  /** Der #-codierte Session-Ordnername unter ~/.claude/projects — Rohmaterial
-   *  für die Projekt-Erkennung, siehe `projectFromSessionDir`. */
-  dir: string;
+  /** Session-Ordner unter ~/.claude/projects — Teil des Dedup-Keys (siehe
+   *  `collectPrompts`), damit derselbe Prompttext aus zwei verschiedenen
+   *  Projekten nicht willkürlich nur dem zuerst gelesenen zugeordnet wird. */
+  sessionDir: string;
+  /** cwd aus dem JSONL-Record selbst — Claude Code schreibt sie auf jeden
+   *  User-Turn mit, das ist der echte Pfad statt eine Näherung aus dem
+   *  #-codierten Ordnernamen. `null` nur, falls ein Transkript das Feld
+   *  nicht trägt (alte Version, unvollständige Zeile). */
+  cwd: string | null;
 }
 
 async function collectPrompts(limit: number): Promise<Prompt[]> {
   const root = path.join(os.homedir(), ".claude", "projects");
-  const found = new Map<string, string>(); // Prompt-Text -> zuerst gesehener Session-Ordner
+  // Dedup-Key ist sessionDir+Text, nicht nur Text: sonst landet derselbe
+  // Prompttext aus zwei Projekten willkürlich beim zuerst gelesenen
+  // Verzeichnis, und dessen cwd/Projekt ist für die andere Query schlicht
+  // falsch.
+  const found = new Map<string, Prompt>();
   let dirs: string[] = [];
   try {
-    dirs = await fs.readdir(root);
+    dirs = (await fs.readdir(root)).sort();
   } catch {
     return [];
   }
   for (const d of dirs) {
     let files: string[] = [];
     try {
-      files = (await fs.readdir(path.join(root, d))).filter((f) => f.endsWith(".jsonl"));
+      files = (await fs.readdir(path.join(root, d))).filter((f) => f.endsWith(".jsonl")).sort();
     } catch {
       continue;
     }
@@ -177,7 +207,7 @@ async function collectPrompts(limit: number): Promise<Prompt[]> {
       }
       for (const line of raw.split("\n")) {
         if (!line.startsWith("{")) continue;
-        let rec: { type?: string; message?: { role?: string; content?: unknown } };
+        let rec: { type?: string; message?: { role?: string; content?: unknown }; cwd?: string };
         try {
           rec = JSON.parse(line);
         } catch {
@@ -197,18 +227,24 @@ async function collectPrompts(limit: number): Promise<Prompt[]> {
         if (text.includes("<recall-hints") || text.includes("<system-reminder")) continue;
         // Bewusst die ganze Breite, nicht nur lange Prompts: Der Router muss
         // gerade an der Grenze zwischen billig und teuer bewertet werden.
-        if (text.length >= 40 && text.length <= 8000 && !found.has(text)) found.set(text, d);
+        if (text.length < 40 || text.length > 8000) continue;
+        const key = `${d} ${text}`;
+        if (!found.has(key)) found.set(key, { text, sessionDir: d, cwd: rec.cwd ?? null });
       }
     }
   }
   // Deterministisch und über die Längen gestreut, damit kurze exakte Suchen und
-  // lange Prosa beide im Set landen.
-  const sorted = [...found.keys()].sort((a, b) => a.length - b.length || (a < b ? -1 : 1));
+  // lange Prosa beide im Set landen. sessionDir als Tiebreaker, damit zwei
+  // Einträge mit identischem Text (verschiedene Projekte) stabil sortiert
+  // bleiben statt von der Map-Iterationsreihenfolge abzuhängen.
+  const sorted = [...found.values()].sort(
+    (a, b) =>
+      a.text.length - b.text.length ||
+      (a.text < b.text ? -1 : a.text > b.text ? 1 : a.sessionDir < b.sessionDir ? -1 : 1),
+  );
   const step = Math.max(1, Math.floor(sorted.length / limit));
   const out: Prompt[] = [];
-  for (let i = 0; i < sorted.length && out.length < limit; i += step) {
-    out.push({ text: sorted[i], dir: found.get(sorted[i])! });
-  }
+  for (let i = 0; i < sorted.length && out.length < limit; i += step) out.push(sorted[i]);
   return out;
 }
 
@@ -269,37 +305,25 @@ function isScopeCompatible(scope: string, project: string | null): boolean {
 }
 
 /**
- * Grobe Projekt-Erkennung aus dem #-codierten Claude-Code-Session-Ordner
- * (z.B. "-Users-n0mad-Projekte-bastra-recall" für cwd
- * "/Users/n0mad/Projekte/bastra-recall"). Der echte `detectProject(cwd)` aus
- * core arbeitet auf echten Pfad-Segmenten; hier sind Slashes bereits zu "-"
- * geworden, und ein Scope wie "bastra-recall" ist im codierten Namen von zwei
- * echten Segmenten ("bastra", "recall") nicht zu unterscheiden.
+ * Erkennt das Projekt aus der echten `cwd` des Transkripts über den core-
+ * eigenen `detectProject(cwd)` — kein Raten aus dem #-codierten Session-
+ * Ordnernamen mehr nötig, seit klar ist, dass Claude Code `cwd` auf jeden
+ * User-Turn mitschreibt.
  *
- * Deshalb: statt naiv das erste Segment nach dem Root-Stichwort zu nehmen
- * (das würde "bastra" liefern und wäre über die Präfix-Familie in
- * `isScopeCompatible` fälschlich mit JEDEM "bastra-*"-Scope kompatibel —
- * bastra-io, bastra-yard, ... —, genau der Fall, den die Präfix-Regel
- * ausschließen soll), suchen wir den LÄNGSTEN tatsächlich im Vault
- * vorkommenden Scope, der dort beginnt. Trifft keiner, ist das erste Segment
- * die letzte Näherung.
+ * `recognized` ist nur dann true, wenn das erkannte Segment im Vault
+ * tatsächlich als Projekt-Scope vorkommt. Ohne diese Zusatzprüfung würde
+ * `detectProject` auch aus einem Pfad wie ".../Projekte" selbst oder einem
+ * beliebigen, im Vault unbekannten Ordnernamen "ein Projekt" liefern — und
+ * die Kontrolle sähe fälschlich scope-gefiltert aus, obwohl sie es nicht ist.
  */
-function projectFromSessionDir(dir: string, knownScopes: string[]): string | null {
-  const ROOTS = ["projekte", "projects", "code", "workspace", "src", "repos"];
-  const lower = dir.toLowerCase();
-  for (const root of ROOTS) {
-    const marker = `-${root}-`;
-    const idx = lower.indexOf(marker);
-    if (idx < 0) continue;
-    const rest = dir.slice(idx + marker.length);
-    const match = knownScopes
-      .filter((s) => rest === s || rest.startsWith(s + "-"))
-      .sort((a, b) => b.length - a.length)[0];
-    if (match) return match;
-    return rest.split("-")[0] || null;
-  }
-  const segments = dir.split("-").filter(Boolean);
-  return segments[segments.length - 1] ?? null;
+function recognizeProject(
+  cwd: string | null,
+  knownScopes: Set<string>,
+): { project: string | null; recognized: boolean } {
+  if (!cwd) return { project: null, recognized: false };
+  const project = detectProject(cwd);
+  if (!project) return { project: null, recognized: false };
+  return { project, recognized: knownScopes.has(project) };
 }
 
 /** Deterministischer 32-Bit-Hash (FNV-1a) — kein Math.random, damit derselbe
@@ -365,17 +389,19 @@ async function main(): Promise<void> {
   search.useEmbeddings(emb);
 
   const allMemories: Memory[] = vault.list();
-  const knownScopes = [...new Set(allMemories.map((m) => m.fm.scope))];
+  const knownScopes = new Set(allMemories.map((m) => m.fm.scope));
 
   const prompts = await collectPrompts(n);
   const sets: QuerySet[] = [];
   const metaSets: MetaSet[] = [];
-  // Wie oft die Kontrolle mangels scope-kompatiblem Memory ungefiltert zog —
-  // interessiert beim Auswerten, ob das die Projekt-Erkennung selbst ist, die
-  // nachgebessert werden muss.
+  // Wie oft die Projekt-Erkennung scheitert/unsicher bleibt bzw. ein Projekt
+  // erkennt, das im Vault noch keine eigenen Memories hat — interessiert beim
+  // Auswerten, ob die Erkennung selbst nachgebessert werden muss.
   let unscopedFallbackCount = 0;
+  let globalOnlyCount = 0;
 
-  for (const { text: q, dir } of prompts) {
+  for (const prompt of prompts) {
+    const q = prompt.text;
     const map = new Map<string, RawCandidate>();
     const titleOf = (id: string): string => vault.get(id)?.fm.title ?? id;
 
@@ -434,15 +460,23 @@ async function main(): Promise<void> {
     //    nach Vault-Reihenfolge" — sonst zieht praktisch jede Query dieselbe
     //    Menge (dieselbe Vault-Reihenfolge, derselbe Stride), unabhängig davon,
     //    worum es in ihr geht, und die Kontrolle testet gar nichts.
-    const project = projectFromSessionDir(dir, knownScopes);
+    const { project, recognized } = recognizeProject(prompt.cwd, knownScopes);
     const scopedPool = allMemories.filter((m) => isScopeCompatible(m.fm.scope, project));
-    // Kein scope-kompatibles Memory getroffen (z.B. Projekt nicht erkannt)?
-    // Dann lieber eine ungefilterte Kontrolle als gar keine — beantwortet aber
-    // eine andere Frage, deshalb eigene Provenienz statt stiller Vermischung.
-    const unscoped = scopedPool.length === 0;
-    if (unscoped) unscopedFallbackCount++;
-    const pool = unscoped ? allMemories : scopedPool;
-    const controlProvenance: Provenance = unscoped ? "random-control-unscoped" : "random-control";
+    // Drei Lagen (siehe Header): unsicher erkannt -> ungefiltert; erkannt,
+    // aber Pool nur aus globalen Scopes -> eigene Provenienz; sonst normale
+    // scope-kompatible Kontrolle.
+    const hasProjectSpecific = scopedPool.some((m) => !GLOBAL_SCOPES.has(m.fm.scope));
+    let controlProvenance: Provenance;
+    if (!recognized) {
+      controlProvenance = "random-control-unscoped";
+      unscopedFallbackCount++;
+    } else if (!hasProjectSpecific) {
+      controlProvenance = "random-control-global-only";
+      globalOnlyCount++;
+    } else {
+      controlProvenance = "random-control";
+    }
+    const pool = scopedPool.length > 0 ? scopedPool : allMemories;
     const seed = hashString(q);
     const stride = Math.max(1, Math.floor(pool.length / CONTROL_SIZE));
     const offset = seed % stride;
@@ -466,7 +500,6 @@ async function main(): Promise<void> {
       candidates: shuffled.map((c) => ({
         id: c.id,
         title: c.title,
-        provenance: c.provenance,
         label: null,
       })),
     });
@@ -485,28 +518,34 @@ async function main(): Promise<void> {
 
   const total = sets.reduce((s, q) => s + q.candidates.length, 0);
   const byProv = new Map<string, number>();
-  for (const s of sets)
+  for (const s of metaSets)
     for (const c of s.candidates)
       for (const p of c.provenance) byProv.set(p, (byProv.get(p) ?? 0) + 1);
 
   console.log(`\nQueries: ${sets.length}, Kandidaten gesamt: ${total}`);
   console.log("Provenienz (Mehrfachnennung pro Kandidat möglich):");
   for (const [p, c] of [...byProv.entries()].sort((a, b) => b[1] - a[1])) {
-    console.log(`  ${p.padEnd(18)} ${String(c).padStart(5)}`);
+    console.log(`  ${p.padEnd(24)} ${String(c).padStart(5)}`);
   }
   if (unscopedFallbackCount > 0) {
     console.log(
-      `\nProjekt-Erkennung fehlgeschlagen bei ${unscopedFallbackCount}/${sets.length} Queries — ` +
+      `\nProjekt-Erkennung gescheitert/unsicher bei ${unscopedFallbackCount}/${sets.length} Queries — ` +
         "deren Kontrolle ist UNGEFILTERT (random-control-unscoped), nicht scope-kompatibel.",
     );
   }
+  if (globalOnlyCount > 0) {
+    console.log(
+      `Projekt erkannt, aber ohne projekt-eigene Memories im Scope-Pool bei ${globalOnlyCount}/${sets.length} Queries — ` +
+        "deren Kontrolle (random-control-global-only) besteht nur aus globalen Scopes.",
+    );
+  }
   // Exklusivität wird gegen die ARM-Quellen gerechnet, nicht gegen alle
-  // Provenienzen: `below-floor` und `random-control` sagen nichts darüber aus,
-  // WELCHER Retriever einen Kandidaten gefunden hat, und würden die Aussage
-  // sonst verwässern, bis sie null ergibt.
+  // Provenienzen: `below-floor` und die Kontroll-Provenienzen sagen nichts
+  // darüber aus, WELCHER Retriever einen Kandidaten gefunden hat, und würden
+  // die Aussage sonst verwässern, bis sie null ergibt.
   const LEX: Provenance[] = ["lexical-top", "lexical-fast", "identifier-exact"];
   const HYBRID_POOL: Provenance[] = ["above-inject-floor", "below-floor"];
-  const all = sets.flatMap((s) => s.candidates);
+  const all = metaSets.flatMap((s) => s.candidates);
   const onlyDense = all.filter(
     (c) => c.provenance.includes("dense-top") && !LEX.some((p) => c.provenance.includes(p)),
   ).length;
@@ -526,7 +565,7 @@ async function main(): Promise<void> {
   // Von keinem Retriever vorgeschlagen: einzig über die random-control-Quelle
   // ins Set gekommen, kein Arm und kein Hybrid-Pool hat den Kandidaten je
   // berührt. Das ist der tatsächliche gemeinsame blinde Fleck.
-  const CONTROL: Provenance[] = ["random-control", "random-control-unscoped"];
+  const CONTROL: Provenance[] = ["random-control", "random-control-global-only", "random-control-unscoped"];
   const noRetriever = all.filter((c) => c.provenance.every((p) => CONTROL.includes(p))).length;
   console.log(`\nNur vom dichten Arm gefunden:                     ${onlyDense}`);
   console.log(`Nur von einem lexikalischen Modus gefunden:       ${onlyLex}`);

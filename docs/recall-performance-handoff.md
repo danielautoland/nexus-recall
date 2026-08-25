@@ -1029,3 +1029,49 @@ jetzt immerhin gegen die richtige Größe gemessen. Ob 5 zu streng oder zu locke
 ist, entscheidet erst ein Sweep gegen die gelabelten einwortigen
 Cross-Scope-Fälle. Dasselbe gilt für die Signifikanzregel, die bewusst vom
 Reflex-Pfad übernommen und nicht neu kalibriert wurde.
+
+---
+
+## 17. Dritte Gegenprüfung: Schreibweisen, Erkennung, Blindheit (25.08.2026)
+
+**Der Anker zählte Schreibweisen statt Wörter.** Die Zweierregel deduplizierte
+vor der Normalisierung, also über den rohen Wort-Text. `recall_when: "foo, foo"`
+lieferte damit zwei Ursprünge — `foo,` und `foo` —, obwohl beide auf denselben
+Suchterm abbilden; ein einzelner Begriff erfüllte so weiterhin die Zweierregel.
+Derselbe Fehlertyp wie in Abschnitt 16, eine Ebene tiefer. Dedupliziert wird
+jetzt über die normalisierte Emissionssignatur des Wortes; die Identifier-Form
+wird davon unberührt weiter an der rohen Schreibweise geprüft.
+
+**Die „0 von 4"-Aussage bewies nichts.** Der Fallback hing daran, ob der
+scope-gefilterte Pool leer ist — im Vault liegen aber 191 globale Memories, die
+immer kompatibel sind. Der Pool ist damit praktisch nie leer, selbst bei völlig
+falsch erkanntem Projekt: Eine Fehl-Erkennung erschien als normale Kontrolle.
+
+Die Erkennung stützt sich jetzt nicht mehr auf den #-codierten Ordnernamen,
+sondern auf das `cwd`-Feld, das die Transkripte auf jedem User-Turn tatsächlich
+tragen — geprüft über drei Projekte. Sie gibt aus, ob sie SICHER ist, und die
+Kontrolle ist dreistufig: `random-control` (Scope erkannt und getroffen),
+`random-control-global-only` (erkannt, aber nur globale Memories im Pool — eine
+eigene Lage, die vorher unsichtbar mitlief) und `random-control-unscoped`
+(Erkennung unsicher).
+
+Der Effekt bestätigt die Kritik: **2 von 4 Queries sind unsicher**, wo vorher
+„0 von 4" stand. Beide Fälle sind plausibel — eine Subagent-Session ohne
+eigenen Vault-Scope und eine Direktnachricht aus einem Projekt, das keinen hat.
+Kein Bug, sondern zwei ehrliche „kein Projekt-Scope"-Fälle, die die alte Logik
+als sauber erkannt ausgab.
+
+Zusätzlich dedupliziert `collectPrompts()` jetzt über `sessionDir + Text` statt
+nur über den Text: Derselbe Prompt aus zwei Projekten wurde vorher willkürlich
+dem zuerst gelesenen Verzeichnis zugeschlagen. Verzeichnisse und Dateien werden
+sortiert gelesen, damit ein zweiter Lauf dieselbe Zuordnung trifft.
+
+**Das Blatt war score-blind, aber nicht retrieval-blind.** Die Provenienz stand
+weiter drin — `above-inject-floor`, `random-control`, `dense-top`. Wer liest,
+dass ein Kandidat heute schon eingeblendet wird, labelt anders. Sie ist jetzt
+ebenfalls nur noch in der Meta-Datei; das Labelblatt trägt `id`, `title` und das
+leere Label, sonst nichts.
+
+Das ist die Voraussetzung dafür, dass die Labels überhaupt etwas wert sind: Sie
+sollen entscheiden, ob Router und schneller Pfad ausgeliefert werden dürfen —
+ein Blatt, das die Antwort mitliefert, kann diese Frage nicht beantworten.

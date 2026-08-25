@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Third counter-review round: the anchor counted spellings, the project
+  detection proved nothing, and the worksheet still named its sources.**
+
+  The two-term rule deduplicated before normalising, so `recall_when: "foo, foo"`
+  produced two origins — `foo,` and `foo` — for one word. Same defect class as
+  the previous round, one level down; dedup now keys on the word's normalised
+  emission signature, while the identifier check keeps reading the raw spelling.
+
+  The candidate tool decided "project unknown" by whether the scope-filtered
+  pool came back empty. With 191 globally-scoped memories in the vault it never
+  does, so a completely wrong detection looked like a clean one — which is why
+  the earlier "fallback fires on 0 of 4" said nothing at all. Detection now
+  reads the `cwd` field the transcripts actually carry on every user turn
+  instead of guessing from the #-encoded directory name, reports whether it is
+  confident, and the control sample is three-way: matched scope, recognised but
+  global-only, and unrecognised. Measured again: 2 of 4 queries are unrecognised,
+  both legitimately so.
+
+  And the worksheet named its own sources — `above-inject-floor`,
+  `random-control`, `dense-top`. Score-blind is not retrieval-blind: whoever
+  reads that a candidate is already being injected labels it differently.
+  Provenance moved to the meta file; the sheet carries id, title and an empty
+  label. Those labels are supposed to decide whether the router ships, and a
+  sheet that hands over the answer cannot decide that.
+
 - **The cross-scope anchor stops counting tokenizer emissions as authored
   intent, and the candidate worksheet stops showing the answer while asking the
   question** (second counter-review round).

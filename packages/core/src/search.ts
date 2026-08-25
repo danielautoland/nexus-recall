@@ -189,16 +189,25 @@ function anchorStrength(
   // ein Wort trägt so höchstens einmal bei, egal wie oft es in der Phrase
   // wiederholt wird oder wie viele Terme der Dual-Emission-Tokenizer daraus
   // macht.
+  //
+  // Dedupliziert wird über die NORMALISIERTE Emissionssignatur (die gefaltete
+  // Token-Liste, die `tokenizeWithIdentifiers` aus dem Wort macht), nicht über
+  // den rohen Wort-Text — sonst zählen zwei Schreibweisen desselben Wortes
+  // ("foo," und "foo", "Foo" und "foo", "my-app" zweimal mit/ohne
+  // Satzzeichen) als zwei Ursprünge, obwohl sie auf denselben Suchterm
+  // abbilden. Die Signatur ist bereits gefaltet — die Identifier-Prüfung
+  // oben bleibt davon unberührt, die läuft separat auf der rohen Schreibweise.
   for (const phrase of phrases) {
-    const contributingWords = new Set<string>();
+    const contributingOrigins = new Set<string>();
     for (const word of phrase.split(/\s+/)) {
       if (!word) continue;
       const emitted = tokenizeWithIdentifiers(word).map((t) => t.toLowerCase());
+      if (emitted.length === 0) continue;
       const wordHits = emitted.some(
         (t) => matchedTriggerTerms.has(t) && isSignificantTriggerTerm(t),
       );
-      if (wordHits) contributingWords.add(word.toLowerCase());
-      if (contributingWords.size >= 2) return "strong";
+      if (wordHits) contributingOrigins.add(emitted.join(" "));
+      if (contributingOrigins.size >= 2) return "strong";
     }
   }
   return "weak";

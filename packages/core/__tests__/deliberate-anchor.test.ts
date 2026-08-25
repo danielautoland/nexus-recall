@@ -446,3 +446,111 @@ body
   vault.forgetFile(path.join(dir, "a.md"));
   assert.equal(df("widgetkonfig"), 0, "ein zweites Entfernen bleibt folgenlos");
 });
+
+/**
+ * #360 Nachschlag: die Zweierregel deduplizierte die Phrasenwörter VOR der
+ * Normalisierung — über den rohen Text, nicht über die Emissionssignatur.
+ * "foo," und "foo" sind als roher Text verschieden, tokenisieren aber beide
+ * zu "foo" — ein einziger Begriff erfüllte so die Zweierregel. Jeder Test
+ * hier nutzt eine Query mit genau EINEM Begriff: schlägt die Dedup fehl,
+ * zählt die Phrase als zwei Ursprünge und wird fälschlich "strong".
+ */
+test("a comma-separated repetition of the same word is one origin, not two", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["foo, foo"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("foo", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.anchor_strength, "weak", "'foo,' and 'foo' tokenize to the same term");
+});
+
+test("capitalization alone does not create a second origin", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["Foo foo"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("foo", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.anchor_strength, "weak", "'Foo' and 'foo' fold to the same term");
+});
+
+test("trailing punctuation on both repetitions does not create two origins", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["foo. foo!"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("foo", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.anchor_strength, "weak", "'foo.' and 'foo!' both strip to 'foo'");
+});
+
+test("a repeated hyphenated identifier is still one origin, even across punctuation variants", async (t) => {
+  // "my-app" ist selbst identifierartig (Bindestrich) — bei niedriger DF
+  // greift schon die EINZELTERM-Regel (seltener Bezeichner trägt für sich)
+  // und liefert legitim "strong", unabhängig von der Zweierregel. Um die
+  // Dedup-Regel isoliert zu prüfen, muss `recall_when`-DF über die
+  // Seltenheitsschwelle (5) gedrückt werden (sechs weitere Memories mit
+  // demselben Term) — nur dann entscheidet allein die Zweierregel.
+  //
+  // Die zwei Vorkommen im Ziel-Trigger tragen unterschiedliche
+  // Interpunktion ("my-app," / "my-app!") — als ROHER Wort-Text also
+  // verschieden, tokenisieren aber beide zu derselben Emissionssignatur.
+  const entries = [
+    { id: "target", recall_when: ["my-app, my-app!"] },
+    ...Array.from({ length: 6 }, (_, i) => ({
+      id: `common-${i}`,
+      recall_when: [`my-app baseline ${i}`],
+    })),
+    ...Array.from({ length: 20 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("my-app", { k: 40 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "'my-app,' and 'my-app!' fold to the same identifier — one origin, not two",
+  );
+});
+
+test("two genuinely different significant words still declare strong intent", async (t) => {
+  // Gegenprobe: die Dedup-Regel darf zwei ECHT verschiedene signifikante
+  // Wörter nicht zusammenlegen — die Signatur muss trennscharf bleiben.
+  const entries = [
+    { id: "target", recall_when: ["arbeit datei"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("arbeit datei", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.anchor_strength, "strong", "two distinct significant words remain two origins");
+});
