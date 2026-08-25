@@ -158,8 +158,14 @@ test("one common trigger term is a weak anchor", async (t) => {
 });
 
 test("a rare trigger term carries intent on its own", async (t) => {
+  // #360: vorher stand hier "nshostingcontroller" komplett klein — bestand
+  // die alte Heuristik nur über die reine Länge (>=12 Zeichen), nicht über
+  // eine Bezeichner-Form. Diese Längenschwelle ist raus (siehe
+  // looksLikeIdentifier), weil lange deutsche Wörter genauso lang sind. Die
+  // authored Phrase steht in echtem camelCase, wie der User es tatsächlich
+  // schreiben würde — das ist jetzt das tragende Signal.
   const entries = [
-    { id: "rare-memo", recall_when: ["nshostingcontroller sizingoptions setzen"] },
+    { id: "rare-memo", recall_when: ["NSHostingController sizingOptions setzen"] },
     ...Array.from({ length: 40 }, (_, i) => ({ id: `noise-${i}`, recall_when: [`arbeit ${i}`] })),
   ];
   const { dir, search } = await vaultWith(entries);
@@ -168,9 +174,9 @@ test("a rare trigger term carries intent on its own", async (t) => {
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
-  const hit = search.recall("nshostingcontroller", { k: 5 }).find((h) => h.id === "rare-memo");
+  const hit = search.recall("NSHostingController", { k: 5 }).find((h) => h.id === "rare-memo");
   assert.ok(hit, "precondition: the rare identifier must retrieve the memory");
-  assert.equal(hit.anchor_strength, "strong", "a rare identifier speaks for itself");
+  assert.equal(hit.anchor_strength, "strong", "a rare camelCase identifier speaks for itself");
 });
 
 test("two exact trigger terms carry intent even when each is common", async (t) => {
@@ -258,4 +264,185 @@ test("an identifier with separators carries intent even when short-ish", async (
   const hit = search.recall("bm25_query_max_chars", { k: 5 }).find((h) => h.id === "cfg-memo");
   assert.ok(hit, "precondition: the identifier must retrieve the memory");
   assert.equal(hit.anchor_strength, "strong", "separators and digits mark a name, not a word");
+});
+
+/**
+ * #360 Fehler 1: die Zweierregel zählte EMISSIONEN aus dem flachen
+ * Roh-Token-Strom, nicht distinkte authored Wörter. Ein Wort, das zweimal in
+ * derselben Phrase steht, ist keine zweite Absichtserklärung — es ist
+ * dasselbe Wort zweimal aufgeschrieben.
+ */
+test("the same word repeated in a phrase does not satisfy the two-term rule", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["foo bei foo"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("foo", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "'foo' appears twice, but it is ONE distinct authored word, not two",
+  );
+});
+
+/**
+ * #360 Fehler 1, zweiter Teil: der Dual-Emission-Tokenizer (#162) emittiert
+ * `my-app` als `my-app`, `my`, `app`. Ein einzelnes authored Wort darf die
+ * Zweierregel nicht allein erfüllen, egal wie viele Terme daraus entstehen.
+ */
+test("a single hyphenated identifier does not satisfy the two-term rule by itself", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["my-app deployen"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  // "my" und "app" matchen beide über die Dual-Emission von "my-app" — ohne
+  // Fix zwei Treffer aus EINEM Wort.
+  const hit = search.recall("my app", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "'my' and 'app' both come from the single word 'my-app' — one origin, not two",
+  );
+});
+
+/**
+ * #360 Fehler 2: "signifikant" war nicht umgesetzt — zwei x-beliebige
+ * Allerweltswörter derselben Phrase reichten für "strong".
+ */
+test("two common filler words from the same phrase are not a declaration", async (t) => {
+  const entries = [
+    // "aber" und "auch" stehen in der geteilten Stoppwortliste (stopwords.ts)
+    // — Funktionswörter ohne eigenes Trigger-Signal.
+    { id: "target", recall_when: ["aber auch heute"] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("aber auch", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(hit.matched_recall_when, true, "both words ARE authored triggers");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "two filler words do not declare intent, even matched exactly",
+  );
+});
+
+/**
+ * #360 Fehler 3: `DocFreqMiniSearch.docFreq()` summiert über alle sieben
+ * indizierten Felder — ein Term, der nur in EINEM authored Trigger, aber in
+ * zehn Bodies auftaucht, riss die alte Schwelle künstlich. Gefragt ist die
+ * DF innerhalb von `recall_when` allein.
+ */
+test("rarity is measured over recall_when occurrences, not all fields summed", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["widget-9000 konfigurieren"] },
+    ...Array.from({ length: 10 }, (_, i) => ({
+      id: `noise-${i}`,
+      recall_when: [`sonstwort ${i}`],
+      body: "hier taucht widget-9000 im body auf, nicht im trigger",
+    })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("widget-9000", { k: 20 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the identifier must retrieve the memory");
+  assert.equal(
+    hit.anchor_strength,
+    "strong",
+    "recall_when-DF is 1 (only 'target' authored it) even though ten bodies also mention it — " +
+      "the all-field sum would have wrongly counted 11 and failed the rarity check",
+  );
+});
+
+/**
+ * Die recall_when-DF ist eine von Hand gepflegte Zähl-Map. Solche Maps driften
+ * still: Ein vergessenes Aufräumen bei `change` lässt Terme für immer als
+ * häufiger gelten, ein doppeltes Abziehen als seltener — und beides ändert
+ * lautlos, welches fremde Memory sich in eine Session drängen darf. Deshalb
+ * hier der vollständige Lebenszyklus statt nur des Normalfalls.
+ */
+test("the recall_when frequency map survives change and remove", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-dfmap-"));
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  const write = async (id: string, trigger: string): Promise<void> => {
+    await writeFile(
+      path.join(dir, `${id}.md`),
+      `---
+id: ${id}
+title: ${id}
+type: lesson
+summary: s
+topic_path: [t]
+tags: [t]
+scope: t
+recall_when: [${JSON.stringify(trigger)}]
+created: 2020-01-01
+updated: 2026-07-01
+---
+
+body
+`,
+      "utf8",
+    );
+  };
+
+  await write("a", "widgetKonfig anlegen");
+  await write("b", "widgetKonfig pruefen");
+  const vault = new Vault(dir);
+  await vault.init();
+  const search = new SearchIndex(vault);
+  search.start();
+  t.after(() => search.stop());
+
+  // Der private Zähler ist die Sache, die driften kann — hier direkt gelesen,
+  // weil ein Test gegen das Endverhalten den Fehler erst Wochen später zeigt.
+  const df = (term: string): number =>
+    (search as unknown as { recallWhenDocFreq(t: string): number }).recallWhenDocFreq(term);
+
+  assert.equal(df("widgetkonfig"), 2, "zwei Memories tragen den Term");
+
+  // CHANGE: b verliert den Term. Ohne Aufräumen bliebe der Zähler auf 2.
+  await write("b", "voellig anderer trigger");
+  await vault.reindexFile(path.join(dir, "b.md"));
+  assert.equal(df("widgetkonfig"), 1, "nach dem Umschreiben trägt ihn nur noch eines");
+
+  // CHANGE zurück: der Zähler muss wieder steigen, nicht bei 1 kleben.
+  await write("b", "widgetKonfig pruefen");
+  await vault.reindexFile(path.join(dir, "b.md"));
+  assert.equal(df("widgetkonfig"), 2, "und wieder hoch, wenn der Term zurückkommt");
+
+  // REMOVE: der Eintrag muss ganz verschwinden, nicht auf 0 stehen bleiben und
+  // auch nicht negativ werden.
+  vault.forgetFile(path.join(dir, "a.md"));
+  vault.forgetFile(path.join(dir, "b.md"));
+  assert.equal(df("widgetkonfig"), 0, "nach dem Entfernen beider trägt ihn keines");
+
+  // Doppeltes Entfernen darf nicht unter null laufen.
+  vault.forgetFile(path.join(dir, "a.md"));
+  assert.equal(df("widgetkonfig"), 0, "ein zweites Entfernen bleibt folgenlos");
 });

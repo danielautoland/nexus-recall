@@ -6,6 +6,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The cross-scope anchor stops counting tokenizer emissions as authored
+  intent, and the candidate worksheet stops showing the answer while asking the
+  question** (second counter-review round).
+
+  The two-term rule ran over a phrase's flat token list — the tokenizer's dual
+  emission. `recall_when: "foo bei foo"` counted `foo` twice, and a single
+  `my-app` satisfied the rule through its own parts `my-app`/`my`/`app`, which
+  bypassed the rarity condition outright. It now counts distinct words of the
+  raw phrase, each at most once, and "significant" is finally implemented: the
+  same stopword and length rule the reflex path has used since the 20.08.
+  incident, moved to `core/stopwords.ts` rather than copied.
+
+  Rarity measured the wrong thing. `docFreq()` sums across seven fields, so a
+  term appearing in five triggers and ten bodies broke the threshold while
+  being rare as a trigger — 607 such cases in the vault. `recallWhenDocFreq()`
+  counts distinct memories carrying the term in `recall_when`, maintained at
+  index time; its lifecycle (add → change → change back → remove → double
+  remove) is pinned by a test, because a hand-maintained count drifts silently
+  and this one decides which foreign memory may enter a session. The identifier
+  check now runs on the RAW phrase — terms arrive folded, so camelCase was
+  structurally invisible — and the `length >= 12` rule is gone: long natural
+  words are ordinary in German, and 646 terms hung on it alone.
+
+  On the eval side: the worksheet is now blind. Score, rank below the floor and
+  distance to 30 move to a separate `*.meta.json`; the sheet carries id, title,
+  provenance and an empty label, shuffled deterministically per query. Whoever
+  sees the number labels the number. The below-floor margin rises to 10 behind
+  `--below-floor-margin`, so "were five enough?" stays answerable afterwards.
+  The control sample is query-hashed and scope-filtered instead of near-identical
+  per query, with a MARKED fallback when project detection fails — measured, it
+  fires on 0 of 4. And "found by no retriever" no longer counts hybrid-pool
+  near-misses, which were found, just not inside the evaluated top 20.
+
 ### Added
 
 - **A cost-based retrieval router, a fast lexical path, and the candidate set

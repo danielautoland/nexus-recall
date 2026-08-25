@@ -26,33 +26,18 @@
  * Client-Report via /hook/hinted (Phantom-Demand-Regel, telemetry.ts).
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { tokenizeWithIdentifiers } from "@bastra-recall/core";
+import { tokenizeWithIdentifiers, PHRASE_STOPWORDS, MIN_SIGNIFICANT_TOKEN_LEN } from "@bastra-recall/core";
 import type { Vault, Memory } from "@bastra-recall/core";
 import { envFirst, envInt } from "./env.js";
 import { readSettings } from "./settings.js";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { truncateSummary } from "./tool-handlers.js";
 
-const MIN_TOKEN_LEN = 3;
+// #360: nach core verschoben (PHRASE_STOPWORDS/MIN_SIGNIFICANT_TOKEN_LEN) —
+// `anchorStrength` in search.ts braucht denselben Begriff von "Allerweltswort"
+// für die Zweierregel. Ein Alias hier, damit der lokale Name unverändert bleibt.
+const MIN_TOKEN_LEN = MIN_SIGNIFICANT_TOKEN_LEN;
 const DEFAULT_MAX_PER_TURN = 2;
-
-/**
- * Funktionswörter (DE+EN), die in natürlich formulierten recall_when-Phrasen
- * („about to write a tailwind grid") kein Trigger-Signal tragen. Ohne diesen
- * Filter müsste der Prompt auch „about"/„beim" enthalten — der Reflex würde
- * praktisch nie feuern. Inhaltswörter bleiben alle Pflicht (Token-AND).
- */
-const PHRASE_STOPWORDS = new Set([
-  // EN
-  "about", "after", "and", "any", "are", "before", "for", "from", "have",
-  "into", "just", "should", "that", "the", "then", "this", "when", "will",
-  "with", "would", "you", "your",
-  // DE
-  "aber", "als", "auch", "auf", "aus", "bei", "beim", "bitte", "das", "dass",
-  "dem", "den", "der", "die", "ein", "eine", "einem", "einen", "einer", "für",
-  "mal", "mit", "nach", "oder", "sich", "sind", "soll", "und", "von", "vor",
-  "wenn", "wird", "über",
-]);
 
 export interface ReflexHit {
   id: string;

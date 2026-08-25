@@ -4,6 +4,7 @@ import type { EmbeddingIndex } from "./embeddings.js";
 import { fuseRRF, RRF_SCALE } from "./embeddings.js";
 import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
+import { PHRASE_STOPWORDS, MIN_SIGNIFICANT_TOKEN_LEN } from "./stopwords.js";
 import { DocFreqMiniSearch } from "./doc-freq-index.js";
 import { rareTermFuzzy } from "./bm25-expansion.js";
 import { groupQueryTerms, groupedTokenize } from "./bm25-grouping.js";
@@ -114,14 +115,33 @@ function matchedRecallWhen(
  * keine Absichtserklärung ist, sondern Statistik. Deshalb kommen die Phrasen
  * hier einzeln aus dem Vault.
  *
+ * #360: die erste Fassung dieser Funktion hatte drei weitere Lücken.
+ *
+ * 1. Sie zählte EMISSIONEN, nicht distinkte Wörter — `"foo bei foo"` mit
+ *    Query `foo` traf den Rohtoken-Strom zweimal (zwei Positionen, gleiches
+ *    Wort) und wurde `strong`, und ein einzelnes `my-app` (Dual-Emission zu
+ *    `my-app`, `my`, `app`) füllte die Zweierregel allein. Jetzt wird pro
+ *    Phrase WORTWEISE gesplittet (am Whitespace) und je Wort nur EINMAL in
+ *    ein `Set` eingetragen — Wiederholungen desselben Wortes und mehrere
+ *    Emissionen eines einzelnen Wortes zählen beide als „ein Ursprung".
+ * 2. Zwei x-beliebige Terme reichten, auch wenn beide Allerweltswörter waren.
+ *    `isSignificantTriggerTerm` filtert jetzt Funktionswörter (geteilte Liste
+ *    mit dem Reflex-Pfad, `stopwords.ts`) und Kurzwörter unter
+ *    `MIN_SIGNIFICANT_TOKEN_LEN` heraus, bevor ein Wort zur Zweierregel
+ *    beiträgt.
+ * 3. Die Seltenheit lief über `DocFreqMiniSearch.docFreq()` — Summe über ALLE
+ *    SIEBEN Felder, nicht über distinkte Memories mit dem Term in
+ *    `recall_when`. Ein Term, der nur in einem authored Trigger, aber in
+ *    zehn Bodies steht, riss die Schwelle künstlich. `recallWhenDocFreq`
+ *    (siehe `SearchIndex`) zählt jetzt genau das Gefragte. Zusätzlich lief
+ *    die Identifier-Prüfung auf dem bereits GEFALTETEN Term — camelCase war
+ *    zu diesem Zeitpunkt strukturell unsichtbar. Beide Einzelterm-Checks
+ *    laufen jetzt auf der ROHEN (ungefalteten) Phrase aus dem Vault; gefaltet
+ *    wird nur für den Set-Vergleich gegen die gematchten Query-Terme.
+ *
  * **Zur Seltenheitsschwelle, offen gesagt:** Sie ist nicht kalibriert, weil es
- * dafür noch keine Labels gibt. Gemessen am echten Vault (992 Memories, 8946
- * distinkte Trigger-Terme) fallen unter `df <= 40` **85 %** aller distinkten
- * Trigger-Terme — die Schwelle beschrieb also die Regel, nicht die Ausnahme.
- * Der DF-Median liegt bei 6. Deshalb jetzt `5` (47 % der distinkten Terme,
- * 14 % der Vorkommen) UND zusätzlich die Identifier-Form: Ein gewöhnliches
- * Wort, das zufällig selten ist, belegt keine Absicht — `NSHostingController`
- * schon.
+ * dafür noch keine Labels gibt. Der Wert `5` ist unverändert — er war nie zu
+ * hoch, er wurde nur gegen die falsche (zu große) DF gemessen; siehe Punkt 3.
  *
  * Der Preis ist ein bewusster: Eine legitime Cross-Project-Erinnerung, die an
  * einem einzelnen natürlichen Wort hängt, kommt nicht mehr durch. Bei einem
@@ -131,35 +151,54 @@ function matchedRecallWhen(
 function anchorStrength(
   r: { id: unknown; match?: Record<string, string[]> },
   queryTerms: ReadonlySet<string>,
-  docFreq: (term: string) => number,
+  recallWhenDocFreq: (term: string) => number,
   phrasesOf: (id: string) => string[],
 ): "strong" | "weak" | undefined {
   const match = r.match;
   if (!match || queryTerms.size === 0) return undefined;
 
-  const matchedTriggerTerms: string[] = [];
+  const matchedTriggerTerms = new Set<string>();
   for (const [term, fields] of Object.entries(match)) {
     const folded = term.toLowerCase();
     if (fields.includes("recall_when_flat") && queryTerms.has(folded)) {
-      matchedTriggerTerms.push(folded);
+      matchedTriggerTerms.add(folded);
     }
   }
-  if (matchedTriggerTerms.length === 0) return undefined;
+  if (matchedTriggerTerms.size === 0) return undefined;
 
-  // Ein einzelner Term trägt nur, wenn er wie ein Bezeichner aussieht UND
-  // selten ist. Beides zusammen, nicht eines von beiden.
-  for (const t of matchedTriggerTerms) {
-    const df = docFreq(t);
-    if (looksLikeIdentifier(t) && df > 0 && df <= ANCHOR_RARE_DF_MAX) return "strong";
+  const phrases = phrasesOf(String(r.id));
+
+  // Einzelterm: trägt nur, wenn er wie ein Bezeichner aussieht UND selten ist
+  // (recall_when-DF, nicht die Summe über alle Felder). Geprüft an der ROHEN
+  // Schreibweise jedes Phrasen-Wortes — sonst ist camelCase schon vor dem
+  // Vergleich weggefaltet.
+  for (const phrase of phrases) {
+    for (const word of phrase.split(/\s+/)) {
+      if (!word) continue;
+      for (const rawToken of tokenizeWithIdentifiers(word)) {
+        const folded = rawToken.toLowerCase();
+        if (!matchedTriggerTerms.has(folded)) continue;
+        const df = recallWhenDocFreq(folded);
+        if (looksLikeIdentifier(rawToken) && df > 0 && df <= ANCHOR_RARE_DF_MAX) return "strong";
+      }
+    }
   }
 
-  // Zwei Terme zählen nur, wenn sie in DERSELBEN autorisierten Phrase stehen.
-  const hit = new Set(matchedTriggerTerms);
-  for (const phrase of phrasesOf(String(r.id))) {
-    let inThisPhrase = 0;
-    for (const raw of tokenizeWithIdentifiers(phrase)) {
-      if (hit.has(raw.toLowerCase())) inThisPhrase++;
-      if (inThisPhrase >= 2) return "strong";
+  // Zweierregel: zwei DISTINKTE, SIGNIFIKANTE authored Wörter derselben
+  // Phrase. Wortweise gesplittet und pro Phrase in ein Set eingetragen —
+  // ein Wort trägt so höchstens einmal bei, egal wie oft es in der Phrase
+  // wiederholt wird oder wie viele Terme der Dual-Emission-Tokenizer daraus
+  // macht.
+  for (const phrase of phrases) {
+    const contributingWords = new Set<string>();
+    for (const word of phrase.split(/\s+/)) {
+      if (!word) continue;
+      const emitted = tokenizeWithIdentifiers(word).map((t) => t.toLowerCase());
+      const wordHits = emitted.some(
+        (t) => matchedTriggerTerms.has(t) && isSignificantTriggerTerm(t),
+      );
+      if (wordHits) contributingWords.add(word.toLowerCase());
+      if (contributingWords.size >= 2) return "strong";
     }
   }
   return "weak";
@@ -167,32 +206,44 @@ function anchorStrength(
 
 /**
  * DF-Grenze, unter der ein identifierartiger Trigger-Term für sich Absicht
- * belegt. `5` von 992 Memories — siehe die Messung oben; die Zahl ist eine
- * konservative Setzung ohne Labels, kein kalibrierter Wert.
+ * belegt. `5` — konservative Setzung ohne Labels, kein kalibrierter Wert.
+ * Jetzt gegen `recallWhenDocFreq` gemessen (distinkte Memories mit dem Term
+ * in `recall_when`), nicht mehr gegen die feldübergreifende Summe.
  */
 const ANCHOR_RARE_DF_MAX = 5;
 
 /**
+ * Ist `term` (roh, in Original-Schreibweise) selbst signifikant genug, um zur
+ * Zweierregel beizutragen? Filtert Funktionswörter (geteilte Liste mit dem
+ * Reflex-Pfad, #360) und Kurzwörter unter der Signifikanz-Mindestlänge —
+ * zwei x-beliebige Allerweltswörter derselben Phrase sind keine Absicht,
+ * auch wenn beide exakt in der Query stehen.
+ */
+function isSignificantTriggerTerm(term: string): boolean {
+  return term.length >= MIN_SIGNIFICANT_TOKEN_LEN && !PHRASE_STOPWORDS.has(term);
+}
+
+/**
  * Trägt dieser eine Term für sich, oder ist er nur ein Wort?
  *
- * Die naheliegende Prüfung auf camelCase geht hier NICHT: Die Terme kommen
- * bereits durch `processTerm` gefaltet an, `NSHostingController` ist zu diesem
- * Zeitpunkt `nshostingcontroller`. Was den Tokenizer überlebt, ist die Länge
- * und — bei zusammengesetzten Bezeichnern, die als Ganzes emittiert wurden —
- * Trenner und Ziffern.
+ * MUSS auf der ROHEN, ungefalteten Schreibweise laufen — camelCase
+ * (`NSHostingController`) ist danach durch `processTerm` bereits zu
+ * `nshostingcontroller` gefaltet und nicht mehr von einem langen deutschen
+ * Wort zu unterscheiden.
  *
- * Beides zusammen beschreibt dieselbe Klasse: Wörter, die niemand beiläufig
- * schreibt. `nshostingcontroller` (19 Zeichen) und `bm25_query_max_chars`
- * (Unterstriche) sind Bezeichner; `arbeit`, `datei`, `wieder` sind es nicht,
- * auch wenn sie in einem kleinen Vault selten sein mögen.
+ * #360: die reine Längenschwelle (`>= 12`) ist raus. Gemessen an 4219
+ * Trigger-Termen mit df<=5 bestanden 2886 die alte Heuristik, davon 646 NUR
+ * wegen der Länge — im Deutschen sind lange natürliche Wörter normal
+ * („Zusammenfassung", „Benachrichtigung"), Länge allein trägt also keine
+ * Bezeichner-Aussage. Ersetzt durch die Case-Form: ein innerer Wechsel von
+ * klein- zu großgeschrieben (camelCase, `myApp`) oder ein Lauf aus zwei-plus
+ * Großbuchstaben (Akronym-Präfix wie in `NSHostingController`) schreibt
+ * niemand beiläufig — ein Wort dieser Form IST ein Name.
  */
 function looksLikeIdentifier(term: string): boolean {
   if (term.length < 4) return false;
   if (/[./_-]/.test(term) || /\d/.test(term)) return true;
-  // Ein sehr langes Einzelwort ist praktisch immer ein zusammengesetzter
-  // Bezeichner — kein natürliches Wort dieser Länge landet zufällig in einer
-  // Query UND in einer fremden Triggerphrase.
-  return term.length >= 12;
+  return /[a-z][A-Z]/.test(term) || /[A-Z]{2,}/.test(term);
 }
 
 export interface RecallOptions {
@@ -333,6 +384,37 @@ export class SearchIndex {
   setDemotions(ids: Iterable<string>): void {
     this.curatorDemotions = new Set(ids);
     this.queryCache.clear();
+  }
+
+  // #360: recall_when-DF für `anchorStrength` — wie viele DISTINKTE Memories
+  // tragen `term` (gefaltet) in ihrem `recall_when`? `DocFreqMiniSearch.docFreq()`
+  // summiert über alle sieben indizierten Felder und ist damit für die
+  // Anker-Seltenheit die falsche Zahl (ein Term in zehn Bodies zählt zehnfach
+  // mit, obwohl er nur einmal authored getriggert wurde). Gepflegte Zähl-Map
+  // statt Live-Scan: ein Anker-Check pro Recall-Hit würde sonst den ganzen
+  // Vault durchlaufen. `recallWhenTermsByMemId` hält die zuletzt gezählten
+  // Terme pro Memory, damit `change`/`remove` sie sauber wieder abziehen kann.
+  private recallWhenTermFreq = new Map<string, number>();
+  private recallWhenTermsByMemId = new Map<string, Set<string>>();
+
+  /** Zieht die zuletzt gezählten recall_when-Terme einer Memory wieder ab —
+   *  Vorstufe für Re-Index (`change`) und `remove`. No-op, wenn die id noch
+   *  nie gezählt wurde (erste Indizierung). */
+  private forgetRecallWhenTerms(id: string): void {
+    const terms = this.recallWhenTermsByMemId.get(id);
+    if (!terms) return;
+    for (const t of terms) {
+      const n = this.recallWhenTermFreq.get(t) ?? 0;
+      if (n <= 1) this.recallWhenTermFreq.delete(t);
+      else this.recallWhenTermFreq.set(t, n - 1);
+    }
+    this.recallWhenTermsByMemId.delete(id);
+  }
+
+  /** Wie viele Memories tragen `term` (gefaltet) in ihrem `recall_when` —
+   *  DISTINKTE Memories, nicht die feldübergreifende Summe. */
+  private recallWhenDocFreq(term: string): number {
+    return this.recallWhenTermFreq.get(term.toLowerCase()) ?? 0;
   }
 
   // Query-Cache (#30): MiniSearch tokenisiert die Query bei jedem
@@ -570,7 +652,7 @@ export class SearchIndex {
       matched_terms: r.terms ?? [],
       matched_recall_when: matchedRecallWhen(r, queryTerms),
       ...(() => {
-        const a = anchorStrength(r, queryTerms, (t) => this.mini.docFreq(t), (id) =>
+        const a = anchorStrength(r, queryTerms, (t) => this.recallWhenDocFreq(t), (id) =>
           this.vault.get(id)?.fm.recall_when ?? [],
         );
         return a ? { anchor_strength: a } : {};
@@ -858,7 +940,7 @@ export class SearchIndex {
         matched_recall_when: bm ? matchedRecallWhen(bm, queryTerms) : false,
         ...(() => {
           const a = bm
-            ? anchorStrength(bm, queryTerms, (t) => this.mini.docFreq(t), (id) =>
+            ? anchorStrength(bm, queryTerms, (t) => this.recallWhenDocFreq(t), (id) =>
                 this.vault.get(id)?.fm.recall_when ?? [],
               )
             : undefined;
@@ -977,6 +1059,10 @@ export class SearchIndex {
     if (e.kind === "remove") {
       // Staleness-Cache invalidieren (#29) — memId genügt.
       this.stalenessCache.delete(e.id);
+      // #360: recall_when-DF-Map — die Terme dieser Memory zählen nicht mehr
+      // mit. `indexOne()` (add/change) macht das intern selbst; hier muss es
+      // explizit passieren, weil kein neuer Indexier-Aufruf folgt.
+      this.forgetRecallWhenTerms(e.id);
       // Query-Cache komplett leeren (#30) — selektive Invalidierung wäre
       // ein eigenes Ranking-Problem und Vault-Changes sind selten.
       this.queryCache.clear();
@@ -1107,6 +1193,18 @@ export class SearchIndex {
 
   private indexOne(m: Memory): void {
     const fm = m.fm;
+    // #360: recall_when-DF-Map neu aufbauen — erst alte Terme dieser id
+    // abziehen (no-op bei Erstindizierung), dann die aktuellen zählen. Deckt
+    // add/change gleichermaßen ab, `remove` räumt in `handle()` separat auf,
+    // weil dort kein neuer Stand mehr kommt.
+    this.forgetRecallWhenTerms(fm.id);
+    const recallWhenTerms = new Set(
+      tokenizeWithIdentifiers(fm.recall_when.join(" ")).map((t) => t.toLowerCase()),
+    );
+    for (const t of recallWhenTerms) {
+      this.recallWhenTermFreq.set(t, (this.recallWhenTermFreq.get(t) ?? 0) + 1);
+    }
+    this.recallWhenTermsByMemId.set(fm.id, recallWhenTerms);
     const doc: IndexDoc = {
       id: fm.id,
       title: fm.title,

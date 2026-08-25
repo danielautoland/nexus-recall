@@ -962,3 +962,70 @@ ohne die Kontrollstichprobe niemand sehen könnte.
 - Der Worker bleibt zurückgestellt. Nächster sinnvoller Test dafür ist nicht die
   Einzellatenz, sondern „langer Recall, 10 ms später ein kurzer" — dort zeigt
   sich, ob die Blockade Queue- oder Timeout-Schäden verursacht.
+
+---
+
+## 16. Zweite Gegenprüfung: Zählfehler und Statistikaussagen (25.08.2026)
+
+**Der Anker zählte Emissionen statt Terme.** Die Zweierregel lief über die
+flache Tokenliste einer Phrase — also über die Dual-Emission des Tokenizers.
+`recall_when: "foo bei foo"` zählte `foo` zweimal, und ein einzelnes `my-app`
+erfüllte über seine Teile `my-app`/`my`/`app` die Zweierregel im Alleingang und
+umging damit die df-Bedingung vollständig. Gezählt werden jetzt distinkte
+Wörter der Rohphrase, jedes höchstens einmal.
+
+**„Signifikant" war nie umgesetzt** — zwei Füllwörter derselben Phrase ergaben
+`strong`. Es gilt jetzt dieselbe Stoppwort- und Mindestlängenregel wie im
+Reflex-Pfad; die Liste wurde dafür nach `packages/core/src/stopwords.ts`
+gezogen, statt sie zu kopieren.
+
+**Rarität und Identifier-Form maßen das Falsche.** `docFreq()` summiert über
+sieben Felder — ein Term, der in fünf Triggern und zehn Bodies steht, riss die
+Schwelle, obwohl er als Trigger selten ist (607 solcher Fälle gemessen). Es gibt
+jetzt `recallWhenDocFreq()`: eine beim Indizieren gepflegte Zählung distinkter
+Memories mit dem Term in `recall_when`. Und die Identifier-Prüfung läuft auf der
+ROHEN Phrase statt auf dem gefalteten Term — `NSHostingController` ist damit
+wieder als Bezeichner erkennbar. Die Längenregel `>= 12` ist ersatzlos raus: Im
+Deutschen sind lange natürliche Wörter normal, 646 Terme hingen allein an ihr.
+An ihre Stelle tritt die Groß-/Kleinschreibungsform.
+
+Die gepflegte Zählung ist die Stelle, an der so etwas später still driftet, und
+sie ist entsprechend festgenagelt: ein Test über add → change → change zurück →
+remove → doppeltes remove. Ein vergessenes Aufräumen ließe Terme dauerhaft als
+häufiger gelten, ein doppeltes Abziehen als seltener — beides ändert lautlos,
+welches fremde Memory sich einmischen darf.
+
+**Zwei Statistikaussagen waren zu stark.** Die „von keinem Retriever gefunden"
+enthielten Near-Miss-Kandidaten aus dem Hybrid-Pool — die wurden sehr wohl
+gefunden, nur nicht in den ausgewerteten Top 20. Getrennt in „außerhalb der
+ausgewerteten Arm-Tiefe" und „von keinem Retriever vorgeschlagen".
+
+**Die Kontrollstichprobe war weder zufällig noch scope-kompatibel** — sie zog
+für jede Query fast dieselben Memories nach Vault-Reihenfolge. Jetzt
+query-gehasht und gegen den Projekt-Scope gefiltert, mit einem markierten
+Fallback (`random-control-unscoped`), falls die Projekterkennung scheitert:
+Er verwässert die Stichprobe nicht mehr still, sondern ist beim Auswerten
+sichtbar. Gemessen greift er bei 0 von 4 Queries.
+
+**Das Arbeitsblatt ist jetzt blind.** Score, Rang unter dem Floor und Abstand
+zur 30 wandern in eine separate `*.meta.json`; das Labelblatt trägt nur id,
+Titel, Provenienz und das leere Label, je Query deterministisch gemischt. Wer
+beim Labeln die Zahl sieht, labelt die Zahl. Die Randbreite ist auf 10
+angehoben und über `--below-floor-margin` steuerbar — die Ränge 6–10 liegen
+damit im Set, ohne im Blatt unterscheidbar zu sein, und die Frage „reichen
+fünf?" ist nachträglich beantwortbar.
+
+### Korrektur einer eigenen Formulierung
+
+„Sobald BM25 den dichten Arm überholt, kippt der Router" war ungenau. Bei einem
+Budget von 200 ms und 7 ms Overhead darf der lexikalische Arm bis ~193 ms
+kosten; zwischen 150 und 193 ms bleibt Hybrid richtig. Die Formel war korrekt,
+der Satz nicht.
+
+### Weiterhin offen
+
+`ANCHOR_RARE_DF_MAX = 5` ist auch nach der Korrektur eine Setzung ohne Labels —
+jetzt immerhin gegen die richtige Größe gemessen. Ob 5 zu streng oder zu locker
+ist, entscheidet erst ein Sweep gegen die gelabelten einwortigen
+Cross-Scope-Fälle. Dasselbe gilt für die Signifikanzregel, die bewusst vom
+Reflex-Pfad übernommen und nicht neu kalibriert wurde.
