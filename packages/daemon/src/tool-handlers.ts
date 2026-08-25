@@ -24,7 +24,7 @@ import {
 import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
 import { markConflict } from "./conflict-marking.js";
-import { claimGateResult, unansweredClaims, type ClaimGateResult } from "./claim-gate.js";
+import { claimGateResult, unansweredClaims, GENERATED_TRIGGER_TYPES, type ClaimGateResult } from "./claim-gate.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { tokens as words } from "./save-similarity.js";
 
@@ -366,7 +366,11 @@ async function saveMemoryInner(
   // layer that can see it but must not guess. Held here, before any file I/O,
   // and only for a CREATE: an `overwrite` names its target, which is itself an
   // answer, and re-saving a memory must never be blocked by its own triggers.
-  if (!parsed.data.overwrite) {
+  //
+  // Documents and bookmarks are out: their triggers come from the importer, not
+  // from an author, so there is no declaration to reconcile — and a bulk import
+  // must not stall on the first repeated phrase.
+  if (!parsed.data.overwrite && !GENERATED_TRIGGER_TYPES.has(parsed.data.type)) {
     const claimed = unansweredClaims(parsed.data, saveQuality, (id) => {
       const m = deps.vault.get(id);
       return m ? { summary: m.fm.summary, body: m.body } : undefined;

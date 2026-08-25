@@ -484,3 +484,36 @@ test("#360: generated triggers (docs, bookmarks) stay out of the sweep", async (
     "the authored pair must still be reported",
   );
 });
+
+test("#360: a document save is never held, however much its trigger collides", async (t) => {
+  const { deps, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  const sidecar = (title: string) => ({
+    title,
+    type: "doc",
+    summary: `Bild: ${title}`,
+    body: `Sidecar für ${title}.`,
+    topic_path: ["documents"],
+    tags: ["dokument"],
+    scope: "documents",
+    // The importer writes the same phrase onto every imported photo.
+    recall_when: ["foto bild unsortiert"],
+  });
+
+  const first = await saveMemoryHandler(deps, sidecar("Foto A"));
+  assert.equal(first.created, true);
+
+  // Verbatim identical trigger — full containment, the gate's own condition.
+  const second = await saveMemoryHandler(deps, sidecar("Foto B"));
+  assert.ok(
+    !("claim_gate" in second),
+    `a generated trigger must not hold an import, got ${JSON.stringify(second)}`,
+  );
+  assert.equal(second.created, true, "the second sidecar must be written");
+
+  // And the rule is type-scoped, not a hole: an authored memory still gates.
+  await saveMemoryHandler(deps, memo("Staging-Deploy Ablauf", [OWNER_TRIGGER]));
+  const held = await saveMemoryHandler(deps, memo("Staging-Deploy Zweitnotiz", [CLAIMING_TRIGGER]));
+  assert.ok("claim_gate" in held, "authored memories must still be held");
+});

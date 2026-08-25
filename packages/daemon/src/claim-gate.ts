@@ -36,6 +36,27 @@ import { stripAutoRelatedSection, CONFLICT_START, type SaveMemoryInput } from "@
 import type { SaveQualityResult } from "./save-quality.js";
 import { contentDelta, type ContentDelta } from "./save-similarity.js";
 
+/**
+ * Types whose `recall_when` the importer writes, not the author.
+ *
+ * A document sidecar gets `foto bild unsortiert` on every imported photo and a
+ * bookmark gets its own host, so they collide with each other by construction
+ * and forever. The gate's premise is that an author DECLARED a situation and
+ * has to reconcile two declarations; for a generated trigger there is nothing
+ * to reconcile, and holding an import to ask about it would stall a bulk
+ * document run on the first duplicate phrase.
+ *
+ * Today the document flow does not reach `saveMemoryHandler` at all — it is
+ * written by `documents-write-handler.ts` — so this is belt and braces rather
+ * than a live fix. It is here anyway because the day those paths converge, the
+ * failure would be a bulk import stopping on every file, and nobody would
+ * connect that back to a gate written for authored memories.
+ *
+ * `claimed-twice.ts` imports this list rather than keeping its own: the report
+ * exists to show what the gate would hold, so the two must not drift.
+ */
+export const GENERATED_TRIGGER_TYPES = new Set(["doc", "bookmark"]);
+
 /** Longest existing body handed back for comparison. Past this the agent gets
  *  a marked excerpt and can `load_memory` for the rest — a gate refusal must
  *  not cost more context than the memory it is protecting. */
