@@ -75,6 +75,9 @@ interface RecallHit {
   /** #148: matchte der Hit auf seinem hand-geschriebenen `recall_when`?
    *  Lässt starke, absichtliche Cross-Scope-Hits durch den #110-Filter. */
   matched_recall_when?: boolean;
+  /** P0: Tragfähigkeit dieses Ankers — der Cross-Scope-Bypass verlangt
+   *  `"strong"` (zwei exakte Trigger-Terme oder einen seltenen). */
+  anchor_strength?: "strong" | "weak";
 }
 
 interface RecallResponse {

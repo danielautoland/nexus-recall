@@ -793,8 +793,15 @@ entsprechend auf ein Wort ab ~5 Zeichen umgestellt werden.
   Suchpfade"-Aussage, und die Punktzahl wird nicht mehr gezeigt — auf einer
   offenen Skala lädt sie zu einem Vergleich ein, den sie nicht trägt.
 
-Offen aus P0: Punkt 2 (expliziter `score_kind` im gemeinsamen Vertrag),
-Punkt 4 (Audit von `recall-handler.ts` auf während des Calls eintretende
-Degradation) und Punkt 6 (die schärfere Zwei-Token-Regel für den
-Cross-Scope-Bypass — `reflex.ts` hat diese Regel bereits erprobt und wäre die
-Vorlage).
+Punkte 2, 4 und 6 sind inzwischen ebenfalls gebaut: `score_kind` (`"rrf"` |
+`"bm25"`) steht neben `unfused`/`degraded` im Antwortvertrag; der Handler liest
+die Degradation aus derselben `done`-Stage, die die Hook-Route schon auswertete,
+statt aus dem Breaker-Zustand vor dem Call; und `anchor_strength` gradiert den
+Anker nach der Regel, die `reflex.ts` seit dem 20.08.-Vorfall verwendet — zwei
+exakte Trigger-Terme oder einer, dessen Document-Frequency ihn für sich sprechen
+lässt. Der Cross-Scope-Bypass verlangt `"strong"`; fehlt das Feld, bleibt es beim
+alten Verhalten, damit ein älterer Daemon nicht still strenger wird.
+
+Damit ist P0 abgeschlossen. Offen bleiben Phase 0 (Messgrundlage und gelabeltes
+Qualitätsset) und Phase 1 (Termgruppierung, Worker) — beide unverändert wie
+oben beschrieben.

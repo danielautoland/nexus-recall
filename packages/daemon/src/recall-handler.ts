@@ -83,6 +83,24 @@ export interface RecallResult {
    *  die höhere Konfidenz-Stufe ist; zusammengelegt ginge genau die
    *  Unterscheidung verloren, die den Wert ausmacht. */
   no_home?: boolean;
+  /**
+   * P0: In welchem Score-Raum `hits[].score` liegt.
+   *
+   * `"rrf"` — fusionierte Rang-Summe, nach oben durch 163,934 begrenzt, die
+   * Bänder 30/50/100 beschreiben etwas. `"bm25"` — rohes MiniSearch, nach oben
+   * offen (sechsstellig auf einem echten Vault), die Bänder beschreiben nichts.
+   *
+   * Explizit auf der Leitung, weil jeder Konsument den Modus sonst aus der
+   * Höhe der Zahl raten muss — und genau dieses Raten ging schief: Rohe Werte
+   * rissen die 100er-Schwelle immer und wurden als REQUIRED ausgeliefert.
+   */
+  score_kind?: "rrf" | "bm25";
+  /** P0: Kurzform von `score_kind === "bm25"` — die Fusion lief nicht.
+   *  Redundant, aber die Form, die Write- und Prompt-Lane bereits lesen. */
+  unfused?: boolean;
+  /** P0/#342: warum die Fusion ausfiel, falls sie während DIESES Calls ausfiel
+   *  (`vector-arm-timeout` | `vector-arm-error` | `vector-arm-empty`). */
+  degraded?: string;
   /** #351 batch only: width the model SENT (not what ran after the guard). */
   query_count?: number;
   /** #351 batch only: one recall_id per executed sub-query. */
@@ -128,10 +146,23 @@ const STAGE_TO_TIMING_KEY: Partial<Record<RecallStage["name"], StageMsKey>> = {
  * Stage-Bucket-Map zurück, sobald `recall()` resolved ist — die Werte
  * landen dann in der Telemetrie.
  */
-function makeStageCollector(forward?: StageListener): { listener: StageListener; timings: RecallStageTimings } {
+function makeStageCollector(forward?: StageListener): {
+  listener: StageListener;
+  timings: RecallStageTimings;
+  /** P0: Grund, falls die Fusion WÄHREND dieses Calls ausfiel. Der
+   *  Breaker-Zustand vor dem Recall beantwortet das nicht: Ein Vector-Arm, der
+   *  in seine Deadline läuft, öffnet keinen Breaker — er liefert einfach nicht,
+   *  und `recallHybrid` degradiert still auf rohes BM25. Ohne dieses Feld hielt
+   *  der Handler denselben Call weiterhin für fusioniert. */
+  degraded: () => string | undefined;
+} {
   const timings: RecallStageTimings = {};
+  let degradedReason: string | undefined;
   const listener: StageListener = (stage: RecallStage) => {
     forward?.(stage);
+    if (stage.name === "done" && typeof stage.meta?.degraded === "string") {
+      degradedReason = stage.meta.degraded;
+    }
     if (stage.name === "cache.hit") {
       timings.cache_hit = true;
       return;
@@ -143,7 +174,7 @@ function makeStageCollector(forward?: StageListener): { listener: StageListener;
     // (statt += ) bleibt der finale Wert die echte Dauer.
     timings[key] = stage.durationMs;
   };
-  return { listener, timings };
+  return { listener, timings, degraded: () => degradedReason };
 }
 
 /** Score-Floor (#50 / #9): Hits darunter sind Rauschen und werden nicht
@@ -283,7 +314,15 @@ export async function recallHandler(
   // Hybrid-Pfad lief (beide Arme — nicht der Breaker-degradierte BM25-Fallback)
   // UND KEIN zurückgegebener Hit lexikalisch anknüpft (weder recall_when- noch
   // Titel-Match). Rein informativ, filtert nichts.
-  const hybridActive = deps.search.hasEmbeddings() && !embeddingDegraded;
+  // P0: `embeddingDegraded` ist der Breaker-Zustand VOR dem Call. Er fängt
+  // „Embeddings sind aus" und „Breaker offen", aber nicht den Fall, der in der
+  // Telemetrie am häufigsten auftrat: Der Vector-Arm lief in seine Deadline,
+  // `recallHybrid` fiel auf rohes BM25 zurück, und der Handler nannte das
+  // Ergebnis trotzdem hybrid. `weak_result` und `no_home` sind aber genau für
+  // den fusionierten Pfad definiert — auf der rohen Skala sagen sie nichts.
+  const degradedDuringCall = collector.degraded();
+  const hybridActive =
+    deps.search.hasEmbeddings() && !embeddingDegraded && degradedDuringCall === undefined;
   const weakResult = isWeakResult(hits, hybridActive);
   // #230: the stricter claim — not just "nothing anchored" but "this fact has
   // no home here". Strict subset of weakResult, so it can only ever narrow it.
@@ -354,6 +393,10 @@ export async function recallHandler(
     // #230: nur setzen wenn true — Abwesenheit = nicht weak, hält lean schlank.
     ...(weakResult ? { weak_result: true } : {}),
     ...(noHome ? { no_home: true } : {}),
+    // P0: Kein Caller darf den Score-Raum aus der Höhe der Zahl erraten.
+    score_kind: hybridActive ? "rrf" : "bm25",
+    ...(hybridActive ? {} : { unfused: true }),
+    ...(degradedDuringCall ? { degraded: degradedDuringCall } : {}),
     ...(full ? { stages: collector.timings } : {}),
   };
 }

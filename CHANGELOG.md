@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A recall that degrades mid-call now says so, names its score space, and
+  stops lending a common word the authority to open a foreign project**
+  (P0 points 2, 4 and 6 from `docs/recall-performance-handoff.md`).
+
+  `recall-handler.ts` decided `hybridActive` from the circuit-breaker state
+  BEFORE the search. A vector arm that misses its deadline or dies mid-call
+  opens no breaker — it simply returns nothing and `recallHybrid` degrades to
+  raw BM25 — so the handler kept calling that answer hybrid and computed
+  `weak_result` / `no_home` for a fusion that never ran. It now reads the
+  degradation off the same `done` stage the hook route already watched, and the
+  response carries `score_kind` (`"rrf"` | `"bm25"`) plus `unfused` and
+  `degraded`. No consumer has to infer the scale from the size of the number.
+
+  The cross-scope bypass (#148) let a foreign-project memory into the session on
+  one exact trigger term. After the anchor fix that term is at least verbatim,
+  but a single ordinary word — "arbeit", "datei", "test" — sits in dozens of
+  trigger phrases and declares nothing. `anchor_strength` now grades it the way
+  `reflex.ts` has graded phrases since the 20.08. incident: two exact trigger
+  terms, or one rare enough to speak for itself (document frequency from the
+  live index, so rarity is a property of THIS vault). The bypass requires
+  `"strong"`; an absent field keeps the pre-P0 behaviour, so an older daemon or
+  a foreign caller never silently gets stricter.
+
 - **Two correctness fixes in what reaches the model: the deliberate-trigger
   anchor stops accepting typos, and a degraded recall stops posing as a fused
   one** (P0 from `docs/recall-performance-handoff.md`).

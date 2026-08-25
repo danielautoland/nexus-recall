@@ -171,10 +171,22 @@ export function isScopeCompatible(scope: string, project: string | null): boolea
  * hätte es nie gesetzt, der absichtliche Cross-Scope-Treffer schon.
  */
 export function passesScopeFilter(
-  hit: { scope: string; score: number; matched_recall_when?: boolean },
+  hit: {
+    scope: string;
+    score: number;
+    matched_recall_when?: boolean;
+    anchor_strength?: "strong" | "weak";
+  },
   project: string | null,
   mustLoadScore: number,
 ): boolean {
   if (isScopeCompatible(hit.scope, project)) return true;
+  // P0: Ein einzelnes häufiges Wort, das zufällig in einer fremden
+  // Triggerphrase steht, ist keine Absichtserklärung — dafür verlangt der
+  // Bypass jetzt einen TRAGFÄHIGEN Anker (zwei exakte Trigger-Terme oder einen
+  // seltenen, siehe `anchorStrength` in core). Fehlt das Feld — ältere Antwort,
+  // fremder Aufrufer —, bleibt es beim reinen Flag: Der Filter darf an einem
+  // unbekannten Feld nicht strenger werden, als er es vorher war.
+  if (hit.anchor_strength !== undefined && hit.anchor_strength !== "strong") return false;
   return hit.matched_recall_when === true && hit.score >= mustLoadScore;
 }

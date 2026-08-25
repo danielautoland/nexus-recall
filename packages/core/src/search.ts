@@ -29,6 +29,16 @@ export interface RecallHit {
    *  deklariert. Genutzt vom Hook-Scope-Filter (#148), um starke, absichtliche
    *  Cross-Scope-Hits durchzulassen ohne den tag/topic-Noise (#110) zu öffnen. */
   matched_recall_when?: boolean;
+  /**
+   * P0: Wie tragfähig der Anker ist — `"strong"` (zwei exakte Trigger-Terme
+   * oder ein seltener), `"weak"` (genau ein häufiger). Fehlt, wenn gar kein
+   * Trigger-Term traf.
+   *
+   * Der Cross-Scope-Bypass (`hook-skip.ts`) verlangt `"strong"`: Ein einzelnes
+   * Allerweltswort, das zufällig in einer fremden Triggerphrase steht, ist
+   * keine Absichtserklärung.
+   */
+  anchor_strength?: "strong" | "weak";
   /** #230: RRF-Herkunft des Scores auf dem Hybrid-Pfad. Der `score` ist eine
    *  skalierte Rang-Summe, keine Content-Similarity — dieses Feld macht
    *  dekomponierbar, woraus die Zahl besteht. Nur auf dem Hybrid-Pfad gesetzt
@@ -81,6 +91,48 @@ function matchedRecallWhen(
   }
   return false;
 }
+
+/**
+ * Wie TRAGFÄHIG ist der Anker? (P0, Punkt 6 der Übergabe.)
+ *
+ * `matched_recall_when` sagt nur, DASS ein Query-Term wörtlich in einer
+ * autorisierten Triggerphrase stand. Das genügt für Telemetrie, aber nicht für
+ * die eine Entscheidung, die daran am teuersten hängt: Ein Memory aus einem
+ * FREMDEN Projekt darf sich in diese Session drängen (`hook-skip.ts`). Ein
+ * einzelnes Allerweltswort — „arbeit", „datei", „test" — kommt in Dutzenden
+ * Triggerphrasen vor und ist als Absichtserklärung wertlos.
+ *
+ * `"strong"` verlangt deshalb dasselbe, was der Reflex-Pfad seit dem
+ * 20.08.-Vorfall verlangt (`reflex.ts`): **zwei** exakte Trigger-Terme, ODER
+ * **einen seltenen** — ein Bezeichner, ein Dateiname, ein Projektname, der im
+ * Vault kaum vorkommt und deshalb für sich spricht. Seltenheit ist hier die
+ * Document-Frequency aus dem laufenden Index, nicht eine Wortliste: Was in
+ * DIESEM Vault selten ist, weiß nur dieser Vault.
+ */
+function anchorStrength(
+  r: { match?: Record<string, string[]> },
+  queryTerms: ReadonlySet<string>,
+  docFreq: (term: string) => number,
+): "strong" | "weak" | undefined {
+  const match = r.match;
+  if (!match || queryTerms.size === 0) return undefined;
+  let hits = 0;
+  let rare = false;
+  for (const [term, fields] of Object.entries(match)) {
+    const folded = term.toLowerCase();
+    if (!fields.includes("recall_when_flat") || !queryTerms.has(folded)) continue;
+    hits++;
+    const df = docFreq(folded);
+    if (df > 0 && df <= ANCHOR_RARE_DF_MAX) rare = true;
+  }
+  if (hits === 0) return undefined;
+  return hits >= 2 || rare ? "strong" : "weak";
+}
+
+/** DF-Grenze, unter der ein einzelner Trigger-Term für sich Absicht belegt.
+ *  Bewusst dieselbe Größenordnung wie die Seltenheitsschwelle in
+ *  `bm25-expansion.ts`: „kommt in höchstens ~4 % der Memories vor". */
+const ANCHOR_RARE_DF_MAX = 40;
 
 export interface RecallOptions {
   k?: number;
@@ -444,6 +496,10 @@ export class SearchIndex {
       score: round(r.score),
       matched_terms: r.terms ?? [],
       matched_recall_when: matchedRecallWhen(r, queryTerms),
+      ...(() => {
+        const a = anchorStrength(r, queryTerms, (t) => this.mini.docFreq(t));
+        return a ? { anchor_strength: a } : {};
+      })(),
       mode: "bm25" as const,
       hop: "direct" as const,
     }));
@@ -722,6 +778,10 @@ export class SearchIndex {
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.
         matched_recall_when: bm ? matchedRecallWhen(bm, queryTerms) : false,
+        ...(() => {
+          const a = bm ? anchorStrength(bm, queryTerms, (t) => this.mini.docFreq(t)) : undefined;
+          return a ? { anchor_strength: a } : {};
+        })(),
         mode: inBoth ? "hybrid" : bm ? "bm25" : "vector",
         hop: "direct" as const,
         // #230: Rang-Herkunft des skalierten Scores durchreichen (nur Hybrid).

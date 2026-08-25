@@ -456,6 +456,10 @@ export function handleHookRecall(
         hits: hits.map((h) => ({
           ...toLeanHit(h),
           matched_recall_when: h.matched_recall_when ?? false,
+          // P0: Der Cross-Scope-Bypass in den Lanes braucht mehr als das Flag —
+          // ein einzelnes häufiges Wort in einer fremden Triggerphrase ist
+          // keine Absicht. Nur gesetzt, wenn überhaupt ein Trigger-Term traf.
+          ...(h.anchor_strength ? { anchor_strength: h.anchor_strength } : {}),
           ...(vault.get(h.id)?.fm.recall_mode === "reflex" ? { recall_mode: "reflex" as const } : {}),
         })),
         ...(reflexHits.length > 0 ? { reflex_hits: reflexHits } : {}),
