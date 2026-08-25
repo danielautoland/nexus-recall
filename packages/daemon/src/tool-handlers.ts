@@ -24,6 +24,7 @@ import {
 import { fireAndForget } from "./telemetry.js";
 import { recordAudit } from "./audit-trail.js";
 import { markConflict } from "./conflict-marking.js";
+import { claimGateResult, unansweredClaims, type ClaimGateResult } from "./claim-gate.js";
 import { touchLoadedMarker } from "./session-state.js";
 import { tokens as words } from "./save-similarity.js";
 
@@ -317,8 +318,8 @@ export function resetSaveFailures(): void {
 export async function saveMemoryHandler(
   deps: ToolDeps,
   rawArgs: unknown,
-): Promise<SaveMemoryResult> {
-  let result: SaveMemoryResult;
+): Promise<SaveMemoryResult | ClaimGateResult> {
+  let result: SaveMemoryResult | ClaimGateResult;
   try {
     result = await saveMemoryInner(deps, rawArgs);
   } catch (err) {
@@ -344,7 +345,7 @@ export async function saveMemoryHandler(
 async function saveMemoryInner(
   deps: ToolDeps,
   rawArgs: unknown,
-): Promise<SaveMemoryResult> {
+): Promise<SaveMemoryResult | ClaimGateResult> {
   const parsed = SaveMemoryInput.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
 
@@ -358,6 +359,20 @@ async function saveMemoryInner(
   if (parsed.data.conflict_with) return markConflict(deps, parsed.data, finalId);
 
   const saveQuality = scoreSaveQuality(deps, parsed.data, finalId);
+
+  // #360: the claim gate. A save whose recall_when fully contains an existing
+  // memory's trigger declares a situation that memory already owns — that is a
+  // successor, a contradiction or a deliberate pair, and the daemon is the
+  // layer that can see it but must not guess. Held here, before any file I/O,
+  // and only for a CREATE: an `overwrite` names its target, which is itself an
+  // answer, and re-saving a memory must never be blocked by its own triggers.
+  if (!parsed.data.overwrite) {
+    const claimed = unansweredClaims(parsed.data, saveQuality, (id) => {
+      const m = deps.vault.get(id);
+      return m ? { summary: m.fm.summary, body: m.body } : undefined;
+    });
+    if (claimed.length > 0) return claimGateResult(finalId, claimed, saveQuality);
+  }
 
   // #164: validate the supersession target BEFORE writing anything. A
   // `replaces` pointing at nothing is an authoring mistake, and failing early

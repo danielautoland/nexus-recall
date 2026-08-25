@@ -130,7 +130,11 @@ function buildSpecificTriggerSuggestion(input: SaveMemoryInput): string {
  * between them cover this one's words do not claim its situation, they just
  * share vocabulary — which is the mistake this whole issue is about.
  */
-function claimingTrigger(trigger: string, theirs: string[]): string | undefined {
+/** #360: exported so the write-time claim gate and the curator's `claimed
+ *  twice` sweep answer the containment question with the same primitive the
+ *  save-time advisory uses — three implementations of "declares the same
+ *  situation" would drift apart the moment one of them is tuned. */
+export function claimingTrigger(trigger: string, theirs: string[]): string | undefined {
   return theirs.find((candidate) => containedIn(trigger, candidate) >= TRIGGER_CLAIMS_SITUATION_MIN);
 }
 

@@ -167,6 +167,7 @@ These optional fields affect staleness and recall ranking:
 | `obsolete` | If true, the memory is filtered out of normal recall |
 | `replaces` | Memory id this one is the new version of — settable via `save_memory` |
 | `superseded_by` | Newer memory that supersedes this one — stamped by the daemon, never by a caller |
+| `siblings` | Memory ids this one deliberately stands beside — set via `save_memory`'s `sibling_of` |
 
 Staleness is computed lazily during recall. Stale and expired memories are downranked; obsolete memories are removed from normal search results.
 
@@ -220,6 +221,86 @@ it does not pre-empt the decision about what to do with it.
 
 Save refuses a `replaces` that points at a nonexistent memory, or at the memory
 being saved, before writing anything.
+
+### The claim gate (#360)
+
+Two memories that declare the same situation both answer that cue, and recall
+has no way to say which one is meant. Before the gate, that happened silently:
+the trigger-collision advisory (#300) warned at save time but decided nothing,
+the write went through, and afterwards nobody looked again.
+
+A save is now **held** when one of its `recall_when` phrases is fully contained
+in an existing memory's trigger — every content word of the incoming phrase
+already appears in theirs. Nothing is written, and the result carries
+`claim_gate.claimed` naming the memory that got there first, both triggers, and
+the save's `save_quality` advisory.
+
+The threshold is full containment and nothing softer. The 0.80–0.99 similarity
+band mixes genuine restatements with templated triggers whose only distinguishing
+word is a proper noun, and no number separates the two classes (#325) — so the
+boundary is a property of the measure rather than a value someone picked.
+
+Two memories declaring one situation are exactly one of three things, and the
+daemon adjudicates none of them:
+
+| Answer | Field | Meaning |
+|---|---|---|
+| Successor | `replaces: <id>` | One chain — the older wording is out of date |
+| Contradiction | `conflict_with: <id>` | Both current, incompatible; diverted into a conflict block (#205) |
+| Siblings | `sibling_of: [<id>]` | Several entities, permanently valid at once |
+
+A fourth way out is narrowing the save's own trigger until it no longer claims
+the other's situation.
+
+#### Does the text add anything?
+
+Naming the collision is not enough to act on. A second memory on one cue that
+says nothing new is a save to **drop**; one carrying a new fact is an **edit to
+the first**. Those are opposite actions, so the refusal carries what is needed
+to tell them apart, without a second roundtrip:
+
+| Field | What it holds |
+|---|---|
+| `existing_body` | The colliding memory's authored text (excerpt past 2000 chars) |
+| `delta.covered` | 0–1, share of the incoming body's content words already present |
+| `delta.new_terms` | The content words that would be added, in order |
+
+The auto-related block and any conflict block are stripped first — they are
+machine-appended, and their wikilinked ids would otherwise show up as
+vocabulary the author never wrote.
+
+There is **no threshold** on `covered`. Prose never reaches 1.0: one stray
+filler word the other memory happens not to use drags a verbatim restatement to
+0.83, so any cut would be a number picked to make a fixture pass. An empty
+`new_terms` is a fact rather than a threshold, and a list of two filler words
+tells the agent as much as a score would.
+
+`covered` is vocabulary only. It cannot see that *"we use Postgres"* and *"we
+use MySQL"* are opposites — that is the agent's reading, and the contradiction
+path is where it lands. What the measure provides is the cheap half: the words
+the text would add, so the agent only reads closely when there is something to
+read.
+
+**Cost.** Measured on a 982-memory vault: 0.000 ms when nothing collides (the
+comparison never runs), 0.184 ms when something does — against the 3.0 ms
+`save_quality` already spent before any of this existed, so 5.7% of the save
+path in the rare case and nothing in the common one. The curator sweep is
+23 ms, once per pass, in idle.
+
+`sibling_of` lands in the `siblings` frontmatter list, **merged** with whatever
+the file already carries — quittances accumulate, and an empty list clears
+nothing. It is recorded on one side only; the curator checks both directions, so
+a second stamp would buy nothing and cost a write into a file the save never
+touched.
+
+Answers are subtracted **per id**: a save that supersedes A and also collides
+with B has answered for A only, and is still held for B.
+
+`overwrite=true` is never gated — an overwrite names its target, which is itself
+an answer, and re-saving a memory must not be blocked by its own triggers.
+
+Pairs that predate the gate are found by the curator and listed in REPORT.md
+under *Claimed twice*; the human decides there and nothing is mutated.
 
 ### Valence And Reflex Fields (#217)
 

@@ -1,10 +1,7 @@
 import { z } from "zod";
-import {
-  saveMemory,
-  slugify,
-  type SaveMemoryInput,
-  type SaveMemoryResult,
-} from "./save.js";
+import { saveMemory } from "./save.js";
+import { slugify } from "./save-text.js";
+import type { SaveMemoryInput, SaveMemoryResult } from "./save-schema.js";
 import {
   AuditLog,
   type AuditEntry,

@@ -217,6 +217,27 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "an existing memory you should update (overwrite=true) instead " +
       "of creating a duplicate.\n" +
       "\n" +
+      "THE CLAIM GATE: a save whose recall_when declares a situation " +
+      "another memory already declares is HELD — nothing is written, and " +
+      "the result carries `claim_gate` naming that memory, both triggers, " +
+      "ITS BODY, and `delta.new_terms` — the content words your text would " +
+      "add to it. Read that first: if your save adds nothing (empty " +
+      "new_terms, or only filler words), DROP it — say the memory already " +
+      "covers it, do not link it, do not re-send. If it adds a real fact " +
+      "that belongs there, do not create a second memory: re-save THAT one " +
+      "with overwrite=true, its id, and a body carrying its existing " +
+      "content plus your addition. Only a genuinely separate memory needs " +
+      "one of the three links. Two memories answering one cue is a " +
+      "successor, a contradiction, or a deliberate pair, and only you can " +
+      "tell which. " +
+      "Re-send the save with `replaces: <id>` (the older one is out of " +
+      "date), `conflict_with: <id>` (both current, incompatible), or " +
+      "`sibling_of: [<id>]` (different entities that share wording and " +
+      "both apply forever) — or narrow this save's recall_when so it stops " +
+      "claiming their situation. Never re-send it unchanged: the gate is " +
+      "deterministic and will hold it again. Writing sharp, situation-" +
+      "specific triggers in the first place is what keeps this rare.\n" +
+      "\n" +
       "QUALITY BARS:\n" +
       "- Title: short, specific, non-generic.\n" +
       "- Summary: one sentence, aim ~250-300 chars, core gist in the first " +
@@ -368,6 +389,20 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
             "memory, and its recall hits carry `conflict: true` until " +
             "someone resolves it. Resolve by deciding with the user which " +
             "claim stands, then re-saving that memory with overwrite=true.",
+        },
+        sibling_of: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Ids this memory deliberately stands BESIDE. Answer to the claim " +
+            "gate: when a save's recall_when declares a situation another " +
+            "memory already declares, the save is held and nothing is " +
+            "written. Three things resolve it — replaces (the older one is " +
+            "out of date), conflict_with (both current, incompatible), or " +
+            "this field, for several entities that are permanently valid at " +
+            "once and only share wording (one memo per contributor, one per " +
+            "project). Use it only when both really do apply forever; " +
+            "quittances accumulate, so a pair is never asked about twice.",
         },
         related: {
           type: "array",

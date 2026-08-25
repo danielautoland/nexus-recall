@@ -30,27 +30,20 @@ export { RECALL_STAGE_ORDER, progressIndexFor } from "./recall-stages.js";
 export { pickPhrase, pickToolPhrase, banterModeFromEnv } from "./recall-banter.js";
 export type { BanterMode, BanterLang } from "./recall-banter.js";
 
+export { saveMemory, deleteMemoryFile } from "./save.js";
+export type { DeleteMemoryResult } from "./save.js";
+export { SaveMemoryInput, MemoryWriteConflictError, MEMORY_WRITE_CONFLICT } from "./save-schema.js";
+export type { SaveMemoryResult, SaveMemoryCommitOptions } from "./save-schema.js";
 export {
-  saveMemory,
-  resolveMemoryTarget,
-  deleteMemoryFile,
   slugify,
-  SaveMemoryInput,
   extractWikilinks,
   stripAutoRelatedSection,
   stripCodeSpans,
   AUTO_RELATED_START,
   AUTO_RELATED_END,
-  MemoryWriteConflictError,
-  MEMORY_WRITE_CONFLICT,
-} from "./save.js";
-export type {
-  SaveMemoryResult,
-  SaveMemoryCommitOptions,
-  DeleteMemoryResult,
-  MemoryTarget,
-  MemoryTargetInput,
-} from "./save.js";
+} from "./save-text.js";
+export { resolveMemoryTarget } from "./save-target.js";
+export type { MemoryTarget, MemoryTargetInput } from "./save-target.js";
 
 export {
   MemoryTypeEnum,

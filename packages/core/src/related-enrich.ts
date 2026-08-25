@@ -33,7 +33,7 @@ import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import matter from "gray-matter";
 import type { Vault } from "./vault.js";
 import type { EmbeddingIndex } from "./embeddings.js";
-import { AUTO_RELATED_START, AUTO_RELATED_END, stripAutoRelatedSection } from "./save.js";
+import { AUTO_RELATED_START, AUTO_RELATED_END, stripAutoRelatedSection } from "./save-text.js";
 
 export interface RelatedEnricherOptions {
   /** Wieviele Nachbarn maximal nach related_via schreiben. Default 5. */

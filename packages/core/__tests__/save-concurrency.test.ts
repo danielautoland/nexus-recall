@@ -23,12 +23,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
-import {
-  MEMORY_WRITE_CONFLICT,
-  MemoryWriteConflictError,
-  saveMemory,
-} from "../src/save.js";
-import type { SaveMemoryInput } from "../src/save.js";
+import { saveMemory } from "../src/save.js";
+import { MEMORY_WRITE_CONFLICT, MemoryWriteConflictError } from "../src/save-schema.js";
+import type { SaveMemoryInput } from "../src/save-schema.js";
 
 const ID = "shared-memory";
 
