@@ -184,30 +184,51 @@ function anchorStrength(
     }
   }
 
-  // Zweierregel: zwei DISTINKTE, SIGNIFIKANTE authored Wörter derselben
-  // Phrase. Wortweise gesplittet und pro Phrase in ein Set eingetragen —
-  // ein Wort trägt so höchstens einmal bei, egal wie oft es in der Phrase
-  // wiederholt wird oder wie viele Terme der Dual-Emission-Tokenizer daraus
-  // macht.
+  // Zweierregel: „zwei exakte Trigger-Terme" heißt zwei verschiedene
+  // Wortursprünge, die auf zwei verschiedene Query-Terme abbilden — nicht
+  // nur zwei verschiedene Ursprünge. `my-app your-app` gegen die Query
+  // `app` sind zwei Wörter, aber beide treffen (über die Dual-Emission)
+  // ausschließlich denselben einen Term `app` — das ist EIN Query-Term, kein
+  // Beleg für zwei.
   //
-  // Dedupliziert wird über die NORMALISIERTE Emissionssignatur (die gefaltete
-  // Token-Liste, die `tokenizeWithIdentifiers` aus dem Wort macht), nicht über
-  // den rohen Wort-Text — sonst zählen zwei Schreibweisen desselben Wortes
-  // ("foo," und "foo", "Foo" und "foo", "my-app" zweimal mit/ohne
-  // Satzzeichen) als zwei Ursprünge, obwohl sie auf denselben Suchterm
-  // abbilden. Die Signatur ist bereits gefaltet — die Identifier-Prüfung
-  // oben bleibt davon unberührt, die läuft separat auf der rohen Schreibweise.
+  // Pro Ursprung wird deshalb die MENGE der getroffenen signifikanten Terme
+  // gemerkt (Schlüssel ist wie zuvor die normalisierte Emissionssignatur —
+  // Wiederholungen und Satzzeichen-Varianten desselben Wortes bleiben EIN
+  // Ursprung, dessen Treffermengen zusammengeführt werden). "Strong" gilt,
+  // wenn zwei Ursprünge A und B existieren, die sich auf zwei DISTINKTE
+  // Terme verteilen lassen (ein bipartites Matching der Größe 2).
+  //
+  // Reicht "A und B treffen unterschiedliche Mengen" als Test? Nein — wenn
+  // A und B beide NUR `{app}` treffen, sind ihre Mengen identisch (korrekt
+  // weak), aber wenn A und B beide `{app, konfig}` treffen (identische
+  // Mengen!), gibt es sehr wohl ein Matching (A→app, B→konfig) und es MUSS
+  // strong sein. Der Mengen-Vergleich sagt in diesem Fall "gleich" und würde
+  // fälschlich weak liefern. Die tatsächliche Bedingung (Hall'sches Kriterium
+  // für zwei Mengen) ist einfacher: ein SDR der Größe 2 existiert genau dann,
+  // wenn |A ∪ B| >= 2 — das versagt nur, wenn A und B beide dasselbe
+  // Einzelelement sind.
   for (const phrase of phrases) {
-    const contributingOrigins = new Set<string>();
+    const originTerms = new Map<string, Set<string>>();
     for (const word of phrase.split(/\s+/)) {
       if (!word) continue;
       const emitted = tokenizeWithIdentifiers(word).map((t) => t.toLowerCase());
       if (emitted.length === 0) continue;
-      const wordHits = emitted.some(
-        (t) => matchedTriggerTerms.has(t) && isSignificantTriggerTerm(t),
-      );
-      if (wordHits) contributingOrigins.add(emitted.join(" "));
-      if (contributingOrigins.size >= 2) return "strong";
+      const hits = emitted.filter((t) => matchedTriggerTerms.has(t) && isSignificantTriggerTerm(t));
+      if (hits.length === 0) continue;
+      const origin = emitted.join("\0");
+      const existing = originTerms.get(origin);
+      if (existing) {
+        for (const t of hits) existing.add(t);
+      } else {
+        originTerms.set(origin, new Set(hits));
+      }
+    }
+    const origins = Array.from(originTerms.values());
+    for (let i = 0; i < origins.length; i++) {
+      for (let j = i + 1; j < origins.length; j++) {
+        const union = new Set([...origins[i], ...origins[j]]);
+        if (union.size >= 2) return "strong";
+      }
     }
   }
   return "weak";

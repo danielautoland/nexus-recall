@@ -185,3 +185,23 @@ test("passesScopeFilter (P0): a weak anchor no longer buys a cross-scope pass", 
     "a strong anchor below the REQUIRED band still does not pass",
   );
 });
+
+test("isScopeCompatible: a project's own memories survive a capitalised directory name", () => {
+  // `detectProject()` gibt das Verzeichnissegment unverändert zurück — bei
+  // /Users/x/Projekte/CarNexus also "CarNexus". Die Memories tragen den Scope
+  // konventionell klein. Case-sensitiv verglichen war das eigene Projekt
+  // dadurch ein fremdes: seine Memories flogen aus jedem Band, und nur die
+  // globalen kamen noch durch. Still, und genau verkehrt herum.
+  assert.equal(isScopeCompatible("carnexus", "CarNexus"), true, "own scope, capitalised cwd");
+  assert.equal(isScopeCompatible("CarNexus", "carnexus"), true, "and the other way round");
+  assert.equal(isScopeCompatible("bastra-recall", "Bastra-Recall"), true, "hyphenated too");
+
+  // Die Scope-Familie über das Präfix muss ebenfalls gefaltet greifen …
+  assert.equal(isScopeCompatible("bastra", "Bastra-Recall"), true, "family prefix, folded");
+  // … ohne dass die Trennung zwischen Geschwistern aufweicht.
+  assert.equal(isScopeCompatible("bastra-io", "Bastra-Recall"), false, "siblings stay separate");
+  assert.equal(isScopeCompatible("carnexus", "Bastra-Recall"), false, "a foreign project stays foreign");
+
+  // Globale Scopes bleiben global, auch groß geschrieben.
+  assert.equal(isScopeCompatible("All-Projects", "CarNexus"), true, "global scopes fold too");
+});

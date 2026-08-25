@@ -24,20 +24,23 @@
  *
  * Die Projekt-Erkennung für die Kontrolle nutzt die echte `cwd`, die Claude
  * Code auf jeden User-Turn im Transkript mitschreibt (kein Raten mehr aus dem
- * #-codierten Session-Ordnernamen). „Erkannt" heißt zusätzlich: das Segment
- * ist im Vault tatsächlich ein vorkommender Projekt-Scope, nicht irgendein
- * Pfadsegment. Drei Lagen, drei Provenienzen, damit keine mit einer anderen
- * Frage verwechselt wird:
- *   - `random-control`              Projekt erkannt, Pool enthält projekt-
- *                                   eigene Memories — die eigentlich
- *                                   interessante Kontrolle.
- *   - `random-control-global-only`  Projekt erkannt, aber der scope-
- *                                   kompatible Pool bestand nur aus globalen
- *                                   Scopes (all-projects, user-preference,
- *                                   taxonomy, commons) — es gibt zu diesem
- *                                   Projekt schlicht noch nichts Eigenes.
- *   - `random-control-unscoped`     Erkennung gescheitert oder unsicher —
- *                                   ungefilterte Stichprobe statt die Query
+ * #-codierten Session-Ordnernamen). Zwei UNABHÄNGIGE Fragen entscheiden über
+ * den Pool, nicht eine abgeleitete Kette (siehe `recognizeProject`): (1) Liefert
+ * die cwd überhaupt ein Projekt? (2) Kommt das im Vault als Scope vor? Drei
+ * Lagen, drei Provenienzen, damit keine mit einer anderen Frage verwechselt
+ * wird:
+ *   - `random-control`              Projekt erkannt UND Vault-Scope
+ *                                   vorhanden — die eigentlich interessante,
+ *                                   scope-kompatible Kontrolle.
+ *   - `random-control-global-only`  Projekt aus der cwd klar, aber KEIN
+ *                                   Vault-Scope dafür — Pool ist dann
+ *                                   ausdrücklich nur die globale Schicht
+ *                                   (all-projects, user-preference, taxonomy,
+ *                                   commons), es gibt zu diesem Projekt
+ *                                   schlicht noch nichts Eigenes.
+ *   - `random-control-unscoped`     Aus der cwd ließ sich gar kein Projekt
+ *                                   ableiten — Pool ist dann wirklich
+ *                                   ungefiltert (`allMemories`), statt die Query
  *                                   ganz ohne Kontrolle zu lassen.
  *
  * Ausgegeben werden ZWEI Dateien, verknüpft über `query_index` + `id`:
@@ -228,7 +231,7 @@ async function collectPrompts(limit: number): Promise<Prompt[]> {
         // Bewusst die ganze Breite, nicht nur lange Prompts: Der Router muss
         // gerade an der Grenze zwischen billig und teuer bewertet werden.
         if (text.length < 40 || text.length > 8000) continue;
-        const key = `${d} ${text}`;
+        const key = `${d}\0${text}`;
         if (!found.has(key)) found.set(key, { text, sessionDir: d, cwd: rec.cwd ?? null });
       }
     }
@@ -295,35 +298,44 @@ function looksLikeIdentifier(term: string): boolean {
  * darf nicht von @bastra-recall/daemon abhängen, die Regel selbst ist aber zu
  * wichtig für eine ehrliche Kontrollstichprobe, um sie wegzulassen. Bei
  * Änderungen dort bitte hier nachziehen.
+ *
+ * Vergleich case-insensitive: `detectProject(cwd)` liefert das rohe
+ * Pfadsegment (z.B. "CarNexus", so wie der Ordner auf der Platte heißt),
+ * Vault-Scopes sind konventionell klein geschrieben ("carnexus"). Ohne
+ * Normalisierung wäre "CarNexus" nie mit seinem eigenen Scope kompatibel —
+ * live an genau diesem Projekt beim Verifizieren aufgefallen.
  */
 const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy", "commons"]);
 function isScopeCompatible(scope: string, project: string | null): boolean {
   if (!project || !scope) return true;
-  if (GLOBAL_SCOPES.has(scope)) return true;
-  if (scope === project) return true;
-  return project.startsWith(scope + "-") || scope.startsWith(project + "-");
+  const s = scope.toLowerCase();
+  const p = project.toLowerCase();
+  if (GLOBAL_SCOPES.has(s)) return true;
+  if (s === p) return true;
+  return p.startsWith(s + "-") || s.startsWith(p + "-");
 }
 
 /**
- * Erkennt das Projekt aus der echten `cwd` des Transkripts über den core-
- * eigenen `detectProject(cwd)` — kein Raten aus dem #-codierten Session-
- * Ordnernamen mehr nötig, seit klar ist, dass Claude Code `cwd` auf jeden
- * User-Turn mitschreibt.
+ * Zwei UNABHÄNGIGE Fragen, die vorher fälschlich zu einer verschmolzen waren
+ * (Review-Fund: dadurch war `random-control-global-only` unerreichbar, weil
+ * "erkannt" implizit schon "hat einen Vault-Scope" bedeutete):
  *
- * `recognized` ist nur dann true, wenn das erkannte Segment im Vault
- * tatsächlich als Projekt-Scope vorkommt. Ohne diese Zusatzprüfung würde
- * `detectProject` auch aus einem Pfad wie ".../Projekte" selbst oder einem
- * beliebigen, im Vault unbekannten Ordnernamen "ein Projekt" liefern — und
- * die Kontrolle sähe fälschlich scope-gefiltert aus, obwohl sie es nicht ist.
+ *   - `project`:  reine cwd-Frage. Was liefert `detectProject(cwd)` aus der
+ *                 echten cwd des Transkripts (kein Raten aus dem #-codierten
+ *                 Session-Ordnernamen mehr)? `null`, wenn cwd fehlt oder
+ *                 `detectProject` nichts liefert.
+ *   - `hasScope`: reine Vault-Frage. Kommt DIESES Projekt im Vault
+ *                 tatsächlich als Scope vor? Ein Projekt kann aus der cwd
+ *                 klar erkennbar sein und trotzdem (noch) keinen eigenen
+ *                 Vault-Scope haben — genau der mittlere Fall, den es zu
+ *                 unterscheiden gilt.
  */
-function recognizeProject(
-  cwd: string | null,
-  knownScopes: Set<string>,
-): { project: string | null; recognized: boolean } {
-  if (!cwd) return { project: null, recognized: false };
-  const project = detectProject(cwd);
-  if (!project) return { project: null, recognized: false };
-  return { project, recognized: knownScopes.has(project) };
+function recognizeProject(cwd: string | null, knownScopes: Set<string>): { project: string | null; hasScope: boolean } {
+  const project = cwd ? detectProject(cwd) : null;
+  // `knownScopes` ist klein geschrieben (siehe Aufrufer) — hier ebenso
+  // normalisieren, sonst bleibt z.B. "CarNexus" (roher Ordnername) für immer
+  // ohne Scope, obwohl "carnexus" im Vault existiert.
+  return { project, hasScope: project !== null && knownScopes.has(project.toLowerCase()) };
 }
 
 /** Deterministischer 32-Bit-Hash (FNV-1a) — kein Math.random, damit derselbe
@@ -389,7 +401,9 @@ async function main(): Promise<void> {
   search.useEmbeddings(emb);
 
   const allMemories: Memory[] = vault.list();
-  const knownScopes = new Set(allMemories.map((m) => m.fm.scope));
+  // Klein geschrieben, damit der Vergleich in `recognizeProject` case-
+  // insensitive bleibt (siehe Kommentar dort und bei `isScopeCompatible`).
+  const knownScopes = new Set(allMemories.map((m) => m.fm.scope.toLowerCase()));
 
   const prompts = await collectPrompts(n);
   const sets: QuerySet[] = [];
@@ -460,23 +474,31 @@ async function main(): Promise<void> {
     //    nach Vault-Reihenfolge" — sonst zieht praktisch jede Query dieselbe
     //    Menge (dieselbe Vault-Reihenfolge, derselbe Stride), unabhängig davon,
     //    worum es in ihr geht, und die Kontrolle testet gar nichts.
-    const { project, recognized } = recognizeProject(prompt.cwd, knownScopes);
-    const scopedPool = allMemories.filter((m) => isScopeCompatible(m.fm.scope, project));
-    // Drei Lagen (siehe Header): unsicher erkannt -> ungefiltert; erkannt,
-    // aber Pool nur aus globalen Scopes -> eigene Provenienz; sonst normale
-    // scope-kompatible Kontrolle.
-    const hasProjectSpecific = scopedPool.some((m) => !GLOBAL_SCOPES.has(m.fm.scope));
+    const { project, hasScope } = recognizeProject(prompt.cwd, knownScopes);
+    // Drei Lagen (siehe Header), jede mit einem EXPLIZIT anderen Pool — kein
+    // "isScopeCompatible mit Phantom-Projekt" mehr, das durch die immer
+    // vorhandenen globalen Memories ohnehin nie leer geworden wäre:
+    let pool: Memory[];
     let controlProvenance: Provenance;
-    if (!recognized) {
+    if (project === null) {
+      // Fakt 1 negativ: aus der cwd ließ sich gar kein Projekt ableiten
+      // (fehlt im Transkript, oder kein bekanntes Root-Stichwort im Pfad) —
+      // Kontrolle ist dann auch wirklich ungefiltert, nicht nur behauptet.
+      pool = allMemories;
       controlProvenance = "random-control-unscoped";
       unscopedFallbackCount++;
-    } else if (!hasProjectSpecific) {
+    } else if (!hasScope) {
+      // Fakt 1 positiv, Fakt 2 negativ: Projekt aus der cwd klar, aber im
+      // Vault (noch) kein eigener Scope dafür. `isScopeCompatible` mit einem
+      // Scope, den es gar nicht gibt, würde nur die globale Schicht liefern —
+      // das schreiben wir hier explizit, statt es zufällig herauszufinden.
+      pool = allMemories.filter((m) => GLOBAL_SCOPES.has(m.fm.scope));
       controlProvenance = "random-control-global-only";
       globalOnlyCount++;
     } else {
+      pool = allMemories.filter((m) => isScopeCompatible(m.fm.scope, project));
       controlProvenance = "random-control";
     }
-    const pool = scopedPool.length > 0 ? scopedPool : allMemories;
     const seed = hashString(q);
     const stride = Math.max(1, Math.floor(pool.length / CONTROL_SIZE));
     const offset = seed % stride;
@@ -535,8 +557,8 @@ async function main(): Promise<void> {
   }
   if (globalOnlyCount > 0) {
     console.log(
-      `Projekt erkannt, aber ohne projekt-eigene Memories im Scope-Pool bei ${globalOnlyCount}/${sets.length} Queries — ` +
-        "deren Kontrolle (random-control-global-only) besteht nur aus globalen Scopes.",
+      `Projekt aus der cwd erkannt, aber ohne Vault-Scope bei ${globalOnlyCount}/${sets.length} Queries — ` +
+        "deren Kontrolle (random-control-global-only) besteht ausdrücklich nur aus globalen Scopes.",
     );
   }
   // Exklusivität wird gegen die ARM-Quellen gerechnet, nicht gegen alle

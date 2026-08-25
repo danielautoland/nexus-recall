@@ -1075,3 +1075,60 @@ leere Label, sonst nichts.
 Das ist die Voraussetzung dafür, dass die Labels überhaupt etwas wert sind: Sie
 sollen entscheiden, ob Router und schneller Pfad ausgeliefert werden dürfen —
 ein Blatt, das die Antwort mitliefert, kann diese Frage nicht beantworten.
+
+---
+
+## 18. Vierte Gegenprüfung — und ein Produktionsfehler, der nichts mit alldem zu tun hatte
+
+**Die Zweierregel konnte weiterhin an einem einzigen Query-Term auslösen.**
+Gezählt wurden distinkte Wort-URSPRÜNGE, nicht distinkte getroffene TERME:
+`recall_when: "my-app your-app"` mit der Query `app` liefert zwei Ursprünge,
+die beide nur denselben einen Term treffen. Jetzt ist ein Matching der Größe
+zwei gefordert — zwei Ursprünge, die zwei verschiedene signifikante Terme
+abdecken (`|A ∪ B| >= 2`, über alle Paare geprüft). Der naheliegende Test
+„die Termmengen sind ungleich" wäre falsch: A = B = {app, konfig} erlaubt ein
+Matching und muss `strong` ergeben.
+
+**Zwei der drei Kontrollzustände gab es nur auf dem Papier.**
+`random-control-global-only` war unerreichbar, weil `recognized` die Existenz
+des Scopes bereits voraussetzte — die Bedingung war zirkulär. Und
+`random-control-unscoped` war entgegen der eigenen Konsolenzeile nicht
+ungefiltert: Auch dort wurde zuerst mit dem unbekannten Projektnamen gefiltert,
+und weil 191 global gescopte Memories den Pool nie leer laufen lassen, griff
+der Fallback auf `allMemories` nie. Belegt daran, dass alle 16 dieser
+Kandidaten aus `all-projects`, `taxonomy` und `user-preference` kamen, kein
+einziger aus einem Projekt-Scope.
+
+Erkennung und Scope-Existenz sind jetzt zwei unabhängige Fakten, und jeder
+Zustand baut seinen Pool ausdrücklich: unsicher erkannt → wirklich alle
+Memories; erkannt ohne passenden Scope → ausdrücklich nur globale; erkannt mit
+Scope → gefiltert wie bisher.
+
+### Der eigentliche Fund
+
+Beim Verifizieren dieser Zustände fiel ein Fehler auf, der nichts mit dem
+Messwerkzeug zu tun hat und weit über #362 hinausgeht:
+
+`detectProject()` gibt das Verzeichnissegment in seiner echten Schreibweise
+zurück — `CarNexus` für `~/Projekte/CarNexus`. Vault-Scopes sind konventionell
+klein geschrieben. `isScopeCompatible()` verglich case-sensitiv. In einer
+CarNexus-Session war das Projekt damit **mit seinem eigenen Scope nie
+kompatibel**: Die eigenen Projekt-Memories fielen aus dem Scope-Filter, in jedem
+Score-Band, während globale weiter durchkamen. Betroffen sind alle vier Lanes,
+die `detectProject()` verwenden.
+
+Der Fehler ist still und in genau der falschen Richtung: Wer in einem solchen
+Projekt arbeitet, bekommt sein eigenes Gedächtnis am schlechtesten. Nichts hat
+ihn gemeldet — kein Test, keine Telemetrie, keine Fehlermeldung. Gefunden hat
+ihn ein Agent, der eigentlich nur die Kontrollstichprobe eines Eval-Werkzeugs
+gegenprüfen sollte.
+
+Beide Seiten werden jetzt gefaltet verglichen. Die Scope-Familie über das
+Präfix und die Trennung zwischen Geschwistern bleiben unverändert und sind
+durch Tests festgehalten.
+
+### Hygiene
+
+In `search.ts` und `candidate-union.ts` stand je ein literales NUL-Byte als
+Trennzeichen im Quelltext — dadurch galten die Dateien für `rg` und manche
+Editoren als binär. Ersetzt durch das Escape `\0`, gleiche Laufzeitwirkung.

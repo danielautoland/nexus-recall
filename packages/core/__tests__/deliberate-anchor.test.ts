@@ -554,3 +554,82 @@ test("two genuinely different significant words still declare strong intent", as
   assert.ok(hit, "precondition: the memory must be retrieved");
   assert.equal(hit.anchor_strength, "strong", "two distinct significant words remain two origins");
 });
+
+/**
+ * #360 Nachschlag 2: zwei verschiedene WORTURSPRÜNGE reichen nicht — sie
+ * müssen auf zwei verschiedene QUERY-TERME abbilden. `my-app` und `your-app`
+ * sind zwei Ursprünge, treffen über die Dual-Emission aber beide
+ * AUSSCHLIESSLICH denselben Term `app` — die Query enthält nur EIN Wort.
+ */
+test("two origins that both only match the same single query term stay weak", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["my-app your-app"] },
+    // Sechs weitere Memories mit "app" im recall_when — drückt die DF von
+    // "app" über die Seltenheitsschwelle, damit die EINZELTERM-Regel nicht
+    // ohnehin greift und ausschließlich die Zweierregel entscheidet.
+    ...Array.from({ length: 6 }, (_, i) => ({ id: `common-${i}`, recall_when: [`app baseline ${i}`] })),
+    ...Array.from({ length: 20 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("app", { k: 40 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "weak",
+    "'my-app' and 'your-app' are two origins, but both hit only the single query term 'app'",
+  );
+});
+
+test("two origins with two different matched terms declare strong intent", async (t) => {
+  const entries = [
+    { id: "target", recall_when: ["my-app konfig-datei"] },
+    ...Array.from({ length: 20 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("app konfig", { k: 40 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "strong",
+    "'my-app' hits 'app', 'konfig-datei' hits 'konfig' — two origins, two distinct terms",
+  );
+});
+
+/**
+ * Team-Lead-Gegenbeispiel: Ursprung A trifft NUR `{app}`, Ursprung B trifft
+ * `{app, konfig}` — die Mengen sind verschieden, aber das genügt nicht als
+ * Kriterium (siehe Kommentar in `anchorStrength`). Die tatsächliche Frage ist,
+ * ob ein Matching auf zwei DISTINKTE Terme existiert: A→app, B→konfig — ja.
+ */
+test("an origin covering two terms can still pair with a single-term origin", async (t) => {
+  const entries = [
+    // "app_konfig" emittiert (Dual-Emission über den Unterstrich) sowohl
+    // "app" als auch "konfig" aus EINEM Wort — Ursprung B trifft also beide
+    // Query-Terme, Ursprung A ("my-app") nur "app".
+    { id: "target", recall_when: ["my-app app_konfig verwalten"] },
+    ...Array.from({ length: 20 }, (_, i) => ({ id: `n-${i}`, recall_when: [`sonstwort ${i}`] })),
+  ];
+  const { dir, search } = await vaultWith(entries);
+  t.after(async () => {
+    search.stop();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+
+  const hit = search.recall("app konfig", { k: 40 }).find((h) => h.id === "target");
+  assert.ok(hit, "precondition: the memory must be retrieved");
+  assert.equal(
+    hit.anchor_strength,
+    "strong",
+    "A hits {app}, B hits {app, konfig} — a matching (A→app, B→konfig) exists",
+  );
+});

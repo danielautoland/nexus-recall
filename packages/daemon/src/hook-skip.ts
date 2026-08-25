@@ -146,9 +146,19 @@ const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy", "c
  */
 export function isScopeCompatible(scope: string, project: string | null): boolean {
   if (!project || !scope) return true;
-  if (GLOBAL_SCOPES.has(scope)) return true;
-  if (scope === project) return true;
-  return project.startsWith(scope + "-") || scope.startsWith(project + "-");
+  // Beide Seiten gefaltet vergleichen. `detectProject()` liefert das
+  // Verzeichnissegment in seiner ECHTEN Schreibweise ("CarNexus"), Vault-Scopes
+  // sind konventionell klein ("carnexus") — case-sensitiv verglichen war ein
+  // Projekt mit Großbuchstaben im Ordnernamen deshalb nie mit seinem EIGENEN
+  // Scope kompatibel. Die Folge war still und genau verkehrt herum: In einer
+  // solchen Session galten die eigenen Projekt-Memories als fremd und flogen
+  // aus jedem Score-Band, während globale Memories weiter durchkamen. Betroffen
+  // sind alle vier Lanes, die `detectProject()` verwenden.
+  const s = scope.toLowerCase();
+  const p = project.toLowerCase();
+  if (GLOBAL_SCOPES.has(s)) return true;
+  if (s === p) return true;
+  return p.startsWith(s + "-") || s.startsWith(p + "-");
 }
 
 /**

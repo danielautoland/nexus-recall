@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A project whose directory is capitalised was foreign to its own memories.**
+  `detectProject()` returns the directory segment as written — `CarNexus` for
+  `~/Projekte/CarNexus` — while vault scopes are conventionally lowercase.
+  `isScopeCompatible()` compared them case-sensitively, so in such a session the
+  project's OWN memories failed the scope filter and were dropped from every
+  score band, while global ones kept coming through. Silent, and precisely
+  backwards. All four lanes that call `detectProject()` were affected. Both
+  sides are folded now; the prefix family (`bastra` covering `bastra-recall`)
+  and the separation between siblings (`bastra-io` vs `bastra-recall`) are
+  unchanged and pinned by tests. Found while verifying the eval tool, not by
+  anything that reported it.
+
+- **The two-term anchor rule could still fire on a single query term.** It
+  counted distinct word ORIGINS but not distinct matched TERMS, so
+  `recall_when: "my-app your-app"` with the query `app` produced two origins
+  from one term. It now requires a matching of size two — two origins covering
+  two distinct significant terms (`|A ∪ B| >= 2`, checked across all pairs).
+
+- **Two of the three control states in the candidate tool were unreachable or
+  mislabelled.** `random-control-global-only` could not occur (recognition
+  implied the scope existed), and `random-control-unscoped` was not unfiltered
+  at all — with 191 globally-scoped memories the pool never empties, so all 16
+  such candidates came from `all-projects` / `taxonomy` / `user-preference`.
+  Recognition and scope existence are now two independent facts, and each state
+  builds its pool explicitly.
+
 - **Third counter-review round: the anchor counted spellings, the project
   detection proved nothing, and the worksheet still named its sources.**
 
