@@ -55,8 +55,17 @@ export interface ReportDanglingLink {
 }
 
 /** #360: how many `claimed twice` rows one report shows. The full set can run
- *  into the hundreds on a vault that predates the gate. */
-export const CLAIMED_TWICE_REPORT_LIMIT = 50;
+ *  into the hundreds on a vault that predates the gate — 244 on the author's —
+ *  and a report nobody finishes reading is a report nobody acts on.
+ *
+ *  `BASTRA_CLAIMED_TWICE_LIMIT` raises it for the case the default is wrong
+ *  for: working the backlog down in one sitting rather than over five passes.
+ *  Read per call rather than at module load, so a run can change it without a
+ *  daemon restart. */
+export function claimedTwiceReportLimit(): number {
+  const raw = Number(process.env.BASTRA_CLAIMED_TWICE_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50;
+}
 
 /** #360: two active memories declaring one situation, with no answer on
  *  either side (`replaces` / `superseded_by` / `siblings`). */
@@ -199,10 +208,11 @@ export function renderVaultHealthReport(data: VaultHealthData): string {
       for (const p of data.claimedTwice) {
         L.push(`- [[${p.fromId}]] → [[${p.toId}]]: \`${p.trigger}\` ⊆ \`${p.claim}\``);
       }
-      if (data.claimedTwice.length >= CLAIMED_TWICE_REPORT_LIMIT) {
+      if (data.claimedTwice.length >= claimedTwiceReportLimit()) {
         L.push("");
         L.push(
-          `_Bounded at ${CLAIMED_TWICE_REPORT_LIMIT} rows — there are more. Answer some and the next pass shows the next batch._`,
+          `_Bounded at ${claimedTwiceReportLimit()} rows — there are more. Answer some and the next pass shows the next batch, ` +
+            `or set BASTRA_CLAIMED_TWICE_LIMIT to see the full set._`,
         );
       }
     }

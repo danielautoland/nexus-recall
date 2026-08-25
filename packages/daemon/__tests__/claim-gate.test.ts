@@ -428,3 +428,59 @@ test("#360: the inverted index finds every pair a brute-force sweep finds", asyn
     "the rarest-token candidate set must not narrow the result",
   );
 });
+
+test("#360: generated triggers (docs, bookmarks) stay out of the sweep", async (t) => {
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // Two document sidecars as the importer writes them: identical generated
+  // trigger, different files. They collide by construction and forever.
+  for (const name of ["doc-inbox-alpha", "doc-inbox-beta"]) {
+    const ts = new Date().toISOString();
+    await writeFile(
+      join(vaultPath, `${name}.md`),
+      [
+        "---",
+        `id: ${name}`,
+        `title: ${name}`,
+        "type: doc",
+        "summary: 'Bild: ein Foto'",
+        "topic_path:",
+        "  - documents",
+        "tags:",
+        "  - dokument",
+        "scope: documents",
+        "recall_when:",
+        "  - foto bild unsortiert",
+        `created: ${ts}`,
+        `updated: ${ts}`,
+        "---",
+        "",
+        `Sidecar ${name}.`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  }
+  await deps.vault.reindex?.();
+
+  // A real colliding memory pair alongside, to prove the sweep still works.
+  await saveMemoryHandler(deps, memo("Staging-Deploy Ablauf", [OWNER_TRIGGER]));
+  await saveMemoryHandler(
+    deps,
+    memo("Staging-Deploy Zweitnotiz", [CLAIMING_TRIGGER], { sibling_of: ["staging-deploy-ablauf"] }),
+  );
+
+  const pairs = collectClaimedTwice({
+    list: () => deps.vault.list().map((m) => ({ fm: { ...m.fm, siblings: undefined } })),
+  });
+
+  assert.ok(
+    !pairs.some((p) => p.fromId.startsWith("doc-inbox") || p.toId.startsWith("doc-inbox")),
+    `a generated trigger must not produce a row, got ${JSON.stringify(pairs)}`,
+  );
+  assert.ok(
+    pairs.some((p) => p.fromId === "staging-deploy-zweitnotiz"),
+    "the authored pair must still be reported",
+  );
+});

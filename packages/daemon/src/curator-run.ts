@@ -32,6 +32,7 @@ import { writePendingSuggestion } from "./pending-suggestions.js";
 import { envInt } from "./env.js";
 import { collectClaimedTwice } from "./claimed-twice.js";
 import {
+  claimedTwiceReportLimit,
   writeVaultHealthReport,
   type ReportConflictCluster,
   type ReportDanglingLink,
@@ -585,7 +586,7 @@ async function runCuratorPassInner(
     ...collectConflictsAndDangling(deps.vault, new Set((await listSkills()).map((s) => s.id))),
     // #360: the claim gate holds new saves; this is the same question asked of
     // everything written before the gate existed.
-    claimedTwice: collectClaimedTwice(deps.vault),
+    claimedTwice: collectClaimedTwice(deps.vault, claimedTwiceReportLimit()),
     emptyFiles: await collectEmptyFiles(deps.vaultRoot),
     flagged: collectFlaggedCaptures(deps.vault),
     damaged: collectDamagedFrontmatter(deps.vault, deps.vaultRoot),
