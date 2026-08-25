@@ -462,7 +462,7 @@ test("#360: generated triggers (docs, bookmarks) stay out of the sweep", async (
       "utf8",
     );
   }
-  await deps.vault.reindex?.();
+  await reindexAll(deps, vaultPath);
 
   // A real colliding memory pair alongside, to prove the sweep still works.
   await saveMemoryHandler(deps, memo("Staging-Deploy Ablauf", [OWNER_TRIGGER]));
@@ -516,4 +516,127 @@ test("#360: a document save is never held, however much its trigger collides", a
   await saveMemoryHandler(deps, memo("Staging-Deploy Ablauf", [OWNER_TRIGGER]));
   const held = await saveMemoryHandler(deps, memo("Staging-Deploy Zweitnotiz", [CLAIMING_TRIGGER]));
   assert.ok("claim_gate" in held, "authored memories must still be held");
+});
+
+// ─── #360: version chains answer transitively ─────────────────────────────
+
+/** Index every .md the test wrote by hand. `vault.reindex()` does not exist —
+ *  calling it optionally made three of these tests pass on an EMPTY vault,
+ *  where the assertion "nothing is reported" is true for the wrong reason.
+ *  Hence `assertPairsWithoutEdges` below: every chain test first proves the
+ *  fixtures collide at all. */
+async function reindexAll(deps: ToolDeps, vaultPath: string): Promise<void> {
+  const entries = await readdir(vaultPath, { withFileTypes: true });
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith(".md")) await deps.vault.reindexFile(join(vaultPath, e.name));
+  }
+}
+
+/** The same fixtures with every version/sibling edge stripped MUST report
+ *  pairs — otherwise a later assertion of "no pairs" proves nothing. */
+function assertPairsWithoutEdges(deps: ToolDeps, expected: number): void {
+  const bare = collectClaimedTwice({
+    list: () =>
+      deps.vault.list().map((m) => ({
+        fm: { ...m.fm, siblings: undefined, replaces: undefined, superseded_by: undefined },
+      })),
+  }, 100);
+  assert.equal(
+    bare.length,
+    expected,
+    `precondition: without edges these fixtures must collide ${expected}×, got ${bare.length}`,
+  );
+}
+
+/** A memory with hand-set frontmatter — these tests need version edges that no
+ *  save path would write in one go. */
+function chainMemo(id: string, extra: Record<string, string> = {}) {
+  const ts = new Date().toISOString();
+  return [
+    "---",
+    `id: ${id}`,
+    `title: ${id}`,
+    "type: project-fact",
+    `summary: Stand ${id}`,
+    "topic_path:",
+    "  - deploy",
+    "tags:",
+    "  - deploy",
+    "scope: chainproj",
+    "recall_when:",
+    "  - den Stand pruefen",
+    ...Object.entries(extra).map(([k, v]) => `${k}: ${v}`),
+    `created: ${ts}`,
+    `updated: ${ts}`,
+    "---",
+    "",
+    `Notiz ${id}.`,
+    "",
+  ].join("\n");
+}
+
+test("#360: a finished version chain answers for every pair in it, not just neighbours", async (t) => {
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // v1 → v2 → v3, both halves of both edges set, as the daemon writes them.
+  await writeFile(join(vaultPath, "v1.md"), chainMemo("v1", { superseded_by: "v2" }), "utf8");
+  await writeFile(join(vaultPath, "v2.md"), chainMemo("v2", { replaces: "v1", superseded_by: "v3" }), "utf8");
+  await writeFile(join(vaultPath, "v3.md"), chainMemo("v3", { replaces: "v2" }), "utf8");
+  await reindexAll(deps, vaultPath);
+
+  assertPairsWithoutEdges(deps, 3);
+  const pairs = collectClaimedTwice({ list: () => deps.vault.list() }, 100);
+  assert.deepEqual(
+    pairs,
+    [],
+    `a fully linked chain must leave nothing open, got ${JSON.stringify(pairs)}`,
+  );
+});
+
+test("#360: a fork stays open — two successors to one predecessor is still a question", async (t) => {
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // A and C both supersede B. A/B and B/C are answered; A/C is not.
+  await writeFile(join(vaultPath, "b.md"), chainMemo("b"), "utf8");
+  await writeFile(join(vaultPath, "a.md"), chainMemo("a", { replaces: "b" }), "utf8");
+  await writeFile(join(vaultPath, "c.md"), chainMemo("c", { replaces: "b" }), "utf8");
+  await reindexAll(deps, vaultPath);
+
+  assertPairsWithoutEdges(deps, 3);
+  const pairs = collectClaimedTwice({ list: () => deps.vault.list() }, 100);
+  const keys = pairs.map((p) => [p.fromId, p.toId].sort().join("|")).sort();
+  assert.deepEqual(keys, ["a|c"], `only the fork may remain, got ${JSON.stringify(pairs)}`);
+});
+
+test("#360: siblings are NOT closed over — the third pair stays a question", async (t) => {
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // A beside B, B beside C. That A and C also belong side by side is an
+  // assumption the report must not make on anyone's behalf.
+  await writeFile(join(vaultPath, "sa.md"), chainMemo("sa", { siblings: "[sb]" }), "utf8");
+  await writeFile(join(vaultPath, "sb.md"), chainMemo("sb", { siblings: "[sc]" }), "utf8");
+  await writeFile(join(vaultPath, "sc.md"), chainMemo("sc"), "utf8");
+  await reindexAll(deps, vaultPath);
+
+  assertPairsWithoutEdges(deps, 3);
+  const pairs = collectClaimedTwice({ list: () => deps.vault.list() }, 100);
+  const keys = pairs.map((p) => [p.fromId, p.toId].sort().join("|")).sort();
+  assert.deepEqual(keys, ["sa|sc"], `only the unnamed pair may remain, got ${JSON.stringify(pairs)}`);
+});
+
+test("#360: a cycle in the version edges does not hang the pass", async (t) => {
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // Hand-written nonsense: a replaces b, b replaces a.
+  await writeFile(join(vaultPath, "ca.md"), chainMemo("ca", { replaces: "cb" }), "utf8");
+  await writeFile(join(vaultPath, "cb.md"), chainMemo("cb", { replaces: "ca" }), "utf8");
+  await reindexAll(deps, vaultPath);
+
+  assertPairsWithoutEdges(deps, 1);
+  const pairs = collectClaimedTwice({ list: () => deps.vault.list() }, 100);
+  assert.deepEqual(pairs, [], "a cycle is still a chain — and must terminate");
 });
