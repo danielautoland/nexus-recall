@@ -476,6 +476,10 @@ export function handleHookRecall(
         // The formatter has to say so rather than band an unbounded scale.
         // Same shape as the flags above: present only when it has something
         // to say, computed once from the value the honesty flags already use.
+        // P0: derselbe explizite Score-Raum wie auf dem MCP-Pfad. `unfused`
+        // sagt es indirekt, aber ein Konsument soll das Feld lesen können,
+        // statt aus einer Abwesenheit zu schließen.
+        score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
         ...(hybridActiveAtRecall ? {} : { unfused: true }),
         // #342: name the reason on the wire too. `unfused` says the bands do
         // not apply; this says why, so a slow machine degrading on every call
