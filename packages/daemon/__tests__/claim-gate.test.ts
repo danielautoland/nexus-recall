@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 import { saveMemoryHandler, resetSaveFailures, type ToolDeps } from "../src/tool-handlers.js";
 import { collectClaimedTwice } from "../src/claimed-twice.js";
+import { containedIn, TRIGGER_CLAIMS_SITUATION_MIN } from "../src/save-similarity.js";
 import { Telemetry } from "../src/telemetry.js";
 
 async function makeDeps(): Promise<{ deps: ToolDeps; vaultPath: string; cleanup: () => Promise<void> }> {
@@ -370,5 +371,60 @@ test("#360b: a compound the memory already wrote covers its parts", async (t) =>
   assert.ok(
     delta?.new_terms.includes("rollbackpfad"),
     `a genuinely new word must survive, got ${JSON.stringify(delta?.new_terms)}`,
+  );
+});
+
+test("#360: the inverted index finds every pair a brute-force sweep finds", async (t) => {
+  const { deps, cleanup } = await makeDeps();
+  t.after(cleanup);
+
+  // Shapes the index has to survive: a single-token trigger (its rarest token
+  // IS its only token), a long compound one, a pair whose shared word is the
+  // most common in the pool, and a memory in a different pool that must not pair.
+  const fixtures: Array<[string, string[]]> = [
+    ["Alpha", ["deployment vorbereiten"]],
+    ["Beta", ["deployment"]],
+    ["Gamma", ["das deployment der staging umgebung sorgfaeltig vorbereiten"]],
+    ["Delta", ["deployment vorbereiten und pruefen"]],
+    ["Epsilon", ["ganz andere situation ohne gemeinsame woerter"]],
+    ["Zeta", ["deployment vorbereiten"]],
+  ];
+  for (const [title, triggers] of fixtures) {
+    resetSaveFailures();
+    // sibling_of past the gate: the sweep must see the pairs, and these
+    // fixtures collide by construction.
+    await saveMemoryHandler(deps, memo(title, triggers, { sibling_of: ["nothing-real"] }));
+  }
+
+  const list = deps.vault.list().map((m) => ({ fm: { ...m.fm, siblings: undefined } }));
+
+  const brute = new Set<string>();
+  const entries: Array<{ id: string; trigger: string; pool: string }> = [];
+  for (const m of list) {
+    const fm = m.fm as Record<string, unknown>;
+    const id = String(fm.id ?? "");
+    if (!id || fm.obsolete === true) continue;
+    const pool = `${String(fm.scope ?? "")}|${String(fm.type ?? "")}`;
+    for (const trig of (fm.recall_when ?? []) as string[]) entries.push({ id, trigger: trig, pool });
+  }
+  for (const a of entries) {
+    for (const b of entries) {
+      if (a.id === b.id || a.pool !== b.pool) continue;
+      if (containedIn(a.trigger, b.trigger) < TRIGGER_CLAIMS_SITUATION_MIN) continue;
+      brute.add(a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`);
+    }
+  }
+
+  const swept = new Set(
+    collectClaimedTwice({ list: () => list }, 10_000).map((p) =>
+      p.fromId < p.toId ? `${p.fromId}|${p.toId}` : `${p.toId}|${p.fromId}`,
+    ),
+  );
+
+  assert.ok(brute.size > 0, "precondition: the fixtures must actually collide");
+  assert.deepEqual(
+    [...swept].sort(),
+    [...brute].sort(),
+    "the rarest-token candidate set must not narrow the result",
   );
 });
