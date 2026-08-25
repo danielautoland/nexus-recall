@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { BM25_QUERY_MAX_CHARS } from "../src/bm25-query-cap.js";
 import { Vault } from "../src/vault.js";
+import { tokenizeWithIdentifiers } from "../src/query-normalize.js";
 import { SearchIndex } from "../src/search.js";
 import type { RecallStage } from "../src/recall-stages.js";
 
@@ -66,14 +67,21 @@ test("default is off — a long query reaches BM25 uncapped", async (t) => {
   });
 
   const bm25Stop = stops[0];
+  // Seit der rangneutralen Gruppierung (#362 Phase 1) ist `bm25_query_chars`
+  // die Länge der GRUPPIERTEN Query — bei einem dreifach wiederholten Filler
+  // also deutlich kürzer als das Original, ohne dass ein Term fehlt. Die
+  // Zeichenzahl taugt damit nicht mehr als Beleg für „nicht gekappt"; die
+  // TERMZAHL tut es: Der Cap entfernt Terme, die Gruppierung entfernt nur
+  // deren Wiederholung.
+  const emitted = bm25Stop?.meta?.terms_emitted as number | undefined;
+  const unique = bm25Stop?.meta?.terms_unique as number | undefined;
   assert.equal(
-    bm25Stop?.meta?.bm25_query_chars,
-    bm25Stop?.meta?.query_chars,
-    `no explicit bm25_query_max_chars must leave the query untouched — got ${bm25Stop?.meta?.bm25_query_chars} of ${bm25Stop?.meta?.query_chars} chars`,
+    unique,
+    new Set(tokenizeWithIdentifiers(longQuery).map((t) => t.toLowerCase())).size,
+    "no explicit bm25_query_max_chars must leave every distinct term in the query",
   );
-  assert.equal(
-    bm25Stop?.meta?.bm25_query_chars,
-    longQuery.length,
-    "the BM25 arm must receive the full, uncapped query by default",
+  assert.ok(
+    emitted !== undefined && unique !== undefined && emitted > unique,
+    `precondition: the fixture must actually repeat terms (${emitted} emitted, ${unique} unique)`,
   );
 });

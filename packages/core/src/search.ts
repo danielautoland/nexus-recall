@@ -6,6 +6,7 @@ import type { RecallStage, StageListener } from "./recall-stages.js";
 import { normalizeQuery, tokenizeWithIdentifiers } from "./query-normalize.js";
 import { DocFreqMiniSearch } from "./doc-freq-index.js";
 import { rareTermFuzzy } from "./bm25-expansion.js";
+import { groupQueryTerms, groupedTokenize } from "./bm25-grouping.js";
 import { capBm25Query } from "./bm25-query-cap.js";
 import { abandonAfter } from "./deadline.js";
 
@@ -207,6 +208,20 @@ export interface RecallOptions {
    * entfällt. Begründung und Messung in `bm25-expansion.ts`.
    */
   bm25_fuzzy_rare_df_max?: number;
+  /**
+   * #362 Phase 3: Der schnelle lexikalische Pfad — exact + prefix, KEIN Fuzzy.
+   *
+   * Für den Fall, den keine der anderen Stellschrauben löst: eine Maschine ohne
+   * Embeddings, ein langer Prompt, und trotzdem ein Budget. Gemessen sind das
+   * 140 ms p50 / 194 ms p90 gegen 1137 ms des vollen Arms — der einzige Weg,
+   * dort überhaupt in die Nähe von 200 ms zu kommen.
+   *
+   * Der Preis ist echt und wird hier nicht kleingeredet: Ohne Fuzzy findet ein
+   * vertipptes Wort sein Memory nicht mehr. Deshalb default AUS und dem
+   * Aufrufer überlassen, der sein Budget kennt — nicht als globale Einstellung,
+   * die einmal gesetzt und dann vergessen wird.
+   */
+  bm25_no_fuzzy?: boolean;
 }
 
 interface IndexDoc {
@@ -342,59 +357,49 @@ export class SearchIndex {
     return this.embeddings !== undefined;
   }
 
+
   /**
-   * Query für den LEXIKALISCHEN Arm (#362). Über dem Zeichen-Budget werden die
-   * seltensten Wörter behalten statt vorne abgeschnitten — Seltenheit kommt aus
-   * der Document-Frequency dieses Index, es wird also nichts zusätzlich
-   * gebaut oder gepflegt.
+   * Alles, was der lexikalische Arm für EINEN Aufruf braucht — an einer Stelle,
+   * damit die drei Dinge zusammenbleiben, die zusammengehören: die gruppierte
+   * Query, die Optionen, die ihre Häufigkeiten wieder einrechnen, und die
+   * Termmenge für den Anker.
    *
-   * Der Cap sitzt hier in core und nicht in der aufrufenden Lane: er wirkt
-   * damit für JEDEN Transport (MCP-`recall`, alle Hook-Lanes, Bridge, Dedup)
-   * statt nur für den einen, der gerade gemessen wurde — die Assertion-Lane
-   * mit ihren 1718-Zeichen-Medianen ist nur der lauteste Fall, nicht der
-   * einzige. Kosten unter dem Budget: ein `length`-Vergleich.
-   *
-   * Nur der BM25-Arm. Der Dense-Arm sieht weiter die vollständige Query
-   * (`recallHybrid`), denn Embedding-Kosten sind über alle Längenbänder
-   * konstant und dort ist der ganze Kontext das Signal.
-   *
-   * Default AUS, bis kalibriert (#362): der Akzeptanztest (15 Probe-Queries,
-   * injektionsrelevante Ids markiert) zeigt beim 200-Zeichen-Budget aus der
-   * ursprünglichen #362-Messung 15/15 Queries mit verlorenen injektionsrele-
-   * vanten Ids (Ø 2,27 pro Query); ein 2000-Zeichen-Budget verbessert auf
-   * 12/15 identisch (Ø 0,47 verloren), reißt die Ship-Regel damit aber
-   * ebenfalls (kein verlorener Id UND ≥90 % identische injizierbare Sets).
-   * Nur ein explizit gesetzter `bm25_query_max_chars` aktiviert den Cap —
-   * die Mechanik selbst bleibt unverändert und einsatzbereit.
+   * Getrennt gehalten wären sie eine Fehlerquelle mit Ansage: Ein gruppierter
+   * Aufruf OHNE `boostTerm` verliert das Gewicht der Wiederholung, und ein
+   * `boostTerm` ohne den Identitäts-Tokenizer zählt Identifier doppelt. Beides
+   * fällt nicht auf — es rankt nur anders.
    */
-  private bm25Query(query: string, opts: RecallOptions): string {
-    return capBm25Query(query, (term) => this.mini.docFreq(term), {
+  private bm25Plan(
+    query: string,
+    opts: RecallOptions,
+  ): {
+    lexQuery: string;
+    searchOptions: Record<string, unknown>;
+    queryTerms: ReadonlySet<string>;
+    emitted: number;
+    unique: number;
+  } {
+    const capped = capBm25Query(query, (term) => this.mini.docFreq(term), {
       maxChars: opts.bm25_query_max_chars ?? 0,
     });
-  }
-
-  /**
-   * Such-Optionen für den lexikalischen Arm (#362).
-   *
-   * Gibt `undefined` zurück, solange `bm25_fuzzy_rare_df_max` nicht gesetzt
-   * ist — der Aufrufer hängt dann nichts an `mini.search()` an und es gilt
-   * unverändert, was im Konstruktor steht. Ein leeres Optionsobjekt wäre
-   * NICHT dasselbe: MiniSearch merged es über die `searchOptions` des Index,
-   * und ein explizites `fuzzy: undefined` schaltet die Expansion dort ab.
-   */
-  private bm25SearchOptions(opts: RecallOptions): { fuzzy: (t: string) => number | false } | undefined {
+    const grouped = groupQueryTerms(capped, tokenizeWithIdentifiers);
     const fuzzy = rareTermFuzzy((term) => this.mini.docFreq(term), opts.bm25_fuzzy_rare_df_max);
-    return fuzzy ? { fuzzy } : undefined;
-  }
-
-  /**
-   * Die gefalteten Query-Terme, wie MiniSearch sie sieht — Grundlage für den
-   * exakten Anker (`matchedRecallWhen`). Derselbe Tokenizer wie auf der
-   * Index-Seite, plus MiniSearchs Default-`processTerm` (`toLowerCase`), sonst
-   * verfehlte ein großgeschriebener Query-Term seinen eigenen Dokumentterm.
-   */
-  private queryTermSet(lexQuery: string): Set<string> {
-    return new Set(tokenizeWithIdentifiers(lexQuery).map((t) => t.toLowerCase()));
+    // #362 Phase 3: `bm25_no_fuzzy` schlägt die feinere Steuerung — wer den
+    // schnellen Pfad anfordert, will keine Expansion, auch keine selektive.
+    const fuzzyOption = opts.bm25_no_fuzzy ? { fuzzy: false } : fuzzy ? { fuzzy } : {};
+    return {
+      lexQuery: grouped.query,
+      searchOptions: {
+        // Die Query ist bereits die Termliste — erneut zerlegen würde die
+        // Dual-Emission des Identifier-Tokenizers ein zweites Mal anwenden.
+        tokenize: groupedTokenize,
+        boostTerm: (term: string) => grouped.counts.get(term) ?? 1,
+        ...fuzzyOption,
+      },
+      queryTerms: new Set(grouped.counts.keys()),
+      emitted: grouped.emitted,
+      unique: grouped.counts.size,
+    };
   }
 
   recall(query: string, opts: RecallOptions = {}): RecallHit[] {
@@ -437,13 +442,21 @@ export class SearchIndex {
     }
 
     const tBm = stage.start("bm25.search");
-    const lexQuery = this.bm25Query(query, opts);
-    const raw = this.mini.search(lexQuery, this.bm25SearchOptions(opts));
-    const queryTerms = this.queryTermSet(lexQuery);
+    const plan = this.bm25Plan(query, opts);
+    const lexQuery = plan.lexQuery;
+    const raw = this.mini.search(lexQuery, plan.searchOptions);
+    const queryTerms = plan.queryTerms;
     stage.end("bm25.search", tBm, {
       raw_hit_count: raw.length,
       query_chars: query.length,
       bm25_query_chars: lexQuery.length,
+      // #362 Phase 0: Die Kosten des Arms hängen an der Termzahl, nicht an den
+      // Zeichen — und der Abstand zwischen beiden Zahlen IST der Gewinn der
+      // Gruppierung. Ohne sie in der Telemetrie ist später nicht mehr
+      // nachvollziehbar, ob ein langsamer Aufruf viele Terme hatte oder viele
+      // Wiederholungen.
+      terms_emitted: plan.emitted,
+      terms_unique: plan.unique,
     });
 
     const filtered = raw.filter((r) => {
@@ -655,16 +668,19 @@ export class SearchIndex {
     // Kosten sind längenunabhängig konstant (104–153 ms über alle Bänder),
     // und der semantische Arm lebt vom ganzen Kontext.
     const tBm = stage.start("bm25.search");
-    const lexQuery = this.bm25Query(query, opts);
+    const plan = this.bm25Plan(query, opts);
+    const lexQuery = plan.lexQuery;
     const bm25 = this.mini
-      .search(lexQuery, this.bm25SearchOptions(opts))
+      .search(lexQuery, plan.searchOptions)
       .filter((r) => passesRecallFilters(r, opts));
-    const queryTerms = this.queryTermSet(lexQuery);
+    const queryTerms = plan.queryTerms;
     const bm25Top = bm25.slice(0, 50);
     stage.end("bm25.search", tBm, {
       raw_hit_count: bm25.length,
       query_chars: query.length,
       bm25_query_chars: lexQuery.length,
+      terms_emitted: plan.emitted,
+      terms_unique: plan.unique,
     });
 
     const vecOrTimeout = await vectorArm;

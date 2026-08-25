@@ -24,6 +24,19 @@ export {
 } from "./bm25-query-cap.js";
 export type { DocFreqFn, Bm25QueryCap } from "./bm25-query-cap.js";
 export { rareTermFuzzy, BM25_FUZZY_RARE_DF_MAX, BM25_FUZZY } from "./bm25-expansion.js";
+export { groupQueryTerms, groupedTokenize, type GroupedQuery } from "./bm25-grouping.js";
+export {
+  estimateBm25Ms,
+  lexicalFitsBudget,
+  BM25_COST_BASE_MS,
+  BM25_COST_PER_UNIQUE_TERM_MS,
+} from "./query-cost.js";
+export {
+  routeRetrieval,
+  type RetrievalMode,
+  type RouteInput,
+  type RouteDecision,
+} from "./retrieval-mode.js";
 
 export type { RecallStage, StageListener } from "./recall-stages.js";
 export { RECALL_STAGE_ORDER, progressIndexFor } from "./recall-stages.js";

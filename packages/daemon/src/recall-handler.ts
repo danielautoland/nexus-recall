@@ -7,6 +7,7 @@ import { z } from "zod";
 import { truncateSummaryTo, hasUnresolvedConflict, type StageListener, type RecallStage, type RecallHit } from "@bastra-recall/core";
 import { envInt } from "./env.js";
 import { fireAndForget } from "./telemetry.js";
+import type { RecallStageBuckets } from "./telemetry-events.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
@@ -117,15 +118,7 @@ export interface RecallResult {
  * dieselben Bucket-Namen. Wird in `recall_call`-JSONL-Logs als
  * `recall_stages` mitgeschrieben, um Bottlenecks zu identifizieren.
  */
-export interface RecallStageTimings {
-  query_parse_ms?: number;
-  bm25_search_ms?: number;
-  vector_search_ms?: number;
-  rrf_fuse_ms?: number;
-  hops_expand_ms?: number;
-  staleness_rank_ms?: number;
-  cache_hit?: boolean;
-}
+export type RecallStageTimings = RecallStageBuckets;
 
 /** Stage-Namen → ms-Bucket in `RecallStageTimings`. `cache_hit` ist
  *  bewusst nicht hier — der ist ein boolean und wird separat gesetzt. */
@@ -166,6 +159,14 @@ function makeStageCollector(forward?: StageListener): {
     if (stage.name === "cache.hit") {
       timings.cache_hit = true;
       return;
+    }
+    if (stage.name === "bm25.search") {
+      // #362 Phase 0: gleiche Querykosten wie auf dem Hook-Pfad, damit eine
+      // Auswertung beide Oberflächen vergleichen kann.
+      const emitted = stage.meta?.terms_emitted;
+      const unique = stage.meta?.terms_unique;
+      if (typeof emitted === "number") timings.terms_emitted = emitted;
+      if (typeof unique === "number") timings.terms_unique = unique;
     }
     if (stage.durationMs === undefined) return;
     const key = STAGE_TO_TIMING_KEY[stage.name];

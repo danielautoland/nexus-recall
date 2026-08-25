@@ -23,6 +23,38 @@ export type TelemetryEvent =
   | RecallEpisodeEvent
   | OllamaLifecycleEvent;
 
+/**
+ * Pro-Stage-Timings eines Recalls (#38) plus die Querykosten-Merkmale aus
+ * #362 Phase 0.
+ *
+ * Bewusst EIN Typ für `recall_call` und `hook_recall`: Die beiden Listen
+ * standen als Kopien nebeneinander, und eine Auswertung, die den Hook-Pfad
+ * gegen den MCP-Pfad vergleicht, ist nur dann korrekt, wenn beide dieselben
+ * Felder tragen. Eine Kopie zu erweitern und die andere zu vergessen fällt
+ * nicht auf — die fehlende Zahl sieht aus wie ein alter Event.
+ */
+export interface RecallStageBuckets {
+  query_parse_ms?: number;
+  bm25_search_ms?: number;
+  vector_search_ms?: number;
+  rrf_fuse_ms?: number;
+  hops_expand_ms?: number;
+  staleness_rank_ms?: number;
+  cache_hit?: boolean;
+  /**
+   * Wieviele Terme der lexikalische Arm emittiert hat und wieviele davon
+   * eindeutig waren.
+   *
+   * Die Kosten des Arms folgen der TERMZAHL, nicht der Zeichenzahl — ein
+   * 2000-Zeichen-Stacktrace mit lauter eindeutigen Pfaden ist teurer als 4000
+   * Zeichen Fließtext mit vielen Wiederholungen. Der Abstand zwischen beiden
+   * Zahlen ist genau das, was die Gruppierung (#362 Phase 1) einspart, und die
+   * Grundlage, auf der ein kostenbasierter Router später entscheiden kann.
+   */
+  terms_emitted?: number;
+  terms_unique?: number;
+}
+
 export interface BaseEvent {
   ts: string;
   session_id: string;
@@ -61,15 +93,7 @@ export interface RecallEvent extends BaseEvent {
    * haben das Feld nicht. `cache_hit: true` zeigt einen Query-Cache-Hit,
    * dann fehlen die übrigen Stage-Felder (außer query_parse_ms).
    */
-  recall_stages?: {
-    query_parse_ms?: number;
-    bm25_search_ms?: number;
-    vector_search_ms?: number;
-    rrf_fuse_ms?: number;
-    hops_expand_ms?: number;
-    staleness_rank_ms?: number;
-    cache_hit?: boolean;
-  };
+  recall_stages?: RecallStageBuckets;
   /**
    * Anzahl Hits, die unter dem Score-Floor (#50 / #9) lagen und nicht
    * zurückgegeben wurden. Macht die Wirkung des Floors messbar. Optional —
@@ -190,15 +214,7 @@ export interface HookRecallEvent extends BaseEvent {
   latency_ms_total: number;
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
    *  Emitter haben das Feld nicht. */
-  recall_stages?: {
-    query_parse_ms?: number;
-    bm25_search_ms?: number;
-    vector_search_ms?: number;
-    rrf_fuse_ms?: number;
-    hops_expand_ms?: number;
-    staleness_rank_ms?: number;
-    cache_hit?: boolean;
-  };
+  recall_stages?: RecallStageBuckets;
   /** Shared learned-recall (#120): bridge expansion applied to this query, if any. */
   bridge_expansion?: BridgeExpansion;
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall. */

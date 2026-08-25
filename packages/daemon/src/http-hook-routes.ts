@@ -12,6 +12,7 @@ import type {
   RecallStage,
   StageListener,
 } from "@bastra-recall/core";
+import { routeRetrieval } from "@bastra-recall/core";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { envBool, envInt } from "./env.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
@@ -105,6 +106,10 @@ const CONTENT_RECALL_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdi
  */
 const hookVectorDeadlineMs = (): number => envInt("BASTRA_VECTOR_DEADLINE_MS", 150);
 
+/** #305/#362: Zielbudget der Hook-Lane in ms — die Zahl, gegen die der
+ *  Schatten-Router seine Kostenschätzung hält. Das Milestone-Ziel ist 200. */
+const hookBudgetMs = (): number => envInt("BASTRA_HOOK_BUDGET_MS", 200);
+
 export function mergeHookRecallHits(
   first: RecallHit[],
   second: RecallHit[],
@@ -191,6 +196,15 @@ export function handleHookRecall(
         if (s.name === "done" && typeof s.meta?.degraded === "string") {
           degradedReason = s.meta.degraded;
         }
+        // #362 Phase 0: Die Querykosten reiten auf der bm25-Stage mit — sie
+        // sagen, ob ein langsamer Aufruf viele Terme hatte oder viele
+        // Wiederholungen, und das entscheidet, welcher Hebel überhaupt greift.
+        if (s.name === "bm25.search") {
+          const emitted = s.meta?.terms_emitted;
+          const unique = s.meta?.terms_unique;
+          if (typeof emitted === "number") stageTimings.terms_emitted = emitted;
+          if (typeof unique === "number") stageTimings.terms_unique = unique;
+        }
         if (s.name === "cache.hit") {
           stageTimings.cache_hit = true;
           return;
@@ -240,6 +254,25 @@ export function handleHookRecall(
         candidatePool = pool.map((h) => ({ id: h.id, score: h.score }));
       };
       const tRecall0 = Date.now();
+      // #362 Phase 0: Wie lange blockiert der synchrone lexikalische Arm den
+      // Event Loop? Ein Timer, der alle 10 ms feuern SOLL, aber erst nach 400 ms
+      // drankommt, hat 390 ms Blockade gemessen — ohne Instrumentierung im
+      // Suchcode selbst, und ohne perf_hooks-Histogramm, das über den ganzen
+      // Prozess mittelt statt diesen einen Aufruf zu beschreiben.
+      //
+      // Die Zahl ist die Vorbedingung dafür, einen Worker später überhaupt
+      // bewerten zu können: Er macht die Rechnung nicht schneller, er gibt nur
+      // den Loop frei. Ohne Vorher-Wert ist der Nachher-Wert bedeutungslos.
+      const loopProbeEveryMs = 10;
+      let loopBlockMs = 0;
+      let lastTick = Date.now();
+      const loopProbe = setInterval(() => {
+        const now = Date.now();
+        const lag = now - lastTick - loopProbeEveryMs;
+        if (lag > loopBlockMs) loopBlockMs = lag;
+        lastTick = now;
+      }, loopProbeEveryMs);
+      loopProbe.unref?.();
       // #165: VOR dem Recall festgehalten, damit der Flag den Recall
       // beschreibt, der tatsächlich serviert wird (siehe recallHandler).
       const embeddingDegradedAtRecall =
@@ -327,7 +360,22 @@ export function handleHookRecall(
           };
         }
       }
+      clearInterval(loopProbe);
       const recallLatencyMs = Date.now() - tRecall0;
+      // #362 Phase 2: Schatten-Route. Die Suche ist zu diesem Zeitpunkt
+      // gelaufen — entschieden wird hier nichts mehr, aufgezeichnet wird, was
+      // ein Router entschieden HÄTTE. `terms_unique` stammt aus derselben
+      // Gruppierung, die der Arm ohnehin gemacht hat, also kostet die
+      // Schattenrechnung nichts als eine Multiplikation.
+      const shadowRoute =
+        typeof stageTimings.terms_unique === "number"
+          ? routeRetrieval({
+              uniqueTerms: stageTimings.terms_unique,
+              denseAvailable: search.hasEmbeddings() && !embeddingDegradedAtRecall,
+              budgetMs: hookBudgetMs(),
+              denseReservedMs: vectorDeadlineMs,
+            })
+          : undefined;
       const totalLatencyMs = Date.now() - t0;
       const recallId = telemetry.newRecallId();
       telemetry.recordHookHints(recallId, hits);
@@ -388,6 +436,19 @@ export function handleHookRecall(
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,
+          // #362 Phase 0: nur melden, wenn überhaupt spürbar blockiert wurde —
+          // eine 0 in jedem Event wäre Rauschen, das die Auswertung verwässert.
+          ...(loopBlockMs >= loopProbeEveryMs ? { event_loop_block_ms: loopBlockMs } : {}),
+          ...(shadowRoute
+            ? {
+                shadow_route: {
+                  mode: shadowRoute.mode,
+                  estimated_lexical_ms: Math.round(shadowRoute.estimatedLexicalMs),
+                  lexical_fits: shadowRoute.lexicalFits,
+                  unique_terms: stageTimings.terms_unique as number,
+                },
+              }
+            : {}),
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
