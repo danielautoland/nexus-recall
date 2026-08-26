@@ -10,6 +10,7 @@ import { rareTermFuzzy } from "./bm25-expansion.js";
 import { groupQueryTerms, groupedTokenize } from "./bm25-grouping.js";
 import { capBm25Query } from "./bm25-query-cap.js";
 import { abandonAfter } from "./deadline.js";
+import { scopeEquals } from "./scope.js";
 
 export interface RecallHit {
   id: string;
@@ -871,7 +872,7 @@ export class SearchIndex {
       .filter(({ mem }) => {
         if (!mem) return false;
         if (mem.fm.obsolete === true) return false;
-        if (opts.scope && mem.fm.scope !== opts.scope) return false;
+        if (opts.scope && !scopeEquals(mem.fm.scope, opts.scope)) return false;
         if (opts.type && mem.fm.type !== opts.type) return false;
         if (
           !opts.allow_private &&
@@ -1047,7 +1048,7 @@ export class SearchIndex {
         const neigh = this.vault.get(link.id);
         if (!neigh) continue;
         if (neigh.fm.obsolete === true) continue;
-        if (opts.scope && neigh.fm.scope !== opts.scope) continue;
+        if (opts.scope && !scopeEquals(neigh.fm.scope, opts.scope)) continue;
         if (opts.type && neigh.fm.type !== opts.type) continue;
         if (
           !opts.allow_private &&
@@ -1260,7 +1261,9 @@ export class SearchIndex {
 
 /**
  * Standard-Filter für BM25-Roh-Treffer: obsolete-Maskierung, scope/type-
- * Exact-Match, und der neue Sensitivity-Filter (#58). Wird sowohl von
+ * Exact-Match (scope gefaltet über `scopeEquals`, #360-Folgefund — ein aus
+ * dem Dateisystem erkannter Projektname trägt eine andere Schreibweise als
+ * der im Vault gespeicherte Scope), und der neue Sensitivity-Filter (#58). Wird sowohl von
  * `recall` als auch von `recallHybrid` aufgerufen, damit der Filter an
  * einer Stelle gepflegt wird. `r` ist ein MiniSearch-`SearchResult`, das
  * via `storeFields` die gespeicherten Doc-Properties als beliebige
@@ -1271,7 +1274,7 @@ function passesRecallFilters(
   opts: RecallOptions,
 ): boolean {
   if (r.obsolete) return false;
-  if (opts.scope && r.scope !== opts.scope) return false;
+  if (opts.scope && !scopeEquals(r.scope as string, opts.scope)) return false;
   if (opts.type && r.type !== opts.type) return false;
   if (!opts.allow_private && r.sensitivity === "private") return false;
   return true;

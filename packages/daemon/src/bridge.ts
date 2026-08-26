@@ -36,6 +36,7 @@ import {
   auditedSave,
   auditedSoftDelete,
   auditedRestore,
+  scopeEquals,
 } from "@bastra-recall/core";
 import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
@@ -299,7 +300,7 @@ async function main(): Promise<void> {
           const filtered = all
             .filter((m) => !m.fm.obsolete)
             .filter((m) => !wantType || m.fm.type === wantType)
-            .filter((m) => !wantScope || m.fm.scope === wantScope);
+            .filter((m) => !wantScope || scopeEquals(m.fm.scope, wantScope));
           result = filtered.map((m) => m.fm);
           break;
         }

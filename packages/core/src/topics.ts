@@ -12,6 +12,7 @@
  * with action phrases ("writing tsx with input", etc.).
  */
 import { basename, extname } from "node:path";
+import { normalizeScopeKey } from "./scope.js";
 
 export interface ToolIntent {
   tool_name: "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | string;
@@ -134,17 +135,62 @@ function pathSegmentTopics(filePath: string): string[] {
   return out;
 }
 
-/** Best-effort project name from cwd, e.g. /Users/x/Projekte/bastra-recall → "bastra-recall". */
-export function detectProject(cwd: string): string | null {
-  if (!cwd) return null;
+/** Common repo-root segments — a path segment right after one of these is a
+ *  real project-root hit, not a guess. */
+const PROJECT_ROOTS = new Set(["projekte", "projects", "code", "workspace", "src", "repos"]);
+
+export interface DetectedProject {
+  /** The path segment verbatim, in its on-disk casing (e.g. "CarNexus"). */
+  raw: string;
+  /** Canonical comparison key ({@link normalizeScopeKey} of `raw`) — the
+   *  ONLY field a scope/project FILTER may use. `raw` is for display and
+   *  telemetry only. */
+  key: string;
+  /** "root-match": a known repo-root segment (Projekte/projects/code/…) was
+   *  hit — real detection. "fallback": only the last path segment, a guess
+   *  that any non-empty path produces. "none": no path at all. */
+  confidence: "root-match" | "fallback" | "none";
+}
+
+/**
+ * Structured project detection (#360-Folgefund C): the old `detectProject()`
+ * collapsed EVERY outcome — a real repo-root match, a last-segment guess, and
+ * "no cwd at all" — into one string-or-null, so callers could never tell
+ * detection from a guess. `/Users/x/Projekte` → "Projekte" and
+ * `/tmp/worktree/packages/core` → "core" both came back looking equally
+ * confident as `/Users/x/Projekte/bastra-recall` → "bastra-recall".
+ */
+export function detectProjectDetailed(cwd: string): DetectedProject {
+  if (!cwd) return { raw: "", key: "", confidence: "none" };
   const parts = cwd.split("/").filter(Boolean);
-  // Common roots: Projekte, projects, Code, Workspace, src, repos
-  const ROOTS = new Set(["projekte", "projects", "code", "workspace", "src", "repos"]);
   for (let i = 0; i < parts.length - 1; i++) {
-    if (ROOTS.has(parts[i].toLowerCase())) return parts[i + 1];
+    if (PROJECT_ROOTS.has(parts[i].toLowerCase())) {
+      const raw = parts[i + 1];
+      return { raw, key: normalizeScopeKey(raw), confidence: "root-match" };
+    }
   }
-  // Fallback: last segment (good when cwd *is* the repo root).
-  return parts[parts.length - 1] ?? null;
+  // Fallback: last segment — good when cwd *is* the repo root, a guess
+  // everywhere else.
+  const last = parts[parts.length - 1];
+  if (last === undefined) return { raw: "", key: "", confidence: "none" };
+  return { raw: last, key: normalizeScopeKey(last), confidence: "fallback" };
+}
+
+/**
+ * Best-effort project name from cwd, e.g. /Users/x/Projekte/bastra-recall →
+ * "bastra-recall". Thin wrapper over {@link detectProjectDetailed} — kept
+ * because 4 daemon lanes (write/prompt/todo/session) plus eval's
+ * candidate-union already call this exact signature and only ever want the
+ * raw name (they pass it on as a display/query field or into
+ * `isScopeCompatible`/`scopeEquals`, which fold casing themselves); switching
+ * all of them to the detailed shape for this task would touch call sites
+ * the bug report never named. New callers that need to distinguish a real
+ * root-match from a last-segment guess should call `detectProjectDetailed`
+ * directly.
+ */
+export function detectProject(cwd: string): string | null {
+  const d = detectProjectDetailed(cwd);
+  return d.confidence === "none" ? null : d.raw;
 }
 
 export function detectTopics(intent: ToolIntent): TopicResult {

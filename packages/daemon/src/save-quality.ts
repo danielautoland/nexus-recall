@@ -16,6 +16,7 @@ import {
   containsInjectedBlock,
   scanForInjection,
   formatInjectionAdvisory,
+  scopeEquals,
 } from "@bastra-recall/core";
 import { detectLanguage } from "./learned-recall/language.js";
 import {
@@ -345,7 +346,7 @@ export function scoreSaveQuality(
     .list()
     .filter(
       (m) =>
-        m.fm.scope === input.scope &&
+        scopeEquals(m.fm.scope, input.scope) &&
         m.fm.type === input.type &&
         m.fm.id !== excludeId &&
         !m.fm.obsolete &&

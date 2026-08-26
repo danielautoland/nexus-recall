@@ -30,6 +30,10 @@
       "types": "./dist/topics.d.ts",
       "import": "./dist/topics.js"
     },
+    "./scope": {
+      "types": "./dist/scope.d.ts",
+      "import": "./dist/scope.js"
+    },
     "./rrf": {
       "types": "./dist/rrf.d.ts",
       "import": "./dist/rrf.js"

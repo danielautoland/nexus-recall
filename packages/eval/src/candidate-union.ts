@@ -76,6 +76,9 @@ import {
   groupQueryTerms,
   tokenizeWithIdentifiers,
   detectProject,
+  isScopeCompatible,
+  normalizeScopeKey,
+  GLOBAL_SCOPES,
 } from "@bastra-recall/core";
 
 const MUST_LOAD_SCORE = 100;
@@ -294,28 +297,6 @@ function looksLikeIdentifier(term: string): boolean {
 }
 
 /**
- * Nachbau von `isScopeCompatible` aus packages/daemon/src/hook-skip.ts. eval
- * darf nicht von @bastra-recall/daemon abhängen, die Regel selbst ist aber zu
- * wichtig für eine ehrliche Kontrollstichprobe, um sie wegzulassen. Bei
- * Änderungen dort bitte hier nachziehen.
- *
- * Vergleich case-insensitive: `detectProject(cwd)` liefert das rohe
- * Pfadsegment (z.B. "CarNexus", so wie der Ordner auf der Platte heißt),
- * Vault-Scopes sind konventionell klein geschrieben ("carnexus"). Ohne
- * Normalisierung wäre "CarNexus" nie mit seinem eigenen Scope kompatibel —
- * live an genau diesem Projekt beim Verifizieren aufgefallen.
- */
-const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxonomy", "commons"]);
-function isScopeCompatible(scope: string, project: string | null): boolean {
-  if (!project || !scope) return true;
-  const s = scope.toLowerCase();
-  const p = project.toLowerCase();
-  if (GLOBAL_SCOPES.has(s)) return true;
-  if (s === p) return true;
-  return p.startsWith(s + "-") || s.startsWith(p + "-");
-}
-
-/**
  * Zwei UNABHÄNGIGE Fragen, die vorher fälschlich zu einer verschmolzen waren
  * (Review-Fund: dadurch war `random-control-global-only` unerreichbar, weil
  * "erkannt" implizit schon "hat einen Vault-Scope" bedeutete):
@@ -332,10 +313,10 @@ function isScopeCompatible(scope: string, project: string | null): boolean {
  */
 function recognizeProject(cwd: string | null, knownScopes: Set<string>): { project: string | null; hasScope: boolean } {
   const project = cwd ? detectProject(cwd) : null;
-  // `knownScopes` ist klein geschrieben (siehe Aufrufer) — hier ebenso
-  // normalisieren, sonst bleibt z.B. "CarNexus" (roher Ordnername) für immer
+  // `knownScopes` ist über `normalizeScopeKey` normalisiert (siehe Aufrufer)
+  // — hier ebenso, sonst bleibt z.B. "CarNexus" (roher Ordnername) für immer
   // ohne Scope, obwohl "carnexus" im Vault existiert.
-  return { project, hasScope: project !== null && knownScopes.has(project.toLowerCase()) };
+  return { project, hasScope: project !== null && knownScopes.has(normalizeScopeKey(project)) };
 }
 
 /** Deterministischer 32-Bit-Hash (FNV-1a) — kein Math.random, damit derselbe
@@ -401,9 +382,10 @@ async function main(): Promise<void> {
   search.useEmbeddings(emb);
 
   const allMemories: Memory[] = vault.list();
-  // Klein geschrieben, damit der Vergleich in `recognizeProject` case-
-  // insensitive bleibt (siehe Kommentar dort und bei `isScopeCompatible`).
-  const knownScopes = new Set(allMemories.map((m) => m.fm.scope.toLowerCase()));
+  // Über `normalizeScopeKey` normalisiert, damit der Vergleich in
+  // `recognizeProject` case-insensitive bleibt (siehe Kommentar dort und bei
+  // `isScopeCompatible`).
+  const knownScopes = new Set(allMemories.map((m) => normalizeScopeKey(m.fm.scope)));
 
   const prompts = await collectPrompts(n);
   const sets: QuerySet[] = [];
@@ -492,7 +474,7 @@ async function main(): Promise<void> {
       // Vault (noch) kein eigener Scope dafür. `isScopeCompatible` mit einem
       // Scope, den es gar nicht gibt, würde nur die globale Schicht liefern —
       // das schreiben wir hier explizit, statt es zufällig herauszufinden.
-      pool = allMemories.filter((m) => GLOBAL_SCOPES.has(m.fm.scope));
+      pool = allMemories.filter((m) => GLOBAL_SCOPES.has(normalizeScopeKey(m.fm.scope)));
       controlProvenance = "random-control-global-only";
       globalOnlyCount++;
     } else {

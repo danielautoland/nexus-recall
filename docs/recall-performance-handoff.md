@@ -1132,3 +1132,59 @@ durch Tests festgehalten.
 In `search.ts` und `candidate-union.ts` stand je ein literales NUL-Byte als
 Trennzeichen im Quelltext — dadurch galten die Dateien für `rg` und manche
 Editoren als binär. Ersetzt durch das Escape `\0`, gleiche Laufzeitwirkung.
+
+---
+
+## 19. Die Fehlerklasse schließen — und eine Korrektur an Abschnitt 18
+
+Der punktuelle Fix aus Abschnitt 18 hat den Einzelfall geschlossen, nicht die
+Klasse. Die Gegenprüfung fand zwei weitere Produktionsausfälle derselben
+Ursache:
+
+**SessionStart.** Die Lane fragt beim Sitzungsstart gezielt nach den Memories
+des Projekts und schickt dafür das rohe `detectProject()`-Ergebnis als `scope`.
+Der Core verglich `opts.scope` case-sensitiv — im BM25-Pfad, im Vector-Pfad UND
+in der Hop-Expansion. `scope: "carnexus"` liefert Treffer, `scope: "CarNexus"`
+liefert nichts. Weil `user-preference` und `all-projects` weiter antworteten,
+las sich der Ausfall als „für dieses Projekt gibt es eben nichts".
+
+**Floors.** `listFloors()` hatte denselben Vergleich. Das wiegt schwerer als der
+Recall-Fall: Floors sind laut Vertrag garantiert präsent — hier fehlten sie
+vollständig und lautlos.
+
+**Die Lösung ist eine Entscheidung, keine Streuung.** Statt weitere
+`.toLowerCase()` zu verteilen, liegt die Scope-Identität jetzt in
+`packages/core/src/scope.ts`: `normalizeScopeKey`, `scopeEquals`,
+`isScopeCompatible`, `GLOBAL_SCOPES`. Alle Vergleichsstellen benutzen sie — die
+drei Core-Recallpfade, die Floor-Registry, `list_memorys`, der
+Save-Quality-Pool, der Hook-Scopefilter und das Eval-Werkzeug, dessen eigene
+Kopie damit verschwindet. Bestandsdaten bleiben unangetastet: Jede Schreibweise
+im Frontmatter bleibt ladbar und wird nur beim Vergleich normalisiert.
+
+`detectProjectDetailed()` liefert jetzt `{raw, key, confidence}`. Der alte
+Fallback gab für jeden nichtleeren Pfad irgendeinen Namen zurück —
+`/tmp/worktree/packages/core` wurde zu `core` —, und kein Aufrufer konnte
+Erkennung von Raten unterscheiden. Filter nutzen `key`, Anzeige und Telemetrie
+dürfen `raw` behalten.
+
+Eine Randnotiz, die kein Zufall ist: Der Hook-Scopefilter wurde nach
+`daemon/scope-filter.ts` ausgelagert, statt `hook-skip.ts` auf core zeigen zu
+lassen. `hook.ts` startet bei JEDEM Tool-Call neu und lädt bewusst nur stdlib —
+ein Re-Export hätte core in jeden dieser Starts gezogen, für eine Funktion, die
+dort nie aufgerufen wird. Das ist genau der Posten, den #305 als 87–102 ms pro
+Aufruf misst.
+
+### Korrektur an Abschnitt 18
+
+Dort stand „alle vier Lanes betroffen". Das war falsch, und es stand so auch im
+Commit und im Vault. Richtig ist:
+
+- **Write-Lane** — betroffen (Scope-Hard-Filter).
+- **SessionStart** — betroffen, über den Core-Filter.
+- **Floor-Registry** — betroffen.
+- **Prompt-Lane und Todo-Lane** — NICHT betroffen, aber aus einem Grund, der
+  selbst ein Befund ist: Sie filtern überhaupt nicht nach Projekt-Scope, nur
+  nach Score beziehungsweise Modus. Wenn #110 für alle automatischen Hook-Hints
+  gelten soll, fehlt dort eine Policy. Dieser Befund zeigt in die andere
+  Richtung als der Case-Fehler: Er erklärt „fremde Treffer kommen durch", nicht
+  „eigene Treffer fehlen".

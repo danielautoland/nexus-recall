@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Scope identity is one decision in core now, and two more places where a
+  project was foreign to itself are closed.** Yesterday's fix folded the case in
+  `isScopeCompatible()` alone; a counter-review found the class was still open.
+
+  SessionStart asks for the project's memories by name and sends the raw
+  directory segment, and the core compared `opts.scope` case-sensitively in the
+  BM25, vector and hop paths — so `scope: "CarNexus"` returned nothing while
+  `scope: "carnexus"` returned hits. Since global scopes kept answering, the
+  failure read as "there is nothing for this project". Project-bound floors had
+  the same defect in `listFloors()`, which is worse: floors are contractually
+  guaranteed to be present, and they were silently absent instead.
+
+  Rather than scattering more `.toLowerCase()`, comparison now lives in
+  `core/scope.ts` — `normalizeScopeKey`, `scopeEquals`, `isScopeCompatible`,
+  `GLOBAL_SCOPES` — and every comparison site uses it: the three core recall
+  paths, the floor registry, `list_memorys`, the save-quality pool, the hook
+  scope filter and the eval tool, whose private copy is gone. Stored frontmatter
+  is untouched: any spelling stays loadable and is normalised only when compared.
+
+  `detectProjectDetailed()` now reports `{raw, key, confidence}`, because the
+  old fallback returned a name for every path — `/tmp/worktree/packages/core`
+  became `core` — and callers could not tell detection from guessing.
+
+  Correcting an earlier claim in this changelog: it was NOT "all four lanes".
+  The write lane, SessionStart, the core recall filter and the floor registry
+  were affected. The prompt and todo lanes were not — because they apply no
+  project scope filter at all, which is its own finding in the opposite
+  direction: foreign hits pass there where #110 would filter them.
+
 - **A project whose directory is capitalised was foreign to its own memories.**
   `detectProject()` returns the directory segment as written — `CarNexus` for
   `~/Projekte/CarNexus` — while vault scopes are conventionally lowercase.

@@ -81,8 +81,10 @@ export type { SemanticLayout } from "./graph-semantic.js";
 export { scrubInjectedBlocks, containsInjectedBlock, INJECTED_BLOCK_TAGS } from "./scrub.js";
 export type { ScrubResult, InjectedBlockTag } from "./scrub.js";
 
-export { detectTopics, detectProject, extractContentExcerpt } from "./topics.js";
-export type { ToolIntent, TopicResult } from "./topics.js";
+export { detectTopics, detectProject, detectProjectDetailed, extractContentExcerpt } from "./topics.js";
+export type { ToolIntent, TopicResult, DetectedProject } from "./topics.js";
+
+export { normalizeScopeKey, scopeEquals, isScopeCompatible, GLOBAL_SCOPES } from "./scope.js";
 
 export {
   AuditLog,

@@ -27,7 +27,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
-import { passesScopeFilter } from "./hook-skip.js";
+import { passesScopeFilter } from "./scope-filter.js";
 import { fileSizeNote } from "./file-size-check.js";
 import { memoryLocationNote } from "./memory-location.js";
 import { reportHinted } from "./hook-hinted.js";
