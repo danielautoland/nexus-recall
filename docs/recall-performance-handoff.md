@@ -1746,3 +1746,77 @@ behandelte einen legitimen Vault-Unterordner namens `..sync` wie einen
 Ausbruch. Und `isMarkdownFile()` ist die eine Extension-Regel: Der Initialscan
 akzeptierte nur `.md`, der Watcher auch `.MD` — eine so benannte Datei war nach
 jedem Neustart verschwunden.
+
+## 25. Zehnte Runde: die Übergangsfälle (26.08.2026)
+
+Der Audit nach Abschnitt 24 fand die Fälle, die zwischen den frisch gebauten
+Invarianten hindurchgingen. Sein Satz dazu trifft es: Das Grün der Suite
+widersprach den Befunden nicht — die Übergangsfälle fehlten schlicht.
+
+### 25.1 Zwei Dateien mit einer id sind eine Antwort, kein Ratespiel
+
+Der Vault erkennt seit #240/A2.3, dass zwei Dateien dieselbe id tragen, und
+quarantäniert die zweite. Abfragbar war das nie: `get(id)` gab den Gewinner
+zurück, als wäre er der einzige. Daran hing das Loch — der produktive
+`vaultLocator` fragte nur `get()` und konnte `ambiguous` deshalb nie melden.
+Ein Save lief durch und ließ das Duplikat bestehen, obwohl jede
+Schreibentscheidung dort geraten wäre: Welche der beiden Dateien ist gemeint?
+
+`Vault.pathsFor(id)` nennt jetzt alle Pfade. Eine gelöschte Datei fällt aus der
+Quarantäne — sonst blockierte ein Zustand jeden Save, den es nicht mehr gibt.
+
+Zwei Löcher derselben Wurzel im Bridge- und Import-Pfad: `auditedSave` kannte
+das Re-Filing aus #64 nicht (ein `overwrite` mit geändertem `folder` schrieb die
+neue Datei und ließ die alte liegen) und gab seinem `saveMemory` keinen Locator
+mit, scannte also das Dateisystem, obwohl der Index in der Hand lag — und sah
+dabei genau das `ambiguous` nicht, das nur der Vault kennt. Der Restore prüfte
+nur seinen Zielpfad: Lebte dieselbe id inzwischen in einem anderen Regal,
+landete die alte Version daneben.
+
+Verglichen wird seither über Gerät und Inode, nicht über Pfadstrings. Auf einem
+case-insensitiven Dateisystem sind `memories/People/x.md` und
+`memories/people/x.md` DIESELBE Datei, und wer sie für verschieden hält,
+verschiebt beim Aufräumen das einzige Exemplar in den Trash.
+
+### 25.2 Der Lock lag auf dem Zielpfad, nicht auf der Identität
+
+`saveMemory` nahm seinen Commit-Claim auf `<zielpfad>.bastra-write.lock`. Zwei
+gleichzeitige Saves DERSELBEN id in verschiedene `folder`-Regale nahmen damit
+zwei verschiedene Locks und gelangen beide. Der Kommentar über dem Lock sprach
+schon von der id; die Umsetzung tat es nicht.
+
+`commitLockPathFor(vaultRoot, id)` legt ihn unter `.bastra/locks/` — nicht neben
+das Memory, wo er beim Re-Filing im falschen Regal zurückbliebe — und hasht den
+id-Anteil, weil eine id Zeichen tragen darf, die auf manchen Dateisystemen
+unbrauchbar sind.
+
+### 25.3 Der Cache machte rohe Scores wieder zu fusionierten
+
+Der Query-Cache speicherte das BM25-Ergebnis eines Vaults ohne Vektor-Arm, aber
+nicht den Score-Modus. Derselbe Wert hieß beim zweiten Aufruf `rrf`: erster
+Aufruf `bm25` bei 1997,338, zweiter `rrf` bei 1997,338 — und damit griffen 50
+und 100 wieder auf eine rohe Zahl.
+
+Gecacht wird weiter, aber mit Modus. Gegen die naheliegende Sofortlösung „gar
+nicht cachen" spricht, dass `vector-arm-empty` eine Eigenschaft des VAULTS ist
+und nicht des einzelnen Aufrufs: Ein Vault ohne Vektoren zahlte sonst dauerhaft
+bei jedem Recall den vollen BM25-Pass plus Embed-Roundtrip. Timeout und
+Provider-Fehler cachen unverändert gar nicht.
+
+### 25.4 Drei Lanes kannten `unfused` nicht
+
+Prompt, Todo und Write waren in Runde 21 umgestellt worden. SessionStart und
+beide Bash-Lanes hatten eigene, ältere Response-Typen: SessionStart behauptete
+bei einem rohen Score von 405585 "Both search paths agreed … score ≥100" und
+sortierte bis zu drei unabhängig degradierende Antworten in einer Zahlenreihe.
+In Bash-Fail umging `hasRequired` den Backoff — auf der offenen Skala riss
+praktisch jeder Score die 100, der Backoff war dort faktisch abgeschaltet.
+
+Ein gemeinsamer `HookRecallResponse` löst die lokalen Kopien ab, mit einem
+fail-closed `isUnfused()`: Was nicht ausdrücklich `score_kind: "rrf"` sagt, gilt
+als unfused. Die Bänder kommen aus einer zentralen `bandHits()`.
+
+Bewusste Verhaltensänderungen, alle nur im unfused-Fall: Der Score-Floor
+entfällt in allen drei Lanes; SessionStart mischt reihum pro Query statt nach
+Score; Bash-Fail umgeht den Backoff nicht mehr; die Score-Zahl verschwindet aus
+den Hint-Zeilen. Der fusionierte Pfad bleibt bit-identisch, gepinnt.
