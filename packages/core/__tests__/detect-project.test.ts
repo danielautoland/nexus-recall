@@ -8,10 +8,21 @@ import assert from "node:assert/strict";
 import { detectProject, detectProjectDetailed } from "../src/topics.js";
 
 test("detectProjectDetailed: root-match when a known repo-root segment precedes it", () => {
-  const d = detectProjectDetailed("/Users/n0mad/Projekte/bastra-recall");
+  // Ein Pfad, den es auf dieser Maschine NICHT gibt: Sonst fände die
+  // Git-Root-Suche ein echtes `.git` und meldete "git-root" — die stärkere
+  // Auskunft. Hier geht es um die Container-Heuristik als Rückfall.
+  const d = detectProjectDetailed("/nirgendwo/Projekte/bastra-recall");
   assert.equal(d.raw, "bastra-recall");
   assert.equal(d.key, "bastra-recall");
   assert.equal(d.confidence, "root-match");
+});
+
+test("detectProjectDetailed: ein echtes .git schlägt die Container-Heuristik", () => {
+  // Dieses Repo liegt unter ~/Projekte/bastra-recall UND hat ein .git.
+  // Beide Wege ergeben denselben Namen, aber die Auskunft ist die bessere.
+  const d = detectProjectDetailed(new URL("..", import.meta.url).pathname);
+  assert.equal(d.key, "bastra-recall");
+  assert.equal(d.confidence, "git-root");
 });
 
 test("detectProjectDetailed: fallback when only the last segment is available", () => {

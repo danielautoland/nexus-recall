@@ -280,17 +280,21 @@ async function main(): Promise<void> {
             allow_private: true,
             expand_hops: (params?.expand_hops === 1 ? 1 : 0) as 0 | 1,
           };
-          const recallQuery = expandQuery(String(params?.query ?? ""), learnedBridges, {
+          const authoredQuery = String(params?.query ?? "");
+          const recallQuery = expandQuery(authoredQuery, learnedBridges, {
             configuredLang: sharedRecallLang,
           }).query;
+          // Anker und Berechtigungen nur aus der authored Query — die
+          // Erweiterung darf Treffer finden, aber keine Absicht behaupten.
+          const anchoredOpts = { ...opts, authored_query: authoredQuery };
           if (search.hasEmbeddings()) {
             search
-              .recallHybrid(recallQuery, opts)
+              .recallHybrid(recallQuery, anchoredOpts)
               .then((hits) => send({ id, result: hits }))
               .catch((err: Error) => send({ id, error: { message: err.message } }));
             return;
           }
-          result = search.recall(recallQuery, opts);
+          result = search.recall(recallQuery, anchoredOpts);
           break;
         }
         case "list_memorys": {

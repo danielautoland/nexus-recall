@@ -9,6 +9,7 @@
  * /curator/state) so http.ts — already past the file-size comfort line —
  * only grows by routing lines.
  */
+import { scopeEquals } from "@bastra-recall/core/scope";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
@@ -31,6 +32,7 @@ import { logDirFor } from "./telemetry.js";
 import { writePendingSuggestion } from "./pending-suggestions.js";
 import { envInt } from "./env.js";
 import { collectClaimedTwice } from "./claimed-twice.js";
+import { isMarkdownFile } from "@bastra-recall/core";
 import {
   claimedTwiceReportLimit,
   writeVaultHealthReport,
@@ -128,7 +130,7 @@ function collectFacts(vault: VaultLike, flooredIds: Set<string>): CuratorMemoryF
       // untouchable for automated lifecycle passes by definition.
       protected:
         mem.fm.type === "doc" ||
-        mem.fm.scope === "taxonomy" ||
+        scopeEquals(String(mem.fm.scope ?? ""), "taxonomy") ||
         mem.fm.write_origin === "user-directed",
     });
   }
@@ -282,7 +284,9 @@ async function collectEmptyFiles(vaultRoot: string): Promise<string[]> {
     const entries = await readdir(vaultRoot, { recursive: true, withFileTypes: true });
     const empty: string[] = [];
     for (const e of entries) {
-      if (!e.isFile() || !e.name.endsWith(".md")) continue;
+      // Dieselbe Extension-Regel wie der Vault-Index (Codex-Befund 7):
+      // eine leere `.MD` ist genauso eine leere Obsidian-Notiz.
+      if (!e.isFile() || !isMarkdownFile(e.name)) continue;
       const rel = relative(vaultRoot, join(e.parentPath, e.name));
       if (rel.split(sep).some((part) => part.startsWith("."))) continue;
       try {

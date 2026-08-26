@@ -23,7 +23,12 @@ export const GLOBAL_SCOPES = new Set(["all-projects", "user-preference", "taxono
  *  (direkt oder über {@link scopeEquals}/{@link isScopeCompatible}) statt
  *  selbst `.toLowerCase()` zu duplizieren. */
 export function normalizeScopeKey(scope: string): string {
-  return scope.toLowerCase();
+  // NFC vor der Faltung: macOS legt Dateinamen in NFD ab (`Cafe` + combining
+  // acute), während dieselbe Eingabe aus einem Editor als NFC (`Café`) kommt.
+  // Ungefaltet sind das zwei verschiedene Scopes, und der Unterschied ist
+  // unsichtbar — dieselbe Klasse wie der Groß-/Kleinschreibungs-Fehler aus
+  // #360, nur eine Ebene tiefer (Codex-Gegenreview, P2).
+  return scope.normalize("NFC").toLowerCase();
 }
 
 /** Exakter Scope-Vergleich, gefaltet über {@link normalizeScopeKey}. Für

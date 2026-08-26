@@ -238,7 +238,10 @@ function passesLaneScope(hit: LaneScopeHit, project: string | null, opts: LaneSc
  */
 export function projectForFilter(cwd: string): string | null {
   const d = detectProjectDetailed(cwd);
-  return d.confidence === "root-match" ? d.key : null;
+  // `git-root` und `root-match` dürfen filtern, `fallback` nicht. Ein
+  // git-root ist die einzige Auskunft, die wirklich ein Repo benennt; die
+  // Container-Heuristik bleibt als Rückfall für Verzeichnisse ohne `.git`.
+  return d.confidence === "git-root" || d.confidence === "root-match" ? d.key : null;
 }
 
 /** Die Erkennungsgüte für die Telemetrie — ohne sie ist `dropped_scope_count`

@@ -88,7 +88,13 @@ export function stripCodeSpans(body: string): string {
  * Die Auto-Related-Section und Code-Spans werden übersprungen — sonst floaten
  * Auto-Links bzw. Code-Beispiele in `related[]` rein.
  */
-const WIKILINK_RE = /\[\[([a-z0-9][a-z0-9_-]{0,79})\]\]/g;
+// `\p{L}\p{N}` statt `a-z0-9`: `slugify()` behält seit dem Cyrillic/CJK-Fix
+// Buchstaben jeder Schrift, also KANN eine id `记忆` heißen — das ASCII-Muster
+// fand sie nie, und `[[记忆]]` erzeugte keine Relation (Codex-Gegenreview, P2).
+// Die Faltung bleibt außen vor: ids sind kanonisch klein (siehe
+// `canonicalMemoryId`), und ein Wikilink zeigt auf die id, nicht auf eine
+// Schreibvariante davon.
+const WIKILINK_RE = /\[\[(\p{L}[\p{L}\p{N}_-]{0,79}|\p{N}[\p{L}\p{N}_-]{0,79})\]\]/gu;
 export function extractWikilinks(body: string): string[] {
   const scanned = stripCodeSpans(stripAutoRelatedSection(body));
   const seen = new Set<string>();

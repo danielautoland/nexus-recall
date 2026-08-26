@@ -9,6 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import {
   applyLaneScopeFilter,
   laneScopeFilterMode,
@@ -270,4 +271,37 @@ test("ohne Projekt: filterProject bleibt null und der Grund steht dabei", () => 
   const r = applyLaneScopeFilter([hit({ scope: "carnexus" })], null, TODO_OPTS, "enforce");
   assert.equal(r.skipped, "no-project");
   assert.equal(r.filterProject, null);
+});
+
+// ── Projekterkennung: der nächstgelegene Git-Root ────────────────────────
+
+/**
+ * Codex-Gegenreview: `root-match` nahm das ERSTE Container-Segment und lag
+ * damit bei jeder verschachtelten Struktur falsch —
+ * `/Users/me/Projects/company/repos/real-repo/…` ergab "company", mit voller
+ * Zuversicht. Ein scharfer Filter entfernt dann die Memories von `real-repo`.
+ */
+test("projectForFilter: der nächstgelegene .git-Ordner gewinnt gegen die Heuristik", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "gitroot-"));
+  try {
+    // .../Projects/company/repos/real-repo/packages/core, .git bei real-repo
+    const repo = join(root, "Projects", "company", "repos", "real-repo");
+    const deep = join(repo, "packages", "core");
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(repo, ".git"), "gitdir: anderswo\n"); // Worktree-Form: eine DATEI
+
+    assert.equal(projectForFilter(deep), "real-repo");
+    assert.equal(projectConfidence(deep), "git-root");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("projectForFilter: ohne .git bleibt die Container-Heuristik der Rückfall", () => {
+  // Ein Pfad, den es auf dieser Maschine nicht gibt — kein .git zu finden.
+  assert.equal(projectForFilter("/nirgendwo/Projekte/mein-projekt/packages/x"), "mein-projekt");
+  assert.equal(projectConfidence("/nirgendwo/Projekte/mein-projekt"), "root-match");
+  assert.equal(projectForFilter("/nirgendwo/tmp/worktree/packages/core"), null);
 });

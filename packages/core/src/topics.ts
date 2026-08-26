@@ -12,6 +12,8 @@
  * with action phrases ("writing tsx with input", etc.).
  */
 import { basename, extname } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import { normalizeScopeKey } from "./scope.js";
 
 export interface ToolIntent {
@@ -146,10 +148,12 @@ export interface DetectedProject {
    *  ONLY field a scope/project FILTER may use. `raw` is for display and
    *  telemetry only. */
   key: string;
-  /** "root-match": a known repo-root segment (Projekte/projects/code/…) was
-   *  hit — real detection. "fallback": only the last path segment, a guess
-   *  that any non-empty path produces. "none": no path at all. */
-  confidence: "root-match" | "fallback" | "none";
+  /** "git-root": das nächstgelegene `.git` bestimmt das Projekt — die einzige
+   *  Auskunft, die wirklich sagt "hier fängt ein Repo an". "root-match": ein
+   *  bekanntes Container-Segment (Projekte/projects/code/…) wurde getroffen —
+   *  eine Heuristik. "fallback": nur das letzte Pfadsegment, ein Rateschluss,
+   *  den jeder nichtleere Pfad produziert. "none": kein Pfad. */
+  confidence: "git-root" | "root-match" | "fallback" | "none";
 }
 
 /**
@@ -162,7 +166,38 @@ export interface DetectedProject {
  */
 export function detectProjectDetailed(cwd: string): DetectedProject {
   if (!cwd) return { raw: "", key: "", confidence: "none" };
-  const parts = cwd.split("/").filter(Boolean);
+  const cached = detectCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const result = detectUncached(cwd);
+  // Ein Hook feuert bei jedem Tool-Call mit demselben cwd — die Aufwärtssuche
+  // nach `.git` darf nicht jedes Mal das Dateisystem anfassen. Der Cache ist
+  // prozesslokal und lebt so lange wie der Daemon; ein cwd wechselt sein Repo
+  // nicht.
+  detectCache.set(cwd, result);
+  return result;
+}
+
+const detectCache = new Map<string, DetectedProject>();
+
+function detectUncached(cwd: string): DetectedProject {
+  // Windows-Pfade tragen `\`, und ein reines Split auf `/` hätte dort EIN
+  // Segment gesehen (Codex-Gegenreview, P2).
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+
+  // Der nächstgelegene `.git`-Ordner ist die einzige Auskunft, die wirklich
+  // "hier fängt ein Repo an" bedeutet. Die Container-Heuristik darunter nahm
+  // das ERSTE passende Segment und lag damit bei jeder verschachtelten
+  // Struktur falsch: `/Users/me/Projects/company/repos/real-repo/packages/core`
+  // ergab "company", weil `Projects` zuerst kam — mit voller Zuversicht. Ein
+  // scharfer Scope-Filter entfernt dann die Memories von `real-repo`.
+  //
+  // Kein Prozess-Spawn: `existsSync` je Ebene, ein paar Ebenen tief, und das
+  // Ergebnis wird gecacht.
+  const gitRoot = findGitRoot(cwd);
+  if (gitRoot !== null) {
+    return { raw: gitRoot, key: normalizeScopeKey(gitRoot), confidence: "git-root" };
+  }
+
   for (let i = 0; i < parts.length - 1; i++) {
     if (PROJECT_ROOTS.has(parts[i].toLowerCase())) {
       const raw = parts[i + 1];
@@ -174,6 +209,23 @@ export function detectProjectDetailed(cwd: string): DetectedProject {
   const last = parts[parts.length - 1];
   if (last === undefined) return { raw: "", key: "", confidence: "none" };
   return { raw: last, key: normalizeScopeKey(last), confidence: "fallback" };
+}
+
+/** Verzeichnisname des nächstgelegenen Vorfahren mit `.git` — oder null.
+ *  `.git` ist in Worktrees und Submodulen eine DATEI, nicht nur ein Ordner,
+ *  deshalb `existsSync` statt einer Verzeichnisprüfung. */
+function findGitRoot(cwd: string): string | null {
+  let dir = resolvePath(cwd);
+  for (let depth = 0; depth < 64; depth++) {
+    if (existsSync(joinPath(dir, ".git"))) {
+      const name = basename(dir);
+      return name === "" ? null : name;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
 }
 
 /**

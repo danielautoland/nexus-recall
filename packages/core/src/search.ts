@@ -364,6 +364,22 @@ export interface RecallOptions {
    * die einmal gesetzt und dann vergessen wird.
    */
   bm25_no_fuzzy?: boolean;
+  /**
+   * Die UNVERÄNDERTE Benutzerquery, wenn `query` maschinell erweitert wurde
+   * (Learned Bridges, `expandQuery`). Codex-Gegenreview: Ohne dieses Feld
+   * galten hinzuerfundene Bridge-Terme als exakte Query-Terme — sie konnten
+   * `matched_recall_when` setzen, `weak_result` unterdrücken und einen
+   * Cross-Scope-Anker erzeugen, obwohl der Benutzer den Term nie geschrieben
+   * hat. Genau das sollte der Anker seit P0 ausschließen: Er misst
+   * AUTORENABSICHT auf beiden Seiten — ein hand-geschriebener Trigger trifft
+   * ein selbst getipptes Wort.
+   *
+   * Fürs RANKING bleibt die erweiterte Query maßgeblich; die Erweiterung soll
+   * Treffer finden. Nur die Berechtigungs- und Ankerentscheidungen ziehen sich
+   * auf das zurück, was der Mensch geschrieben hat. Fehlt das Feld, ist
+   * `query` selbst die authored Query — Aufrufer ohne Expansion ändern nichts.
+   */
+  authored_query?: string;
 }
 
 interface IndexDoc {
@@ -549,6 +565,9 @@ export class SearchIndex {
     lexQuery: string;
     searchOptions: Record<string, unknown>;
     queryTerms: ReadonlySet<string>;
+    /** Nur die Terme aus der AUTHORED Query — die Basis jeder Anker- und
+     *  Berechtigungsentscheidung (siehe `authored_query`). */
+    authoredTerms: ReadonlySet<string>;
     emitted: number;
     unique: number;
   } {
@@ -570,6 +589,10 @@ export class SearchIndex {
         ...fuzzyOption,
       },
       queryTerms: new Set(grouped.counts.keys()),
+      authoredTerms:
+        opts.authored_query === undefined || opts.authored_query === query
+          ? new Set(grouped.counts.keys())
+          : new Set(groupQueryTerms(opts.authored_query, tokenizeWithIdentifiers).counts.keys()),
       emitted: grouped.emitted,
       unique: grouped.counts.size,
     };
@@ -618,7 +641,7 @@ export class SearchIndex {
     const plan = this.bm25Plan(query, opts);
     const lexQuery = plan.lexQuery;
     const raw = this.mini.search(lexQuery, plan.searchOptions);
-    const queryTerms = plan.queryTerms;
+    const authoredTerms = plan.authoredTerms;
     stage.end("bm25.search", tBm, {
       raw_hit_count: raw.length,
       query_chars: query.length,
@@ -637,7 +660,7 @@ export class SearchIndex {
       return true;
     });
 
-    const { ranked, pool } = this.rankBm25(filtered, k, opts, stage, queryTerms);
+    const { ranked, pool } = this.rankBm25(filtered, k, opts, stage, authoredTerms);
 
     this.storeQueryCache(cacheKey, ranked, pool);
 
@@ -848,7 +871,7 @@ export class SearchIndex {
     const bm25 = this.mini
       .search(lexQuery, plan.searchOptions)
       .filter((r) => passesRecallFilters(r, opts));
-    const queryTerms = plan.queryTerms;
+    const authoredTerms = plan.authoredTerms;
     const bm25Top = bm25.slice(0, 50);
     stage.end("bm25.search", tBm, {
       raw_hit_count: bm25.length,
@@ -904,7 +927,7 @@ export class SearchIndex {
       // Reuse the BM25 results this call already computed — no recursion into
       // the public pipeline, so the stage sequence stays monotonic and emits
       // exactly one `done` and one candidate-pool callback.
-      const { ranked: bm25Only, pool: bm25Pool } = this.rankBm25(bm25, k, opts, stage, queryTerms);
+      const { ranked: bm25Only, pool: bm25Pool } = this.rankBm25(bm25, k, opts, stage, authoredTerms);
       // #342: a timeout degradation must NOT be cached. The cache key varies on
       // `embeddings.size()`, which a cold model does not change — so caching
       // here would freeze the one-armed answer for the full TTL and every
@@ -968,10 +991,10 @@ export class SearchIndex {
         matched_terms: bm?.terms ?? [],
         // #148: vom BM25-Arm; ein reiner Vektor-Treffer (kein `bm`) ist kein
         // lexikalisches recall_when-Match → false.
-        matched_recall_when: bm ? matchedRecallWhen(bm, queryTerms) : false,
+        matched_recall_when: bm ? matchedRecallWhen(bm, authoredTerms) : false,
         ...(() => {
           const a = bm
-            ? anchorStrength(bm, queryTerms, (t) => this.recallWhenDocFreq(t), (id) =>
+            ? anchorStrength(bm, authoredTerms, (t) => this.recallWhenDocFreq(t), (id) =>
                 this.vault.get(id)?.fm.recall_when ?? [],
               )
             : undefined;

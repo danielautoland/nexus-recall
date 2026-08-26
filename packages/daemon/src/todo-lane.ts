@@ -504,7 +504,7 @@ interface TodoHookTelemetry {
   dropped_scope_count?: number;
   dropped_scopes?: string[];
   /** §20.5, siehe Prompt-Lane. */
-  project_confidence?: "root-match" | "fallback" | "none";
+  project_confidence?: "git-root" | "root-match" | "fallback" | "none";
   /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert. */
   filter_project?: string | null;
   scope_filter_skipped?: "no-project" | "no-scope-evidence";

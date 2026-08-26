@@ -869,7 +869,7 @@ interface PromptHookTelemetry {
   dropped_scopes?: string[];
   /** §20.5: "fallback" heißt, der Projektname war geraten — dann filtert die
    *  Lane nicht, und ein `dropped_scope_count` von 0 sagt nichts über Scopes. */
-  project_confidence?: "root-match" | "fallback" | "none";
+  project_confidence?: "git-root" | "root-match" | "fallback" | "none";
   /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert. */
   filter_project?: string | null;
   scope_filter_skipped?: "no-project" | "no-scope-evidence";

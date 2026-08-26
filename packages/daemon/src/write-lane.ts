@@ -526,7 +526,7 @@ interface HookCallTelemetry {
   /** §20.5: "root-match" = echtes Repo-Wurzelsegment getroffen, "fallback" =
    *  letztes Pfadsegment geraten (dann filtert die Lane nicht), "none" = kein
    *  Pfad. Ohne dieses Feld ist `dropped_scope_count` nicht interpretierbar. */
-  project_confidence?: "root-match" | "fallback" | "none";
+  project_confidence?: "git-root" | "root-match" | "fallback" | "none";
   /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert.
    *  `project_confidence: "root-match"` allein zeigt nicht, dass irrtümlich
    *  gegen "packages" verglichen wurde; dieses Feld zeigt es. */
