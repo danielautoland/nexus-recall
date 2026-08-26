@@ -473,7 +473,10 @@ export class SearchIndex {
   // unterhalb von k (Reflex-/Hop-Seeds, far-slice-Harvest) — ohne Pool im Cache
   // lieferte ein Hit für die volle TTL nichts (BM25) bzw. Tiefe k statt
   // max(k*4, 20) (Hybrid). Rein In-Memory, ~20 flache Objekte pro Eintrag.
-  private queryCache = new Map<string, { hits: RecallHit[]; pool: RecallHit[]; at: number }>();
+  private queryCache = new Map<
+    string,
+    { hits: RecallHit[]; pool: RecallHit[]; at: number; degraded?: string }
+  >();
   private static readonly QUERY_CACHE_MAX = 100;
   private static readonly QUERY_CACHE_TTL_MS = 30_000;
 
@@ -812,6 +815,12 @@ export class SearchIndex {
         vault_size: this.mini.documentCount,
         total_ms: Date.now() - recallStart,
         cached: true,
+        // P0: der Degradations-Grund wird mit-repliziert. Er ist die einzige
+        // Quelle, aus der der Recall-Handler `score_kind` ableitet — fehlt er
+        // beim Cache-Hit, wird derselbe rohe BM25-Score (gemessen: 1997.338)
+        // beim zweiten Aufruf als `rrf` ausgeliefert und von den Bändern
+        // 50/100 gelesen, die nur auf der RRF-Skala existieren.
+        ...(cached.degraded ? { degraded: cached.degraded } : {}),
       });
       return cached.hits;
     }
@@ -941,7 +950,10 @@ export class SearchIndex {
       // die Erholung des Providers kam nicht durch. Gleiche Falle wie #342,
       // durch die Nachbartür.
       if (!vectorArmTimedOut && !vectorArmErrored) {
-        this.storeQueryCache(cacheKey, bm25Only, bm25Pool);
+        // P0: der Grund geht MIT in den Cache. Diese Hits sind rohe
+        // BM25-Scores; ein Cache-Hit, der das verschweigt, macht sie beim
+        // Leser wieder zu RRF-Werten.
+        this.storeQueryCache(cacheKey, bm25Only, bm25Pool, "vector-arm-empty");
       }
       stage.emit("done", recallStart, {
         hit_count: bm25Only.length,
@@ -1200,7 +1212,7 @@ export class SearchIndex {
    */
   private lookupQueryCache(
     key: string,
-  ): { hits: RecallHit[]; pool: RecallHit[] } | undefined {
+  ): { hits: RecallHit[]; pool: RecallHit[]; degraded?: string } | undefined {
     const cached = this.queryCache.get(key);
     if (!cached) return undefined;
     if (Date.now() - cached.at > SearchIndex.QUERY_CACHE_TTL_MS) {
@@ -1217,7 +1229,11 @@ export class SearchIndex {
     // nach außen — der defensive Klon liegt in `emitCachedPool()`, damit ein
     // Cache-Hit ohne `onCandidatePool` keine einzige Allokation mehr kostet
     // als vor #365 (Hook-Budget #305/#362).
-    return { hits: cached.hits.map((h) => ({ ...h })), pool: cached.pool };
+    // P0: `degraded` muss mit raus. Der Score-RAUM (rohes BM25 vs. RRF) ist
+    // eine Eigenschaft des gecachten Ergebnisses, nicht des Calls, der es
+    // ausliefert — ohne dieses Feld nannte der Handler dieselben Zahlen beim
+    // zweiten Aufruf `rrf` und legte die Bänder 50/100 an eine offene Skala.
+    return { hits: cached.hits.map((h) => ({ ...h })), pool: cached.pool, degraded: cached.degraded };
   }
 
   /** #365/5: den mitgecachten tiefen Pool bei einem Query-Cache-Hit
@@ -1227,7 +1243,12 @@ export class SearchIndex {
     opts.onCandidatePool(pool.map((h) => ({ ...h })));
   }
 
-  private storeQueryCache(key: string, hits: RecallHit[], pool: RecallHit[]): void {
+  private storeQueryCache(
+    key: string,
+    hits: RecallHit[],
+    pool: RecallHit[],
+    degraded?: string,
+  ): void {
     if (this.queryCache.size >= SearchIndex.QUERY_CACHE_MAX) {
       // Oldest first — Map preserved insertion order.
       const oldest = this.queryCache.keys().next().value;
@@ -1242,6 +1263,7 @@ export class SearchIndex {
       hits: hits.map((h) => ({ ...h })),
       pool: pool.map((h) => ({ ...h })),
       at: Date.now(),
+      ...(degraded ? { degraded } : {}),
     });
   }
 

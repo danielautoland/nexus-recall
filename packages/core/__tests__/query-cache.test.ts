@@ -346,3 +346,38 @@ test("query-cache: LRU-Bump bei Hit verhindert Eviction der gebumpten Query", as
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+test("query-cache P0: ein Cache-Hit auf die einarmige Antwort behält den Score-Modus", async () => {
+  // Der Fehlerfall: `vector-arm-empty` wird gecacht (korrekt, siehe #342 —
+  // das ist eine Eigenschaft des Vaults), aber der Cache-Eintrag trug den
+  // Degradations-Grund nicht mit. Beim zweiten identischen Aufruf meldete
+  // `done` nur noch `cached: true` — der Recall-Handler leitet `score_kind`
+  // aber genau aus diesem Feld ab. Ergebnis: derselbe rohe BM25-Score
+  // (z.B. 1997.338) kam beim ersten Aufruf als `bm25`/`unfused` heraus und
+  // beim zweiten als `rrf`. Damit wurden die Bänder 50/100, die nur auf der
+  // RRF-Skala (Obergrenze 163.934) definiert sind, auf eine offene Skala
+  // angewendet.
+  const { idx, close } = await makeHybrid({ failFromStart: true });
+  try {
+    const first = doneMeta();
+    const cold = await idx.recallHybrid("alpha", { k: 5, onStage: first.onStage });
+    assert.equal(first.last().degraded, "vector-arm-empty", "Vorbedingung: kalt degradiert");
+
+    const second = doneMeta();
+    const warm = await idx.recallHybrid("alpha", { k: 5, onStage: second.onStage });
+    assert.equal(second.last().cached, true, "Vorbedingung: der zweite Aufruf kommt aus dem Cache");
+    assert.equal(
+      second.last().degraded,
+      "vector-arm-empty",
+      "der Cache-Hit serviert BM25-Scores und muss das auch sagen",
+    );
+    assert.deepEqual(
+      warm.map((h) => h.score),
+      cold.map((h) => h.score),
+      "identische Zahlen — sie dürfen nur nicht anders benannt werden",
+    );
+    assert.ok(warm.every((h) => h.mode === "bm25"));
+  } finally {
+    await close();
+  }
+});

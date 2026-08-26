@@ -24,6 +24,8 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
+import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
+import { unfusedHeadline } from "./band-wording.js";
 import { extractCommandHead, invokesOwnBinary } from "./bash-fail-lane.js";
 import {
   bumpShown,
@@ -45,21 +47,12 @@ export interface BashHookPayload {
   tool_input?: Record<string, unknown>;
 }
 
-interface RecallHit {
-  id: string;
-  title: string;
-  type: string;
-  scope: string;
-  summary: string;
-  score: number;
-}
-
-interface RecallResponse {
-  hits: RecallHit[];
-  vault_size: number;
-  latency_ms: number;
-  recall_id: string;
-}
+// P0: EIN gemeinsamer Response-Typ für alle Lanes. Die lokale Kopie hier
+// kannte `score_kind`/`unfused` nicht — das Feld fiel beim Parsen still weg,
+// und diese Lane bandete danach rohe BM25-Werte mit einem Cut, den nur die
+// fusionierte Skala trägt.
+type RecallHit = HookRecallHit;
+type RecallResponse = HookRecallResponse;
 
 /**
  * Destructive patterns — always need a recall.
@@ -186,10 +179,13 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
     }
   }
 
+  // P0: siehe bash-fail-lane.ts — auf der unfused Skala markiert der Floor
+  // keinen Punkt. Die Warnung selbst hängt ohnehin nicht an einem Score.
+  const unfused = isUnfused(resp);
   const hits: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
-      if (h.score >= SCORE_FLOOR) hits.push(h);
+      if (unfused || h.score >= SCORE_FLOOR) hits.push(h);
     }
   }
   if (resp && hits.length === 0) status = "no-hits";
@@ -219,7 +215,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
 
   // Emit hint even if no memories match — the warning itself is the point.
   // #161 CONSTRAINT (see top of file): the tripwire is exempt from backoff.
-  const block = formatHintBlock(match.label, match.severity, emitted);
+  const block = formatHintBlock(match.label, match.severity, emitted, unfused);
   const stdout = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -251,15 +247,19 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
   return stdout;
 }
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
+  // P0: gleiche Wahl wie in prompt-lane.ts — ohne Fusion keine Zahl.
+  return hideScore
+    ? `- ${h.id} (${h.type}): ${summary}`
+    : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-function formatHintBlock(
+export function formatHintBlock(
   pattern: string,
   severity: "destructive" | "risky",
   hits: RecallHit[],
+  unfused = false,
 ): string {
   const head = `<recall-hints surface="claude-code" trigger="bash-${severity}">`;
   const tail = `</recall-hints>`;
@@ -281,9 +281,12 @@ function formatHintBlock(
   if (hits.length > 0) {
     lines.push("");
     lines.push(
-      `Relevant lessons / preferences from the vault — load_memory(id) before deciding to run:`,
+      unfused
+        ? `Relevant lessons / preferences from the vault — load_memory(id) before deciding to run. ` +
+          unfusedHeadline("this command")
+        : `Relevant lessons / preferences from the vault — load_memory(id) before deciding to run:`,
     );
-    for (const h of hits) lines.push(formatHintLine(h));
+    for (const h of hits) lines.push(formatHintLine(h, unfused));
   }
 
   return [head, HINT_FRAME_NOTE, stripFenceMarkers(lines.join("\n")), tail].join("\n");
@@ -339,4 +342,4 @@ async function writeTelemetry(payload: BashHookCallTelemetry): Promise<void> {
 }
 
 // Export for testing.
-export { matchPattern, formatHintBlock, DESTRUCTIVE_PATTERNS, RISKY_PATTERNS };
+export { matchPattern, DESTRUCTIVE_PATTERNS, RISKY_PATTERNS };

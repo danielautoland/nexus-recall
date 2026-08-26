@@ -75,3 +75,34 @@ export function unfusedHeadline(subject: string): string {
     `summary, not by the number.`
   );
 }
+
+/**
+ * Die Bandzuweisung selbst — zentral, damit kein Surface sie noch einmal
+ * inline erfindet.
+ *
+ * P0: Ohne Vektor-Arm gibt es keine Fusion, keine Obergrenze und damit kein
+ * Band. Die Cuts (50/100) sind Punkte auf der Rang-Summen-Skala; auf rohe
+ * BM25-Werte angewendet selektieren sie nichts — gemessen wurden dort
+ * sechsstellige Top-Scores, die jeden Cut trivial reißen. `unbanded` trägt in
+ * diesem Fall ALLE Hits, und der Aufrufer stellt sie unter
+ * `unfusedHeadline()`, statt eine Auswahl zu behaupten.
+ */
+export interface BandedHits<H> {
+  required: H[];
+  optional: H[];
+  /** Nur im unfused Fall belegt: die Hits ohne jeden Bandanspruch. */
+  unbanded: H[];
+}
+
+export function bandHits<H extends { score: number }>(
+  hits: H[],
+  cut: number,
+  unfused: boolean,
+): BandedHits<H> {
+  if (unfused) return { required: [], optional: [], unbanded: hits };
+  return {
+    required: hits.filter((h) => h.score >= cut),
+    optional: hits.filter((h) => h.score < cut),
+    unbanded: [],
+  };
+}

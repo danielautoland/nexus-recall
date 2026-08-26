@@ -10,27 +10,14 @@
  * leafs only, never the @bastra-recall/core barrel.
  */
 import { request } from "node:http";
+import type { HookRecallResponse as RecallResponse } from "./hook-recall-response.js";
 import type { PinnedFloorLean } from "./pinned-block.js";
 
-export interface RecallHit {
-  id: string;
-  title: string;
-  type: string;
-  scope: string;
-  summary: string;
-  score: number;
-}
-
-export interface RecallResponse {
-  hits: RecallHit[];
-  vault_size: number;
-  latency_ms: number;
-  recall_id: string;  /** #249: no returned hit lexically anchors — the top score is rank-1-of-
-   *  nothing. Absent means "not weak". */
-  weak_result?: boolean;
-  /** #230: stricter subset of weak_result — the fact has no home in this vault. */
-  no_home?: boolean;
-}
+// P0: der Transporttyp kannte den Score-Modus nicht — `score_kind`/`unfused`
+// fielen beim Parsen still weg, und die SessionStart-Lane bandete danach rohe
+// BM25-Werte mit Cuts, die nur auf der fusionierten Skala existieren. Jetzt
+// derselbe Typ wie in allen anderen Lanes.
+export type { HookRecallHit as RecallHit, HookRecallResponse as RecallResponse } from "./hook-recall-response.js";
 
 export interface UpdateAvailable {
   current: string;

@@ -34,7 +34,8 @@
 // start against +0.8ms for the three leafs, on a fresh spawn per event.
 import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
-import { requiredHeadline } from "./band-wording.js";
+import { bandHits, requiredHeadline, unfusedHeadline } from "./band-wording.js";
+import { isUnfused } from "./hook-recall-response.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -123,19 +124,13 @@ export async function runSessionLane(
     }
   }
 
-  // Merge: dedup by id, sort by score, cap total.
-  const seen = new Set<string>();
-  const merged: RecallHit[] = [];
-  for (const r of responses) {
-    if (!r.resp) continue;
-    for (const h of r.resp.hits) {
-      if (h.score < SCORE_FLOOR) continue;
-      if (seen.has(h.id)) continue;
-      seen.add(h.id);
-      merged.push(h);
-    }
-  }
-  merged.sort((a, b) => b.score - a.score);
+  // P0: Der Score-Modus gilt für den GANZEN Block, und zwar fail-closed —
+  // sobald EINE der (bis zu drei) Antworten unfusioniert ist, sind die Zahlen
+  // untereinander nicht mehr vergleichbar. Nachgestellt: bei einem rohen
+  // BM25-Score von 405585 behauptete diese Lane „Both search paths agreed …
+  // score ≥100", obwohl genau ein Pfad lief.
+  const unfused = responses.some((r) => r.resp !== null && isUnfused(r.resp));
+  const merged = mergeSessionHits(responses, unfused, SCORE_FLOOR);
 
   // Floor-Registry (#141/#142): gepinnte Memories — push-by-state, bewusst
   // NICHT score-gated (gleiches Muster wie der Taxonomie-Block: dedizierter
@@ -439,7 +434,7 @@ export async function runSessionLane(
     // real signal here, and framing the whole block as noise would hide it.
     const answered = responses.filter((r) => r.resp !== null);
     const allWeak = answered.length > 0 && answered.every((r) => r.resp!.weak_result === true);
-    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak) + extras;
+    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak, unfused) + extras;
     out = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
@@ -470,15 +465,77 @@ export async function runSessionLane(
   return out;
 }
 
-function formatBlock(hits: RecallHit[], project: string | null, source: string | null, weak = false): string {
+/**
+ * Dedup + Reihenfolge über die (bis zu drei) scope-gefilterten Antworten.
+ *
+ * P0: `unfused` entscheidet, ob überhaupt gerechnet werden darf. Fusioniert
+ * bleibt alles wie bisher — gemeinsame Skala, Floor, absteigend sortiert.
+ * Unfusioniert stammen die Zahlen aus einer offenen Skala und aus getrennten
+ * Aufrufen: 405585 schlägt 160 immer, ohne besser zu sein. Dann wird REIHUM
+ * genommen, jede Query behält ihren eigenen Rang, und der Floor entfällt, weil
+ * 30 auf dieser Skala keinen Punkt markiert.
+ */
+export function mergeSessionHits(
+  responses: Array<{ scope: string; resp: { hits: RecallHit[] } | null }>,
+  unfused: boolean,
+  floor: number,
+): RecallHit[] {
+  const seen = new Set<string>();
+  const lists = responses.filter((r) => r.resp !== null).map((r) => r.resp!.hits);
+
+  if (unfused) {
+    const merged: RecallHit[] = [];
+    const depth = Math.max(0, ...lists.map((l) => l.length));
+    for (let i = 0; i < depth; i++) {
+      for (const list of lists) {
+        const h = list[i];
+        if (!h || seen.has(h.id)) continue;
+        seen.add(h.id);
+        merged.push(h);
+      }
+    }
+    return merged;
+  }
+
+  const merged: RecallHit[] = [];
+  for (const list of lists) {
+    for (const h of list) {
+      if (h.score < floor) continue;
+      if (seen.has(h.id)) continue;
+      seen.add(h.id);
+      merged.push(h);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+  return merged;
+}
+
+export function formatBlock(
+  hits: RecallHit[],
+  project: string | null,
+  source: string | null,
+  weak = false,
+  unfused = false,
+): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const srcAttr = source ? ` source="${escapeAttr(source)}"` : "";
   const head = `<session-context surface="claude-code"${projAttr}${srcAttr}>`;
   const tail = `</session-context>`;
 
-  const required = hits.filter((h) => h.score >= MUST_LOAD_SCORE);
-  const optional = hits.filter((h) => h.score < MUST_LOAD_SCORE);
+  // P0: zentrale Bandzuweisung. Ohne Fusion vergibt sie kein Band — die Cuts
+  // 30/100 sind Punkte auf der Rang-Summen-Skala und selektieren auf rohen
+  // BM25-Werten nichts.
+  const { required, optional, unbanded } = bandHits(hits, MUST_LOAD_SCORE, unfused);
   const sections: string[] = [];
+
+  if (unbanded.length > 0) {
+    sections.push(
+      `${unfusedHeadline(`the ${project ?? "current"} session`)} ` +
+        `load_memory(id) the ones relevant to what the user actually asks for. ` +
+        `These are hints, not obligations.`,
+    );
+    for (const h of unbanded) sections.push(formatHintLine(h, true));
+  }
 
   if (required.length > 0) {
     // #249: see hook.ts — the honesty flag decides how this block is framed.
@@ -504,9 +561,13 @@ function formatBlock(hits: RecallHit[], project: string | null, source: string |
   return [head, HINT_FRAME_NOTE, stripFenceMarkers(sections.join("\n")), tail].join("\n");
 }
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}/${h.scope}, score ${Math.round(h.score)}): ${summary}`;
+  // P0: Auf der unfused Skala ist die Zahl weder mit den Bändern noch zwischen
+  // zwei Aufrufen vergleichbar — gleiche Wahl wie in prompt-lane.ts.
+  return hideScore
+    ? `- ${h.id} (${h.type}/${h.scope}): ${summary}`
+    : `- ${h.id} (${h.type}/${h.scope}, score ${Math.round(h.score)}): ${summary}`;
 }
 
 function escapeAttr(s: string): string {

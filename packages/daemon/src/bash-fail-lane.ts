@@ -25,6 +25,8 @@ import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
+import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
+import { unfusedHeadline } from "./band-wording.js";
 import {
   decideBackoff,
   loadSessionState,
@@ -54,21 +56,12 @@ export interface BashFailPayload {
   tool_response?: Record<string, unknown>;
 }
 
-interface RecallHit {
-  id: string;
-  title: string;
-  type: string;
-  scope: string;
-  summary: string;
-  score: number;
-}
-
-interface RecallResponse {
-  hits: RecallHit[];
-  vault_size: number;
-  latency_ms: number;
-  recall_id: string;
-}
+// P0: EIN gemeinsamer Response-Typ für alle Lanes. Die lokale Kopie hier
+// kannte `score_kind`/`unfused` nicht — das Feld fiel beim Parsen still weg,
+// und diese Lane bandete danach rohe BM25-Werte mit einem Cut, den nur die
+// fusionierte Skala trägt.
+type RecallHit = HookRecallHit;
+type RecallResponse = HookRecallResponse;
 
 /**
  * Run the post-Bash pipeline; return the exact stdout document for the thin
@@ -153,10 +146,15 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
     }
   }
 
+  // P0: Ohne Fusion sind die Scores rohe BM25-Werte auf offener Skala — der
+  // Floor 50 markiert dort keinen Punkt (gemessen: sechsstellige Top-Scores),
+  // also wird nicht geflooert, sondern die vom Daemon gelieferte Rangfolge
+  // (k=3) unverändert übernommen.
+  const unfused = isUnfused(resp);
   const hits: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
-      if (h.score >= SCORE_FLOOR) hits.push(h);
+      if (unfused || h.score >= SCORE_FLOOR) hits.push(h);
     }
   }
   if (resp && hits.length === 0) status = "no-hits";
@@ -172,11 +170,15 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
     const state = await loadSessionState(sessionId);
     const entry = state.sources?.[BACKOFF_SOURCE];
     const consumed = await wasEmitConsumed(entry);
-    const hasRequired = hits.some((h) => h.score >= MUST_LOAD_SCORE);
+    // P0: Die Backoff-Umgehung ist eine Band-Aussage. Auf der unfused Skala
+    // reißt praktisch jeder Hit die 100 — die Umgehung feuerte also immer und
+    // der Backoff war faktisch abgeschaltet. Fail-closed: kein Band, keine
+    // Umgehung.
+    const hasRequired = !unfused && hits.some((h) => h.score >= MUST_LOAD_SCORE);
     const decision = decideBackoff(entry, consumed, hasRequired);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
-    const block = formatHintBlock(hits);
+    const block = formatHintBlock(hits, unfused);
     if (suppressed) {
       // Suppressed emits {} like the no-hits path; the throttle stays
       // unmarked (nothing was emitted), the saved tokens go to telemetry.
@@ -294,19 +296,25 @@ export function extractErrorKeywords(ctx: string): string {
   return out.join(" ");
 }
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
+  // P0: die unfused Zahl ist weder mit den Bändern noch zwischen zwei
+  // Aufrufen vergleichbar — gleiche Wahl wie in prompt-lane.ts.
+  return hideScore
+    ? `- ${h.id} (${h.type}): ${summary}`
+    : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-export function formatHintBlock(hits: RecallHit[]): string {
+export function formatHintBlock(hits: RecallHit[], unfused = false): string {
   const head = `<recall-hints surface="claude-code" trigger="bash-fail">`;
   const tail = `</recall-hints>`;
   const lines: string[] = [];
   lines.push(
     `The Bash command above failed. These memories describe similar failure modes — check before re-running or trying alternatives.`,
   );
-  for (const h of hits) lines.push(formatHintLine(h));
+  // P0: ohne Fusion sagen, woran das Modell die Treffer stattdessen misst.
+  if (unfused) lines.push(unfusedHeadline("this failure"));
+  for (const h of hits) lines.push(formatHintLine(h, unfused));
   return [head, HINT_FRAME_NOTE, stripFenceMarkers(lines.join("\n")), tail].join("\n");
 }
 
