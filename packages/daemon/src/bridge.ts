@@ -339,9 +339,23 @@ async function main(): Promise<void> {
             input: parsed.data,
             context: ctx,
           })
-            .then(async ({ result, audit }) => {
+            .then(async ({ result, audit, audit_warning }) => {
               await vault.reindexFile(result.file_path);
-              send({ id, result: { ...result, audit_id: audit.id } });
+              // Codex-Gegenreview Runde 10 (Security): Der Spread schickte
+              // `audit_before`/`audit_after` mit — vollständige
+              // Frontmatter-Abbilder inklusive `sensitivity: private`. Der
+              // MCP-Pfad entfernt sie seit langem ausdrücklich
+              // (`tool-handlers.ts`), die Bridge tat es nicht; derselbe Client
+              // bekam über den einen Weg Audit-Material, über den anderen nicht.
+              const { audit_before: _b, audit_after: _a, ...payload } = result;
+              send({
+                id,
+                result: {
+                  ...payload,
+                  audit_id: audit?.id ?? null,
+                  ...(audit_warning ? { audit_warning } : {}),
+                },
+              });
             })
             .catch((err: Error) => {
               send({ id, error: { message: err.message } });
@@ -361,14 +375,15 @@ async function main(): Promise<void> {
             memoryID: targetId,
             context: ctx,
           })
-            .then(({ id: deletedId, trashPath, audit }) => {
+            .then(({ id: deletedId, trashPath, audit, audit_warning }) => {
               send({
                 id,
                 result: {
                   id: deletedId,
                   file_path: trashPath,
                   deleted: true,
-                  audit_id: audit.id,
+                  audit_id: audit?.id ?? null,
+                  ...(audit_warning ? { audit_warning } : {}),
                 },
               });
             })
@@ -396,7 +411,7 @@ async function main(): Promise<void> {
             destFilePath: destOverride,
             context: ctx,
           })
-            .then(async ({ id: restoredId, restoredTo, audit }) => {
+            .then(async ({ id: restoredId, restoredTo, audit, audit_warning }) => {
               // Restore = neuer File-Add für den Vault — explicit reindex.
               await vault.reindexFile(restoredTo);
               send({
@@ -404,7 +419,8 @@ async function main(): Promise<void> {
                 result: {
                   id: restoredId,
                   file_path: restoredTo,
-                  audit_id: audit.id,
+                  audit_id: audit?.id ?? null,
+                  ...(audit_warning ? { audit_warning } : {}),
                 },
               });
             })

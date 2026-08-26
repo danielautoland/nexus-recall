@@ -96,6 +96,8 @@ export {
   markAreaDeleted,
   markAreaRenamed,
   readAreaMark,
+  withAreaExclusive,
+  withAreaShared,
 } from "./area-claim.js";
 export type { AreaMark } from "./area-claim.js";
 export type { IdAuthority, IdClaim, IdClaimOptions, IdScanObservation } from "./id-transaction.js";

@@ -10,8 +10,6 @@
  * Vault-Mutation — kein doppelter Code, kein Drift.
  */
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
-import matter from "gray-matter";
 import {
   saveMemory,
   mutateMemoryFile,
@@ -557,28 +555,6 @@ export const ArchiveMemoryArgs = z.object({
  * `superseded_by` wird best-effort in die Trash-Kopie gestempelt, damit der
  * Trash-Ordner beim späteren Audit pro Datei zeigt, wohin adoptiert wurde.
  */
-/**
- * Das Frontmatter der Datei, die gleich ins Archiv wandert — als Audit-Beweis,
- * TIEF kopiert.
- *
- * Codex-Gegenreview (P1): gray-matter cached `matter(content)` je Input-String
- * und gibt allen Parsern desselben Inhalts dasselbe `data`-Objekt zurück. Wer
- * es über `await`s hinweg festhält, kann sein `diff_before` NACHTRÄGLICH von
- * einem zweiten Parser verändert bekommen. Dieselbe Falle wie in
- * related-enrich.ts und memory-mutate.ts.
- */
-async function readTrashPreimage(
-  filePath: string,
-): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return JSON.parse(JSON.stringify(matter(raw).data)) as Record<string, unknown>;
-  } catch {
-    // Beweis, kein Gate: Ein Lesefehler darf das Archivieren nicht verhindern.
-    return null;
-  }
-}
-
 export async function archiveMemoryHandler(
   deps: ToolDeps,
   args: Record<string, unknown>,
@@ -610,14 +586,15 @@ export async function archiveMemoryHandler(
               `fix that first, archiving now would move the wrong file.`,
         );
       }
-      // Codex-Gegenreview (P1): `diff_before` kam aus dem Vault-Cache, während
-      // die Datei daneben autoritativ lokalisiert wurde. War sie extern
-      // geändert worden, wanderte die NEUE Fassung in den Trash und das Audit
-      // beschrieb die ALTE. Gelesen wird deshalb die Datei, die gleich
-      // wegwandert, unter demselben Claim — fällt das Lesen aus, bleibt der
-      // Cache-Stand als schwächere Auskunft.
-      const onDisk = await readTrashPreimage(located.filePath);
-      const to = await moveToTrashUnderClaim(deps.vaultPath, located.filePath, claim);
+      // Codex-Gegenreview Runde 10 (P1-4): Hier stand ein eigener Read, dessen
+      // Ergebnis als `diff_before` ins Ledger ging — ohne Bindung an die
+      // Fassung, die gleich danach wegwanderte. Beweis und Bewegung kommen
+      // jetzt aus EINEM Read in der Trash-Primitive selbst.
+      const { trashPath: to, frontmatter: onDisk } = await moveToTrashUnderClaim(
+        deps.vaultPath,
+        located.filePath,
+        claim,
+      );
       deps.vault.forgetFile(located.filePath);
       if (superseded_by) {
         try {

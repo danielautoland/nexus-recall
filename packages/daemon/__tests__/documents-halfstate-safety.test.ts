@@ -340,7 +340,7 @@ test("ein Move, der wegen einer externen Änderung scheitert, lässt keinen halb
   const message = (outcome as Error).message;
   assert.match(message, /changed on disk/);
   // Die Meldung darf nur behaupten, was stimmt: der Move STEHT.
-  assert.match(message, /could NOT be undone/);
+  assert.match(message, /could NOT be fully undone/);
   assert.match(message, /new folder/);
 
   // Endzustand gemeinsam: beide Ordner, Bytes, Index.
@@ -361,5 +361,78 @@ test("ein Move, der wegen einer externen Änderung scheitert, lässt keinen halb
     vault.get(doc.id)?.filePath,
     newSidecar,
     "der Index muss dem stehengebliebenen Move folgen, nicht ins Leere zeigen",
+  );
+});
+
+// ── Codex-Gegenreview Runde 10 (P0-3/P0-4) ──────────────────────
+
+test("der Original-Rollback löscht keine externe Fassung", async (t) => {
+  // Nachgestellt: Bastra ersetzt Original V1 durch V2, ein externer Writer
+  // schreibt danach V3, der Sidecar-CAS schlägt korrekt fehl — und der
+  // Rollback löschte V3 und stellte V1 wieder her. Der Sidecar-Schutz
+  // verschob den Datenverlust damit nur auf das Original.
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+  const EXTERN = EXTERNAL_SIDECAR(doc.id);
+
+  const v2 = join(dir, "zweitquelle", "Police.pdf");
+  await mkdir(join(dir, "zweitquelle"), { recursive: true });
+  await writeFile(v2, "REPLACEMENT-V2", "utf8");
+
+  let fired = false;
+  const args = {
+    ...BASE,
+    original_path: v2,
+    overwrite: true,
+    get summary(): string | undefined {
+      if (!fired) {
+        fired = true;
+        // Beides im selben Fenster — die Kopie steht schon, der Sidecar noch
+        // nicht: eine fremde Fassung des ORIGINALS und eine fremde Fassung des
+        // Sidecars, damit der Commit scheitert.
+        writeFileSync(doc.original_path, "POLICE-V3-EXTERN", "utf8");
+        writeFileSync(doc.sidecar_path, EXTERN, "utf8");
+      }
+      return undefined;
+    },
+  };
+
+  const outcome = await saveDocument(vault, args as SaveArgs).then(
+    () => "fulfilled" as const,
+    (err: Error) => err,
+  );
+
+  assert.equal(fired, true, "das Commit-Fenster wurde getroffen");
+  assert.notEqual(outcome, "fulfilled", "ein stiller Erfolg ist der Defekt");
+  assert.equal(
+    await readFile(doc.original_path, "utf8"),
+    "POLICE-V3-EXTERN",
+    "die externe Fassung des Originals darf der Rollback nicht anfassen",
+  );
+  assert.match(
+    (outcome as Error).message,
+    /could not be rolled back/,
+    "und der Halbzustand gehört gemeldet, nicht verschwiegen",
+  );
+});
+
+test("ein Move belegt seine Zielpfade und ersetzt dort nichts", async (t) => {
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+
+  // Eine fremde Datei genau am Zielpfad des Originals.
+  const neu = join(dir, "documents", "neu");
+  await mkdir(neu, { recursive: true });
+  await writeFile(join(neu, "Police.pdf"), "FREMD-UND-WICHTIG", "utf8");
+
+  await assert.rejects(
+    () => moveDocument(vault, { id: doc.id, folder_path: "neu" }),
+    /already exists/,
+  );
+  assert.equal(await readFile(join(neu, "Police.pdf"), "utf8"), "FREMD-UND-WICHTIG");
+  assert.equal(await readFile(doc.original_path, "utf8"), "POLICE-V1", "nichts wurde bewegt");
+  assert.deepEqual(
+    (await readdir(join(dir, "documents", "alt"))).sort(),
+    ["Police.pdf", "Police.pdf.md"],
   );
 });

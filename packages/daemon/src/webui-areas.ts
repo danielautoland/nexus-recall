@@ -18,7 +18,7 @@
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { assertInsideDir, assertInsideVault, assertOwnSubdir, clearAreaMark, isMarkdownFile, isPathSafeComponent, markAreaDeleted, markAreaRenamed, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
+import { assertInsideDir, assertInsideVault, assertOwnSubdir, clearAreaMark, isMarkdownFile, isPathSafeComponent, markAreaDeleted, markAreaRenamed, mutateMemoryFile, readOccupant, slugify, withAreaExclusive } from "@bastra-recall/core";
 import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
@@ -178,6 +178,14 @@ function assertEditable(kind: "project" | "top", name: string): void {
 export async function createArea(vaultRoot: string, rawName: string): Promise<AreaInfo> {
   const name = slugify(rawName);
   assertEditable("project", name);
+  // Codex-Gegenreview Runde 10 (P0-1/P0-2): Area-Operationen liefen ohne jede
+  // gegenseitige Ausschließung — parallel gegeneinander und gegen laufende
+  // Saves. Ab hier gilt für Create, Rename und Delete derselbe EXKLUSIVE
+  // Area-Claim, und der Save hält denselben Namen geteilt.
+  return withAreaExclusive(vaultRoot, [name], () => createAreaLocked(vaultRoot, name));
+}
+
+async function createAreaLocked(vaultRoot: string, name: string): Promise<AreaInfo> {
   const dir = areaPath(vaultRoot, "project", name);
   if (await isDir(dir)) throw new Error(`area already exists: ${name}`);
   await mkdir(dir, { recursive: true });
@@ -499,6 +507,23 @@ export async function renameArea(
   const newName = slugify(rawNewName);
   assertEditable(kind, newName);
   if (newName === name) throw new Error("new name equals the current name");
+  // BEIDE Namen, und `withAreaExclusive` erwirbt sie sortiert. Codex-
+  // Gegenreview Runde 10 (P0-2): Zwölf parallele Versuche `carnexus → ziel-a`
+  // gegen `carnexus → ziel-b` ergaben in 12 von 12 Läufen einen Grabstein, der
+  // auf das Ziel des VERLIERERS zeigte — ein alter Client bekam eine sachlich
+  // falsche Weiterleitung. Der Zielname gehört mit unter den Claim, sonst
+  // könnte ein `createArea(ziel)` mitten in den Umzug laufen.
+  return withAreaExclusive(vaultRoot, [name, newName], () =>
+    renameAreaLocked(vaultRoot, kind, name, newName),
+  );
+}
+
+async function renameAreaLocked(
+  vaultRoot: string,
+  kind: "project" | "top",
+  name: string,
+  newName: string,
+): Promise<RenameResult> {
   const from = areaPath(vaultRoot, kind, name);
   const to = areaPath(vaultRoot, kind, newName);
   if (!(await isDir(from))) throw new Error(`area not found: ${name}`);
@@ -546,7 +571,31 @@ export async function renameArea(
   // einen Top-Namen würde dafür ein gleichnamiges PROJEKT sperren, das mit
   // dem umbenannten Ordner nichts zu tun hat.
   if (kind === "project") await markAreaRenamed(vaultRoot, name, newName);
-  await rename(from, to);
+  try {
+    await rename(from, to);
+  } catch (err) {
+    // Codex-Gegenreview Runde 10 (P1-1): Dieses `rename` lag außerhalb des
+    // Rollback-Blocks. Nachgestellt mit einer Datei am Zielpfad: Der Rename
+    // scheiterte mit ENOTDIR, das alte Regal stand unverändert da — und der
+    // Grabstein behauptete trotzdem „carnexus → neu", also war das Projekt ab
+    // sofort unbeschreibbar. Ein GEWORFENER `rename()` ist unter dem
+    // exklusiven Area-Claim beweisbar folgenlos geblieben (rename ist atomar,
+    // und niemand sonst darf hier gerade arbeiten); das unterscheidet ihn von
+    // einem Absturz, bei dem der Grabstein bewusst stehen bleibt.
+    if (kind === "project") {
+      try {
+        await clearAreaMark(vaultRoot, name);
+      } catch (clearErr) {
+        throw new Error(
+          `rename failed, nothing was moved: ${(err as Error).message}. ` +
+            `AND the tombstone for '${name}' could not be removed ` +
+            `(${(clearErr as Error).message}) — saves into '${name}' will keep failing ` +
+            `until that is fixed.`,
+        );
+      }
+    }
+    throw err;
+  }
   // Und die Gegenrichtung: `a → b` und später `b → a` liefe sonst in den
   // eigenen alten Grabstein — das Regal läge wieder unter `a`, und kein Save
   // dürfte hinein. Ein Rename NIMMT den Zielnamen in Betrieb, genau wie
@@ -767,6 +816,14 @@ export async function deleteArea(
   name: string,
 ): Promise<DeleteResult> {
   assertEditable(kind, name);
+  return withAreaExclusive(vaultRoot, [name], () => deleteAreaLocked(vaultRoot, kind, name));
+}
+
+async function deleteAreaLocked(
+  vaultRoot: string,
+  kind: "project" | "top",
+  name: string,
+): Promise<DeleteResult> {
   const from = areaPath(vaultRoot, kind, name);
   if (!(await isDir(from))) throw new Error(`area not found: ${name}`);
   const trashRoot = join(vaultRoot, ".bastra", "trash", "areas");

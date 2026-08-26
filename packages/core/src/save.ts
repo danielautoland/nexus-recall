@@ -24,7 +24,7 @@ import { withIdClaim, type IdClaim } from "./id-transaction.js";
 import { sameFile } from "./file-identity.js";
 import { resolveMemoryTarget } from "./save-target.js";
 import { moveToTrashUnderClaim } from "./audit-log.js";
-import { assertAreaWritable } from "./area-claim.js";
+import { assertAreaWritable, withAreaShared } from "./area-claim.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
@@ -42,10 +42,19 @@ export async function saveMemory(
   // nicht plötzlich woanders auftaucht. Die verbindliche Frage — gehört die
   // id schon jemandem? — stellt die Transaktion unten, und zwar an die Platte.
   const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input, locator);
-  // Keine `authority` aus dem Aufrufer: Der Scan unter dem Lock ist der einzige
-  // Weg — siehe die Begründung an `SaveMemoryCommitOptions`.
-  return withIdClaim({ vaultRoot, id, filePath, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
-    commitMemory(vaultRoot, input, commit, { id, filePath, scope }, claim),
+  // REIHENFOLGE: Area-Claim VOR ID-Claim, überall im Vault dieselbe.
+  //
+  // Codex-Gegenreview Runde 10 (P0-1): Der Grabstein wurde bisher mitten im
+  // Save gelesen und danach noch geparst, gebaut, geschrieben und umbenannt.
+  // Nachgestellt: Zwischen der Prüfung und dem Publish lief ein kompletter
+  // Area-Rename durch — der Save veröffentlichte trotzdem im alten Regal, und
+  // danach existierten beide. Der SHARED Area-Claim hält den Scope über den
+  // GESAMTEN Publish; er schließt Saves untereinander nicht aus (die ändern das
+  // Regal nicht), nur gegen Create/Rename/Delete.
+  return withAreaShared(vaultRoot, scope, () =>
+    withIdClaim({ vaultRoot, id, filePath, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
+      commitMemory(vaultRoot, input, commit, { id, filePath, scope }, claim),
+    ),
   );
 }
 

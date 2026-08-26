@@ -33,8 +33,15 @@ import { occupantOfRaw } from "./memory-locator.js";
 import { withIdClaim } from "./id-transaction.js";
 
 export type MutateOutcome =
-  /** Geschrieben. */
-  | { kind: "written" }
+  /** Geschrieben — mit dem Frontmatter VOR und NACH diesem Schreibvorgang.
+   *
+   *  Codex-Gegenreview Runde 10 (P1-2): Die Aufrufer bauten ihren Audit-Beleg
+   *  aus dem Vault-CACHE, weil die Mutation nichts zurückgab. Nachgestellt am
+   *  Conflict-Marking: Auf der Platte stand `external-on-disk`, das Audit
+   *  meldete als Vorbild `cache-summary`. Wer schreibt, weiß als Einziger, was
+   *  vorher dastand — also gibt er es zurück. Beide Abbilder sind tief
+   *  kopiert, damit sie kein gray-matter-Cache-Objekt teilen. */
+  | { kind: "written"; before: Record<string, unknown>; after: Record<string, unknown> }
   /** Der Patch hatte nichts zu tun (`frontmatter` gab `null` zurück). Kein
    *  Fehlschlag — die Datei steht schon so da, wie sie soll.
    *
@@ -171,7 +178,11 @@ async function mutateUnderClaim(
       return { kind: "raced" };
     }
     await rename(tmp, filePath);
-    return { kind: "written" };
+    return {
+      kind: "written",
+      before: JSON.parse(JSON.stringify(fmBefore)) as Record<string, unknown>,
+      after: JSON.parse(JSON.stringify(fmAfter)) as Record<string, unknown>,
+    };
   } catch (err) {
     await unlink(tmp).catch(() => {});
     throw err;

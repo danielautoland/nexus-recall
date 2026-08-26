@@ -73,16 +73,32 @@ export async function markConflict(
         `nothing was modified. Retry.`,
     );
   }
+  if (outcome.kind !== "written") {
+    // Kann hier nicht eintreten (dieser Aufruf patcht nur den Body und gibt nie
+    // `null` zurück), aber ein Beleg wird nur aus einem WRITTEN gebildet —
+    // stillschweigend etwas anderes zu protokollieren wäre genau der Fehler,
+    // den P1-2 meint.
+    throw new Error(
+      `conflict_with: '${targetId}' reported '${outcome.kind}' — nothing was modified.`,
+    );
+  }
   await deps.vault.reindexFile(target.filePath);
 
+  // Codex-Gegenreview Runde 10 (P1-2): `diffBefore` kam aus `target.fm`, also
+  // aus dem Vault-CACHE, und `diffAfter` aus einem Cache-Lookup nach dem
+  // Reindex. Nachgestellt: Auf der Platte stand `external-on-disk`, das Audit
+  // meldete vorher `cache-summary` — ein Beleg, der eine Fassung beschreibt,
+  // die dieser Schreibvorgang nie gesehen hat. Beide Abbilder kommen jetzt aus
+  // der Mutation selbst, gelesen unter demselben Claim aus denselben Bytes,
+  // die überschrieben wurden.
   await recordAudit({
     vaultRoot: deps.vaultPath,
     memoryId: targetId,
     operation: "update",
     actor: "assistant",
     actorDetail: "mcp:save_memory:conflict",
-    diffBefore: { ...target.fm },
-    diffAfter: { ...(deps.vault.get(targetId)?.fm ?? {}) },
+    diffBefore: outcome.before,
+    diffAfter: outcome.after,
     filePath: target.filePath,
     reason: `conflict marked: incoming save '${input.title}' contradicts this memory`,
     sessionId: deps.telemetry.runId(),

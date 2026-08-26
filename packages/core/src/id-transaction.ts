@@ -38,8 +38,8 @@ import {
 /**
  * Wer beantwortet unter dem Lock die Frage „wo lebt diese id?".
  *
- * In der Produktion IMMER der Plattenscan. Die Schnittstelle bleibt für Tests
- * einsetzbar, hat aber keinen produktiven Sonderfall mehr:
+ * IMMER der Plattenscan — seit Codex-Gegenreview Runde 10 gibt es keinen Weg
+ * mehr, ihn von außen zu ersetzen (siehe `withIdClaim`):
  *
  * Codex-Gegenreview (P0): Der Bulk-Import setzte hier einen Vault-Snapshot
  * ein, weil ein Scan je Datei quadratisch ist. Prozesssicher war das nicht —
@@ -112,7 +112,20 @@ export function diskAuthority(vaultRoot: string, op = "unknown"): IdAuthority {
   };
 }
 
+/**
+ * Die Marke, die einen ECHTEN Claim von einem nachgebauten unterscheidet.
+ *
+ * Codex-Gegenreview Runde 10 (Security): `IdClaim` war rein strukturell —
+ * `{ id, locate }` genügte. Zusammen mit den öffentlich exportierten
+ * Trash-Primitiven stimmte die Zusage „wer den Claim hat, hält den passenden
+ * Lock" damit nicht als API-Garantie: Jeder Aufrufer konnte sich einen bauen.
+ * Das Symbol wird NICHT exportiert; ein Claim entsteht nur in `withIdClaim`.
+ */
+const ID_CLAIM: unique symbol = Symbol("bastra.idClaim");
+
 export interface IdClaim {
+  /** @internal — nur `withIdClaim` setzt das. */
+  readonly [ID_CLAIM]: true;
   readonly id: string;
   /**
    * Wo lebt diese id — verbindlich, unter dem Lock erhoben.
@@ -131,8 +144,6 @@ export interface IdClaimOptions {
   /** Der Pfad, um den es geht. Nur für die Fehlermeldung und die
    *  Containment-Prüfung; der Lock kennt ihn nicht. */
   filePath: string;
-  /** Siehe {@link IdAuthority}. Ohne Angabe: Plattenscan. */
-  authority?: IdAuthority;
   /** Welcher Writer hier schreibt (`save_memory`, `save_document`, `archive`,
    *  …). Geht in die Scan-Messung ein; siehe {@link IdScanObservation}. */
   op?: string;
@@ -175,9 +186,15 @@ export async function withIdClaim<T>(
   assertInsideDir(locksDir, lockPath, "lock", "the locks folder");
   await mkdir(dirname(lockPath), { recursive: true });
   const token = await acquireCommitClaim(lockPath, opts.id, opts.filePath);
-  const authority = opts.authority ?? diskAuthority(opts.vaultRoot, opts.op);
+  // Kein injizierbares `authority` mehr. Codex-Gegenreview Runde 10
+  // (Security): Solange `IdClaimOptions` eine austauschbare Auskunft führte,
+  // konnte ein Aufrufer den autoritativen Plattenscan durch eine beliebige
+  // Antwort ersetzen — die Invariante „unter dem Lock entscheidet die Platte"
+  // galt dann nur für die internen Aufrufstellen, nicht für die API.
+  const authority = diskAuthority(opts.vaultRoot, opts.op);
   try {
     return await fn({
+      [ID_CLAIM]: true,
       id: opts.id,
       locate: () => authority.locate(opts.id),
     });

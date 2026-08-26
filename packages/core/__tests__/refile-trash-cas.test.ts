@@ -31,7 +31,7 @@ import {
   type SaveMemoryInput,
 } from "../src/index.js";
 import { moveToTrashUnderClaim } from "../src/audit-log.js";
-import type { IdClaim } from "../src/id-transaction.js";
+import { withIdClaim } from "../src/id-transaction.js";
 
 const ID = "umzug";
 
@@ -119,7 +119,11 @@ test("ohne Dazwischenschreiben zieht ein Re-File weiterhin ganz um", async (t) =
 
 // ─── Befund 2 ────────────────────────────────────────────────────
 
-const claimFor = (id: string): IdClaim => ({ id, locate: async () => ({ kind: "none" }) });
+/** Ein Memory-File mit genau der id, die der Claim trägt — seit
+ *  Codex-Gegenreview Runde 10 (P0-5) prüft die Trash-Primitive diese Bindung
+ *  selbst, und ein nackter Marker-String ist kein Memory. */
+const mem = (id: string, marker: string) => `---\nid: ${id}\ntype: lesson\n---\n\n${marker}\n`;
+const bodyOf = (raw: string) => raw.split("---\n")[2]?.trim() ?? "";
 
 test("zwei parallele Trash-Bewegungen derselben id verlieren keine Fassung", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "bastra-trash-par-"));
@@ -127,13 +131,18 @@ test("zwei parallele Trash-Bewegungen derselben id verlieren keine Fassung", asy
 
   const a = join(root, "a.md");
   const b = join(root, "b.md");
-  await writeFile(a, "INHALT-A", "utf8");
-  await writeFile(b, "INHALT-B", "utf8");
+  await writeFile(a, mem("victim", "INHALT-A"), "utf8");
+  await writeFile(b, mem("victim", "INHALT-B"), "utf8");
 
-  const settled = await Promise.allSettled([
-    moveToTrashUnderClaim(root, a, claimFor("victim")),
-    moveToTrashUnderClaim(root, b, claimFor("victim")),
-  ]);
+  // EIN echter Claim, zwei gleichzeitige Bewegungen darunter: Genau das ist
+  // die Frage dieses Tests — belegt die Zielpfadwahl atomar? Ein nachgebauter
+  // Claim geht seit der Nominalisierung nicht mehr.
+  const settled = await withIdClaim({ vaultRoot: root, id: "victim", filePath: a }, (claim) =>
+    Promise.allSettled([
+      moveToTrashUnderClaim(root, a, claim),
+      moveToTrashUnderClaim(root, b, claim),
+    ]),
+  );
   assert.deepEqual(
     settled.map((s) => s.status),
     ["fulfilled", "fulfilled"],
@@ -143,7 +152,7 @@ test("zwei parallele Trash-Bewegungen derselben id verlieren keine Fassung", asy
   const names = (await readdir(trashDir)).sort();
   assert.equal(names.length, 2, `beide Fassungen müssen im Trash liegen, gefunden: ${names}`);
   const contents = (
-    await Promise.all(names.map((n) => readFile(join(trashDir, n), "utf8")))
+    await Promise.all(names.map(async (n) => bodyOf(await readFile(join(trashDir, n), "utf8"))))
   ).sort();
   assert.deepEqual(contents, ["INHALT-A", "INHALT-B"]);
 });
@@ -153,13 +162,40 @@ test("moveToTrashUnderClaim bewegt nichts, wenn die Datei nicht mehr die erwarte
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const file = join(root, "m.md");
-  await writeFile(file, "NEU", "utf8");
+  const neu = mem("m", "NEU");
+  await writeFile(file, neu, "utf8");
 
   await assert.rejects(
-    () => moveToTrashUnderClaim(root, file, claimFor("m"), "ALT"),
+    () =>
+      withIdClaim({ vaultRoot: root, id: "m", filePath: file }, (claim) =>
+        moveToTrashUnderClaim(root, file, claim, "ALT"),
+      ),
     (err: Error & { code?: string }) => err.code === MEMORY_WRITE_CONFLICT,
   );
-  assert.equal(await readFile(file, "utf8"), "NEU", "die Datei bleibt, wo sie ist");
+  assert.equal(await readFile(file, "utf8"), neu, "die Datei bleibt, wo sie ist");
+  assert.equal(existsSync(join(root, ".bastra", "trash")), false);
+});
+
+test("ein Claim beweist keinen Besitz an einem beliebigen Pfad", async (t) => {
+  // Codex-Gegenreview Runde 10 (P0-5): Mit einem echten Claim für A und dem
+  // PFAD von B verschwand B aus dem Bestand und landete unter `a.md` im Trash,
+  // während A aktiv blieb.
+  const root = await mkdtemp(join(tmpdir(), "bastra-claim-bind-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const a = join(root, "a.md");
+  const b = join(root, "b.md");
+  await writeFile(a, mem("a", "MEMORY-A"), "utf8");
+  await writeFile(b, mem("b", "MEMORY-B"), "utf8");
+
+  await assert.rejects(
+    () =>
+      withIdClaim({ vaultRoot: root, id: "a", filePath: a }, (claim) =>
+        moveToTrashUnderClaim(root, b, claim),
+      ),
+    /does not hold memory 'a'/,
+  );
+  assert.ok(existsSync(b), "B bleibt im Bestand");
   assert.equal(existsSync(join(root, ".bastra", "trash")), false);
 });
 

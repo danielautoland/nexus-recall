@@ -13,7 +13,7 @@ import { assertInsideVault, sameFile } from "./file-identity.js";
 import type { Located, MemoryLocator } from "./memory-locator.js";
 import { access, readFile, rename } from "node:fs/promises";
 import matter from "gray-matter";
-import { readOccupant } from "./memory-locator.js";
+import { occupantOfRaw, readOccupant } from "./memory-locator.js";
 import { withIdClaim, type IdClaim } from "./id-transaction.js";
 
 /**
@@ -43,7 +43,7 @@ export async function auditedSave(args: {
   vaultRoot: string;
   input: SaveMemoryInput;
   context: AuditContext;
-}): Promise<{ result: SaveMemoryResult; audit: AuditEntry }> {
+}): Promise<{ result: SaveMemoryResult; audit: AuditEntry | null; audit_warning?: string }> {
   const { vault, auditLog, vaultRoot, input, context } = args;
 
   if (context.actor === "assistant" && !context.reason?.trim()) {
@@ -81,7 +81,7 @@ export async function auditedSave(args: {
   // ein Writer nach der Freigabe des Claims dort hingeschrieben hat.
   const diffAfter = result.audit_after;
 
-  const audit = await auditLog.record({
+  const recorded = await recordOrWarn(auditLog, {
     memory_id: result.id,
     actor: context.actor,
     actor_detail: context.actor_detail,
@@ -95,7 +95,7 @@ export async function auditedSave(args: {
     session_id: context.session_id,
   });
 
-  return { result, audit };
+  return { result, ...recorded };
 }
 
 /**
@@ -114,7 +114,7 @@ export async function auditedSoftDelete(args: {
   vaultRoot: string;
   memoryID: string;
   context: AuditContext;
-}): Promise<{ id: string; trashPath: string; audit: AuditEntry }> {
+}): Promise<{ id: string; trashPath: string; audit: AuditEntry | null; audit_warning?: string }> {
   const { vault, auditLog, vaultRoot, memoryID, context } = args;
 
   const memory = vault.get(memoryID);
@@ -146,17 +146,13 @@ export async function auditedSoftDelete(args: {
               `fix that first, deleting now would move the wrong file.`,
         );
       }
-      // Codex-Gegenreview (P1): Das Vorbild kam weiter aus dem Cache, obwohl
-      // die Lokalisierung daneben schon autoritativ war. Nachgestellt: Ein
-      // geladenes Memory wurde extern geändert und danach gelöscht — im Trash
-      // lag die NEUE Fassung, im Audit stand die ALTE. Gelesen wird deshalb
-      // die Datei, die gleich in den Trash wandert, unter demselben Claim.
-      //
-      // Fällt das Lesen aus (die Datei verschwand zwischen Scan und Read, oder
-      // der Mount hakt), bleibt der Cache-Stand als schwächere Auskunft besser
-      // als gar keine — die volle Wahrheit liegt dann ohnehin in der
-      // Trash-Kopie, die `moveToTrashUnderClaim` gleich anlegt.
-      const onDisk = await readFrontmatter(located.filePath);
+      // Codex-Gegenreview Runde 10 (P1-4): Hier stand ein EIGENER Read, dessen
+      // Ergebnis danach als `diff_before` ins Ledger ging — ohne jede Bindung
+      // an die Fassung, die `moveToTrashUnderClaim` gleich verschob. Zwischen
+      // beiden konnte eine externe Änderung eintreffen: verschoben wurde die
+      // neue Fassung, protokolliert die alte. Das Vorbild kommt deshalb aus der
+      // Trash-Primitive selbst, gelesen aus genau den Bytes, die gewandert
+      // sind.
       return commitSoftDelete({
         vault,
         auditLog,
@@ -164,7 +160,6 @@ export async function auditedSoftDelete(args: {
         memoryID,
         claim,
         originalPath: located.filePath,
-        diffBefore: onDisk ?? cloneFrontmatter(memory.fm),
         context,
       });
     },
@@ -182,11 +177,14 @@ async function commitSoftDelete(a: {
    *  nimmt ihn entgegen, damit niemand ohne Transaktion trashen kann. */
   claim: IdClaim;
   originalPath: string;
-  diffBefore: Record<string, unknown>;
   context: AuditContext;
-}): Promise<{ id: string; trashPath: string; audit: AuditEntry }> {
-  const { vault, auditLog, vaultRoot, memoryID, claim, originalPath, diffBefore, context } = a;
-  const trashPath = await moveToTrashUnderClaim(vaultRoot, originalPath, claim);
+}): Promise<{ id: string; trashPath: string; audit: AuditEntry | null; audit_warning?: string }> {
+  const { vault, auditLog, vaultRoot, memoryID, claim, originalPath, context } = a;
+  const { trashPath, frontmatter: diffBefore } = await moveToTrashUnderClaim(
+    vaultRoot,
+    originalPath,
+    claim,
+  );
   // Codex-Befund 5: Die Datei war weg, der Index-Eintrag blieb. Auf einem
   // Cloud-Mount pollt der Watcher (Intervall 1500ms) und bekommt den unlink
   // eines Provider-Mounts oft überhaupt nicht mit — bis zum nächsten Reconcile
@@ -195,7 +193,7 @@ async function commitSoftDelete(a: {
   // Eviction gehört deshalb hierher, in die Mutation selbst.
   vault.forgetFile(originalPath);
 
-  const audit = await auditLog.record({
+  const recorded = await recordOrWarn(auditLog, {
     memory_id: memoryID,
     actor: context.actor,
     actor_detail: context.actor_detail,
@@ -207,7 +205,7 @@ async function commitSoftDelete(a: {
     session_id: context.session_id,
   });
 
-  return { id: memoryID, trashPath, audit };
+  return { id: memoryID, trashPath, ...recorded };
 }
 
 /**
@@ -232,7 +230,7 @@ export async function auditedRestore(args: {
    *  Datei an. Ein optionaler Sicherheitsgurt ist kein Sicherheitsgurt. */
   vault?: Vault;
   context: AuditContext;
-}): Promise<{ id: string; restoredTo: string; audit: AuditEntry }> {
+}): Promise<{ id: string; restoredTo: string; audit: AuditEntry | null; audit_warning?: string }> {
   const { auditLog, vaultRoot, memoryID, destFilePath, context } = args;
 
   const lastDelete = await auditLog.lastDeleteFor(memoryID);
@@ -308,7 +306,7 @@ async function publishRestore(a: {
   dest: string;
   lastDelete: AuditEntry;
   context: AuditContext;
-}): Promise<{ id: string; restoredTo: string; audit: AuditEntry }> {
+}): Promise<{ id: string; restoredTo: string; audit: AuditEntry | null; audit_warning?: string }> {
   const { auditLog, vaultRoot, memoryID, claim, trashFile, dest, lastDelete, context } = a;
   await restoreFromTrashUnderClaim(vaultRoot, trashFile, dest, claim);
 
@@ -316,7 +314,15 @@ async function publishRestore(a: {
   // geprüft. Ein von Hand angefasster oder per Sync-Konflikt ersetzter
   // Trash-Stand landete damit unter fremdem Namen am Originalpfad — und der
   // Reindex direkt danach hätte ihn als diese Memory in den Index gehoben.
-  const occupant = readOccupant(dest);
+  // EIN Read für Identitätsprüfung UND Audit-Nachbild. Codex-Gegenreview
+  // Runde 10 (P1-2): `diff_after` kam aus `lastDelete.diff_before`, also aus
+  // dem Zustand VOR dem Löschen. Wurde die Trash-Fassung dazwischen verändert
+  // (von Hand, per Sync-Konflikt, durch den Archiv-Stempel), protokollierte
+  // das Audit eine Fassung, die so nie wiederhergestellt wurde —
+  // nachgestellt: tatsächlich `externally-edited-trash`, im Ledger
+  // `original-summary`. Ein Beleg beschreibt, was auf der Platte steht.
+  const restoredRaw = await readFile(dest, "utf8").catch(() => null);
+  const occupant = restoredRaw === null ? readOccupant(dest) : occupantOfRaw(restoredRaw, dest);
   if (occupant.kind !== "memory" || occupant.id !== memoryID) {
     // Zurückrollen, statt die falsche Datei im Vault liegen zu lassen.
     await rename(dest, trashFile).catch(() => {});
@@ -327,47 +333,66 @@ async function publishRestore(a: {
     );
   }
 
-  const audit = await auditLog.record({
+  const recorded = await recordOrWarn(auditLog, {
     memory_id: memoryID,
     actor: context.actor,
     actor_detail: context.actor_detail,
     operation: "restore",
     diff_before: null,
-    diff_after: lastDelete.diff_before,
+    // Fällt der Read aus, ist der Stand aus dem Delete-Eintrag die schwächere,
+    // aber einzige verfügbare Auskunft — dann steht er ausdrücklich als
+    // degradierter Beleg im Ledger, nicht als exaktes Nachbild.
+    diff_after:
+      restoredRaw !== null
+        ? cloneFrontmatter(matter(restoredRaw).data)
+        : { ...(lastDelete.diff_before ?? {}), evidence_quality: "degraded" },
     file_path: dest,
     reason: context.reason,
     session_id: context.session_id,
   });
 
-  return { id: memoryID, restoredTo: dest, audit };
+  return { id: memoryID, restoredTo: dest, ...recorded };
 }
 
 // ─── helpers ────────────────────────────────────────────────────
 
-function cloneFrontmatter(fm: unknown): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(fm)) as Record<string, unknown>;
+/**
+ * Den Audit-Eintrag anhängen — und ihn NIE die bereits committete Mutation
+ * zurückweisen lassen.
+ *
+ * Codex-Gegenreview Runde 10 (P1-3): Das Append steht nach dem dauerhaften
+ * Save, dem Trash-Move und dem Restore. Nachgestellt: `auditedSave` warf
+ * `AUDIT-IO-FAIL`, während die Memory-Datei vollständig auf der Platte lag —
+ * ein Aufrufer, der auf den Fehler hin wiederholt, wiederholt eine Mutation,
+ * die schon stattgefunden hat. Die Mutation gilt deshalb als gelungen, und der
+ * fehlende Beleg wird als `audit_warning` gemeldet.
+ *
+ * Was das NICHT ist: eine Garantie, dass jede Mutation einen Beleg bekommt.
+ * Dafür bräuchte es einen Write-ahead-Eintrag VOR dem Commit (Outbox/Journal),
+ * der nach dem Commit quittiert wird. Bis dahin ist die ehrliche Aussage
+ * „committed, aber unprotokolliert" besser als ein Fehler, der zum
+ * Doppelschreiben einlädt.
+ */
+async function recordOrWarn(
+  auditLog: AuditLog,
+  entry: Parameters<AuditLog["record"]>[0],
+): Promise<{ audit: AuditEntry | null; audit_warning?: string }> {
+  try {
+    return { audit: await auditLog.record(entry) };
+  } catch (err) {
+    return {
+      audit: null,
+      audit_warning:
+        `the ${entry.operation} was committed, but the audit entry could not be written ` +
+        `(${(err as Error).message}) — do NOT retry the operation; it already happened.`,
+    };
+  }
 }
 
-/**
- * Frontmatter einer Datei als Audit-Beweis — TIEF kopiert.
- *
- * Codex-Gegenreview (P1): Hier wurde `matter(raw).data` direkt herausgereicht.
- * gray-matter cached `matter(content)` je Input-String, das Objekt gehört also
- * allen Parsern desselben Inhalts gemeinsam — und es wurde hier über mehrere
- * `await`s gehalten, bis es im Ledger landete. Der Reviewer konnte ein bereits
- * gebildetes `diff_before` NACHTRÄGLICH verändern, indem ein zweiter Parser
- * denselben Cache-Eintrag mutierte. Dieselbe Falle wie in
- * related-enrich.ts:230 und memory-mutate.ts:153.
- */
-async function readFrontmatter(
-  filePath: string,
-): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return cloneFrontmatter(matter(raw).data);
-  } catch {
-    return null;
-  }
+
+
+function cloneFrontmatter(fm: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(fm)) as Record<string, unknown>;
 }
 
 async function fileExists(p: string): Promise<boolean> {

@@ -25,6 +25,7 @@ import {
   access,
   link,
 } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
@@ -847,7 +848,9 @@ async function commitDocument(
   // Beim Overwrite wandert die alte Originaldatei in ein Backup neben dem Ziel,
   // ein NEU entstandenes Original wird im Fehlerfall wieder entfernt. Preis:
   // eine zusätzliche temporäre Datei und ein rename mehr.
-  let rollbackOriginal: (() => Promise<void>) | undefined;
+  // Gibt `null` zurück, wenn wirklich alles zurückgenommen wurde — sonst den
+  // pfadgenauen Text, der dem Aufrufer sagt, was liegen blieb.
+  let rollbackOriginal: (() => Promise<string | null>) | undefined;
   let commitOriginal: (() => Promise<void>) | undefined;
   if (!args.linked_file) {
     // #240/A5.1: Same-File-Erkennung. Liegt die Quelle bereits exakt am Ziel
@@ -877,14 +880,55 @@ async function commitDocument(
         if (hadOriginal) await rename(backupDest, originalDest).catch(() => {});
         throw err;
       }
-      rollbackOriginal = hadOriginal
-        ? async () => {
-            await unlink(originalDest).catch(() => {});
-            await rename(backupDest, originalDest).catch(() => {});
+      // Codex-Gegenreview Runde 10 (P0-3): Der Rollback entfernte das aktuelle
+      // Original BLIND und spielte das Backup blind zurück, Fehler inklusive
+      // `.catch(() => {})` verschluckt. Nachgestellt: Bastra ersetzt V1 durch
+      // V2, ein externer Writer schreibt V3, der Sidecar-CAS schlägt korrekt
+      // fehl — und der Rollback löschte V3 und stellte V1 wieder her. Der
+      // Sidecar-Schutz verschob den Datenverlust damit nur auf das Original.
+      //
+      // Also: nur zurücknehmen, was nachweislich noch UNSERE Fassung ist.
+      // Verglichen wird die Datei-Identität direkt nach dem Publish
+      // (dev+ino fangen ein Ersetzen, size+mtime eine Änderung am selben
+      // Inode). Weicht etwas ab, bleibt die fremde Datei stehen, das Backup
+      // bleibt liegen, und der Halbzustand wird ehrlich gemeldet.
+      const published = await stat(originalDest).catch(() => null);
+      const stillOurs = async (): Promise<boolean> => {
+        const now = await stat(originalDest).catch(() => null);
+        return (
+          published !== null &&
+          now !== null &&
+          now.dev === published.dev &&
+          now.ino === published.ino &&
+          now.size === published.size &&
+          now.mtimeMs === published.mtimeMs
+        );
+      };
+      rollbackOriginal = async (): Promise<string | null> => {
+        if (!(await stillOurs())) {
+          return (
+            `${originalDest} was changed by someone else after this write — it was left ` +
+            `untouched` +
+            (hadOriginal ? `, and the previous version is still at ${backupDest}.` : `.`)
+          );
+        }
+        try {
+          await unlink(originalDest);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+            return `${originalDest} could not be removed (${(e as Error).message})` +
+              (hadOriginal ? `; the previous version is still at ${backupDest}.` : `.`);
           }
-        : async () => {
-            await unlink(originalDest).catch(() => {});
-          };
+        }
+        if (!hadOriginal) return null;
+        try {
+          await rename(backupDest, originalDest);
+        } catch (e) {
+          return `the previous version of ${originalDest} could not be put back ` +
+            `(${(e as Error).message}) — it is still at ${backupDest}.`;
+        }
+        return null;
+      };
       commitOriginal = hadOriginal
         ? async () => {
             await unlink(backupDest).catch(() => {});
@@ -966,8 +1010,13 @@ async function commitDocument(
   } catch (err) {
     // Der Sidecar-Commit ist gescheitert — also darf auch die Kopie nicht
     // stehenbleiben. Erst damit stimmt, was `publishSidecar` dem Aufrufer
-    // meldet: dass hier nichts geschrieben wurde.
-    await rollbackOriginal?.();
+    // meldet: dass hier nichts geschrieben wurde. Konnte der Rollback das
+    // nicht vollständig, sagt die Meldung es pfadgenau, statt „nichts
+    // geschrieben" zu behaupten.
+    const stuck = (await rollbackOriginal?.()) ?? null;
+    if (stuck !== null) {
+      throw new Error(`${(err as Error).message} — AND the original could not be rolled back: ${stuck}`);
+    }
     throw err;
   }
   // Ab hier ist der Vorgang unumkehrbar geglückt: das Backup der alten
@@ -1161,19 +1210,19 @@ async function abortMove(
   expectedSidecar: string | undefined,
   err: unknown,
 ): Promise<never> {
-  const rolledBack = await moved.rollback(expectedSidecar).catch(() => false);
-  if (rolledBack) throw err;
+  const undone = await moved
+    .rollback(expectedSidecar)
+    .catch((e: unknown) => ({ ok: false, detail: (e as Error).message }) as MoveRollbackResult);
+  if (undone.ok) throw err;
   if (moved.newSidecarPath !== oldSidecarPath) {
     vault.forgetFile(oldSidecarPath);
     await vault.reindexFile(moved.newSidecarPath).catch(() => {});
   }
   throw new Error(
     `${(err as Error)?.message ?? String(err)}\n\n` +
-      `Careful: the files had already been moved to ${moved.newSidecarPath} and the ` +
-      `move could NOT be undone — something outside Bastra wrote to that path in ` +
-      `the meantime, and rolling back would have dragged that edit along. The files ` +
-      `now sit in the new folder while the sidecar frontmatter still names the old ` +
-      `one. Read the document again (read_document) and redo the move.`,
+      `Careful: the files had already been moved and the move could NOT be fully undone: ` +
+      `${undone.detail ?? "reason unknown"}. The sidecar frontmatter may still name the old ` +
+      `folder. Read the document again (read_document) and redo the move.`,
   );
 }
 
@@ -1321,11 +1370,68 @@ interface MovedDocumentFiles {
    * Der Vergleich ist kein Luxus: Scheitert der Commit gerade deshalb, weil
    * jemand von außen an den neuen Pfad geschrieben hat, würde ein blindes
    * Zurückbenennen genau diese fremde Bearbeitung mitschleifen — der Fix wäre
-   * derselbe Datenverlust in grün. Weicht der Stand ab, bleibt alles am neuen
-   * Ort liegen und die Funktion meldet `false`; der Aufrufer zieht dann den
-   * Index nach, statt zu behaupten, es sei nichts passiert.
+   * derselbe Datenverlust in grün.
+   *
+   * Codex-Gegenreview Runde 10 (P0-4): Verglichen wurde NUR der neue Sidecar.
+   * Zwei Reproduktionen:
+   *   A) Eine extern am ALTEN Originalpfad entstandene Datei wurde vom
+   *      zurückgerollten Bastra-Original ersetzt und ging verloren — `rename`
+   *      überschreibt.
+   *   B) Der Original-Rollback scheiterte, sein Fehler wurde verschluckt, und
+   *      `rollback()` meldete trotzdem `true`: Sidecar wieder im alten Ordner,
+   *      Original weiterhin im neuen, Index auf dem alten Sidecar.
+   * Deshalb ein Ergebnis PRO DATEI: `ok` nur, wenn Original UND Sidecar
+   * verifiziert wieder am alten Ort liegen; sonst sagt `detail` pfadgenau, was
+   * wo liegt.
    */
-  rollback(expectedSidecar?: string | null): Promise<boolean>;
+  rollback(expectedSidecar?: string | null): Promise<MoveRollbackResult>;
+}
+
+export interface MoveRollbackResult {
+  /** Der Zustand von vor dem Move ist vollständig wiederhergestellt. */
+  ok: boolean;
+  /** Was NICHT zurückgenommen werden konnte — pfadgenau. */
+  detail?: string;
+}
+
+/**
+ * Eine Datei bewegen, ohne am Ziel etwas zu ersetzen.
+ *
+ * Codex-Gegenreview Runde 10 (P0-4): Die Zielprüfungen waren `pathExists` plus
+ * ein späteres `rename` — ein zwischenzeitlich entstandenes Ziel wurde damit
+ * still überschrieben, auf dem Hinweg wie auf dem Rückweg. `link()` schlägt
+ * atomar mit EEXIST fehl; dasselbe Muster wie im Trash und im Save-Pfad.
+ * Original und Sidecar liegen beide unter dem Dokumenten-Regal, also auf
+ * einem Dateisystem — ein Hardlink ist dort immer möglich.
+ */
+async function moveExclusive(src: string, dest: string): Promise<void> {
+  try {
+    await link(src, dest);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+      throw new Error(`target already exists: ${dest}`);
+    }
+    throw err;
+  }
+  try {
+    await unlink(src);
+  } catch (err) {
+    // Sonst existierten BEIDE Links — dieselbe Regel wie beim Trash.
+    await unlink(dest).catch(() => {});
+    throw err;
+  }
+}
+
+/** Ist an diesem Pfad noch exakt die Datei, die wir dort hingelegt haben? */
+function sameFileStat(a: Stats | null, b: Stats | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs
+  );
 }
 
 async function moveDocumentFiles(
@@ -1366,41 +1472,110 @@ async function moveDocumentFiles(
     throw new Error(`target sidecar already exists: ${newSidecarPath}`);
   }
 
-  if (movesOriginal) await rename(args.originalPath, newOriginalPath);
+  if (movesOriginal) await moveExclusive(args.originalPath, newOriginalPath);
   if (movesSidecar) {
     try {
-      await rename(args.sidecarPath, newSidecarPath);
+      await moveExclusive(args.sidecarPath, newSidecarPath);
     } catch (err) {
       // Der Sidecar-Move ist der zweite Schritt: schlägt er fehl (ENOSPC,
       // EACCES, Cloud-Mount-Stall), das Original zurückrollen, damit kein
-      // Split-State zurückbleibt.
+      // Split-State zurückbleibt. Scheitert AUCH das, wird es gesagt — vorher
+      // verschluckte ein `.catch(() => {})` genau diesen Fall.
       if (movesOriginal) {
-        await rename(newOriginalPath, args.originalPath).catch(() => {});
+        try {
+          await moveExclusive(newOriginalPath, args.originalPath);
+        } catch (undoErr) {
+          throw new Error(
+            `${(err as Error).message} — AND the original could not be moved back: ` +
+              `it is at ${newOriginalPath} instead of ${args.originalPath} ` +
+              `(${(undoErr as Error).message}).`,
+          );
+        }
       }
       throw err;
     }
   }
 
+  // Die Identität direkt nach dem Move: Wer später zurückrollt, muss beweisen
+  // können, dass am neuen Pfad noch UNSERE Datei liegt.
+  const publishedOriginal = movesOriginal ? await stat(newOriginalPath).catch(() => null) : null;
+
   // Der Stand direkt nach dem Move — die Erwartung für einen Rollback, dessen
   // Aufrufer gar nicht mehr zum Lesen gekommen ist (ein Fehler zwischen Move
   // und Sidecar-Read). Ein Read auf eine kleine Datei; ohne ihn müsste ein
   // solcher Fehlschlag den Halbzustand stehen lassen.
-  const movedBytes = movesSidecar ? await readTargetRaw(newSidecarPath) : null;
+  let movedBytes: string | null = null;
+  if (movesSidecar) {
+    try {
+      movedBytes = await readTargetRaw(newSidecarPath);
+    } catch (err) {
+      // Codex-Gegenreview Runde 10 (P0-4): Schlug dieser Read fehl, war
+      // bereits verschoben — der Caller bekam aber nie eine Rollback-Funktion
+      // und blieb auf dem Halbzustand sitzen. Also hier selbst zurücknehmen.
+      const undo: string[] = [];
+      try {
+        await moveExclusive(newSidecarPath, args.sidecarPath);
+      } catch (e) {
+        undo.push(`${newSidecarPath} (should be ${args.sidecarPath}): ${(e as Error).message}`);
+      }
+      if (movesOriginal) {
+        try {
+          await moveExclusive(newOriginalPath, args.originalPath);
+        } catch (e) {
+          undo.push(`${newOriginalPath} (should be ${args.originalPath}): ${(e as Error).message}`);
+        }
+      }
+      throw new Error(
+        `the moved sidecar could not be read back (${(err as Error).message})` +
+          (undo.length > 0
+            ? ` AND the move could not be undone. Fix by hand: ${undo.join("; ")}.`
+            : ` — the move was undone, nothing was changed.`),
+      );
+    }
+  }
 
   const rollback = async (
     expectedSidecar: string | null = movedBytes,
-  ): Promise<boolean> => {
+  ): Promise<MoveRollbackResult> => {
+    const problems: string[] = [];
     if (movesSidecar) {
       // Nur zurückrollen, was auch noch unser Sidecar ist — sonst schleift der
       // Rollback eine fremde Bearbeitung an den alten Pfad.
-      const current = await readTargetRaw(newSidecarPath);
-      if (current !== expectedSidecar) return false;
-      await rename(newSidecarPath, args.sidecarPath);
+      const current = await readTargetRaw(newSidecarPath).catch(() => undefined);
+      if (current !== expectedSidecar) {
+        return {
+          ok: false,
+          detail:
+            `${newSidecarPath} was written by someone else after the move — nothing was ` +
+            `rolled back, both files stay in the new folder.`,
+        };
+      }
+      try {
+        await moveExclusive(newSidecarPath, args.sidecarPath);
+      } catch (e) {
+        problems.push(
+          `${newSidecarPath} could not go back to ${args.sidecarPath} (${(e as Error).message})`,
+        );
+      }
     }
     if (movesOriginal) {
-      await rename(newOriginalPath, args.originalPath).catch(() => {});
+      // Dieselbe Frage fürs Original — sie fehlte ganz, und deshalb ersetzte
+      // der Rollback eine extern am alten Pfad entstandene Datei.
+      if (!sameFileStat(publishedOriginal, await stat(newOriginalPath).catch(() => null))) {
+        problems.push(
+          `${newOriginalPath} was changed by someone else after the move — it was left there`,
+        );
+      } else {
+        try {
+          await moveExclusive(newOriginalPath, args.originalPath);
+        } catch (e) {
+          problems.push(
+            `${newOriginalPath} could not go back to ${args.originalPath} (${(e as Error).message})`,
+          );
+        }
+      }
     }
-    return true;
+    return problems.length > 0 ? { ok: false, detail: problems.join("; ") } : { ok: true };
   };
 
   return { newSidecarPath, newOriginalPath, rollback };

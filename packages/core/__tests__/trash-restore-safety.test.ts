@@ -19,25 +19,45 @@ import {
   trashPathFor,
   latestTrashPathFor,
 } from "../src/audit-log.js";
-import type { IdClaim } from "../src/id-transaction.js";
+import { withIdClaim } from "../src/id-transaction.js";
 
 /**
- * Die Trash-Primitiven verlangen seit der Codex-Gegenreview einen `IdClaim` —
- * die id kommt aus ihm, und wer ihn hat, hält den Lock. Diese Tests prüfen die
- * Pfad- und Rename-Mechanik, nicht die Transaktion; ein Stellvertreter-Claim
- * reicht dafür.
+ * Die Trash-Primitiven verlangen einen `IdClaim`, und der ist seit der
+ * Codex-Gegenreview Runde 10 NOMINAL: Ein Stellvertreter aus dem Testcode lässt
+ * sich nicht mehr bauen, weil genau das die Zusage „wer den Claim hat, hält den
+ * Lock" als API-Garantie aushebelte. Diese Tests nehmen deshalb echte Claims.
+ *
+ * Und die Datei muss das Memory des Claims halten (P0-5) — ein Marker-String
+ * ohne Frontmatter ist kein Memory mehr, also tragen die Fixtures echtes
+ * Frontmatter und der Marker steht im Body.
  */
-const claimFor = (id: string): IdClaim => ({ id, locate: async () => ({ kind: "none" }) });
-const moveToTrash = (vaultRoot: string, filePath: string, id: string) =>
-  moveToTrashUnderClaim(vaultRoot, filePath, claimFor(id));
-const restoreFromTrash = (vaultRoot: string, trashFile: string, destFile: string) =>
-  restoreFromTrashUnderClaim(vaultRoot, trashFile, destFile, claimFor("restore-test"));
+function mem(id: string, marker: string): string {
+  return `---\nid: ${id}\ntype: lesson\n---\n\n${marker}\n`;
+}
 
-async function vaultWith(t: { after: (fn: () => unknown) => void }, content: string) {
+async function bodyOf(file: string): Promise<string> {
+  return (await readFile(file, "utf8")).split("---\n")[2]?.trim() ?? "";
+}
+
+const moveToTrash = (vaultRoot: string, filePath: string, id: string) =>
+  withIdClaim({ vaultRoot, id, filePath }, (claim) =>
+    moveToTrashUnderClaim(vaultRoot, filePath, claim),
+  ).then((r) => r.trashPath);
+
+const restoreFromTrash = (vaultRoot: string, trashFile: string, destFile: string) =>
+  withIdClaim({ vaultRoot, id: "restore-test", filePath: destFile }, (claim) =>
+    restoreFromTrashUnderClaim(vaultRoot, trashFile, destFile, claim),
+  );
+
+async function vaultWith(
+  t: { after: (fn: () => unknown) => void },
+  marker: string,
+  id = "victim",
+) {
   const dir = await mkdtemp(path.join(tmpdir(), "bastra-trash-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, "victim.md");
-  await writeFile(file, content, "utf8");
+  await writeFile(file, mem(id, marker), "utf8");
   return { dir, file };
 }
 
@@ -45,14 +65,14 @@ test("trashing the same id twice keeps both versions", async (t) => {
   const { dir, file } = await vaultWith(t, "VERSION-ONE");
 
   const firstTrash = await moveToTrash(dir, file, "victim");
-  assert.equal(await readFile(firstTrash, "utf8"), "VERSION-ONE");
+  assert.equal(await bodyOf(firstTrash), "VERSION-ONE");
 
-  await writeFile(file, "VERSION-TWO", "utf8");
+  await writeFile(file, mem("victim", "VERSION-TWO"), "utf8");
   const secondTrash = await moveToTrash(dir, file, "victim");
 
   assert.notEqual(firstTrash, secondTrash, "the second trash must not reuse the path");
-  assert.equal(await readFile(firstTrash, "utf8"), "VERSION-ONE", "v1 must survive");
-  assert.equal(await readFile(secondTrash, "utf8"), "VERSION-TWO");
+  assert.equal(await bodyOf(firstTrash), "VERSION-ONE", "v1 must survive");
+  assert.equal(await bodyOf(secondTrash), "VERSION-TWO");
 
   const trashed = await readdir(path.dirname(firstTrash));
   assert.equal(trashed.length, 2, `expected two trash entries, got ${JSON.stringify(trashed)}`);
@@ -69,12 +89,12 @@ test("latestTrashPathFor returns the newest version, not the base path", async (
   const { dir, file } = await vaultWith(t, "VERSION-ONE");
   await moveToTrash(dir, file, "victim");
 
-  await writeFile(file, "VERSION-TWO", "utf8");
+  await writeFile(file, mem("victim", "VERSION-TWO"), "utf8");
   const second = await moveToTrash(dir, file, "victim");
 
   const latest = await latestTrashPathFor(dir, "victim");
   assert.equal(latest, second);
-  assert.equal(await readFile(latest!, "utf8"), "VERSION-TWO");
+  assert.equal(await bodyOf(latest!), "VERSION-TWO");
 });
 
 test("latestTrashPathFor returns undefined when nothing was trashed", async (t) => {
@@ -90,18 +110,18 @@ test("restore refuses to overwrite an active file at the destination", async (t)
 
   // The id got recreated after the delete — a common shape (archive, then
   // save a fresh memory under the same title).
-  await writeFile(file, "ACTIVE-EDIT-DO-NOT-LOSE", "utf8");
+  await writeFile(file, mem("victim", "ACTIVE-EDIT-DO-NOT-LOSE"), "utf8");
 
   await assert.rejects(
     () => restoreFromTrash(dir, trashed, file),
     /refusing to restore over an existing file/,
   );
   assert.equal(
-    await readFile(file, "utf8"),
+    await bodyOf(file),
     "ACTIVE-EDIT-DO-NOT-LOSE",
     "the active version must be untouched",
   );
-  assert.equal(await readFile(trashed, "utf8"), "TRASHED", "the trashed copy stays recoverable");
+  assert.equal(await bodyOf(trashed), "TRASHED", "the trashed copy stays recoverable");
 });
 
 test("restore into a free destination still works", async (t) => {
@@ -111,7 +131,7 @@ test("restore into a free destination still works", async (t) => {
   const dest = path.join(dir, "memories", "projects", "x", "victim.md");
   await restoreFromTrash(dir, trashed, dest);
 
-  assert.equal(await readFile(dest, "utf8"), "TRASHED");
+  assert.equal(await bodyOf(dest), "TRASHED");
 });
 
 test("a crafted id cannot escape the trash folder", async (t) => {
@@ -132,7 +152,7 @@ test("a crafted id cannot escape the trash folder", async (t) => {
  */
 
 test("a dotted neighbour id is not mistaken for a trashed version", async (t) => {
-  const { dir, file } = await vaultWith(t, "NEIGHBOUR");
+  const { dir, file } = await vaultWith(t, "NEIGHBOUR", "foo.bar");
   await moveToTrash(dir, file, "foo.bar");
 
   assert.equal(
@@ -143,10 +163,10 @@ test("a dotted neighbour id is not mistaken for a trashed version", async (t) =>
 });
 
 test("the newest neighbour never outranks the id's own trashed file", async (t) => {
-  const { dir, file } = await vaultWith(t, "OWN");
+  const { dir, file } = await vaultWith(t, "OWN", "foo");
   const own = await moveToTrash(dir, file, "foo");
 
-  await writeFile(file, "NEIGHBOUR", "utf8");
+  await writeFile(file, mem("foo.bar", "NEIGHBOUR"), "utf8");
   await moveToTrash(dir, file, "foo.bar");
 
   // Make the neighbour strictly newer, so a prefix match would prefer it.
@@ -155,19 +175,19 @@ test("the newest neighbour never outranks the id's own trashed file", async (t) 
 
   const latest = await latestTrashPathFor(dir, "foo");
   assert.equal(latest, own);
-  assert.equal(await readFile(latest!, "utf8"), "OWN");
+  assert.equal(await bodyOf(latest!), "OWN");
 });
 
 test("a dotted id still finds its own timestamped versions", async (t) => {
-  const { dir, file } = await vaultWith(t, "VERSION-ONE");
+  const { dir, file } = await vaultWith(t, "VERSION-ONE", "foo.bar");
   await moveToTrash(dir, file, "foo.bar");
 
-  await writeFile(file, "VERSION-TWO", "utf8");
+  await writeFile(file, mem("foo.bar", "VERSION-TWO"), "utf8");
   const second = await moveToTrash(dir, file, "foo.bar");
 
   const latest = await latestTrashPathFor(dir, "foo.bar");
   assert.equal(latest, second);
-  assert.equal(await readFile(latest!, "utf8"), "VERSION-TWO");
+  assert.equal(await bodyOf(latest!), "VERSION-TWO");
 });
 
 test("an unrelated file in the trash folder is never a candidate", async (t) => {

@@ -4,6 +4,8 @@ import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
 import { readTarget } from "./save-commit.js";
 import { MemoryWriteConflictError } from "./save-schema.js";
 import type { IdClaim } from "./id-transaction.js";
+import matter from "gray-matter";
+import { occupantOfRaw } from "./memory-locator.js";
 
 /**
  * Audit-Log: jede Memory-Mutation wird als JSON-Zeile in
@@ -329,6 +331,21 @@ export async function latestTrashPathFor(
  *    `claim` ist deshalb Parameter, nicht Konvention: Wer ihn hat, hält den
  *    Lock; die id kommt aus ihm und kann nicht mehr danebenliegen.
  *
+ * 3. Codex-Gegenreview Runde 10 (P0-5): Der `claim` bewies nur, dass IRGENDEIN
+ *    id-Lock gehalten wurde — nicht, dass er zu `filePath` gehört.
+ *    Nachgestellt mit einem echten Claim für A und dem Pfad von B: A blieb
+ *    aktiv, B verschwand aus dem Bestand, und im Trash lag unter `a.md` der
+ *    Inhalt von B. Die Primitive prüft die Bindung deshalb selbst: Die Datei
+ *    MUSS erkennbar das Memory des Claims halten.
+ *
+ * 4. Codex-Gegenreview Runde 10 (P1-4): Delete und Archive lasen ihr
+ *    Audit-Vorbild in einem eigenen Read und übergaben es NICHT — zwischen
+ *    Beweis-Read und Trash-Move konnte eine neue externe Fassung eintreffen:
+ *    verschoben wurde die neue, protokolliert die alte. Hier wird EINMAL roh
+ *    gelesen, und aus genau diesen Bytes kommen Identitätsprüfung, CAS und das
+ *    zurückgegebene `frontmatter` fürs Audit. Ein Vorbild, das nicht aus der
+ *    verschobenen Fassung stammt, gibt es damit nicht mehr.
+ *
  * @param expectedPreimage Die Bytes, die die Datei tragen MUSS. Weggelassen =
  *   keine Prüfung. Damit liegen Prüfung und Rename direkt beieinander — das
  *   Fenster dazwischen ist ein Read plus ein Link, mikroskopisch, aber NICHT
@@ -337,25 +354,41 @@ export async function latestTrashPathFor(
  *   einem Vergleich, den das Dateisystem selbst atomar mitführt — den gibt es
  *   für Markdown-Dateien nicht.
  */
+export interface TrashMoveResult {
+  /** Wo die Fassung im Trash liegt. */
+  trashPath: string;
+  /** Die Rohbytes, die verschoben wurden. */
+  preimage: string;
+  /** Das Frontmatter EBEN DIESER Fassung — der einzige ehrliche `diff_before`. */
+  frontmatter: Record<string, unknown>;
+}
+
 export async function moveToTrashUnderClaim(
   vaultRoot: string,
   filePath: string,
   claim: IdClaim,
   expectedPreimage?: string | null,
-): Promise<string> {
+): Promise<TrashMoveResult> {
   const id = claim.id;
-  if (expectedPreimage !== undefined) {
-    const now = await readTarget(filePath);
-    if (now !== expectedPreimage) {
-      throw new MemoryWriteConflictError(
-        id,
-        filePath,
-        now === null
-          ? "the file disappeared before it could be trashed"
-          : "the file changed before it could be trashed",
-      );
-    }
+  const raw = await readTarget(filePath);
+  if (raw === null) {
+    throw new MemoryWriteConflictError(id, filePath, "the file disappeared before it could be trashed");
   }
+  if (expectedPreimage !== undefined && raw !== expectedPreimage) {
+    throw new MemoryWriteConflictError(id, filePath, "the file changed before it could be trashed");
+  }
+  // Die Bindung, die der Claim allein nicht herstellt: Dieser Pfad muss DIESES
+  // Memory halten. Ohne sie war `claim` nur ein Beweis, dass irgendwo ein Lock
+  // liegt, und der Aufrufer bestimmte allein, welche Datei verschwindet.
+  const occupant = occupantOfRaw(raw, filePath);
+  if (occupant.kind !== "memory" || occupant.id !== id) {
+    throw new Error(
+      `refusing to trash ${filePath}: it does not hold memory '${id}' ` +
+        `(found ${occupant.kind === "memory" ? `'${occupant.id}'` : occupant.kind}). ` +
+        `The id claim proves a lock, not which file it belongs to — re-resolve the path.`,
+    );
+  }
+  const frontmatter = JSON.parse(JSON.stringify(matter(raw).data)) as Record<string, unknown>;
   const base = trashPathFor(vaultRoot, id);
   await mkdir(dirname(base), { recursive: true });
   for (const dest of trashCandidates(base)) {
@@ -375,7 +408,7 @@ export async function moveToTrashUnderClaim(
       await unlink(dest).catch(() => {});
       throw err;
     }
-    return dest;
+    return { trashPath: dest, preimage: raw, frontmatter };
   }
   throw new Error(`could not find a free trash path for id: ${id}`);
 }
