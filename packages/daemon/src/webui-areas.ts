@@ -19,12 +19,26 @@ import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
-import { scopeEquals } from "@bastra-recall/core/scope";
+import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 
 /** Folders under memories/ whose names the save-routing depends on. */
 const RESERVED_TOP = new Set(["projects", "user", "all-projects", "taxonomy"]);
+
+/**
+ * Reserviert-Sein ist eine Frage der Scope-Identität, nicht der Schreibweise.
+ *
+ * Der Vergleich lief exakt gegen den Ordnernamen. Auf case-insensitivem APFS
+ * zeigt `memories/Projects` aber auf genau denselben Ordner wie
+ * `memories/projects`: über den Namen `Projects` ging das reservierte
+ * Projekt-Regal als editierbarer Top-Bereich durch und ließ sich vollständig
+ * umbenennen. Dieselbe zentrale Faltung wie überall sonst, statt einer
+ * eigenen Kopie.
+ */
+function isReservedTop(name: string): boolean {
+  return RESERVED_TOP.has(normalizeScopeKey(name));
+}
 
 export interface AreaInfo {
   /** Folder name — for project areas this is the scope. */
@@ -79,7 +93,7 @@ export async function listAreas(vaultRoot: string): Promise<AreaInfo[]> {
       name,
       kind: "top",
       count: await countMarkdown(join(memRoot, name)),
-      reserved: RESERVED_TOP.has(name),
+      reserved: isReservedTop(name),
     });
   }
   const projRoot = join(memRoot, "projects");
@@ -109,7 +123,7 @@ function assertEditable(kind: "project" | "top", name: string): void {
   if (!isPathSafeComponent(name)) {
     throw new Error(`invalid area name: ${JSON.stringify(name)}`);
   }
-  if (kind === "top" && RESERVED_TOP.has(name)) {
+  if (kind === "top" && isReservedTop(name)) {
     throw new Error(`"${name}" is a reserved system area and cannot be changed`);
   }
 }
@@ -304,26 +318,93 @@ export async function renameArea(
   let scopesRewritten = 0;
   let docsFolderMoved = false;
   let docsRetagged = 0;
-  if (kind === "project") {
-    scopesRewritten = await rewriteScopes(to, name, newName);
-    if (await isDir(docsFrom)) {
-      await rename(docsFrom, docsTo);
-      docsFolderMoved = true;
+  try {
+    if (kind === "project") {
+      scopesRewritten = await rewriteScopes(to, name, newName);
+      if (await isDir(docsFrom)) {
+        await rename(docsFrom, docsTo);
+        docsFolderMoved = true;
+      }
+      // #360-Folgefund B: der Doku-Ordner zog mit, seine Dokumente behielten
+      // aber `scope: <alt>` — sie lagen danach im neuen Regal und wurden beim
+      // Recall fürs neue Projekt als fremd gefiltert. Betrifft JEDEN Rename,
+      // unabhängig von der Schreibweise. Zählt in dieselbe Summe: es sind
+      // Scope-Rewrites derselben Area.
+      if (await isDir(docsTo)) {
+        // Reihenfolge: erst retaggen, dann Scopes. Die Produktdoku-Signatur
+        // prüft `scope` gegen den ALTEN Namen — liefe der Scope-Rewrite zuerst,
+        // erkennte `rewriteDocMetadata` kein einziges Dokument mehr wieder.
+        docsRetagged = await rewriteDocMetadata(docsTo, name, newName);
+        scopesRewritten += await rewriteScopes(docsTo, name, newName);
+      }
     }
-    // #360-Folgefund B: der Doku-Ordner zog mit, seine Dokumente behielten
-    // aber `scope: <alt>` — sie lagen danach im neuen Regal und wurden beim
-    // Recall fürs neue Projekt als fremd gefiltert. Betrifft JEDEN Rename,
-    // unabhängig von der Schreibweise. Zählt in dieselbe Summe: es sind
-    // Scope-Rewrites derselben Area.
-    if (await isDir(docsTo)) {
-      // Reihenfolge: erst retaggen, dann Scopes. Die Produktdoku-Signatur
-      // prüft `scope` gegen den ALTEN Namen — liefe der Scope-Rewrite zuerst,
-      // erkennte `rewriteDocMetadata` kein einziges Dokument mehr wieder.
-      docsRetagged = await rewriteDocMetadata(docsTo, name, newName);
-      scopesRewritten += await rewriteScopes(docsTo, name, newName);
-    }
+  } catch (err) {
+    throw await rollbackRename(
+      { vaultRoot, kind, name, newName, from, to, docsFrom, docsTo, docsFolderMoved },
+      err as Error,
+    );
   }
   return { name: newName, scopesRewritten, docsFolderMoved, docsRetagged };
+}
+
+/**
+ * Rollback nach einem gescheiterten Rename — der zweite Halt gegen die
+ * geteilte Area.
+ *
+ * ENTSCHEIDUNG (warum Rollback und nicht „noch mehr Preflight"): Der
+ * vorhandene Preflight deckt genau EINEN Grund ab, aus dem der Doku-Zug
+ * scheitern kann (das Zielregal existiert schon). `rename()` scheitert aber
+ * auch an Rechten, an einem gerade gehaltenen Handle, an EXDEV auf einem
+ * gemounteten Vault, und an einer Datei, die am Zielpfad liegt statt eines
+ * Ordners — isDir() sagt dazu nein, der rename trotzdem auch. Preflight kann
+ * das prinzipiell nicht abschließen: zwischen Prüfung und Bewegung liegt
+ * immer ein Fenster. Also wird das, was schon bewegt wurde, zurückbewegt —
+ * inklusive der Scope- und Tag-Rewrites, die sonst mit dem neuen Namen im
+ * alten Ordner zurückblieben.
+ *
+ * Scheitert der Rollback selbst, wird das nicht verschwiegen: die Meldung
+ * nennt dann PFADGENAU, was in welchem Zustand liegen blieb. Ein „meldet
+ * Erfolg, obwohl geteilt" gibt es auf keinem der beiden Wege.
+ */
+async function rollbackRename(
+  a: {
+    vaultRoot: string;
+    kind: "project" | "top";
+    name: string;
+    newName: string;
+    from: string;
+    to: string;
+    docsFrom: string;
+    docsTo: string;
+    docsFolderMoved: boolean;
+  },
+  cause: Error,
+): Promise<Error> {
+  const stuck: string[] = [];
+  if (a.docsFolderMoved) {
+    try {
+      // Gleiche Reihenfolge wie im Hinweg, nur mit vertauschten Namen: die
+      // Produktdoku-Signatur prüft `scope`, der hier schon der neue ist.
+      await rewriteDocMetadata(a.docsTo, a.newName, a.name);
+      await rewriteScopes(a.docsTo, a.newName, a.name);
+      await rename(a.docsTo, a.docsFrom);
+    } catch {
+      stuck.push(`dokumentationen/${a.newName} (sollte dokumentationen/${a.name} sein)`);
+    }
+  }
+  try {
+    if (a.kind === "project") await rewriteScopes(a.to, a.newName, a.name);
+    await rename(a.to, a.from);
+  } catch {
+    stuck.push(`${a.to} (sollte ${a.from} sein)`);
+  }
+  if (stuck.length > 0) {
+    return new Error(
+      `rename failed AND could not be fully undone: ${cause.message}. ` +
+        `Von Hand zu richten: ${stuck.join("; ")}.`,
+    );
+  }
+  return new Error(`rename failed, nothing was changed: ${cause.message}`);
 }
 
 export interface DeleteResult {

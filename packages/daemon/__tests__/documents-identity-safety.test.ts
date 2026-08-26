@@ -31,7 +31,7 @@ import {
   stat,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import matter from "gray-matter";
 import { Vault } from "@bastra-recall/core";
 import {
@@ -365,4 +365,148 @@ test("auch ein Move erhält die Felder außerhalb der Rebuild-Liste", async (t) 
   assert.deepEqual(after.related, ["doc-alt-akte-pdf"]);
   assert.equal(after.sensitivity, "private");
   assert.equal(after.confidence, 0.5);
+});
+
+// ── 7 ───────────────────────────────────────────────────────────
+
+test("save_document(overwrite) patcht das Sidecar, statt es neu zu bauen", async (t) => {
+  const { dir, vault } = await harness(t);
+
+  const src = join(dir, "Police.pdf");
+  await writeFile(src, "POLICE", "utf8");
+  const doc = await saveDocument(vault, {
+    ...BASE,
+    title: "Police",
+    original_path: src,
+    folder_path: "versicherung",
+    body: "Erfasster Inhalt.",
+  } as SaveArgs);
+
+  // Der gelebte Zustand: der Related-Enricher hat Kanten gezogen, jemand hat
+  // die Sensitivity gesetzt, die confidence heruntergestuft und in Obsidian
+  // einen eigenen Alias vergeben.
+  const parsed = matter(await readFile(doc.sidecar_path, "utf8"));
+  await writeFile(
+    doc.sidecar_path,
+    matter.stringify(parsed.content, {
+      ...parsed.data,
+      created: "2019-03-04",
+      aliases: [...(parsed.data.aliases as string[]), "meine-police"],
+      related: ["doc-versicherung-antrag-pdf"],
+      related_via: [
+        { id: "doc-versicherung-antrag-pdf", reason: "same-folder", score: 0.8 },
+      ],
+      sensitivity: "private",
+      source: "scan",
+      confidence: 0.4,
+    }),
+    "utf8",
+  );
+  await vault.reindexFile(doc.sidecar_path);
+
+  // Eine Titel-/Tag-Korrektur — genau der Metadaten-Refresh, den der Hub
+  // selbst anbietet (er gibt den In-Vault-Pfad als original_path zurück).
+  await saveDocument(vault, {
+    ...BASE,
+    title: "Police (korrigiert)",
+    tags: ["versicherung", "police"],
+    original_path: doc.original_path,
+    folder_path: "versicherung",
+    overwrite: true,
+  } as SaveArgs);
+
+  const after = matter(await readFile(doc.sidecar_path, "utf8")).data as Record<
+    string,
+    unknown
+  >;
+  assert.equal(after.title, "Police (korrigiert)", "der Refresh greift");
+  assert.deepEqual(after.tags, ["versicherung", "police"]);
+  assert.equal(after.created, "2019-03-04", "created ist keine Neuerfassung");
+  assert.deepEqual(after.related, ["doc-versicherung-antrag-pdf"]);
+  assert.deepEqual(after.related_via, [
+    { id: "doc-versicherung-antrag-pdf", reason: "same-folder", score: 0.8 },
+  ]);
+  assert.equal(after.sensitivity, "private");
+  assert.equal(after.source, "scan");
+  assert.equal(after.confidence, 0.4);
+  assert.ok(
+    (after.aliases as string[]).includes("meine-police"),
+    "der handvergebene Alias überlebt",
+  );
+  assert.ok(
+    (after.aliases as string[]).includes(doc.id),
+    "der id-Alias bleibt trotzdem da",
+  );
+});
+
+// ── 8 ───────────────────────────────────────────────────────────
+
+test("ein Sidecar mit `scope: Documents` ist dasselbe Sidecar", async (t) => {
+  const { dir, vault } = await harness(t);
+
+  const src = join(dir, "Rechnung.pdf");
+  await writeFile(src, "RECHNUNG", "utf8");
+  const doc = await saveDocument(vault, {
+    ...BASE,
+    title: "Rechnung",
+    category: "rechnung",
+    original_path: src,
+    folder_path: "rechnungen",
+  } as SaveArgs);
+
+  const parsed = matter(await readFile(doc.sidecar_path, "utf8"));
+  await writeFile(
+    doc.sidecar_path,
+    matter.stringify(parsed.content, { ...parsed.data, scope: "Documents" }),
+    "utf8",
+  );
+  await vault.reindexFile(doc.sidecar_path);
+
+  // Ungefaltet verglichen ist das Sidecar sich selbst fremd: der Hub
+  // verweigert seinem eigenen Dokument Move und Recategorize.
+  const moved = await moveDocument(vault, {
+    id: doc.id,
+    folder_path: "archiv",
+  });
+  assert.match(moved.sidecar_path, /documents\/archiv\//);
+});
+
+// ── 9 ───────────────────────────────────────────────────────────
+
+test("ein quarantänisiertes Sidecar derselben id blockiert den Save", async (t) => {
+  const { dir, vault } = await harness(t);
+
+  const src = join(dir, "Akte.pdf");
+  await writeFile(src, "AKTE", "utf8");
+  const doc = await saveDocument(vault, {
+    ...BASE,
+    title: "Akte",
+    original_path: src,
+    folder_path: "a",
+  } as SaveArgs);
+
+  // Dieselbe id ein zweites Mal auf der Platte — der Index nimmt nur einen
+  // Pfad auf und stellt den anderen in Quarantäne.
+  const twin = join(dir, "documents", "b", "Akte.pdf.md");
+  await mkdir(join(dir, "documents", "b"), { recursive: true });
+  await writeFile(twin, await readFile(doc.sidecar_path, "utf8"), "utf8");
+  await vault.reconcile();
+  const paths = vault.pathsFor(doc.id);
+  assert.equal(paths.length, 2, "der Vault kennt beide Pfade");
+
+  // Der Save auf den QUARANTÄNISIERTEN Pfad: `vault.get()` zeigte nur den
+  // indexierten, der Pfad passte nicht — und der Save lief durch, während
+  // das andere Sidecar mit derselben id unverändert stehen blieb.
+  const other = paths.find((p) => p !== doc.sidecar_path)!;
+  const loser = other === twin ? doc.sidecar_path : twin;
+  await assert.rejects(
+    saveDocument(vault, {
+      ...BASE,
+      title: "Akte",
+      original_path: src,
+      folder_path: loser.includes(`${sep}b${sep}`) ? "b" : "a",
+      overwrite: true,
+    } as SaveArgs),
+    /already belongs to/,
+  );
 });

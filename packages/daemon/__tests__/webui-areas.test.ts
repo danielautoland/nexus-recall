@@ -313,3 +313,42 @@ test("renameArea: zwei inhaltsgleiche Dokumente werden beide umgeschrieben", asy
     await rm(v, { recursive: true, force: true });
   }
 });
+
+test("renameArea: scheitert der Doku-Zug, bleibt die Area ungeteilt", async () => {
+  const v = await makeVault();
+  try {
+    await mkdir(join(v, "dokumentationen", "carnexus"), { recursive: true });
+    await writeFile(join(v, "dokumentationen", "carnexus", "doku-a.md"), "---\nid: doku-a\ntitle: A\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - carnexus\n  - area\ntags:\n  - carnexus\nscope: carnexus\nrecall_when:\n  - a\ncreated: 2026-07-17\nupdated: 2026-07-17\n---\n\nA.\n");
+    // Der Preflight kennt nur „Zielordner existiert schon". Hier liegt am
+    // Zielpfad eine DATEI: isDir() sagt nein, der rename scheitert trotzdem.
+    await writeFile(join(v, "dokumentationen", "new-project"), "im Weg", "utf8");
+
+    await assert.rejects(renameArea(v, "project", "carnexus", "new-project"));
+
+    // Vorher blieb genau hier eine geteilte Area zurück: Memories unter dem
+    // neuen Namen, Doku unter dem alten — und der Fehler meldete nur den
+    // zweiten Schritt.
+    const projects = await readdir(join(v, "memories", "projects"));
+    assert.ok(projects.includes("carnexus"), "das Memory-Regal steht wieder am alten Platz");
+    assert.ok(!projects.includes("new-project"), "und nicht unter dem neuen Namen");
+    const fm = matter(await readFile(join(v, "memories", "projects", "carnexus", "fact-one.md"), "utf8")).data;
+    assert.equal(fm.scope, "carnexus", "auch der Scope ist zurückgedreht");
+    assert.ok((await readdir(join(v, "dokumentationen"))).includes("carnexus"));
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("reservierte Bereiche sind auch in anderer Schreibweise reserviert", async () => {
+  const v = await makeVault();
+  try {
+    // Auf case-insensitivem APFS zeigt `memories/Projects` auf `memories/projects`.
+    // Ungefaltet geprüft ließ sich das reservierte Regal darüber umbenennen.
+    await assert.rejects(renameArea(v, "top", "Projects", "gekapert"), /reserved/);
+    await assert.rejects(deleteArea(v, "top", "USER"), /reserved/);
+    await assert.rejects(renameArea(v, "top", "people", "Taxonomy"), /reserved/);
+    assert.ok((await readdir(join(v, "memories"))).includes("projects"));
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});

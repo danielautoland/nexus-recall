@@ -36,6 +36,7 @@ import {
   formatInjectionAdvisory,
 } from "@bastra-recall/core";
 import { truncateSummaryTo, SUMMARY_MAX } from "@bastra-recall/core";
+import { scopeEquals } from "@bastra-recall/core/scope";
 
 // ─── Argument schemas ───────────────────────────────────────────
 
@@ -387,7 +388,11 @@ export function isDocumentSidecar(fm: unknown, expectedId?: string): boolean {
     folder_path?: unknown;
   };
   if (f?.type !== "doc") return false;
-  if (f.scope !== "documents") return false;
+  // Gefaltet über die zentrale Scope-Identität: ein von Hand auf
+  // `scope: Documents` gesetztes Sidecar war sich mit `!==` selbst fremd —
+  // der Hub verweigerte seinem eigenen Dokument Move und Recategorize.
+  if (typeof f.scope !== "string" || !scopeEquals(f.scope, "documents"))
+    return false;
   if (typeof f.original_path !== "string" || f.original_path.length === 0)
     return false;
   if (typeof f.folder_path !== "string") return false;
@@ -427,6 +432,11 @@ function patchSidecarFrontmatter(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries({ ...existing, ...patch })) {
+    // `undefined` im Patch heißt „Feld entfernen" — der einzige Weg, ein
+    // Feld loszuwerden, dessen Wert der Call gerade neu bestimmt hat (die
+    // Injection-Flags, wenn der Scan diesmal nichts mehr findet). Ohne die
+    // Ausnahme würde js-yaml beim Dump über den undefined-Wert stolpern.
+    if (value === undefined) continue;
     // YAML liefert `created: 2026-05-01` als Date zurück; ungefiltert
     // zurückgeschrieben würde daraus ein Zeitstempel mit Uhrzeit.
     out[key] = value instanceof Date ? value.toISOString().slice(0, 10) : value;
@@ -477,6 +487,34 @@ function metadataPatch(
   ] as const) {
     if (existing[field] === undefined) patch[field] = rebuilt[field];
   }
+  return patch;
+}
+
+/**
+ * Was ein `save_document(overwrite: true)` gegenüber einem Ordnerwechsel
+ * ZUSÄTZLICH meint.
+ *
+ * Ein Overwrite ist eine Neu-Erfassung derselben Datei, keine Neu-Anlage:
+ * Titel, Tags, Kategorie, Summary, Trigger und die frisch gescannten
+ * Injection-Flags kommen aus dem Call; `created`, `related`, `related_via`,
+ * `sensitivity`, `source`, eine heruntergestufte `confidence` und ein von
+ * Hand vergebener Alias gehören der Platte. Basis ist deshalb derselbe
+ * {@link metadataPatch} wie bei Recategorize/Move — er lässt genau diese
+ * Felder in Ruhe.
+ */
+function savePatch(
+  existing: Record<string, unknown>,
+  rebuilt: DocumentFrontmatter,
+): Record<string, unknown> {
+  const patch = metadataPatch(existing, rebuilt);
+  // Anders als ein Ordnerwechsel bringt der Save beides mit (oder hat es
+  // oben aus dem Bestand übernommen) — in jedem Fall der gemeinte Wert.
+  patch.summary = rebuilt.summary;
+  patch.recall_when = rebuilt.recall_when;
+  // #147: Der Capture-Scan ist gerade über Titel, Summary und Body gelaufen.
+  // Sein Ergebnis ersetzt das alte auch dann, wenn es leer ist — sonst bliebe
+  // ein Flag stehen, dessen Anlass aus dem Dokument verschwunden ist.
+  patch.injection_flags = rebuilt.injection_flags;
   return patch;
 }
 
@@ -535,6 +573,9 @@ export async function saveDocument(
   ) {
     throw new Error(`destination already exists: ${originalDest}`);
   }
+  // Der Bestand auf der Platte, sobald ein eigenes Sidecar am Pfad liegt —
+  // Grundlage des Metadaten-Patches weiter unten (siehe metadataPatch).
+  let existing: { data: Record<string, unknown>; body: string } | undefined;
   const occupant = readOccupant(sidecarPath);
   if (occupant.kind !== "absent") {
     if (!args.overwrite) {
@@ -543,11 +584,8 @@ export async function saveDocument(
     // `overwrite` heißt „ersetze MEIN Sidecar", nie „ersetze, was da liegt".
     // Eine handgeschriebene Obsidian-Notiz an `<original>.md` wurde vorher
     // vollständig überschrieben, weil allein der Pfad entschied.
-    const occupantFm =
-      occupant.kind === "memory"
-        ? (await readSidecarRaw(sidecarPath)).data
-        : undefined;
-    if (occupant.kind === "foreign" || !isDocumentSidecar(occupantFm, docID)) {
+    if (occupant.kind === "memory") existing = await readSidecarRaw(sidecarPath);
+    if (occupant.kind === "foreign" || !isDocumentSidecar(existing?.data, docID)) {
       throw new Error(
         `refusing to overwrite ${sidecarPath}: not a document sidecar for ${docID}`,
       );
@@ -556,9 +594,15 @@ export async function saveDocument(
   // `a+b.pdf` und `a-b.pdf` slugifizieren auf DIESELBE id. Vorher entstanden
   // zwei Sidecars mit einer id, und der Vault-Index behielt nur eines davon —
   // das andere Dokument war still nicht mehr auffindbar.
-  const idHolder = vault.get(docID);
-  if (idHolder && resolve(idHolder.filePath) !== resolve(sidecarPath)) {
-    throw new Error(`id ${docID} already belongs to ${idHolder.filePath}`);
+  // `pathsFor` statt `get`: der Index führt pro id nur EINEN Pfad, die
+  // wegen Duplikat quarantänisierten verschweigt er. Ein zweites Sidecar
+  // mit derselben id an einem dritten Pfad kam damit an der Kollisions-
+  // prüfung vorbei — und der Save auf das eine ließ das andere stehen.
+  const holder = vault
+    .pathsFor(docID)
+    .find((p) => resolve(p) !== resolve(sidecarPath));
+  if (holder) {
+    throw new Error(`id ${docID} already belongs to ${holder}`);
   }
 
   if (!args.linked_file) {
@@ -585,9 +629,16 @@ export async function saveDocument(
     }
   }
 
-  const summary = args.summary ?? `${args.category}: ${args.title}`;
+  const existingSummary =
+    typeof existing?.data.summary === "string" ? existing.data.summary : undefined;
+  // Ein Refresh ohne `summary` MEINT die Summary nicht — der abgeleitete
+  // Default (`kategorie: titel`) hätte eine von Hand geschriebene ersetzt.
+  const summary = args.summary ?? existingSummary ?? `${args.category}: ${args.title}`;
   const recallWhen =
     args.recall_when ??
+    (Array.isArray(existing?.data.recall_when)
+      ? (existing.data.recall_when as string[])
+      : undefined) ??
     [
       `find document ${args.title}`,
       args.tags.slice(0, 3).join(" "),
@@ -616,14 +667,32 @@ export async function saveDocument(
     folderPath: args.folder_path ?? "",
     created: today,
     updated: today,
+    // Ein in Obsidian von Hand vergebener Alias ist Nutzer-Eingabe; der
+    // Rebuild kannte nur die id und warf ihn weg.
+    aliases: existing?.data.aliases as string[] | undefined,
     injectionFlags: injectionFlags.length > 0 ? injectionFlags : undefined,
   });
 
   const body = args.body
     ? `> Sidecar für \`${originalDest}\`.\n\n## Extrahierter Inhalt\n\n${args.body}`
-    : `> Sidecar für \`${originalDest}\`.\n\n_(Kein extrahierter Inhalt — vom Caller nicht mitgeliefert.)_`;
+    : // Auch der Body ist Bestand: ein Refresh ohne `body` hat keinen Inhalt
+      // zu melden, er hat den vorhandenen nicht zu löschen.
+      (existing?.body.trim()
+        ? existing.body
+        : `> Sidecar für \`${originalDest}\`.\n\n_(Kein extrahierter Inhalt — vom Caller nicht mitgeliefert.)_`);
 
-  await atomicWriteFile(sidecarPath, renderSidecar(fm, body));
+  // Beim Overwrite wird das bestehende Frontmatter GEPATCHT, nicht neu
+  // gebaut. Der Rebuild verlor dieselben Felder, die er beim Recategorize
+  // verlor — `created`, `related`, `related_via`, `sensitivity`, `source`,
+  // eine heruntergestufte `confidence` —, nur hier zusätzlich noch über den
+  // Weg, den der Hub seinen Callern selbst als Metadaten-Refresh anbietet.
+  const content = existing
+    ? renderPatched(
+        patchSidecarFrontmatter(existing.data, savePatch(existing.data, fm)),
+        body,
+      )
+    : renderSidecar(fm, body);
+  await atomicWriteFile(sidecarPath, content);
 
   // Cloud-Watcher-Mitigation: synchroner reindex statt auf chokidar warten.
   await vault.reindexFile(sidecarPath);
