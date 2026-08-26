@@ -274,3 +274,38 @@ test("save_product_doc: findet ein Bestandsdokument mit roher Scope-Schreibweise
     await close();
   }
 });
+
+/**
+ * Codex-Gegenreview: Der Lookup prüfte nur type, Scope und topic_path[2] und
+ * überschrieb damit jedes beliebige Dokument im selben Scope, dessen drittes
+ * topic_path-Segment zufällig gleich hieß.
+ */
+test("save_product_doc: ein fremdes Dokument im selben Scope wird NICHT überschrieben", async () => {
+  const { deps, dir, close } = await makeDeps();
+  try {
+    await mkdir(join(dir, "dokumentationen", "carnexus"), { recursive: true });
+    const foreign = join(dir, "dokumentationen", "carnexus", "manual-doc.md");
+    const original =
+      "---\nid: manual-doc\ntitle: Handbuch\ntype: doc\nsummary: s\ntopic_path:\n  - manual\n  - unrelated\n  - area\ntags:\n  - manual\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nHandgeschriebenes Dokument.\n";
+    await writeFile(foreign, original);
+    await deps.vault.reconcile?.();
+
+    const r = await saveProductDocHandler(deps, {
+      project: "carnexus",
+      area: "area",
+      title: "Produktdoku",
+      summary: "s",
+      body: "# Produktdoku\n",
+    });
+
+    assert.equal(r.id, "doku-carnexus-area", "eine neue, eigene id");
+    assert.equal(r.created, true);
+    assert.equal(
+      await readFile(foreign, "utf8"),
+      original,
+      "das fremde Dokument bleibt unangetastet",
+    );
+  } finally {
+    await close();
+  }
+});

@@ -172,3 +172,53 @@ for (const [label, rel, scope, folder] of [
     }
   });
 }
+
+/**
+ * Dritte Codex-Runde: Der vaultweite Scan suchte nach dem DATEINAMEN. Das hatte
+ * zwei Ausgänge, und der erste war Datenverlust.
+ */
+test("eine fremde Notiz mit passendem Dateinamen wird NICHT überschrieben", async () => {
+  const v = await mkdtemp(join(tmpdir(), "canon-note-"));
+  try {
+    await mkdir(join(v, "notes"), { recursive: true });
+    const note = join(v, "notes", "Upper-ID.md");
+    const original = "# Meine Notiz\n\nWichtiger Text, kein Memory.\n";
+    await writeFile(note, original);
+
+    const r = await saveMemory(v, { ...base, id: "Upper-ID", scope: "proj", overwrite: true });
+
+    // Die Notiz ist kein Memory — sie hat kein Frontmatter, also keine id.
+    assert.equal(await readFile(note, "utf8"), original, "die fremde Notiz bleibt unangetastet");
+    assert.equal(r.id, "upper-id");
+    assert.equal(r.file_path, join(v, "memories", "projects", "proj", "upper-id.md"));
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("ein Bestands-Memory wird über seine Frontmatter-id gefunden, nicht über den Dateinamen", async () => {
+  const v = await mkdtemp(join(tmpdir(), "canon-fm-"));
+  try {
+    await mkdir(join(v, "notes"), { recursive: true });
+    const file = join(v, "notes", "legacy-name.md");
+    await writeFile(
+      file,
+      "---\nid: Upper-ID\ntitle: T\ntype: reference\nsummary: s\ntopic_path:\n  - t\ntags:\n  - t\nscope: proj\nrecall_when:\n  - t\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nAlt.\n",
+    );
+
+    const r = await saveMemory(v, {
+      ...base,
+      id: "Upper-ID",
+      scope: "proj",
+      body: "Neu.",
+      overwrite: true,
+    });
+
+    assert.equal(r.created, false, "kein zweites Memory daneben");
+    assert.equal(r.id, "Upper-ID");
+    assert.equal(r.file_path, file, "die Datei behält ihren abweichenden Namen");
+    assert.match(await readFile(file, "utf8"), /Neu\./);
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});

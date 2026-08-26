@@ -8,7 +8,8 @@
  * vault root. Separate from the save itself so the daemon can ask "where would
  * this land" without a write.
  */
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import matter from "gray-matter";
 import { join, relative, resolve, sep } from "node:path";
 import type { SaveMemoryInput } from "./save-schema.js";
 import { canonicalMemoryId } from "./save-text.js";
@@ -67,45 +68,54 @@ export function subfolderFor(scope: string, type: string): string {
  * ihren Namen stehen und setzt im Frontmatter die neue id — Datei und id
  * fallen auseinander (auf APFS nachgestellt).
  *
- * Gesucht wird VAULTWEIT, nicht an den zwei naheliegenden Orten. Die erste
- * Fassung prüfte nur „kanonisches Regal + kanonische id" gegen „rohes Regal +
- * rohe id" und übersah damit jede Mischform (`memories/projects/proj/Upper-ID.md`)
- * ebenso wie die Ablagen, die der Vault ausdrücklich unterstützt: die flache
- * Legacy-Ablage `memorys/` und jedes per `folder` gesetzte Regal
- * (`memories/people/`). Der Vault scannt rekursiv — der Resolver muss es auch.
+ * Gesucht wird vaultweit und über die FRONTMATTER-id, nicht über den
+ * Dateinamen. Die Dateinamen-Variante hatte zwei Ausgänge, und der erste war
+ * Datenverlust: Eine gewöhnliche Obsidian-Notiz `notes/Upper-ID.md` — kein
+ * Memory, kein Frontmatter — wurde als Ziel akzeptiert und komplett
+ * überschrieben. Der zweite: Ein echtes Bestands-Memory, dessen Datei anders
+ * heißt als seine id (`notes/legacy-name.md` mit `id: Upper-ID`), wurde nicht
+ * gefunden, und daneben entstand das kanonische Duplikat. Die id im
+ * Frontmatter ist die Identität; der Dateiname ist es nur normalerweise auch.
  *
  * Der Scan läuft nur, wenn roh und kanonisch überhaupt auseinandergehen UND
- * das kanonische Ziel nicht schon dasteht: bei jedem normalen Save kostet er
- * nichts, und im Sonderfall ist er ein Verzeichnisdurchlauf gegen einen
- * Datei-Write.
+ * das kanonische Ziel nicht schon dasteht. Gemessen an einem Vault mit 997
+ * Memories: Normalfall 0,015 ms je Aufruf (kein Scan), Sonderfall mit vollem
+ * Durchlauf 180 ms — einmalig, gegen einen Datei-Write, und nur für Callers,
+ * die eine nicht-kanonische id mitschicken.
  *
- * Verglichen wird EXAKT, über `readdirSync`. `existsSync` meldet auf
- * case-insensitiven Dateisystemen für `upper-id.md` true, wenn `Upper-ID.md`
- * daliegt, und öffnet für `…/proj` klaglos `Proj/` — genau die Verwechslung,
- * die hier auseinanderzuhalten ist.
+ * Das kanonische Ziel wird EXAKT geprüft, über `readdirSync`. `existsSync`
+ * meldet auf case-insensitiven Dateisystemen für `upper-id.md` true, wenn
+ * `Upper-ID.md` daliegt, und öffnet für `…/proj` klaglos `Proj/` — genau die
+ * Verwechslung, die hier auseinanderzuhalten ist.
  */
 function resolveAgainstExisting(
   vaultRoot: string,
   input: MemoryTargetInput,
   canonicalId: string,
   canonicalSubdir: string,
-): { id: string; subdir: string } {
-  const canonical = { id: canonicalId, subdir: canonicalSubdir };
+): { id: string; relPath: string } {
+  const canonical = { id: canonicalId, relPath: `${canonicalSubdir}/${canonicalId}.md` };
   const rawId = input.id ?? canonicalId;
   const rawSubdir = input.folder ?? subfolderFor(input.scope, input.type);
   // Beide Achsen können abweichen, und jede allein genügt: eine rohe id in
   // einem kanonischen Regal ist derselbe Bestandsfall wie eine kanonische id
   // in einem rohen Regal (`memories/projects/Proj/alte-id.md`).
   if (rawId === canonicalId && rawSubdir === canonicalSubdir) return canonical;
-  if (existsExactPath(vaultRoot, `${canonicalSubdir}/${canonicalId}.md`)) return canonical;
-  const found = findExactFile(vaultRoot, vaultRoot, `${rawId}.md`);
-  return found === null ? canonical : { id: rawId, subdir: found };
+  if (existsExactPath(vaultRoot, canonical.relPath)) return canonical;
+  const found = findByFrontmatterId(vaultRoot, vaultRoot, rawId);
+  return found === null ? canonical : { id: rawId, relPath: found };
 }
 
-/** Verzeichnis (relativ zum Vault-Root), in dem `fileName` mit GENAU dieser
- *  Schreibweise liegt — oder null. Erster Treffer gewinnt; zwei Dateien mit
- *  derselben id sind ohnehin ein Vault-Defekt, den der Index meldet. */
-function findExactFile(vaultRoot: string, dir: string, fileName: string): string | null {
+/**
+ * Pfad (relativ zum Vault-Root) der Markdown-Datei, deren FRONTMATTER-`id`
+ * genau `wantedId` ist — oder null. Dateien ohne parsebares Frontmatter und
+ * ohne `id` sind keine Memories und kommen nie als Ziel in Frage; das ist der
+ * Teil, der fremde Notizen vor dem Überschrieben-werden schützt.
+ *
+ * Erster Treffer gewinnt: Zwei Dateien mit derselben id sind ohnehin ein
+ * Vault-Defekt, den der Index meldet (#240/A2.3).
+ */
+function findByFrontmatterId(vaultRoot: string, dir: string, wantedId: string): string | null {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -114,16 +124,23 @@ function findExactFile(vaultRoot: string, dir: string, fileName: string): string
   }
   for (const e of entries) {
     if (e.name.startsWith(".") || e.name === "node_modules") continue;
-    if (e.isFile()) {
-      if (e.name === fileName) {
-        const rel = relative(vaultRoot, dir);
-        return rel === "" ? "." : rel.split(sep).join("/");
-      }
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      const hit = findByFrontmatterId(vaultRoot, full, wantedId);
+      if (hit !== null) return hit;
       continue;
     }
-    if (!e.isDirectory()) continue;
-    const hit = findExactFile(vaultRoot, join(dir, e.name), fileName);
-    if (hit !== null) return hit;
+    if (!e.isFile() || !e.name.toLowerCase().endsWith(".md")) continue;
+    try {
+      // Exakt, nicht gefaltet: Gäbe es die kanonische id, hätte der Zweig
+      // darüber schon gegriffen.
+      if ((matter(readFileSync(full, "utf8")).data as Record<string, unknown>)?.id !== wantedId) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    return relative(vaultRoot, full).split(sep).join("/");
   }
   return null;
 }
@@ -182,9 +199,10 @@ export function resolveMemoryTarget(
   // `save.ts` schreibt denselben Key ins Frontmatter, damit Ordner und
   // `scope:` nie auseinanderlaufen.
   const canonicalSubdir = input.folder ?? subfolderFor(normalizeScopeKey(input.scope), input.type);
-  const { id, subdir } = resolveAgainstExisting(vaultRoot, input, canonicalId, canonicalSubdir);
-  const scope = subdir === canonicalSubdir ? normalizeScopeKey(input.scope) : input.scope;
-  const filePath = join(vaultRoot, subdir, `${id}.md`);
+  const { id, relPath } = resolveAgainstExisting(vaultRoot, input, canonicalId, canonicalSubdir);
+  const canonicalRelPath = `${canonicalSubdir}/${canonicalId}.md`;
+  const scope = relPath === canonicalRelPath ? normalizeScopeKey(input.scope) : input.scope;
+  const filePath = join(vaultRoot, ...relPath.split("/"));
   if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
     throw new Error(`refusing to write outside the vault: ${filePath}`);
   }

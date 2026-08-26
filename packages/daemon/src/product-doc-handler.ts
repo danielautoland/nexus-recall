@@ -49,9 +49,16 @@ export interface SaveProductDocResult {
 }
 
 /**
- * Das Dokument dieser Area, über seine Identität statt über seinen Namen:
- * type `doc` + Scope + Area-Segment im topic_path. Scope gefaltet (#360), denn
- * ein Bestandsdokument kann `scope: CarNexus` tragen.
+ * Das Dokument dieser Area, über seine Identität statt über seinen Namen.
+ *
+ * Die Signatur muss VOLLSTÄNDIG passen. Die erste Fassung prüfte nur type,
+ * Scope und `topic_path[2]` — und fand damit jedes beliebige Dokument im
+ * selben Scope, dessen dritter topic_path-Eintrag zufällig gleich hieß.
+ * Reproduziert mit `topic_path: [manual, unrelated, area]`: Das fremde
+ * Dokument wurde vollständig überschrieben (Codex-Gegenreview). Ein
+ * Produktdoku-topic_path ist immer `["doku", <projekt>, <area>]` — genau das
+ * wird verlangt, mit gefaltetem Projektsegment, denn ein Bestandsdokument kann
+ * `[doku, CarNexus, …]` tragen. Der Scope wird aus demselben Grund gefaltet.
  */
 function findDocFor(
   deps: ToolDeps,
@@ -63,7 +70,10 @@ function findDocFor(
     if (fm.type !== "doc") continue;
     if (typeof fm.scope !== "string" || !scopeEquals(fm.scope, projectKey)) continue;
     const path = fm.topic_path;
-    if (!Array.isArray(path) || path[2] !== areaSlug) continue;
+    if (!Array.isArray(path) || path.length !== 3) continue;
+    if (path[0] !== "doku") continue;
+    if (typeof path[1] !== "string" || !scopeEquals(path[1], projectKey)) continue;
+    if (path[2] !== areaSlug) continue;
     return m as { fm: { id: string } };
   }
   return undefined;

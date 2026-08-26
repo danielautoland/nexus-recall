@@ -1478,6 +1478,24 @@ Die Telemetrie hätte den Filter nicht von einem stillen Recall unterscheiden
 können — also genau das nicht gezeigt, wofür der Shadow-Modus da ist. Todo- und
 Write-Lane setzen ihren Status schon nach dem Filter und waren nicht betroffen.
 
+### 21.5 Was offen blieb
+
+**Die Shadow-Daten.** Sobald der Daemon eine Weile mit diesem Stand lief, sagen
+`dropped_scope_count`, `dropped_scopes`, `filter_project` und
+`scope_filter_skipped` in den Prompt- und Todo-Serien, ob `enforce` trägt.
+Umlegen ist dann ein Env-Wert.
+
+**Die BM25-only-Floors** (21.3). Braucht Labels, kein weiteres Argument — und
+hängt damit am selben Blocker wie Router und schneller Lexikpfad.
+
+### 21.6 Verifikation
+
+1643 Tests, 1641 grün, 0 rot (1 skipped, 1 todo). Typechecks für core, daemon,
+statusline und eval grün. Neue Tests, jeder reproduziert seinen Defekt vor dem
+Fix: `core/__tests__/canonical-id.test.ts` (6), `lane-scope-filter.test.ts`
+(19), `write-lane-project-confidence.test.ts` (2), `webui-areas.test.ts` (+2),
+`product-docs.test.ts` (+2), `todo-hook.test.ts` (+5), `taxonomy.test.ts` (+1).
+
 ## 22. Siebte Gegenprüfung: der Bestandsschutz war zu schmal, das Rename zu grob (26.08.2026)
 
 Der Hook- und Scope-Teil aus Abschnitt 21 hat die Gegenprüfung überstanden.
@@ -1541,20 +1559,65 @@ Scope-Schreibweise in `product-docs.test.ts`.
 
 Unverändert offen bleiben die beiden Punkte aus 21.5.
 
-### 21.5 Was offen blieb
+## 23. Achte Gegenprüfung: zwei Wege, fremde Dateien zu überschreiben (26.08.2026)
 
-**Die Shadow-Daten.** Sobald der Daemon eine Weile mit diesem Stand lief, sagen
-`dropped_scope_count`, `dropped_scopes`, `filter_project` und
-`scope_filter_skipped` in den Prompt- und Todo-Serien, ob `enforce` trägt.
-Umlegen ist dann ein Env-Wert.
+Beide Funde sind Save-Sicherheit, beide entstanden in den Reparaturen der
+letzten zwei Runden, und beide sind Datenverlust — nicht bloß Duplikate.
 
-**Die BM25-only-Floors** (21.3). Braucht Labels, kein weiteres Argument — und
-hängt damit am selben Blocker wie Router und schneller Lexikpfad.
+### 23.1 Der Vault-Scan verwechselte Dateinamen mit Identität
 
-### 21.6 Verifikation
+`findExactFile()` aus 22.1 suchte eine Datei namens `<rawId>.md` und prüfte
+ihr Frontmatter nicht. Zwei Ausgänge, nachgestellt:
 
-1643 Tests, 1641 grün, 0 rot (1 skipped, 1 todo). Typechecks für core, daemon,
-statusline und eval grün. Neue Tests, jeder reproduziert seinen Defekt vor dem
-Fix: `core/__tests__/canonical-id.test.ts` (6), `lane-scope-filter.test.ts`
-(19), `write-lane-project-confidence.test.ts` (2), `webui-areas.test.ts` (+2),
-`product-docs.test.ts` (+2), `todo-hook.test.ts` (+5), `taxonomy.test.ts` (+1).
+```
+notes/Upper-ID.md  (gewöhnliche Obsidian-Notiz, kein Frontmatter)
+  → vollständig durch das neue Memory ersetzt
+
+notes/legacy-name.md  (Frontmatter id: Upper-ID, ein echtes Memory)
+  → nicht gefunden, kanonisches Duplikat daneben angelegt
+```
+
+Der erste Fall ist der schwerste Fund dieser ganzen Kette: Ein Save konnte eine
+fremde Notiz zerstören, nur weil sie zufällig so hieß wie eine id.
+
+Beide Fälle haben dieselbe Wurzel — der Dateiname wurde als Identität
+behandelt. `findByFrontmatterId()` sucht jetzt über die geparste
+Frontmatter-`id`. Eine Datei ohne parsebares Frontmatter und ohne `id` ist kein
+Memory und kommt nie als Ziel in Frage; das ist der Teil, der fremde Notizen
+schützt. Und ein Memory, dessen Datei anders heißt als seine id, wird gefunden
+und behält seinen Dateinamen — `MemoryTarget` trägt deshalb den vollen
+relativen Pfad statt `<id>.md` anzunehmen.
+
+Verglichen wird exakt, nicht gefaltet: Gäbe es die kanonische id, hätte der
+Zweig davor schon gegriffen.
+
+Kosten, gemessen an einem Vault mit 997 Memories: Normalfall 0,015 ms je
+Aufruf (kein Scan), Sonderfall mit vollem Durchlauf 180 ms — einmalig, gegen
+einen Datei-Write, und nur für Aufrufer, die eine nicht-kanonische id
+mitschicken.
+
+### 23.2 Der Produktdoku-Lookup war zu breit
+
+`findDocFor()` aus 22.2 prüfte type, Scope und `topic_path[2]`. Ein
+handgeschriebenes Dokument im selben Scope mit
+`topic_path: [manual, unrelated, area]` erfüllte das — und wurde von
+`save_product_doc(project=carnexus, area=area)` vollständig überschrieben.
+
+Verlangt wird jetzt die vollständige Signatur: `type: doc`, passender Scope,
+`topic_path` der Länge 3 mit `["doku", <projekt>, <area>]`. Projektsegment und
+Scope gefaltet, weil ein Bestandsdokument `[doku, CarNexus, …]` tragen kann.
+
+Der Ansatz aus 22.2 — stabile historische id, Lookup über die Identität —
+bleibt damit unverändert richtig; er war nur zu großzügig formuliert.
+
+### 23.3 Verifikation
+
+1651 Tests, 1649 grün, 0 rot (1 skipped, 1 todo). Typechecks für core, daemon,
+statusline und eval grün. Drei neue Negativtests, die genau das prüfen, was die
+Suite bisher nicht sah: die fremde Notiz bleibt unangetastet, das Memory unter
+abweichendem Dateinamen wird gefunden, das fremde Dokument im selben Scope
+bleibt unangetastet.
+
+Unverändert offen bleiben die beiden Punkte aus 21.5 — beides Recall-Themen,
+beides labelpflichtig.
+
