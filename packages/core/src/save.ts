@@ -30,7 +30,7 @@ export async function saveMemory(
   input: SaveMemoryInput,
   commit: SaveMemoryCommitOptions = {},
 ): Promise<SaveMemoryResult> {
-  const { id, filePath } = resolveMemoryTarget(vaultRoot, input);
+  const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input);
   const observedTarget = await readTarget(filePath);
   const exists = observedTarget !== null;
   if (
@@ -155,7 +155,11 @@ export async function saveMemory(
     summary: clampedSummary,
     topic_path: input.topic_path,
     tags: input.tags,
-    scope: input.scope,
+    // Immer identisch zum Ordner, den `resolveMemoryTarget` gewählt hat
+    // (#360-D): kanonisch bei jedem normalen Save, im Bestandsfall die alte
+    // Schreibweise — sonst zeigt das Frontmatter auf ein Regal, in dem die
+    // Datei gar nicht liegt.
+    scope,
     recall_when: input.recall_when,
     related: mergedRelated,
     ...(aliases && aliases.length > 0 ? { aliases } : {}),

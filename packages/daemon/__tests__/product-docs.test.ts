@@ -12,13 +12,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 import { Telemetry } from "../src/telemetry.js";
 import type { ToolDeps } from "../src/tool-handlers.js";
 import { saveProductDocHandler } from "../src/product-doc-handler.js";
+import { renameArea } from "../src/webui-areas.js";
 import { formatDokuBlock } from "../src/doku-block.js";
 import { appendProductDocHint, type SaveSuggestion } from "../src/stop-lane.js";
 
@@ -148,4 +149,100 @@ test("appendProductDocHint: only fires on feature-completion and only when on", 
   appendProductDocHint(auto, "auto");
   assert.match(auto[1].body, /docs\.mode=auto/);
   assert.doesNotMatch(auto[1].body, /propose to the user first/);
+});
+
+/**
+ * #360-Folgefund D (Codex-Gegenreview): der Handler baute id, Ordner, Scope,
+ * topic_path und Tags aus dem ROHEN `project`. Zwei Schreibweisen desselben
+ * Projekts ergaben zwei logische Docs auf einer Datei — und der Scope im
+ * Frontmatter passte nicht zum Ordner, in dem das Doc lag.
+ */
+test("save_product_doc: project casing is canonical in id, folder and scope", async () => {
+  const { deps, dir, close } = await makeDeps();
+  try {
+    const first = await saveProductDocHandler(deps, {
+      project: "CarNexus",
+      area: "Recall-Ansicht",
+      title: "Recall-Ansicht",
+      summary: "s",
+      body: "# Erste Fassung\n",
+    });
+    assert.equal(first.id, "doku-carnexus-recall-ansicht");
+    assert.equal(first.created, true);
+    const shelves = await readdir(join(dir, "dokumentationen"));
+    assert.deepEqual(shelves, ["carnexus"]); // genau EIN Regal, klein
+    const raw = await readFile(
+      join(dir, "dokumentationen", "carnexus", "doku-carnexus-recall-ansicht.md"),
+      "utf8",
+    );
+    assert.match(raw, /^scope: carnexus$/m);
+
+    // Zweiter Call mit anderer Schreibweise: dasselbe Dokument, kein zweites.
+    const second = await saveProductDocHandler(deps, {
+      project: "carnexus",
+      area: "Recall-Ansicht",
+      title: "Recall-Ansicht",
+      summary: "s",
+      body: "# Zweite Fassung\n",
+    });
+    assert.equal(second.id, first.id);
+    assert.equal(second.created, false);
+    assert.equal(second.updated, true);
+    const after = await readFile(second.file_path, "utf8");
+    assert.match(after, /Zweite Fassung/);
+    assert.deepEqual(await readdir(join(dir, "dokumentationen")), ["carnexus"]);
+  } finally {
+    await close();
+  }
+});
+
+/**
+ * Codex-Gegenreview: Der Rename schrieb den Scope um, aber nicht die
+ * IDENTITÄT. Die id blieb `doku-carnexus-…`, während der nächste Save für
+ * `new-project` nach `doku-new-project-…` sucht — und ein zweites Dokument
+ * anlegte, statt das vorhandene zu aktualisieren.
+ *
+ * Der ganze Weg in einem Test: Doc anlegen → Projekt umbenennen → dieselbe
+ * Area erneut speichern → weiterhin genau EIN Dokument.
+ */
+test("save_product_doc: rename then update keeps exactly one doc", async () => {
+  const { deps, dir, close } = await makeDeps();
+  try {
+    const first = await saveProductDocHandler(deps, {
+      project: "carnexus",
+      area: "Recall-Ansicht",
+      title: "Recall-Ansicht",
+      summary: "s",
+      body: "# Vor dem Rename\n",
+    });
+    assert.equal(first.id, "doku-carnexus-recall-ansicht");
+    // Das Memory-Regal muss existieren, sonst hat die Area nichts zum Umbenennen.
+    await mkdir(join(dir, "memories", "projects", "carnexus"), { recursive: true });
+
+    const r = await renameArea(dir, "project", "carnexus", "new-project");
+    assert.equal(r.docsFolderMoved, true);
+    assert.equal(r.docsRenamed, 1);
+    await deps.vault.reconcile?.();
+
+    const second = await saveProductDocHandler(deps, {
+      project: "new-project",
+      area: "Recall-Ansicht",
+      title: "Recall-Ansicht",
+      summary: "s",
+      body: "# Nach dem Rename\n",
+    });
+    assert.equal(second.id, "doku-new-project-recall-ansicht");
+    assert.equal(second.created, false, "kein zweites Dokument");
+
+    const docs = await readdir(join(dir, "dokumentationen", "new-project"));
+    assert.deepEqual(docs, ["doku-new-project-recall-ansicht.md"]);
+    const raw = await readFile(join(dir, "dokumentationen", "new-project", docs[0]), "utf8");
+    assert.match(raw, /Nach dem Rename/);
+    assert.match(raw, /^scope: new-project$/m);
+    // topic_path und Tag tragen den Projektnamen ebenfalls.
+    assert.match(raw, /- new-project/);
+    assert.doesNotMatch(raw, /carnexus/);
+  } finally {
+    await close();
+  }
 });

@@ -19,6 +19,7 @@
 import { z } from "zod";
 import {
   isPathSafeComponent,
+  normalizeScopeKey,
   saveMemory,
   slugify,
   truncateSummaryTo,
@@ -56,7 +57,13 @@ export async function saveProductDocHandler(
 
   const areaSlug = slugify(area);
   if (!areaSlug) throw new Error(`area slugifies to nothing: ${JSON.stringify(area)}`);
-  const id = `doku-${project}-${areaSlug}`;
+  // #360-Folgefund D (Codex-Gegenreview): `project` kam roh vom Aufrufer und
+  // wurde ungefaltet zu id, Scope, Ordner, topic_path und Tags. Ein zweiter
+  // Aufruf mit anderer Schreibweise erzeugte damit eine zweite logische
+  // Doku — auf case-insensitiven Dateisystemen ein stilles Überschreiben.
+  // Kanonischer Key für jede IDENTITÄT, rohe Schreibweise nur in title/body.
+  const projectKey = normalizeScopeKey(project);
+  const id = `doku-${projectKey}-${areaSlug}`;
 
   const before = deps.vault.get(id);
   const existed = before !== undefined;
@@ -66,9 +73,9 @@ export async function saveProductDocHandler(
     type: "doc",
     summary: truncateSummaryTo(summary, SUMMARY_MAX),
     body,
-    topic_path: ["doku", project, areaSlug],
-    tags: parsed.data.tags ?? ["product-doc", project],
-    scope: project,
+    topic_path: ["doku", projectKey, areaSlug],
+    tags: parsed.data.tags ?? ["product-doc", projectKey],
+    scope: projectKey,
     recall_when: parsed.data.recall_when ?? [
       `how to use ${title}`,
       `${project} ${area} user guide`,

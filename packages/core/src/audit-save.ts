@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { saveMemory } from "./save.js";
-import { slugify } from "./save-text.js";
+import { canonicalMemoryId } from "./save-text.js";
 import type { SaveMemoryInput, SaveMemoryResult } from "./save-schema.js";
 import {
   AuditLog,
@@ -56,7 +56,7 @@ export async function auditedSave(args: {
   // deshalb JEDER slug-inferred Overwrite als `create` mit `diff_before: null`
   // auditiert — das Vorbild eines destruktiven Overwrites war damit weg und
   // die Mutation aus dem Trail nicht rekonstruierbar.
-  const candidateID = input.id ?? slugify(input.title);
+  const candidateID = canonicalMemoryId(input.id, input.title);
   const existing = vault.get(candidateID);
   const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
 

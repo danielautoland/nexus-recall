@@ -51,6 +51,7 @@ export { SaveMemoryInput, MemoryWriteConflictError, MEMORY_WRITE_CONFLICT } from
 export type { SaveMemoryResult, SaveMemoryCommitOptions } from "./save-schema.js";
 export {
   slugify,
+  canonicalMemoryId,
   extractWikilinks,
   stripAutoRelatedSection,
   stripCodeSpans,

@@ -16,7 +16,7 @@ import matter from "gray-matter";
 import { z } from "zod";
 import {
   saveMemory,
-  slugify,
+  resolveMemoryTarget,
   moveToTrash,
   SaveMemoryInput,
   stripAutoRelatedSection,
@@ -352,7 +352,14 @@ async function saveMemoryInner(
   // Die effektive id muss VOR dem Quality-Scoring feststehen — sonst schließt
   // scoreSaveQuality das Memory nicht von seinen eigenen Duplikat- und
   // Kollisions-Checks aus (#239).
-  const finalId = parsed.data.id ?? slugify(parsed.data.title);
+  // Codex-Gegenreview zu #360-D: hier stand eine EIGENE Kopie der
+  // id-Ableitung. Seit die Faltung existiert, wich sie vom tatsächlich
+  // geschriebenen Ziel ab — der Quality-Selbstausschluss (#239) hätte das
+  // Memory dann als sein eigenes Duplikat gewertet. `resolveMemoryTarget`
+  // ist die Stelle, die das Ziel bestimmt, inklusive Bestandsschutz; sie
+  // fasst nichts an und ist deshalb auch vor dem Schreiben die richtige
+  // Auskunft.
+  const finalId = resolveMemoryTarget(deps.vaultPath, parsed.data).id;
 
   // #205: a save declaring a contradiction is a conflict report, not a write —
   // diverted before any quality scoring or file I/O touches the vault.

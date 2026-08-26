@@ -15,11 +15,12 @@
  *     vault.reconcile() — drops run before adds there, so renames resolve
  *     cleanly. Never mix per-file reindexFile into a bulk move.
  */
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import matter from "gray-matter";
 import { isPathSafeComponent, slugify } from "@bastra-recall/core";
+import { scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 
@@ -126,7 +127,13 @@ export async function createArea(vaultRoot: string, rawName: string): Promise<Ar
 }
 
 /** Rewrite `scope:` in every memory frontmatter under dir (recursive) whose
- *  scope equals oldScope. Files without parseable frontmatter are skipped. */
+ *  scope equals oldScope. Files without parseable frontmatter are skipped.
+ *
+ *  #360-Folgefund A: der Vergleich lief exakt (`!== oldScope`) — ein Ordner
+ *  `carnexus` mit Frontmatter `scope: CarNexus` wurde verschoben, aber kein
+ *  einziger Scope umgeschrieben (`scopesRewritten: 0`), und die Memories waren
+ *  danach im eigenen Projekt fremd. Gefaltet über die zentrale
+ *  Scope-Identität (`scopeEquals`) statt einer eigenen Kopie. */
 async function rewriteScopes(dir: string, oldScope: string, newScope: string): Promise<number> {
   let rewritten = 0;
   let entries;
@@ -146,7 +153,8 @@ async function rewriteScopes(dir: string, oldScope: string, newScope: string): P
     try {
       const raw = await readFile(full, "utf8");
       const parsed = matter(raw);
-      if ((parsed.data as Record<string, unknown>)?.scope !== oldScope) continue;
+      const cur = (parsed.data as Record<string, unknown>)?.scope;
+      if (typeof cur !== "string" || !scopeEquals(cur, oldScope)) continue;
       (parsed.data as Record<string, unknown>).scope = newScope;
       const next = matter.stringify(parsed.content, parsed.data);
       const tmp = `${full}.tmp-${process.pid}`;
@@ -164,6 +172,75 @@ export interface RenameResult {
   name: string;
   scopesRewritten: number;
   docsFolderMoved: boolean;
+  /** Produktdokumente, deren id/Dateiname/topic_path/Tag auf das neue
+   *  Projekt gezogen wurden (siehe {@link rewriteDocIdentity}). */
+  docsRenamed: number;
+}
+
+/**
+ * Produktdokumente tragen den Projektnamen in ihrer IDENTITÄT, nicht nur im
+ * Scope: `save_product_doc` baut `doku-<projekt>-<area>` als id (= Dateiname),
+ * `["doku", <projekt>, <area>]` als topic_path und `<projekt>` als Tag.
+ *
+ * Codex-Gegenreview: Ein Rename schrieb bisher nur den Scope um. Die id blieb
+ * `doku-carnexus-area`, während der nächste `save_product_doc`-Aufruf für
+ * `new-project` nach `doku-new-project-area` sucht — und ein ZWEITES Dokument
+ * anlegt, statt das vorhandene zu aktualisieren. Genau das, was die
+ * update-in-place-Semantik dieses Tools ausschließen soll.
+ *
+ * Umgeschrieben wird nur, was den Projektnamen an der id-Position trägt; ein
+ * Dokument mit fremder id bleibt unangetastet. Ist der Zielname schon belegt,
+ * bleibt das Dokument liegen — lieber eine alte id als ein überschriebenes
+ * Dokument.
+ */
+async function rewriteDocIdentity(dir: string, oldName: string, newName: string): Promise<number> {
+  let renamed = 0;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  const prefix = `doku-${oldName}-`;
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.toLowerCase().endsWith(".md")) continue;
+    const full = join(dir, e.name);
+    try {
+      const raw = await readFile(full, "utf8");
+      const parsed = matter(raw);
+      const data = parsed.data as Record<string, unknown>;
+      const id = data.id;
+      if (typeof id !== "string" || !id.startsWith(prefix)) continue;
+      const nextId = `doku-${newName}-${id.slice(prefix.length)}`;
+      const nextPath = join(dir, `${nextId}.md`);
+      if (nextPath !== full && (await pathExists(nextPath))) continue;
+      data.id = nextId;
+      if (Array.isArray(data.topic_path) && data.topic_path[1] === oldName) {
+        data.topic_path = [...data.topic_path];
+        (data.topic_path as unknown[])[1] = newName;
+      }
+      if (Array.isArray(data.tags)) {
+        data.tags = (data.tags as unknown[]).map((t) => (t === oldName ? newName : t));
+      }
+      const tmp = `${full}.tmp-${process.pid}`;
+      await writeFile(tmp, matter.stringify(parsed.content, data), "utf8");
+      await rename(tmp, nextPath);
+      if (nextPath !== full) await rm(full, { force: true });
+      renamed++;
+    } catch {
+      // unparseable file — leave it untouched rather than corrupt it
+    }
+  }
+  return renamed;
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -190,6 +267,7 @@ export async function renameArea(
 
   let scopesRewritten = 0;
   let docsFolderMoved = false;
+  let docsRenamed = 0;
   if (kind === "project") {
     scopesRewritten = await rewriteScopes(to, name, newName);
     // dokumentationen/<scope> is the same area's docs shelf — keep it in step.
@@ -199,8 +277,17 @@ export async function renameArea(
       await rename(docsFrom, docsTo);
       docsFolderMoved = true;
     }
+    // #360-Folgefund B: der Doku-Ordner zog mit, seine Dokumente behielten
+    // aber `scope: <alt>` — sie lagen danach im neuen Regal und wurden beim
+    // Recall fürs neue Projekt als fremd gefiltert. Betrifft JEDEN Rename,
+    // unabhängig von der Schreibweise. Zählt in dieselbe Summe: es sind
+    // Scope-Rewrites derselben Area.
+    if (await isDir(docsTo)) {
+      scopesRewritten += await rewriteScopes(docsTo, name, newName);
+      docsRenamed = await rewriteDocIdentity(docsTo, name, newName);
+    }
   }
-  return { name: newName, scopesRewritten, docsFolderMoved };
+  return { name: newName, scopesRewritten, docsFolderMoved, docsRenamed };
 }
 
 export interface DeleteResult {

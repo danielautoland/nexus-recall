@@ -114,3 +114,59 @@ test("guards: reserved areas and unsafe names are rejected", async () => {
     await rm(v, { recursive: true, force: true });
   }
 });
+
+/**
+ * #360-Folgefund A+B (Codex-Gegenreview): der Scope-Rewrite beim Rename lief
+ * case-sensitiv, und der mitgezogene Doku-Ordner wurde gar nicht umgeschrieben.
+ */
+async function makeMixedCaseVault(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "areas-case-"));
+  await mkdir(join(root, "memories", "projects", "carnexus"), { recursive: true });
+  await writeFile(
+    join(root, "memories", "projects", "carnexus", "fact-case.md"),
+    "---\nid: fact-case\ntitle: T\ntype: reference\nsummary: s\ntopic_path:\n  - t\ntags:\n  - t\nscope: CarNexus\nrecall_when:\n  - t\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nBody.\n",
+  );
+  await mkdir(join(root, "dokumentationen", "carnexus"), { recursive: true });
+  await writeFile(
+    join(root, "dokumentationen", "carnexus", "doku-carnexus-area.md"),
+    "---\nid: doku-carnexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\ntags:\n  - product-doc\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc.\n",
+  );
+  return root;
+}
+
+test("renameArea: scope rewrite is case-folded — CarNexus counts as carnexus", async () => {
+  const v = await makeMixedCaseVault();
+  try {
+    const r = await renameArea(v, "project", "carnexus", "new-project");
+    // 1x memory (scope: CarNexus) + 1x product doc (scope: carnexus)
+    assert.equal(r.scopesRewritten, 2);
+    const raw = await readFile(
+      join(v, "memories", "projects", "new-project", "fact-case.md"),
+      "utf8",
+    );
+    assert.equal(matter(raw).data.scope, "new-project");
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("renameArea: product docs move, and scope AND identity are rewritten", async () => {
+  const v = await makeMixedCaseVault();
+  try {
+    const r = await renameArea(v, "project", "carnexus", "new-project");
+    assert.equal(r.docsFolderMoved, true);
+    // Codex-Gegenreview: nicht nur der Scope — die id trägt den Projektnamen
+    // ebenfalls, und ein gebliebenes `doku-carnexus-area` hätte beim nächsten
+    // save_product_doc für new-project ein ZWEITES Dokument erzeugt.
+    assert.equal(r.docsRenamed, 1);
+    const docs = await readdir(join(v, "dokumentationen", "new-project"));
+    assert.deepEqual(docs, ["doku-new-project-area.md"]);
+    const raw = await readFile(join(v, "dokumentationen", "new-project", docs[0]), "utf8");
+    // Der Kernfehler: das Dokument lag im neuen Regal, hieß aber noch carnexus
+    // — und wurde beim Recall für new-project als fremd gefiltert.
+    assert.equal(matter(raw).data.scope, "new-project");
+    assert.equal(matter(raw).data.id, "doku-new-project-area");
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});

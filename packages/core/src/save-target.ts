@@ -8,9 +8,11 @@
  * vault root. Separate from the save itself so the daemon can ask "where would
  * this land" without a write.
  */
+import { readdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { SaveMemoryInput } from "./save-schema.js";
-import { slugify } from "./save-text.js";
+import { canonicalMemoryId } from "./save-text.js";
+import { normalizeScopeKey } from "./scope.js";
 
 /**
  * Subfolder routing inside the vault.
@@ -34,6 +36,13 @@ import { slugify } from "./save-text.js";
  * The vault scans recursively, so older flat `memorys/` files continue to
  * work until they are migrated.
  */
+/**
+ * Die exakten `scope === …`-Vergleiche hier sind seit #360-D unkritisch: der
+ * EINZIGE produktive Aufrufer ist `resolveMemoryTarget`, und der übergibt den
+ * kanonischen Key (`normalizeScopeKey`). Ein roher "User-Preference" kann
+ * diese Zweige also nicht mehr verfehlen. Wer die Funktion künftig direkt
+ * aufruft, faltet vorher selbst.
+ */
 export function subfolderFor(scope: string, type: string): string {
   if (type === "bookmark") return "bookmarks";
   if (type === "doc") return `dokumentationen/${scope}`;
@@ -47,6 +56,66 @@ export function subfolderFor(scope: string, type: string): string {
   return `memories/projects/${scope}`;
 }
 
+/**
+ * Bestandsschutz für die Kanonisierung (Codex-Gegenreview zu #360-D).
+ *
+ * Die Faltung ist richtig für NEUE Memories, darf aber kein bestehendes
+ * unerreichbar machen. Ein Vault mit `Upper-ID.md` (oder einem Regal `Proj/`)
+ * hätte sonst zwei Ausgänge, beide falsch: auf einem case-SENSITIVEN System
+ * entsteht `upper-id.md` daneben — ein Duplikat, das `overwrite: true` still
+ * ignoriert; auf einem case-INSENSITIVEN System trifft der Schreibvorgang die
+ * alte Datei, lässt ihren Namen stehen und setzt im Frontmatter die neue id —
+ * Datei und id fallen auseinander (auf APFS nachgestellt).
+ *
+ * Also: Existiert das kanonische Ziel EXAKT nicht, das rohe aber schon, wird
+ * das rohe bedient und die alte Schreibweise beibehalten. Kein Rename, keine
+ * Migration — Bestandsdaten bleiben genau so bedienbar wie vorher, und alles
+ * Neue ist kanonisch.
+ *
+ * `readdirSync` statt `existsSync`, weil `existsSync` auf case-insensitiven
+ * Dateisystemen für `upper-id.md` true meldet, wenn `Upper-ID.md` daliegt —
+ * genau die Verwechslung, die hier auseinandergehalten werden muss. Der
+ * Zweig läuft nur, wenn roh und kanonisch überhaupt auseinandergehen: bei
+ * jedem normalen Save kostet er nichts.
+ */
+function resolveAgainstExisting(
+  vaultRoot: string,
+  input: MemoryTargetInput,
+  canonicalId: string,
+  canonicalSubdir: string,
+): { id: string; subdir: string } {
+  const rawId = input.id ?? canonicalId;
+  const rawSubdir = input.folder ?? subfolderFor(input.scope, input.type);
+  if (rawId === canonicalId && rawSubdir === canonicalSubdir) {
+    return { id: canonicalId, subdir: canonicalSubdir };
+  }
+  if (existsExactPath(vaultRoot, `${canonicalSubdir}/${canonicalId}.md`)) {
+    return { id: canonicalId, subdir: canonicalSubdir };
+  }
+  if (existsExactPath(vaultRoot, `${rawSubdir}/${rawId}.md`)) {
+    return { id: rawId, subdir: rawSubdir };
+  }
+  return { id: canonicalId, subdir: canonicalSubdir };
+}
+
+/** Existiert dieser Pfad mit GENAU dieser Schreibweise? Jedes Segment einzeln,
+ *  weil ein case-insensitives Dateisystem sonst schon beim Ordner lügt: ein
+ *  `readdirSync("…/proj")` öffnet dort klaglos `Proj/` und meldet dessen
+ *  Inhalt — die Datei sähe kanonisch vorhanden aus, obwohl sie im alten Regal
+ *  liegt. */
+function existsExactPath(root: string, relPath: string): boolean {
+  let cur = root;
+  for (const segment of relPath.split("/")) {
+    try {
+      if (!readdirSync(cur).includes(segment)) return false;
+    } catch {
+      return false;
+    }
+    cur = join(cur, segment);
+  }
+  return true;
+}
+
 export type MemoryTargetInput = Pick<
   SaveMemoryInput,
   "title" | "type" | "scope" | "id" | "folder"
@@ -55,6 +124,11 @@ export type MemoryTargetInput = Pick<
 export interface MemoryTarget {
   id: string;
   filePath: string;
+  /** Der Scope, den das Frontmatter tragen MUSS, damit er zum Ordner passt.
+   *  Normalerweise der kanonische Key; im Bestandsfall (siehe
+   *  {@link resolveAgainstExisting}) die alte Schreibweise, weil die Datei
+   *  weiterhin im alten Regal liegt. */
+  scope: string;
 }
 
 /**
@@ -70,11 +144,19 @@ export function resolveMemoryTarget(
   vaultRoot: string,
   input: MemoryTargetInput,
 ): MemoryTarget {
-  const id = input.id ?? slugify(input.title);
-  const subdir = input.folder ?? subfolderFor(input.scope, input.type);
+  const canonicalId = canonicalMemoryId(input.id, input.title);
+  // #360-Folgefund D: `scope` wird hier zum ORDNERNAMEN. Ein roher
+  // Projektname ("CarNexus") legte damit ein zweites Regal neben dem
+  // kanonischen an — auf case-insensitiven Dateisystemen sogar dasselbe
+  // Regal unter zwei Namen. Gefaltet über die zentrale Scope-Identität;
+  // `save.ts` schreibt denselben Key ins Frontmatter, damit Ordner und
+  // `scope:` nie auseinanderlaufen.
+  const canonicalSubdir = input.folder ?? subfolderFor(normalizeScopeKey(input.scope), input.type);
+  const { id, subdir } = resolveAgainstExisting(vaultRoot, input, canonicalId, canonicalSubdir);
+  const scope = subdir === canonicalSubdir ? normalizeScopeKey(input.scope) : input.scope;
   const filePath = join(vaultRoot, subdir, `${id}.md`);
   if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
     throw new Error(`refusing to write outside the vault: ${filePath}`);
   }
-  return { id, filePath };
+  return { id, filePath, scope };
 }

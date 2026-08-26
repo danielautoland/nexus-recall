@@ -126,6 +126,27 @@ export function slugify(input: string): string {
   return slug;
 }
 
+/**
+ * Die EINE Ableitung der Memory-id (#360-Folgefund D, Codex-Gegenreview).
+ *
+ * Auto-generierte ids sind über `slugify()` immer klein — eine vom Caller
+ * EXPLIZIT gesetzte id passierte dagegen nur `isPathSafeComponent` und durfte
+ * Großbuchstaben tragen. Folgen: (a) `doku-CarNexus-area` und
+ * `doku-carnexus-area` sind zwei logische Memories, auf case-insensitiven
+ * Dateisystemen aber EINE Datei — ein stilles Überschreiben; (b) das
+ * Wikilink-Muster akzeptiert nur `[a-z0-9][a-z0-9_-]*`, eine großgeschriebene
+ * id ist also per `[[id]]` gar nicht verlinkbar und fällt aus dem
+ * Multi-Hop-Recall heraus.
+ *
+ * Deshalb gefaltet statt abgelehnt: ein Caller mit CamelCase-id soll schreiben
+ * können, nur eben auf die kanonische id. `save-target.ts` (Zielpfad) und
+ * `audit-save.ts` (diff_before-Lookup) MÜSSEN dieselbe Ableitung benutzen —
+ * dass beide sie einst getrennt kopierten, war die Wurzel von #240/C6.
+ */
+export function canonicalMemoryId(explicitId: string | undefined, title: string): string {
+  return explicitId === undefined ? slugify(title) : explicitId.toLowerCase();
+}
+
 export function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
