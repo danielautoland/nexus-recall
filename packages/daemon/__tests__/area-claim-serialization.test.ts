@@ -14,11 +14,19 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAreaMark, saveMemory, withAreaShared, type SaveMemoryInput } from "@bastra-recall/core";
+import {
+  areaKeyForPath,
+  readAreaMark,
+  saveMemory,
+  withAreaExclusive,
+  withAreaShared,
+  type SaveMemoryInput,
+} from "@bastra-recall/core";
 import { createArea, deleteArea, renameArea } from "../src/webui-areas.js";
 
 async function vault(t: { after: (fn: () => unknown) => void }): Promise<string> {
@@ -51,7 +59,7 @@ test("ein laufender Save hält seinen Scope — der Rename daneben schreibt kein
   // kompletter Rename durch.
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
-  const saving = withAreaShared(root, "carnexus", async () => {
+  const saving = withAreaShared(root, ["carnexus"], async () => {
     await held;
     return "saved";
   });
@@ -136,4 +144,138 @@ test("Delete und Create desselben Namens laufen nicht gegeneinander", async (t) 
     false,
     `lebendes Regal mit Grabstein: ${JSON.stringify({ mark, settled: settled.map((s) => s.status) })}`,
   );
+});
+
+// ── Codex-Abschlussprüfung: die Sperre selbst ───────────────────
+
+test("einen verwaisten Area-Lock übernimmt genau einer", async (t) => {
+  // Nachgestellt mit 30 Runden à 16 Konkurrenten: Der eigene Reclaim
+  // (`claimIsAbandoned` + ungeschütztes `rename`) ließ alle 16 gleichzeitig in
+  // den exklusiven Abschnitt. Jetzt läuft die Übernahme über
+  // `acquireCommitClaim()`, dieselbe Konstruktion wie im Save-Pfad.
+  for (let round = 0; round < 6; round++) {
+    const root = await vault(t);
+    const locks = join(root, ".bastra", "locks");
+    await mkdir(locks, { recursive: true });
+    // Ein Lock eines Prozesses, den es nachweislich nicht mehr gibt: fremder
+    // Host + überaltert, damit `claimIsAbandoned` ihn freigibt.
+    const digest = createHash("sha256").update("carnexus").digest("hex").slice(0, 32);
+    const lockPath = join(locks, `area-${digest}.lock`);
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: 999999, host: "eine-andere-maschine", ts: 0, token: "alt" }),
+      "utf8",
+    );
+    const past = new Date(Date.now() - 5 * 60_000);
+    await utimes(lockPath, past, past);
+
+    let inside = 0;
+    let maxInside = 0;
+    const settled = await Promise.allSettled(
+      Array.from({ length: 16 }, () =>
+        withAreaExclusive(root, ["carnexus"], async () => {
+          inside++;
+          maxInside = Math.max(maxInside, inside);
+          await new Promise((r) => setTimeout(r, 5));
+          inside--;
+        }),
+      ),
+    );
+    assert.equal(maxInside, 1, `nie mehr als einer im exklusiven Abschnitt (Runde ${round})`);
+    assert.equal(
+      settled.filter((x) => x.status === "fulfilled").length,
+      1,
+      `genau ein Reclaimer darf gewinnen (Runde ${round})`,
+    );
+  }
+});
+
+test("der Area-Schlüssel kommt aus dem Pfad, nicht aus dem Scope", async (t) => {
+  const root = await vault(t);
+  assert.equal(areaKeyForPath(root, join(root, "memories/projects/carnexus/m.md")), "carnexus");
+  assert.equal(areaKeyForPath(root, join(root, "memories/people/mike.md")), "people");
+  assert.equal(areaKeyForPath(root, join(root, "dokumentationen/carnexus/d.md")), "carnexus");
+  // Kein Regal: eine Datei direkt in `memories/`, Bookmarks, der Document-Hub.
+  assert.equal(areaKeyForPath(root, join(root, "memories/lose.md")), null);
+  assert.equal(areaKeyForPath(root, join(root, "bookmarks/b.md")), null);
+  assert.equal(areaKeyForPath(root, join(root, "documents/alt/x.md.md")), null);
+});
+
+test("ein exklusiver people-Lock blockiert einen Save mit folder: memories/people", async (t) => {
+  // Bestätigt war: gehaltener `people`-Lock, `saveMemory({ scope: "carnexus",
+  // folder: "memories/people" })` lief glatt durch — ein Top-Rename war damit
+  // nicht gegen Saves ins Top-Regal serialisiert.
+  const root = await vault(t);
+  await mkdir(join(root, "memories", "people"), { recursive: true });
+
+  // Erst warten, bis der Lock WIRKLICH gehalten wird: `withAreaExclusive` läuft
+  // bis dahin durch mehrere awaits, und ein Save, der in dieses Fenster fällt,
+  // würde umgekehrt die Area-Operation zurücktreten lassen.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let ready!: () => void;
+  const acquired = new Promise<void>((r) => (ready = r));
+  const holding = withAreaExclusive(root, ["people"], () => {
+    ready();
+    return held;
+  });
+  await acquired;
+
+  await assert.rejects(
+    () => saveMemory(root, input({ id: "mike", folder: "memories/people" })),
+    /the area 'people' is being renamed, deleted or created right now/,
+  );
+  assert.equal(existsSync(join(root, "memories", "people", "mike.md")), false);
+
+  release();
+  await holding;
+  // Und danach geht derselbe Save.
+  const saved = await saveMemory(root, input({ id: "mike", folder: "memories/people" }));
+  assert.match(saved.file_path, /memories\/people\/mike\.md$/);
+});
+
+test("ein Re-File sperrt Quell- UND Zielregal", async (t) => {
+  const root = await vault(t);
+  await createArea(root, "carnexus");
+  const first = await saveMemory(root, input());
+  assert.match(first.file_path, /projects\/carnexus\//);
+
+  // Das ZIEL des Re-Files ist gesperrt.
+  let releaseTarget!: () => void;
+  const heldTarget = new Promise<void>((r) => (releaseTarget = r));
+  let targetReady!: () => void;
+  const targetAcquired = new Promise<void>((r) => (targetReady = r));
+  const holdingTarget = withAreaExclusive(root, ["people"], () => {
+    targetReady();
+    return heldTarget;
+  });
+  await targetAcquired;
+  await assert.rejects(
+    () => saveMemory(root, input({ overwrite: true, folder: "memories/people" })),
+    /the area 'people' is being renamed/,
+  );
+  releaseTarget();
+  await holdingTarget;
+
+  // Und die QUELLE ebenso — sie wird beim Umzug getrasht.
+  let releaseSource!: () => void;
+  const heldSource = new Promise<void>((r) => (releaseSource = r));
+  let sourceReady!: () => void;
+  const sourceAcquired = new Promise<void>((r) => (sourceReady = r));
+  const holdingSource = withAreaExclusive(root, ["carnexus"], () => {
+    sourceReady();
+    return heldSource;
+  });
+  await sourceAcquired;
+  await assert.rejects(
+    () => saveMemory(root, input({ overwrite: true, folder: "memories/people" })),
+    /the area 'carnexus' is being renamed/,
+  );
+  releaseSource();
+  await holdingSource;
+
+  // Ohne Sperre zieht er ganz um.
+  const moved = await saveMemory(root, input({ overwrite: true, folder: "memories/people" }));
+  assert.match(moved.file_path, /memories\/people\//);
+  assert.equal(existsSync(first.file_path), false, "die Quelle ist weg");
 });

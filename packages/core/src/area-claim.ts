@@ -30,12 +30,12 @@
  * für die dieselben Regeln gelten wie für Trash und Locks: eigenes
  * Unterverzeichnis, kein Symlink.
  */
-import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
-import { claimIsAbandoned } from "./save-commit.js";
+import { acquireCommitClaim, claimIsAbandoned, releaseCommitClaim } from "./save-commit.js";
 import { normalizeScopeKey } from "./scope.js";
 
 const AUDIT_DIR = ".bastra";
@@ -299,32 +299,80 @@ async function liveReaders(readersDir: string): Promise<string[]> {
 const SHARED_RETRIES = 5;
 const SHARED_RETRY_MS = 20;
 
+
+/**
+ * Welches Regal wird an diesem Pfad wirklich beschrieben?
+ *
+ * Codex-Abschlussprüfung (P0-2): Der Save sperrte seinen `scope`. Das
+ * PHYSISCHE Ziel kann aber ein anderes Regal sein — `folder` ist eine
+ * Anweisung, die `subfolderFor()` übergeht. Bestätigt: Bei gehaltenem
+ * exklusivem Lock auf `people` lief `saveMemory({ scope: "carnexus", folder:
+ * "memories/people" })` glatt durch, und ein Top-Rename `people → personen`
+ * war damit weiterhin nicht gegen Saves in `memories/people` serialisiert.
+ *
+ * Der Schlüssel kommt deshalb aus dem aufgelösten Pfad, nicht aus dem Scope:
+ *
+ *   memories/projects/<p>/…   → <p>
+ *   dokumentationen/<p>/…     → <p>
+ *   memories/<top>/…          → <top>
+ *
+ * `null` heißt „kein Area-Regal" (`bookmarks/`, `documents/`, eine Datei
+ * direkt in `memories/`) — dort gibt es nichts zu serialisieren, weil kein
+ * Rename und kein Delete diese Pfade bewegt.
+ */
+export function areaKeyForPath(vaultRoot: string, filePath: string): string | null {
+  const rel = relative(vaultRoot, filePath).split(sep);
+  // Ausserhalb des Vaults (`..`) ist keine Area — die Containment-Prüfung des
+  // Aufrufers hat dazu ohnehin das letzte Wort.
+  if (rel.length === 0 || rel[0] === "" || rel[0] === "..") return null;
+  // Der Schlüssel muss ein ORDNER sein: `memories/projects/x.md` ist eine Datei
+  // im Projektregal-Elternordner, kein Regal namens `x.md`.
+  const at = (i: number): string | null =>
+    rel.length > i + 1 && rel[i] !== "" ? normalizeScopeKey(rel[i]) : null;
+  if (rel[0] === "memories") return rel[1] === "projects" ? at(2) : at(1);
+  if (rel[0] === "dokumentationen") return at(1);
+  return null;
+}
+
 /**
  * Den Namen für die Dauer von `fn` MITBENUTZEN — ein Save, der ins Regal
  * schreibt, ohne es zu verändern.
  */
 export async function withAreaShared<T>(
   vaultRoot: string,
-  name: string,
+  names: (string | null)[],
   fn: () => Promise<T>,
 ): Promise<T> {
-  const { lock, readers } = areaLockPaths(vaultRoot, name);
-  await mkdir(readers, { recursive: true });
+  // Sortiert und dedupliziert wie beim exklusiven Claim: Ein Re-File berührt
+  // ZWEI Regale (Quelle und Ziel), und zwei Saves in gekreuzter Richtung
+  // dürfen nicht jeweils die Hälfte halten. `null` ist kein Regal.
+  const wanted = [...new Set(names.filter((n): n is string => n !== null).map(normalizeScopeKey))].sort();
+  if (wanted.length === 0) return fn();
+  const shelves = wanted.map((name) => ({ name, ...areaLockPaths(vaultRoot, name) }));
+  for (const s of shelves) await mkdir(s.readers, { recursive: true });
   for (let attempt = 0; ; attempt++) {
-    const marker = join(readers, `${randomUUID()}.json`);
-    await writeFile(marker, claimBody(), { encoding: "utf8", mode: 0o600 });
+    const markers = shelves.map((s) => ({ shelf: s, path: join(s.readers, `${randomUUID()}.json`) }));
+    const body = claimBody();
+    for (const m of markers) await writeFile(m.path, body, { encoding: "utf8", mode: 0o600 });
     // ERST eintragen, DANN prüfen — nur so kann die Gegenseite uns sehen.
-    if (!(await exclusiveHeld(lock))) {
+    let blockedBy: string | null = null;
+    for (const s of shelves) {
+      if (await exclusiveHeld(s.lock)) {
+        blockedBy = s.name;
+        break;
+      }
+    }
+    if (blockedBy === null) {
       try {
         return await fn();
       } finally {
-        await unlink(marker).catch(() => {});
+        for (const m of markers) await unlink(m.path).catch(() => {});
       }
     }
-    await unlink(marker).catch(() => {});
+    for (const m of markers) await unlink(m.path).catch(() => {});
     if (attempt >= SHARED_RETRIES) {
       throw new Error(
-        `the area '${name}' is being renamed, deleted or created right now — ` +
+        `the area '${blockedBy}' is being renamed, deleted or created right now — ` +
           `nothing was written. Retry in a moment.`,
       );
     }
@@ -344,37 +392,34 @@ export async function withAreaExclusive<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const wanted = [...new Set(names.map((n) => normalizeScopeKey(n)))].sort();
-  const held: { lock: string; body: string; name: string }[] = [];
+  const held: { lock: string; token: string }[] = [];
   try {
     for (const name of wanted) {
       const { lock, readers } = areaLockPaths(vaultRoot, name);
       await mkdir(dirname(lock), { recursive: true });
-      const body = claimBody();
+      // Codex-Abschlussprüfung (P0-1): Hier stand ein ZWEITER, eigener
+      // Reclaim-Algorithmus — `claimIsAbandoned()` gefolgt von einem
+      // ungeschützten `rename(tmp, lock)`. Nachgestellt mit 30 Runden à 16
+      // Konkurrenten auf demselben verwaisten Lock: 30 von 30 fehlerhaft, alle
+      // 16 gleichzeitig im exklusiven Abschnitt. Nach einem Crash war
+      // `withAreaExclusive` also nicht exklusiv.
+      //
+      // Der Vault hat genau EINE korrekte Übernahme-Konstruktion, und sie steht
+      // in `acquireCommitClaim()`: O_EXCL, und für den verwaisten Fall eine
+      // Reclaim-Markierung, deren NAME aus dem Inhalt des alten Claims
+      // abgeleitet ist — zwei Reclaimer streiten damit um denselben Pfad, und
+      // veröffentlicht wird per `rename` über den bestehenden Lock, sodass der
+      // Pfad nie leer aussieht. Ein Lock-Mechanismus, zwei Aufrufer.
+      let token: string;
       try {
-        const handle = await open(lock, "wx", 0o600);
-        try {
-          await handle.writeFile(body, "utf8");
-        } finally {
-          await handle.close();
-        }
+        token = await acquireCommitClaim(lock, `area:${name}`, lock);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
-        if (!(await claimIsAbandoned(lock))) {
-          throw new Error(
-            `another area operation is running on '${name}' — nothing was changed. Retry in a moment.`,
-          );
-        }
-        // Verwaist: über ein Rename übernehmen, damit der Pfad nie leer ist.
-        const tmp = `${lock}.${process.pid}.${randomUUID().slice(0, 8)}.take`;
-        await writeFile(tmp, body, { encoding: "utf8", mode: 0o600 });
-        try {
-          await rename(tmp, lock);
-        } catch (e) {
-          await unlink(tmp).catch(() => {});
-          throw e;
-        }
+        throw new Error(
+          `another area operation is running on '${name}' — nothing was changed. ` +
+            `Retry in a moment. (${(err as Error).message})`,
+        );
       }
-      held.push({ lock, body, name });
+      held.push({ lock, token });
       // ERST der Lock, DANN die Reader — spiegelbildlich zu `withAreaShared`.
       const readersLive = await liveReaders(readers);
       if (readersLive.length > 0) {
@@ -386,12 +431,9 @@ export async function withAreaExclusive<T>(
     }
     return await fn();
   } finally {
-    for (const h of held.reverse()) {
-      // Nur den EIGENEN Lock freigeben: Wurde er zwischenzeitlich als verwaist
-      // eingesammelt, gehört er jemand anderem — dieselbe Regel wie in
-      // `releaseCommitClaim`.
-      const current = await readFile(h.lock, "utf8").catch(() => null);
-      if (current === h.body) await unlink(h.lock).catch(() => {});
-    }
+    // `releaseCommitClaim` gibt nur den EIGENEN Lock frei: Wurde er
+    // zwischenzeitlich als verwaist eingesammelt, gehört er jemand anderem und
+    // bleibt stehen.
+    for (const h of held.reverse()) await releaseCommitClaim(h.lock, h.token);
   }
 }

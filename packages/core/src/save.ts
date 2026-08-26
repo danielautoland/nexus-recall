@@ -22,9 +22,10 @@ import { extractWikilinks, todayISO, dedupe } from "./save-text.js";
 import { fileExists, readTarget, writeConflict } from "./save-commit.js";
 import { withIdClaim, type IdClaim } from "./id-transaction.js";
 import { sameFile } from "./file-identity.js";
+import { normalizeScopeKey } from "./scope.js";
 import { resolveMemoryTarget } from "./save-target.js";
 import { moveToTrashUnderClaim } from "./audit-log.js";
-import { assertAreaWritable, withAreaShared } from "./area-claim.js";
+import { areaKeyForPath, assertAreaWritable, withAreaShared } from "./area-claim.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
@@ -41,17 +42,30 @@ export async function saveMemory(
   // und in welcher Schreibweise liegt diese id, damit ein Bestands-Memory
   // nicht plötzlich woanders auftaucht. Die verbindliche Frage — gehört die
   // id schon jemandem? — stellt die Transaktion unten, und zwar an die Platte.
-  const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input, locator);
+  const { id, filePath, scope, existingPath } = resolveMemoryTarget(vaultRoot, input, locator);
   // REIHENFOLGE: Area-Claim VOR ID-Claim, überall im Vault dieselbe.
   //
   // Codex-Gegenreview Runde 10 (P0-1): Der Grabstein wurde bisher mitten im
   // Save gelesen und danach noch geparst, gebaut, geschrieben und umbenannt.
   // Nachgestellt: Zwischen der Prüfung und dem Publish lief ein kompletter
   // Area-Rename durch — der Save veröffentlichte trotzdem im alten Regal, und
-  // danach existierten beide. Der SHARED Area-Claim hält den Scope über den
+  // danach existierten beide. Der SHARED Area-Claim hält das Regal über den
   // GESAMTEN Publish; er schließt Saves untereinander nicht aus (die ändern das
   // Regal nicht), nur gegen Create/Rename/Delete.
-  return withAreaShared(vaultRoot, scope, () =>
+  //
+  // Codex-Abschlussprüfung (P0-2): Gesperrt wurde der SCOPE. Das physische Ziel
+  // kann durch `folder` aber ein ganz anderes Regal sein — bestätigt mit einem
+  // gehaltenen `people`-Lock und `saveMemory({ scope: "carnexus", folder:
+  // "memories/people" })`, das glatt durchlief. Der Schlüssel kommt deshalb aus
+  // dem AUFGELÖSTEN Pfad. Beim Re-Filing sind es zwei Regale: das Ziel und die
+  // Quelle, die gleich getrasht wird.
+  //
+  // Restfenster, bewusst offen: Findet der autoritative Scan unter dem ID-Claim
+  // eine Quelle, die die Routing-Auskunft nicht kannte (veralteter Index), ist
+  // deren Regal hier nicht mitgesperrt. Es früher zu wissen hieße, den
+  // Vaultscan VOR den Area-Claim zu ziehen — und damit die Auskunft, um die es
+  // geht, wieder ohne Sperre zu erheben.
+  return withAreaShared(vaultRoot, [areaKeyForPath(vaultRoot, filePath), existingPath !== undefined ? areaKeyForPath(vaultRoot, existingPath) : null], () =>
     withIdClaim({ vaultRoot, id, filePath, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
       commitMemory(vaultRoot, input, commit, { id, filePath, scope }, claim),
     ),
@@ -164,6 +178,14 @@ async function commitMemory(
   // Schreibvorgang: Der Grabstein ist ein Fakt auf der Platte, also wird er
   // gelesen wie die autoritative Auskunft daneben.
   await assertAreaWritable(vaultRoot, scope);
+  // Und dasselbe für das Regal, in das wirklich geschrieben wird: Ein
+  // ausdrücklicher `folder` kann auf ein ANDERES Projektregal zeigen als der
+  // Scope, und dessen Grabstein blieb dann ungelesen (dieselbe Klasse wie
+  // P0-2, nur auf der Grabstein-Achse statt auf der Lock-Achse).
+  const shelf = areaKeyForPath(vaultRoot, filePath);
+  if (shelf !== null && shelf !== normalizeScopeKey(scope)) {
+    await assertAreaWritable(vaultRoot, shelf);
+  }
 
   const observedTarget = await readTarget(filePath);
   const exists = observedTarget !== null;

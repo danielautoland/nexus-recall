@@ -85,8 +85,11 @@ function resolveAgainstExisting(
   canonicalId: string,
   canonicalSubdir: string,
   locator: MemoryLocator | undefined,
-): { id: string; relPath: string } {
+): { id: string; relPath: string; displacedPath?: string } {
   const canonical = { id: canonicalId, relPath: `${canonicalSubdir}/${canonicalId}.md` };
+  // Der Fund, den ein ausdrücklicher `folder` unten VERWIRFT: Genau der ist
+  // beim Re-Filing die Quelle, und der Area-Claim muss ihn kennen (P0-2).
+  let displaced: string | undefined;
   const rawId = input.id ?? canonicalId;
 
   // Zuerst: Liegt am kanonischen Ziel schon genau dieses Memory? Dann ist
@@ -118,10 +121,13 @@ function resolveAgainstExisting(
     // SELBEN Regal ist trotzdem dasselbe Memory — nur anders geschrieben —,
     // ein Fund woanders wäre eine stille Umleitung entgegen der Anweisung.
     // Den Fall entscheidet `saveMemory` anhand von `overwrite`.
-    if (input.folder !== undefined && dirnameOf(relPath) !== input.folder) continue;
+    if (input.folder !== undefined && dirnameOf(relPath) !== input.folder) {
+      displaced ??= located.filePath;
+      continue;
+    }
     return { id: candidateId, relPath };
   }
-  return canonical;
+  return { ...canonical, ...(displaced !== undefined ? { displacedPath: displaced } : {}) };
 }
 
 function dirnameOf(relPath: string): string {
@@ -157,6 +163,17 @@ export interface MemoryTarget {
    *  {@link resolveAgainstExisting}) die alte Schreibweise, weil die Datei
    *  weiterhin im alten Regal liegt. */
   scope: string;
+  /**
+   * Wo dieses Memory laut Routing-Auskunft HEUTE liegt, falls das nicht
+   * `filePath` ist.
+   *
+   * Codex-Abschlussprüfung (P0-2): Beim Re-Filing (`folder` zeigt woanders hin
+   * als der Bestand) berührt ein Save ZWEI Regale — es schreibt ins Ziel und
+   * trasht die Quelle. Der Area-Claim braucht beide, und er wird VOR der
+   * ID-Transaktion genommen, also bevor der autoritative Scan gelaufen ist.
+   * Die Routing-Auskunft ist die einzige, die zu diesem Zeitpunkt vorliegt.
+   */
+  existingPath?: string;
 }
 
 /**
@@ -181,7 +198,7 @@ export function resolveMemoryTarget(
   // `save.ts` schreibt denselben Key ins Frontmatter, damit Ordner und
   // `scope:` nie auseinanderlaufen.
   const canonicalSubdir = input.folder ?? subfolderFor(normalizeScopeKey(input.scope), input.type);
-  const { id, relPath } = resolveAgainstExisting(vaultRoot, input, canonicalId, canonicalSubdir, locator);
+  const { id, relPath, displacedPath } = resolveAgainstExisting(vaultRoot, input, canonicalId, canonicalSubdir, locator);
   const canonicalRelPath = `${canonicalSubdir}/${canonicalId}.md`;
   const scope = relPath === canonicalRelPath ? normalizeScopeKey(input.scope) : input.scope;
   const filePath = join(vaultRoot, ...relPath.split("/"));
@@ -192,5 +209,12 @@ export function resolveMemoryTarget(
   // brav mit dem Vault-Pfad, das Dateisystem geht trotzdem woanders hin.
   // Dieselbe Prüfung, die `auditedRestore` seit Codex-Befund 6a benutzt.
   assertInsideVault(vaultRoot, filePath);
-  return { id, filePath, scope };
+  return {
+    id,
+    filePath,
+    scope,
+    ...(displacedPath !== undefined && displacedPath !== filePath
+      ? { existingPath: displacedPath }
+      : {}),
+  };
 }

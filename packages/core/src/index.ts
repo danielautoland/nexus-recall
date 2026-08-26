@@ -91,6 +91,7 @@ export type { MutateOutcome, MemoryMutation } from "./memory-mutate.js";
 export { readOccupant, occupantOfRaw, scanVaultForId, scanVaultForIdAsync, snapshotLocator, vaultRelative } from "./memory-locator.js";
 export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
 export {
+  areaKeyForPath,
   assertAreaWritable,
   clearAreaMark,
   markAreaDeleted,
