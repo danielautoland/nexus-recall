@@ -80,7 +80,8 @@ export function fuseCommonsHits(
     fused.set(hit.id, { hit: kept, raw: score });
   });
   commons.forEach((hit, index) => {
-    const contribution = (RRF_SCALE * weightFor(hit.id)) / (RRF_K + index + 1);
+    const weight = weightFor(hit.id);
+    const contribution = (RRF_SCALE * weight) / (RRF_K + index + 1);
     const existing = fused.get(hit.id);
     // ID-Kollision: das persönliche Memory bleibt das ausgelieferte Objekt
     // (Scope, Body, Frontmatter), sein Rang im Commons-Index zählt aber mit —
@@ -89,8 +90,42 @@ export function fuseCommonsHits(
     // Akkumuliert in `raw`, nicht auf `hit.score`: der Score-Gateway-Guard
     // (#194) verlangt, dass eine `.score`-Zuweisung nur an gepinnten Stellen steht,
     // und diese Fusion baut einen Wert auf, statt einen bestehenden zu mutieren.
-    if (existing) existing.raw += contribution;
-    else fused.set(hit.id, { hit, raw: contribution });
+    if (existing) {
+      // Codex-Gegenreview (P0): Der Beitrag verschwand spurlos in der Summe.
+      // Das Evidence-Objekt nannte weiter nur die persönlichen Ränge und
+      // erklärte damit eine Zahl, die es nicht mehr war. Wer den Score liest,
+      // muss sehen können, welcher Teil davon aus den Commons kam — und was
+      // derselbe Recall ohne sie ergeben hätte.
+      if (existing.hit.rrf) {
+        existing.hit = {
+          ...existing.hit,
+          rrf: {
+            ...existing.hit.rrf,
+            rank_commons: index + 1,
+            commons_weight: weight,
+            personal_score: round3(existing.raw),
+          },
+        };
+      }
+      existing.raw += contribution;
+    } else {
+      fused.set(hit.id, {
+        // Ein Treffer, den NUR die Commons kennen: der ganze Score kommt von
+        // dort, der persönliche Anteil ist null.
+        hit: {
+          ...hit,
+          rrf: {
+            rank_bm25: null,
+            rank_vector: null,
+            raw: contribution / RRF_SCALE,
+            rank_commons: index + 1,
+            commons_weight: weight,
+            personal_score: 0,
+          },
+        },
+        raw: contribution,
+      });
+    }
   });
   return [...fused.values()]
     .map(({ hit, raw }) => ({ ...hit, score: round3(raw) }))

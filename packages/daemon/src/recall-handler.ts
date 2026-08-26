@@ -67,6 +67,30 @@ export const RecallArgs = z.object({
   min_score: z.number().min(0).optional(),
 });
 
+/**
+ * Version der Score-Formel. Zu erhöhen, sobald DIESELBE Armmenge eine andere
+ * Zahl ergibt — sonst vergleicht ein Konsument über die Versionsgrenze hinweg
+ * zwei Werte, die nichts miteinander zu tun haben.
+ */
+export const SCORE_VERSION = "rrf-1";
+
+/**
+ * Die Armmenge, aus der der ausgelieferte Score gebildet wurde.
+ *
+ * `personal-rank` steht bewusst NICHT für „BM25": Auf dem Kollaps-Pfad (der
+ * persönliche Arm ist degradiert) geht nur noch der LISTENRANG der
+ * persönlichen Liste ein, nicht ihr Zahlenwert. Das ist eine andere Zahl als
+ * `bm25+commons`, und sie muss auch anders heißen.
+ */
+export function armsOf(state: { hybridActive: boolean; commonsFused: boolean }): string[] {
+  if (state.commonsFused) {
+    return state.hybridActive
+      ? ["bm25", "commons", "vector"]
+      : ["commons", "personal-rank"];
+  }
+  return state.hybridActive ? ["bm25", "vector"] : ["bm25"];
+}
+
 // ─── Recall ──────────────────────────────────────────────────────
 
 export interface RecallResult {
@@ -98,6 +122,21 @@ export interface RecallResult {
    * rissen die 100er-Schwelle immer und wurden als REQUIRED ausgeliefert.
    */
   score_kind?: "rrf" | "bm25";
+  /**
+   * P0/Codex-Gegenreview: WELCHE Arme diese Zahl gebildet haben, sortiert.
+   *
+   * `score_kind: "rrf"` allein reicht seit dem Commons-Arm nicht mehr: Es
+   * bezeichnet BM25+Vector (Obergrenze 163.934), BM25+Vector+Commons
+   * (241.803) und den Kollaps-Pfad aus persönlichem Listenrang plus Commons
+   * (147.541). Zwei Scores sind nur innerhalb DERSELBEN Armmenge vergleichbar
+   * — wer Ergebnisse verschiedener Armmengen zusammenführt, muss über die
+   * Ränge fusionieren statt über die Zahlen (siehe `recall-batch.ts`).
+   */
+  score_arms?: string[];
+  /** Version der Score-FORMEL. Ändert sich, wenn dieselbe Armmenge künftig
+   *  eine andere Zahl ergibt — dann sind auch gleiche Armmengen über die
+   *  Versionsgrenze hinweg nicht mehr vergleichbar. */
+  score_version?: string;
   /** P0: Kurzform von `score_kind === "bm25"` — die Fusion lief nicht.
    *  Redundant, aber die Form, die Write- und Prompt-Lane bereits lesen. */
   unfused?: boolean;
@@ -371,6 +410,13 @@ export async function recallHandler(
   // `weak_result`/`no_home` bleiben an `hybridActive` hängen: die beantworten
   // eine andere Frage (waren sich zwei PERSÖNLICHE Arme einig?).
   const scoreKind: "rrf" | "bm25" = hybridActive || commonsFused ? "rrf" : "bm25";
+  // Codex-Gegenreview (P0): `score_kind: "rrf"` bezeichnet inzwischen MEHRERE
+  // verschiedene Zahlen — BM25+Vector (≤163.934), BM25+Vector+Commons
+  // (≤241.803) und den Kollaps-Pfad aus persönlichem Listenrang + Commons
+  // (≤147.541). Zwei „rrf"-Scores sind nur dann vergleichbar, wenn ihre
+  // ARMMENGE dieselbe ist; ohne diese Angabe stellte der Batch-Merge einen
+  // Dreiarm-Wert vor einen Zweiarm-Wert, ohne dass er besser passte.
+  const scoreArms = armsOf({ hybridActive, commonsFused });
   const weakResult = isWeakResult(hits, hybridActive);
   // #230: the stricter claim — not just "nothing anchored" but "this fact has
   // no home here". Strict subset of weakResult, so it can only ever narrow it.
@@ -425,8 +471,14 @@ export async function recallHandler(
         // der Commons-Runde. Ohne diese Felder lernte die Floor-Kalibrierung
         // und das Bridge-Harvesting „schwache" Fälle aus rohen BM25-Werten.
         score_kind: scoreKind,
+        score_arms: scoreArms,
         candidate_pool_score_kind: candidatePool.length > 0 ? candidatePoolKind : undefined,
         embedding_degraded: embeddingDegraded ? true : undefined,
+        // Codex-Gegenreview (P1): Der Grund stand in der ANTWORT, aber nicht im
+        // Telemetrie-Eintrag — `embedding_degraded` unterscheidet nur „Breaker
+        // offen", nicht „Vektor-Arm lief in seine Deadline". Genau die beiden
+        // haben verschiedene Ursachen und verschiedene Fixes.
+        degraded_reason: degradedDuringCall,
         salience_shadow: salienceShadow,
         trust_shadow: trustShadow,
     }),
@@ -451,6 +503,8 @@ export async function recallHandler(
     ...(noHome ? { no_home: true } : {}),
     // P0: Kein Caller darf den Score-Raum aus der Höhe der Zahl erraten.
     score_kind: scoreKind,
+    score_arms: scoreArms,
+    score_version: SCORE_VERSION,
     ...(scoreKind === "bm25" ? { unfused: true } : {}),
     ...(degradedDuringCall ? { degraded: degradedDuringCall } : {}),
     ...(full ? { stages: collector.timings } : {}),

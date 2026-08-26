@@ -88,5 +88,10 @@ export function isNoHome(hits: RecallHit[], hybridActive: boolean): boolean {
   // Commons-fused hits come from the BM25 path and carry no `rrf` block at all.
   // Requiring it present is what keeps them from being read as one-armed.
   if (!top?.rrf) return false;
+  // Ein Treffer, den NUR die Commons kennen, trägt seit dem Commons-Beleg
+  // (Codex-Gegenreview P0) ein `rrf`-Objekt mit zwei leeren PERSÖNLICHEN
+  // Rängen. Das ist Evidenz über den Commons-Arm, keine Aussage über die
+  // Einigkeit zweier persönlicher Arme — und genau die misst `no_home`.
+  if (top.rrf.personal_score === 0) return false;
   return top.rrf.rank_bm25 === null || top.rrf.rank_vector === null;
 }

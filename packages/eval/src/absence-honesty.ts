@@ -73,6 +73,10 @@ function isNoHome(hits: RecallHit[], hybridActive: boolean): boolean {
   if (!isWeakResult(hits, hybridActive)) return false;
   const top = hits[0];
   if (!top?.rrf) return false;
+  // Ein Treffer, den NUR die Commons kennen, trägt ein `rrf`-Objekt mit zwei
+  // leeren PERSÖNLICHEN Rängen — Evidenz über den Commons-Arm, keine Aussage
+  // über die Einigkeit zweier persönlicher Arme.
+  if (top.rrf.personal_score === 0) return false;
   return top.rrf.rank_bm25 === null || top.rrf.rank_vector === null;
 }
 

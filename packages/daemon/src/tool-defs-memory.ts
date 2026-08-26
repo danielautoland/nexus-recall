@@ -44,12 +44,27 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "- Before save_memory: query to avoid creating a duplicate.\n" +
       "\n" +
       "WHAT TO DO WITH HITS:\n" +
-      "- score >= ~100 with title/recall_when match: load_memory and " +
-      "apply the lesson before acting.\n" +
-      "- score 30-100: read the summary, load if directly relevant.\n" +
-      "- score < 30: usually noise; skip unless the summary is a " +
-      "perfect topic match.\n" +
+      "READ `score_kind` FIRST — the bands below only exist on the fused " +
+      "scale.\n" +
+      "- `score_kind: \"rrf\"` (fused rank sum, bounded): score >= ~100 with " +
+      "title/recall_when match: load_memory and apply the lesson before " +
+      "acting. score 30-100: read the summary, load if directly relevant. " +
+      "score < 30: usually noise; skip unless the summary is a perfect " +
+      "topic match.\n" +
+      "- `score_kind: \"bm25\"` (also flagged `unfused: true`): the vector " +
+      "arm did not run — no embedding model, a cold-start timeout, or an " +
+      "open circuit breaker (`degraded` names which). These are raw " +
+      "MiniSearch scores on an OPEN scale — six figures on a real vault — " +
+      "so 100 means nothing here and every hit would look REQUIRED. Judge " +
+      "those hits by title, summary and recall_when match, and by their " +
+      "ORDER, never by the number.\n" +
       "Never ignore a `lesson` hit with strong recall_when match.\n" +
+      "Two scores are comparable only within the same `score_arms` (and the " +
+      "same `score_version`): the fused scale reaches 163.934 with the two " +
+      "personal arms and 241.803 once the Bastra Commons contribute a third. " +
+      "A batch response whose phrasings disagreed on that reports " +
+      "`merged_by: \"query-rank-fusion\"` and drops back to `unfused` — its " +
+      "order is meaningful, its numbers are not a band.\n" +
       "On the hybrid (BM25 + vector) path the score is a scaled rank sum, " +
       "not a similarity — a top hit is high by construction. When the " +
       "response carries top-level `weak_result: true`, no returned hit has " +

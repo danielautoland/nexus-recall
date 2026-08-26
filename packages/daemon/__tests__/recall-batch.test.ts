@@ -157,3 +157,38 @@ test("recallHandler (#351 guard): a duplicate query is collapsed, the result say
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+/**
+ * Codex-Gegenreview (P0): Zwei Sub-Ergebnisse können BEIDE `score_kind: "rrf"`
+ * melden und trotzdem in verschiedenen Zahlenräumen liegen — eine Phrasierung
+ * mit Commons-Treffern reicht bis 241.803, eine ohne bis 163.934. Der
+ * Best-Score-Merge stellte den Dreiarm-Wert nach vorn, weil seine Skala höher
+ * reicht, nicht weil er besser passte. Verglichen wird deshalb die ARMMENGE.
+ */
+test("verschiedene Armmengen werden über die Ränge fusioniert, nicht über die Zahlen", () => {
+  const zweiarm = {
+    hits: [{ id: "persoenlich", score: 160 }],
+    score_kind: "rrf" as const,
+    score_arms: ["bm25", "vector"],
+    score_version: "rrf-1",
+  };
+  const dreiarm = {
+    hits: [{ id: "mit-commons", score: 230 }],
+    score_kind: "rrf" as const,
+    score_arms: ["bm25", "commons", "vector"],
+    score_version: "rrf-1",
+  };
+
+  const merged = mergeBatchResults(["a", "b"], [zweiarm, dreiarm], 5);
+  assert.equal(merged.merged_by, "query-rank-fusion");
+  assert.equal(merged.score_kind, "bm25", "gemischte Bauart trägt kein Band");
+  assert.equal(merged.unfused, true);
+  assert.equal(merged.score_arms, undefined);
+
+  // Gleiche Armmenge bleibt dagegen der billige Best-Score-Merge.
+  const gleich = mergeBatchResults(["a", "b"], [zweiarm, { ...zweiarm, hits: [{ id: "z", score: 90 }] }], 5);
+  assert.equal(gleich.merged_by, "score");
+  assert.equal(gleich.score_kind, "rrf");
+  assert.deepEqual(gleich.score_arms, ["bm25", "vector"]);
+  assert.equal(gleich.score_version, "rrf-1");
+});

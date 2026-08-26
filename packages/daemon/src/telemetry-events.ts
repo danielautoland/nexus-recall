@@ -120,6 +120,16 @@ export interface RecallEvent extends BaseEvent {
    *  der Pool aus der persönlichen Suche und `top_score` aus der Liste nach der
    *  Commons-Runde — die beiden können auseinanderfallen. */
   candidate_pool_score_kind?: "rrf" | "bm25";
+  /**
+   * Welche ARME den ausgelieferten Score gebildet haben, sortiert.
+   *
+   * Codex-Gegenreview (P0): `score_kind: "rrf"` steht für mehrere verschiedene
+   * Zahlen — BM25+Vector, BM25+Commons, Vector+Commons, Hop+Commons. Die
+   * Obergrenze unterscheidet sich (163.934 gegen 241.803), also sind zwei
+   * `rrf`-Werte nur dann vergleichbar, wenn ihre Armmenge identisch ist. Für
+   * die Auswertung ist das die entscheidende Dimension, nicht `score_kind`.
+   */
+  score_arms?: string[];
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */

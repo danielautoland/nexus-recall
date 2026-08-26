@@ -90,6 +90,12 @@ export interface BatchSubResult {
   score_kind?: "rrf" | "bm25";
   /** Kurzform von `score_kind === "bm25"`. */
   unfused?: boolean;
+  /** Welche ARME die Zahl gebildet haben. Feiner als `score_kind` und seit
+   *  dem Commons-Arm die eigentlich entscheidende Angabe — siehe
+   *  {@link signatureOf}. */
+  score_arms?: string[];
+  /** Version der Score-Formel. */
+  score_version?: string;
 }
 
 export interface BatchMerged {
@@ -105,6 +111,11 @@ export interface BatchMerged {
    *  optional: eine fehlende Angabe war genau der Weg, auf dem rohe BM25-Werte
    *  als Rang-Summen gelesen wurden. */
   score_kind: "rrf" | "bm25";
+  /** Die Armmenge, in der alle Sub-Ergebnisse lagen — nur gesetzt, wenn sie
+   *  überhaupt dieselbe war. */
+  score_arms?: string[];
+  /** Version der Score-Formel, ebenfalls nur bei einheitlicher Bauart. */
+  score_version?: string;
   unfused?: true;
   /** Woraus die Reihenfolge entstanden ist — `"score"` nur, wenn alle
    *  Sub-Ergebnisse im selben Raum lagen. */
@@ -117,6 +128,25 @@ export interface BatchMerged {
 function spaceOf(s: BatchSubResult): "rrf" | "bm25" {
   if (s.unfused === true) return "bm25";
   return s.score_kind ?? "bm25";
+}
+
+/**
+ * Die VERGLEICHBARKEITS-Signatur eines Sub-Ergebnisses: Formelversion plus
+ * Armmenge, sonst der Score-Raum.
+ *
+ * Codex-Gegenreview (P0): Verglichen wurde nur `score_kind`, und seit dem
+ * Commons-Arm heißen mehrere verschiedene Zahlen `"rrf"` — BM25+Vector
+ * (≤163.934), BM25+Vector+Commons (≤241.803), Kollaps-Rang+Commons (≤147.541).
+ * Zwei Phrasierungen, von denen eine Commons-Treffer hatte und die andere
+ * nicht, wurden damit per Best-Score gegeneinandergestellt: Der Dreiarm-Wert
+ * gewann, weil seine Skala höher reicht, nicht weil er besser passte. Gleiche
+ * Zahl, gleiche Bauart — sonst wird über die RÄNGE fusioniert.
+ */
+function signatureOf(s: BatchSubResult): string {
+  const space = spaceOf(s);
+  if (space === "bm25") return "bm25";
+  const arms = s.score_arms ? [...s.score_arms].sort().join("+") : "rrf-unspecified";
+  return `${s.score_version ?? "unversioned"}/${arms}`;
 }
 
 /**
@@ -151,15 +181,24 @@ export function mergeBatchResults(queries: string[], subs: BatchSubResult[], k: 
   let weakAll = true;
   let noHomeAll = true;
   const spaces = new Set<"rrf" | "bm25">();
+  const signatures = new Set<string>();
   for (const s of subs) {
     if (typeof s.vault_size === "number") vaultSize = s.vault_size;
     if (typeof s.recall_id === "string") recallIds.push(s.recall_id);
     if (s.weak_result !== true) weakAll = false;
     if (s.no_home !== true) noHomeAll = false;
     spaces.add(spaceOf(s));
+    signatures.add(signatureOf(s));
   }
-  const mixed = spaces.size > 1;
-  const scoreKind: "rrf" | "bm25" = spaces.size === 1 ? [...spaces][0]! : "bm25";
+  // Gemischt heißt jetzt „nicht dieselbe Bauart", nicht nur „nicht derselbe
+  // Score-Raum": Zwei `rrf`-Listen mit verschiedenen Armmengen sind ebenso
+  // wenig per Zahl vergleichbar wie eine RRF- und eine BM25-Liste.
+  const mixed = signatures.size > 1;
+  // Fail-closed wie bei gemischten Räumen: Verschiedene Armmengen heißt „kein
+  // Band". Die ausgewiesenen Zahlen bleiben echte Einzelquery-Scores, aber
+  // niemand darf 100 darauf anwenden, wenn 100 in der einen Liste etwas
+  // anderes bedeutet als in der anderen.
+  const scoreKind: "rrf" | "bm25" = !mixed && spaces.size === 1 ? [...spaces][0]! : "bm25";
 
   const hits = mixed ? fuseByQueryRank(subs, k) : mergeByScore(subs, k);
   return {
@@ -172,6 +211,7 @@ export function mergeBatchResults(queries: string[], subs: BatchSubResult[], k: 
     ...(weakAll && subs.length > 0 ? { weak_result: true as const } : {}),
     ...(noHomeAll && subs.length > 0 ? { no_home: true as const } : {}),
     score_kind: scoreKind,
+    ...(mixed ? {} : { score_arms: subs[0]?.score_arms, score_version: subs[0]?.score_version }),
     ...(scoreKind === "bm25" ? { unfused: true as const } : {}),
     merged_by: mixed ? "query-rank-fusion" : "score",
   };

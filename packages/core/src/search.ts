@@ -54,6 +54,23 @@ export interface RecallHit {
     rank_vector: number | null;
     /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der RRF_SCALE-Skalierung, die `score` ergibt. */
     raw: number;
+    /**
+     * Der Commons-Arm, nur gesetzt wenn er zu DIESEM Hit etwas beigetragen hat
+     * (siehe `commons-fusion.ts`).
+     *
+     * Codex-Gegenreview (P0): Ohne diese drei Felder erklärte das
+     * Evidence-Objekt den ausgelieferten Score nicht mehr. Es nannte die
+     * persönlichen Ränge, während die Zahl daneben zusätzlich einen
+     * Commons-Beitrag enthielt — ein Feld, das eine Zahl erklären soll und es
+     * nur zur Hälfte tut, ist irreführender als keines.
+     */
+    /** 1-basierter Rang im Commons-Index. */
+    rank_commons?: number;
+    /** Vertrauensgewicht dieses Commons-Treffers (`commonsRankFactor`, 0.5–0.95). */
+    commons_weight?: number;
+    /** Der Score OHNE den Commons-Beitrag — die Zahl, die derselbe Recall
+     *  ohne aktive Commons ausgeliefert hätte. */
+    personal_score?: number;
   };
 }
 
