@@ -105,6 +105,21 @@ export interface RecallEvent extends BaseEvent {
   /** #121: the deeper candidate pool (incl. below-floor ranks) behind this recall,
    *  so the far slice is observable for offline harvesting. Lean {id, score} only. */
   candidate_pool?: { id: string; score: number }[];
+  /**
+   * Zweiter Gegenreview: In welchem Raum `top_score` und `hits[].score` liegen
+   * — `"rrf"` = fusionierte Rang-Summe, die Bänder 30/50/100 beschreiben
+   * etwas; `"bm25"` = roher, nach oben offener MiniSearch-Wert, die Bänder
+   * beschreiben nichts. Ohne dieses Feld ist jede Auswertung über `top_score`
+   * eine Zahl ohne Skala, und die Floor-Kalibrierung lernte aus rohen
+   * Sechsstellern „starke" und aus fusionierten 60ern „schwache" Fälle.
+   * Optional: ältere Events haben es nicht — ein fehlender Wert heißt
+   * „unbekannt", nicht „rrf".
+   */
+  score_kind?: "rrf" | "bm25";
+  /** Der Raum von `candidate_pool`, SEPARAT geführt: Bei aktiven Commons kommt
+   *  der Pool aus der persönlichen Suche und `top_score` aus der Liste nach der
+   *  Commons-Runde — die beiden können auseinanderfallen. */
+  candidate_pool_score_kind?: "rrf" | "bm25";
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
@@ -263,6 +278,21 @@ export interface HookRecallEvent extends BaseEvent {
      *  Arm ohne Ertrag aussieht (`hit_count > 0`, `added_count = 0`). */
     skipped_score_space?: true;
   };
+  /**
+   * Zweiter Gegenreview: In welchem Raum `top_score` und `hits[].score` liegen
+   * — `"rrf"` = fusionierte Rang-Summe, die Bänder 30/50/100 beschreiben
+   * etwas; `"bm25"` = roher, nach oben offener MiniSearch-Wert, die Bänder
+   * beschreiben nichts. Ohne dieses Feld ist jede Auswertung über `top_score`
+   * eine Zahl ohne Skala, und die Floor-Kalibrierung lernte aus rohen
+   * Sechsstellern „starke" und aus fusionierten 60ern „schwache" Fälle.
+   * Optional: ältere Events haben es nicht — ein fehlender Wert heißt
+   * „unbekannt", nicht „rrf".
+   */
+  score_kind?: "rrf" | "bm25";
+  /** Der Raum von `candidate_pool`, SEPARAT geführt: Bei aktiven Commons kommt
+   *  der Pool aus der persönlichen Suche und `top_score` aus der Liste nach der
+   *  Commons-Runde — die beiden können auseinanderfallen. */
+  candidate_pool_score_kind?: "rrf" | "bm25";
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */

@@ -524,6 +524,13 @@ export function handleHookRecall(
           bridge_expansion:
             expansion.lang && expansion.added.length > 0 ? { lang: expansion.lang, added: expansion.added } : undefined,
           candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+          // Zweiter Gegenreview: derselbe explizite Raum wie auf dem Response.
+          // `top_score` und `candidate_pool` sind sonst Zahlen ohne Skala, und
+          // eine Auswertung, die sie über degradierte und fusionierte Recalls
+          // hinweg mittelt, misst zwei verschiedene Größen als eine.
+          score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
+          candidate_pool_score_kind:
+            candidatePool.length > 0 ? (hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const)) : undefined,
           content_recall: contentRecall,
           // #165: pre-recall festgehalten, siehe oben / recallHandler.
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,

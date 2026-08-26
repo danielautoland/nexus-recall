@@ -121,6 +121,10 @@ export interface CandidatePoolEntry {
   query: string;
   pool: { id: string; score: number }[];
   topScore: number;
+  /** In welchem Raum `topScore` liegt. `null` = das Event hat es nicht gesagt
+   *  (Altbestand). Der Far-Harvest schneidet bei einem absoluten Score (100),
+   *  und dieser Schnitt bedeutet nur auf der fusionierten Skala etwas. */
+  scoreKind: "rrf" | "bm25" | null;
 }
 
 /** Pull (query → deeper candidate pool) entries from recall/hook_recall events (#121). */
@@ -134,8 +138,24 @@ export function extractCandidatePools(events: TelemetryEvent[]): CandidatePoolEn
       .filter((p) => typeof p.id === "string" && typeof p.score === "number")
       .map((p) => ({ id: p.id as string, score: p.score as number }));
     if (pool.length === 0) continue;
-    const topScore = typeof e.top_score === "number" ? e.top_score : pool[0].score;
-    out.push({ query: e.query, pool, topScore });
+    // Zweiter Gegenreview: `top_score` und `candidate_pool` können aus
+    // verschiedenen Räumen kommen (Commons-Recall: der Pool aus der
+    // persönlichen Suche, `top_score` aus der Liste danach). Nur wenn beide
+    // denselben Raum nennen, darf `top_score` gegen den Pool gelesen werden;
+    // sonst zählt der Pool-Spitzenwert, der garantiert im Pool-Raum liegt.
+    const kind = e.score_kind === "rrf" || e.score_kind === "bm25" ? e.score_kind : null;
+    const poolKind =
+      e.candidate_pool_score_kind === "rrf" || e.candidate_pool_score_kind === "bm25"
+        ? e.candidate_pool_score_kind
+        : null;
+    const sameSpace = kind === null || poolKind === null || kind === poolKind;
+    const useTop = sameSpace && typeof e.top_score === "number";
+    out.push({
+      query: e.query,
+      pool,
+      topScore: useTop ? (e.top_score as number) : pool[0].score,
+      scoreKind: useTop ? kind : poolKind,
+    });
   }
   return out;
 }
@@ -171,6 +191,14 @@ export async function harvestFarBridges(
   let judged = 0;
   for (const entry of pools) {
     if (judged >= maxJudge) break;
+    // Zweiter Gegenreview: `maxScore` ist ein absoluter Schnitt auf der
+    // fusionierten Skala. Auf rohem BM25 (offen, sechsstellig) reißt ihn jeder
+    // Treffer — der ganze Recall sähe „zuversichtlich" aus und würde nie
+    // geprüft, während umgekehrt kein einziger echter far-Fall erkannt wird.
+    // Ein Event, das seinen Raum ausdrücklich als `bm25` nennt, wird deshalb
+    // übersprungen. `null` (Altbestand ohne das Feld) bleibt wie bisher drin —
+    // fail-closed hieße hier, den kompletten historischen Log wegzuwerfen.
+    if (entry.scoreKind === "bm25") continue;
     if (entry.topScore >= maxScore) continue; // already a confident hit → not a far case
     const lang = detectLanguage(entry.query).lang;
     if (!lang) continue;

@@ -138,6 +138,9 @@ function spaceOf(s: BatchSubResult): "rrf" | "bm25" {
  *     Sub-Listen — das Einzige, was zwischen den Räumen vergleichbar ist. Die
  *     ausgewiesenen Scores bleiben die echten Einzelquery-Werte, aber der
  *     Response meldet fail-closed `bm25`/`unfused`: gemischt heißt „kein Band".
+ *     Zusätzlich trägt JEDER Hit sein eigenes `score_kind` — der eine Wert oben
+ *     beschreibt die gemischte Liste nicht, und ohne die Pro-Hit-Angabe steht
+ *     ein echter Einzelquery-Score da, dessen Skala niemand nennen kann.
  *
  * weak_result/no_home überleben weiterhin nur, wenn JEDES Sub-Ergebnis sie
  * trug — eine verankerte Phrasierung macht den Batch beantwortbar.
@@ -193,17 +196,24 @@ function mergeByScore(subs: BatchSubResult[], k: number): BatchHit[] {
 function fuseByQueryRank(subs: BatchSubResult[], k: number): BatchHit[] {
   const fused = new Map<string, { hit: BatchHit; rank: number; rrf: number }>();
   for (const s of subs) {
+    const space = spaceOf(s);
     (s.hits ?? []).forEach((h, index) => {
       const rank = index + 1;
       const contribution = 1 / (RRF_K + rank);
+      // Zweiter Gegenreview: `unfused` auf dem Response verhindert das Banding,
+      // aber der eine `score_kind` oben beschreibt hier NICHT alle Hits — die
+      // Liste kann 160 (fusioniert) und 405585 (roh) direkt hintereinander
+      // führen. Jeder Hit nennt deshalb den Raum SEINER Zahl; ohne das ist ein
+      // ausgewiesener Einzelquery-Score im gemischten Batch nicht lesbar.
+      const tagged: BatchHit = { ...h, score_kind: space };
       const existing = fused.get(h.id);
       if (!existing) {
-        fused.set(h.id, { hit: h, rank, rrf: contribution });
+        fused.set(h.id, { hit: tagged, rank, rrf: contribution });
         return;
       }
       existing.rrf += contribution;
       if (rank < existing.rank) {
-        existing.hit = h;
+        existing.hit = tagged;
         existing.rank = rank;
       }
     });

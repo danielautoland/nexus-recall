@@ -123,7 +123,7 @@ test("Befund 2 — fuseCommonsHits: Commons ist eine zweite Rangliste, kein zwei
   const commons = [
     { id: "recipe", score: 405585 } as unknown as RecallHit,
   ];
-  const fused = fuseCommonsHits(personal, commons, () => 0.8);
+  const fused = fuseCommonsHits(personal, commons, () => 0.8, { personalFused: false });
 
   assert.equal(fused[0]!.id, "own", "ein sechsstelliger BM25-Wert kauft keinen Rang — 0.8 × sechsstellig ist sechsstellig");
   assert.equal(fused[0]!.score, Math.round((RRF_SCALE / (RRF_K + 1)) * 1000) / 1000);
@@ -139,7 +139,7 @@ test("Befund 2 — fuseCommonsHits: Commons ist eine zweite Rangliste, kein zwei
 test("Befund 2 — fuseCommonsHits: ID-Kollision behält das persönliche Memory und zählt beide Ränge", () => {
   const personal = [{ id: "same", score: 120, scope: "personal" } as unknown as RecallHit];
   const commons = [{ id: "same", score: 7, scope: "commons" } as unknown as RecallHit];
-  const fused = fuseCommonsHits(personal, commons, () => 0.8);
+  const fused = fuseCommonsHits(personal, commons, () => 0.8, { personalFused: false });
   assert.equal(fused.length, 1, "keine Duplikate");
   assert.equal(fused[0]!.scope, "personal", "der persönliche Treffer gewinnt die Kollision");
   assert.equal(
@@ -331,5 +331,174 @@ test("Befund 3 — /hook/recall: ein degradierter Content-Arm mischt seine rohen
       h.score <= RRF_CEILING,
       `${h.id} trägt ${h.score} — ein roher BM25-Wert in einer als "rrf" gemeldeten Liste`,
     );
+  }
+});
+
+// ─── Befund A: Commons darf die persönliche Arm-Einigung nicht einebnen ────
+
+test("Befund A — fuseCommonsHits(personalFused): der persönliche Score überlebt die Commons-Runde", () => {
+  // Rang 1 in BEIDEN persönlichen Armen = 163.934. Die alte Fassung reduzierte
+  // diesen Treffer auf seinen LISTENRANG und servierte 81.967 — die Einigung
+  // zweier Arme war weg, obwohl Commons zu diesem Hit gar nichts gesagt hat.
+  const twoArmed = (2 * RRF_SCALE) / (RRF_K + 1);
+  const oneArmed = RRF_SCALE / (RRF_K + 1);
+  const personal = [
+    { id: "own", score: Math.round(twoArmed * 1000) / 1000, rrf: { rank_bm25: 1, rank_vector: 1, raw: 1 / 3 } } as unknown as RecallHit,
+  ];
+  const commons = [{ id: "recipe", score: 405585 } as unknown as RecallHit];
+
+  const fused = fuseCommonsHits(personal, commons, () => 0.8, { personalFused: true });
+
+  assert.equal(fused[0]!.id, "own");
+  assert.equal(fused[0]!.score, Math.round(twoArmed * 1000) / 1000, "unverändert — Commons hat zu diesem Hit nichts beigetragen");
+  assert.equal(fused[1]!.id, "recipe");
+  assert.equal(fused[1]!.score, Math.round(0.8 * oneArmed * 1000) / 1000);
+});
+
+test("Befund A — fuseCommonsHits(personalFused): die ID-Kollision addiert auf den bestehenden Score", () => {
+  const oneArmed = RRF_SCALE / (RRF_K + 1);
+  const personal = [{ id: "same", score: 163.934, scope: "personal", rrf: { rank_bm25: 1, rank_vector: 1, raw: 1 / 3 } } as unknown as RecallHit];
+  const fused = fuseCommonsHits(personal, [{ id: "same", score: 7 } as unknown as RecallHit], () => 0.8, {
+    personalFused: true,
+  });
+  assert.equal(fused.length, 1);
+  assert.equal(fused[0]!.scope, "personal");
+  assert.equal(fused[0]!.score, Math.round((163.934 + 0.8 * oneArmed) * 1000) / 1000);
+});
+
+test("Befund A — fuseCommonsHits(personalFused): der rrf-Beleg überlebt, sonst kippt no_home", () => {
+  // `isNoHome` verlangt den `rrf`-Block. Wurde er beim Commons-Merge entfernt,
+  // meldete derselbe Recall mit aktivierten Commons plötzlich no_home=false.
+  const personal = [{ id: "own", score: 81.967, rrf: { rank_bm25: 1, rank_vector: null, raw: 1 / 6 } } as unknown as RecallHit];
+  const fused = fuseCommonsHits(personal, [{ id: "recipe", score: 5 } as unknown as RecallHit], () => 0.8, {
+    personalFused: true,
+  });
+  const own = fused.find((h) => h.id === "own")!;
+  assert.deepEqual(own.rrf, { rank_bm25: 1, rank_vector: null, raw: 1 / 6 }, "der Beleg beschreibt weiterhin den persönlichen Anteil");
+});
+
+test("Befund A — recallHandler: ein REQUIRED-Treffer bleibt mit Commons REQUIRED", async () => {
+  const dirP = await mkdtemp(join(tmpdir(), "bastra-commons-req-p-"));
+  const dirC = await mkdtemp(join(tmpdir(), "bastra-commons-req-c-"));
+  try {
+    await writeFile(join(dirP, "own.md"), memoryMd("own-note", "flux compensator drift tuning", "Body own."), "utf8");
+    await writeFile(join(dirC, "recipe.md"), memoryMd("spinner-recipe", "flux compensator drift tuning", "Body recipe."), "utf8");
+
+    const vault = new Vault(dirP);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const provider = new SelectiveSlowProvider();
+    const emb = new EmbeddingIndex(vault, provider, join(dirP, ".bastra", "embeddings.json"));
+    await emb.start();
+    search.useEmbeddings(emb);
+    const commonsVault = new Vault(dirC);
+    await commonsVault.init();
+    const commonsSearch = new SearchIndex(commonsVault);
+    commonsSearch.start();
+    const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: dirP, commonsSearch };
+
+    const res = await recallHandler(deps, { query: "flux compensator drift tuning", k: 5, min_score: 100 });
+    const hits = res.hits as { id: string; score: number }[];
+    assert.ok(
+      hits.some((h) => h.id === "own-note"),
+      "das persönliche Memory ist Rang 1 in beiden Armen — mit min_score=100 darf Commons es nicht wegdrücken",
+    );
+    assert.equal(
+      hits.find((h) => h.id === "own-note")!.score,
+      Math.round(RRF_CEILING * 1000) / 1000,
+      "der Score ist exakt der beidarmige Anker — die Commons-Runde lässt ihn unangetastet",
+    );
+    assert.equal(res.score_kind, "rrf");
+
+    commonsSearch.stop();
+    await emb.stop();
+    search.stop();
+    await vault.stop?.();
+    await commonsVault.stop?.();
+  } finally {
+    await rm(dirP, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    await rm(dirC, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+// ─── Befund B: gemischter Batch trägt den Raum pro Hit ────────────────────
+
+test("Befund B — mergeBatchResults: im gemischten Batch nennt JEDER Hit seinen Raum", () => {
+  const merged = mergeBatchResults(
+    ["hybrid phrasing", "degraded phrasing"],
+    [
+      { hits: [{ id: "a", score: 160 }, { id: "c", score: 120 }], recall_id: "r1", score_kind: "rrf" },
+      { hits: [{ id: "b", score: 405585 }, { id: "a", score: 9 }], recall_id: "r2", score_kind: "bm25", unfused: true },
+    ],
+    5,
+  );
+  const byId = new Map(merged.hits.map((h) => [h.id, h]));
+  assert.equal(byId.get("a")!.score_kind, "rrf", "160 kam aus der fusionierten Phrasierung");
+  assert.equal(byId.get("b")!.score_kind, "bm25", "405585 ist ein roher Wert und sagt das selbst");
+  assert.equal(byId.get("c")!.score_kind, "rrf");
+});
+
+// ─── Befund C: Telemetrie speichert keine Zahl ohne ihren Raum ─────────────
+
+test("Befund C — recall-Event trägt den Raum von top_score UND candidate_pool", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-telemetry-space-"));
+  try {
+    await writeFile(join(dir, "own.md"), memoryMd("own-note", "flux compensator drift tuning", "Body own."), "utf8");
+    const vault = new Vault(dir);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const telemetry = new Telemetry();
+    const logged: Record<string, unknown>[] = [];
+    const orig = telemetry.logRecall.bind(telemetry);
+    telemetry.logRecall = async (e: Parameters<typeof orig>[0]) => {
+      logged.push(e as unknown as Record<string, unknown>);
+    };
+    const deps: ToolDeps = { vault, search, telemetry, vaultPath: dir };
+
+    await recallHandler(deps, { query: "flux compensator drift tuning", k: 5 });
+    await sleep(20);
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0]!.score_kind, "bm25", "ohne Vektor-Arm ist top_score ein roher Wert");
+    assert.equal(logged[0]!.candidate_pool_score_kind, "bm25", "und der Pool liegt im selben rohen Raum");
+
+    search.stop();
+    await vault.stop?.();
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+// ─── Befund D: Scope-Identität ist eine Entscheidung, nicht ein === ────────
+
+test("Befund D — recallHandler: scope 'Commons' zählt als Commons-Scope", async () => {
+  const dirP = await mkdtemp(join(tmpdir(), "bastra-commons-case-p-"));
+  const dirC = await mkdtemp(join(tmpdir(), "bastra-commons-case-c-"));
+  try {
+    await writeFile(join(dirC, "recipe.md"), memoryMd("spinner-recipe", "button spinner clipped width jumps", "Body recipe."), "utf8");
+    const vault = new Vault(dirP);
+    await vault.init();
+    const search = new SearchIndex(vault);
+    search.start();
+    const commonsVault = new Vault(dirC);
+    await commonsVault.init();
+    const commonsSearch = new SearchIndex(commonsVault);
+    commonsSearch.start();
+    const deps: ToolDeps = { vault, search, telemetry: new Telemetry(), vaultPath: dirP, commonsSearch };
+
+    const res = await recallHandler(deps, { query: "button spinner clipped width jumps", k: 5, scope: "Commons" });
+    assert.ok(
+      (res.hits as { id: string }[]).some((h) => h.id === "spinner-recipe"),
+      "eine großgeschriebene Schreibweise desselben Scopes darf den Commons-Index nicht abschalten",
+    );
+
+    commonsSearch.stop();
+    search.stop();
+    await vault.stop?.();
+    await commonsVault.stop?.();
+  } finally {
+    await rm(dirP, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    await rm(dirC, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

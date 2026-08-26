@@ -4,6 +4,7 @@
  * re-exports everything, so the existing import paths keep working.
  */
 import { z } from "zod";
+import { scopeEquals } from "@bastra-recall/core/scope";
 import { truncateSummaryTo, hasUnresolvedConflict, type StageListener, type RecallStage, type RecallHit } from "@bastra-recall/core";
 import { envInt } from "./env.js";
 import { fireAndForget } from "./telemetry.js";
@@ -300,6 +301,21 @@ export async function recallHandler(
     ? await deps.search.recallHybrid(expansion.query, recallOpts)
     : deps.search.recall(expansion.query, recallOpts);
 
+  // P0: `embeddingDegraded` ist der Breaker-Zustand VOR dem Call. Er fängt
+  // „Embeddings sind aus" und „Breaker offen", aber nicht den Fall, der in der
+  // Telemetrie am häufigsten auftrat: Der Vector-Arm lief in seine Deadline,
+  // `recallHybrid` fiel auf rohes BM25 zurück, und der Handler nannte das
+  // Ergebnis trotzdem hybrid.
+  // MUSS vor der Commons-Runde stehen: Die Fusion braucht die Antwort auf
+  // „liegen die persönlichen Scores schon auf der RRF-Skala?", um zwischen
+  // Addieren und Rang-Kollaps zu wählen (commons-fusion.ts).
+  const degradedDuringCall = collector.degraded();
+  const hybridActive =
+    deps.search.hasEmbeddings() && !embeddingDegraded && degradedDuringCall === undefined;
+  // #121: der geloggte Kandidaten-Pool kommt aus der PERSÖNLICHEN Suche, also
+  // aus deren Raum — die Commons-Runde unten schreibt ihn nicht mit um.
+  const candidatePoolKind: "rrf" | "bm25" = hybridActive ? "rrf" : "bm25";
+
   // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, per RRF über
   // die RÄNGE fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
   // expliziter scope-Filter (außer "commons") überspringt die Fusion.
@@ -310,14 +326,25 @@ export async function recallHandler(
   // gedeckelt, die Commons-Skala nach oben offen — 80 % eines sechsstelligen
   // BM25-Werts ist immer noch sechsstellig und gewann jedes Mal. Seit der
   // Rang-Fusion (`commons-fusion.ts`) liegt alles in EINEM Raum.
+  //
+  // Zweiter Gegenreview: Commons zählt jetzt als DRITTER ARM auf den
+  // bestehenden persönlichen RRF-Score, statt die persönliche Liste erneut auf
+  // Listenränge zu kollabieren — sonst verlor ein beidarmiger Rang-1-Treffer
+  // die Hälfte seines Scores (163.934 → 81.967) und fiel unter jedes
+  // REQUIRED-Band, obwohl Commons zu ihm nichts beigetragen hatte.
   let commonsFused = false;
-  if (deps.commonsSearch && (!parsed.data.scope || parsed.data.scope === "commons")) {
+  if (deps.commonsSearch && (!parsed.data.scope || scopeEquals(parsed.data.scope, "commons"))) {
     const commonsHits = deps.commonsSearch.recall(query, { k: recallOpts.k, type: parsed.data.type });
     if (commonsHits.length > 0) {
-      rawHits = fuseCommonsHits(rawHits, commonsHits, (id) => {
-        const v = deps.commonsVerifications?.get(id) ?? { works: 0, fails: 0 };
-        return commonsRankFactor(v.works, v.fails);
-      }).slice(0, recallOpts.k ?? 5);
+      rawHits = fuseCommonsHits(
+        rawHits,
+        commonsHits,
+        (id) => {
+          const v = deps.commonsVerifications?.get(id) ?? { works: 0, fails: 0 };
+          return commonsRankFactor(v.works, v.fails);
+        },
+        { personalFused: hybridActive },
+      ).slice(0, recallOpts.k ?? 5);
       commonsFused = true;
     }
   }
@@ -334,15 +361,9 @@ export async function recallHandler(
   // Hybrid-Pfad lief (beide Arme — nicht der Breaker-degradierte BM25-Fallback)
   // UND KEIN zurückgegebener Hit lexikalisch anknüpft (weder recall_when- noch
   // Titel-Match). Rein informativ, filtert nichts.
-  // P0: `embeddingDegraded` ist der Breaker-Zustand VOR dem Call. Er fängt
-  // „Embeddings sind aus" und „Breaker offen", aber nicht den Fall, der in der
-  // Telemetrie am häufigsten auftrat: Der Vector-Arm lief in seine Deadline,
-  // `recallHybrid` fiel auf rohes BM25 zurück, und der Handler nannte das
-  // Ergebnis trotzdem hybrid. `weak_result` und `no_home` sind aber genau für
-  // den fusionierten Pfad definiert — auf der rohen Skala sagen sie nichts.
-  const degradedDuringCall = collector.degraded();
-  const hybridActive =
-    deps.search.hasEmbeddings() && !embeddingDegraded && degradedDuringCall === undefined;
+  // `weak_result` und `no_home` sind für den fusionierten Pfad definiert — auf
+  // der rohen Skala sagen sie nichts. `hybridActive` steht oben, vor der
+  // Commons-Runde, weil die Fusion die Antwort selbst braucht.
   // Codex-Gegenreview: `score_kind` beschreibt die ZAHL, die serviert wird.
   // Lief die Commons-Rang-Fusion, sind ALLE Scores auf die RRF-Skala
   // umgeschrieben (auch die eines degradierten persönlichen Arms) — dann gibt
@@ -397,6 +418,14 @@ export async function recallHandler(
             ? { lang: expansion.lang, added: expansion.added }
             : undefined,
         candidate_pool: candidatePool.length > 0 ? candidatePool : undefined,
+        // Zweiter Gegenreview: `top_score` und `candidate_pool` sind Zahlen,
+        // und eine Zahl ohne ihren Raum ist in der Auswertung wertlos. Bei
+        // aktiven Commons stammen die beiden sogar aus VERSCHIEDENEN Räumen —
+        // der Pool aus der persönlichen Suche, `top_score` aus der Liste nach
+        // der Commons-Runde. Ohne diese Felder lernte die Floor-Kalibrierung
+        // und das Bridge-Harvesting „schwache" Fälle aus rohen BM25-Werten.
+        score_kind: scoreKind,
+        candidate_pool_score_kind: candidatePool.length > 0 ? candidatePoolKind : undefined,
         embedding_degraded: embeddingDegraded ? true : undefined,
         salience_shadow: salienceShadow,
         trust_shadow: trustShadow,
