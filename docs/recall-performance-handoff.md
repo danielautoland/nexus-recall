@@ -1188,3 +1188,310 @@ Commit und im Vault. Richtig ist:
   gelten soll, fehlt dort eine Policy. Dieser Befund zeigt in die andere
   Richtung als der Case-Fehler: Er erklärt „fremde Treffer kommen durch", nicht
   „eigene Treffer fehlen".
+
+## 20. Fünfte Gegenprüfung: die Identität selbst, nicht nur ihr Vergleich (26.08.2026)
+
+Abschnitt 19 zentralisierte den **Vergleich** zweier Schreibweisen. Die
+Gegenprüfung durch Codex fand drei Stellen, an denen zwei Schreibweisen
+überhaupt erst entstehen — plus einen vierten Fund, der mit Groß- und
+Kleinschreibung nichts zu tun hat. Alle vier bestätigt, alle vier behoben.
+
+### 20.1 Der Rename schrieb Scopes nicht um
+
+`rewriteScopes()` in `daemon/webui-areas.ts` verglich `scope !== oldScope`
+exakt. Ein Ordner `carnexus` mit Frontmatter `scope: CarNexus` wurde beim
+Umbenennen verschoben, aber kein einziger Scope umgeschrieben —
+`scopesRewritten: 0`, und die Memories waren danach im eigenen Projekt fremd.
+Gefaltet über `scopeEquals`.
+
+### 20.2 Produktdokumente zogen mit, ihr Scope nicht
+
+Derselbe Rename verschiebt `dokumentationen/<scope>` als Regal derselben Area
+mit, rief `rewriteScopes()` aber nur für den Memory-Ordner auf. Die Dokumente
+lagen danach im neuen Regal und trugen den alten Scope — beim Recall fürs neue
+Projekt also fremd. Das betraf **jeden** Rename, unabhängig von der
+Schreibweise. Der Doku-Ordner wird jetzt nach dem Verschieben genauso
+umgeschrieben; beide Zahlen fließen in dieselbe `scopesRewritten`-Summe, denn
+es sind Scope-Rewrites derselben Area.
+
+### 20.3 Die Identität selbst: id und Scope sind jetzt kanonisch
+
+`save_product_doc` baute id, Pfad, Scope, `topic_path` und Tags aus dem rohen
+`project`. Zwei Aufrufe mit `CarNexus` und `carnexus` erzeugten zwei logische
+Dokumente — auf einem case-insensitiven Dateisystem aber auf EINER Datei, also
+ein Überschreiben, das wie ein Update aussieht.
+
+Der Fix sitzt nicht im Handler, sondern eine Ebene tiefer, weil das Loch
+allgemeiner war: Auto-generierte ids sind über `slugify()` immer klein, eine
+vom Caller **explizit gesetzte** id passierte dagegen nur
+`isPathSafeComponent`. Zwei Folgen, beide still — das beschriebene
+Überschreiben, und: das Wikilink-Muster akzeptiert nur
+`[a-z0-9][a-z0-9_-]*`, eine großgeschriebene id ist per `[[id]]` gar nicht
+verlinkbar und fällt aus dem Multi-Hop-Recall heraus.
+
+Deshalb jetzt eine Ableitung für alle:
+
+- `canonicalMemoryId(explicitId, title)` in `core/save-text.ts` — gefaltet,
+  nicht abgelehnt: ein Caller mit CamelCase-id soll schreiben können, nur eben
+  auf die kanonische id.
+- `resolveMemoryTarget()` faltet zusätzlich den Scope, bevor er zum
+  Ordnernamen wird; `save.ts` schreibt denselben Key ins Frontmatter, damit
+  Ordner und `scope:` nie auseinanderlaufen.
+- `audit-save.ts` benutzt dieselbe Ableitung statt einer eigenen Kopie — dass
+  beide sie einst getrennt kopierten, war die Wurzel von #240/C6.
+
+Damit erledigt sich Codex' Punkt zu den exakten Reserved-Scope-Prüfungen in
+`save-target.ts` von selbst: Der einzige produktive Aufrufer von
+`subfolderFor()` ist `resolveMemoryTarget`, und der übergibt den kanonischen
+Key. In `daemon/taxonomy.ts` wurde die Prüfung dennoch gefaltet — dort liest
+sie **Bestands**-Frontmatter, das von Hand geschrieben sein kann, und die
+Drift-Erkennung negiert dieselbe Prüfung: ein `scope: Taxonomy` wäre still aus
+der Session-Injektion gefallen und zugleich als Drift-Kandidat behandelt
+worden.
+
+**Vault-Bestand geprüft, keine Migration nötig.** Über alle 997 Dateien: 0 ids,
+0 Scopes, 0 Ordner mit Großbuchstaben. Die 21 großgeschriebenen Dateinamen in
+`documents/Inbox/` sind Dokument-Sidecars, deren Name den Original-Scan
+spiegelt (`IMG_4022.JPG.md`) — eine andere Identität, bewusst unangetastet.
+
+### 20.4 Die Todo-Lane las `unfused` nicht
+
+Der Fund mit der größten Reichweite, und der einzige ohne Bezug zur
+Schreibweise. Fällt der dichte Arm aus, liefert `recallHybrid` rohe
+BM25-Werte auf offener Skala — #302 maß Spitzentreffer sechsstellig. Prompt-
+und Write-Lane behandeln das seit P0; die Todo-Lane las das Feld gar nicht und
+maß die rohen Werte an 50/100, als wären es RRF-Scores. Für jede Maschine
+**ohne Embedding-Modell** hieß das: praktisch jeder Treffer im REQUIRED-Band,
+Backoff-Bypass inklusive.
+
+Jetzt wortgleich zur Prompt-Lane: kein REQUIRED und kein Bypass ohne Fusion,
+`unfusedHeadline("these todos")` statt einer Bandaussage, und die Zahl wird
+weggelassen — sie lädt zum Vergleichen ein, den sie nicht trägt. Die Telemetrie
+führt `unfused` mit, damit der Anteil messbar ist.
+
+Das ist zugleich die Vorbedingung für den nächsten Schritt: Ein
+score-gegateter Scope-Bypass in der Todo-Lane wäre auf der unfused Skala
+sinnlos gewesen.
+
+### 20.5 Der Scope-Filter für Prompt- und Todo-Lane — gebaut, im Shadow-Modus
+
+Der Befund aus Abschnitt 19: Write-Lane und SessionStart filtern seit #110 hart
+nach Projekt-Scope, Prompt- und Todo-Lane filterten **nie**. Fremde Treffer
+kamen dort durch.
+
+Der Filter ist jetzt da, in `daemon/scope-filter.ts` als
+`applyLaneScopeFilter()`, und läuft zuerst im **Shadow-Modus**: Er rechnet aus,
+was er verwerfen würde, schreibt das in die Telemetrie und verwirft nichts.
+Umgelegt wird er mit `BASTRA_SCOPE_FILTER_LANES=enforce`.
+
+Warum nicht sofort scharf: Wie viele Treffer betroffen sind, weiß niemand — die
+Zahl existiert nirgends, weil der Filter dort nie lief. Ein Filter, der ohne
+gemessene Grundlinie scharfgeschaltet wird, entfernt möglicherweise eigene
+Treffer lautlos, und genau diese Fehlerklasse wurde in Abschnitt 19 und 20
+gerade geschlossen. Die Telemetrie beider Lanes trägt jetzt
+`scope_filter_mode`, `dropped_scope_count`, `dropped_scopes` und
+`project_confidence`; `detected_mode` und `unfused` standen schon da. Die
+Scope-NAMEN kommen mit, weil eine nackte Zahl nicht auswertbar ist: „12
+verworfen" kann ein einziges Nachbarprojekt sein oder breite Streuung, und das
+sind zwei verschiedene Entscheidungen.
+
+Die Politik unterscheidet sich pro Lane, und das ist der Punkt:
+
+- **Prompt-Lane** behält die Anker-Ausnahme aus #148 — ein hand-geschriebener
+  Trigger aus einem anderen Projekt ist eine Absichtserklärung, kein Rauschen.
+- **Todo-Lane** bekommt sie nicht. Sie fragt ausdrücklich nach
+  `type: project-fact` für den aktuellen Arbeitsplan; ein fremder Projekt-Fakt
+  ist dort fast immer Kontamination.
+- **Reflex-Treffer passieren immer**, in beiden Lanes, auch die semantischen
+  mit `recall_mode: "reflex"`. Sie sind vom Benutzer verdrahtet und hart
+  getriggert — eigene Produktsemantik (#217), kein Ranking-Ergebnis, das ein
+  Scope-Filter zweitbewerten dürfte.
+- **Ohne Fusion ist die Cross-Scope-Ausnahme zu.** Auf der rohen BM25-Skala
+  gibt es kein „beide Arme stimmen überein"-Signal, an dem sich ein Bypass
+  festmachen ließe. Für fremde Scopes gilt dann fail-closed — weil das Signal
+  fehlt, nicht weil der Treffer schlecht wäre. Das war zugleich der Grund,
+  20.4 vorher zu erledigen: Ein score-gegateter Bypass wäre auf einer Skala
+  ohne Bänder sinnlos gewesen.
+
+### 20.6 `detectProjectDetailed()` produktiv — ein geratener Name darf nicht filtern
+
+`detectProject()` gibt für jeden nichtleeren Pfad einen Namen zurück.
+`/tmp/worktree/packages/core` wird zu "core", und der Aufrufer konnte das nicht
+von einer echten Erkennung unterscheiden. In der Write-Lane hieß das: Der
+Hard-Filter warf dort jeden Treffer weg, dessen Scope nicht "core" hieß — das
+ganze eigene Projektgedächtnis, lautlos, ohne dass irgendwo ein Fehler entstand.
+Dieselbe Wirkung wie der case-sensitive Vergleich aus #360, nur mit anderer
+Ursache.
+
+`projectForFilter(cwd)` in `daemon/scope-filter.ts` beantwortet jetzt die Frage
+„darf dieser Name etwas wegwerfen": nur bei `confidence: "root-match"`, sonst
+`null` — und `isScopeCompatible(scope, null)` ist true, der Filter ist also
+offen statt falsch streng. Zurückgegeben wird `key`, nie `raw`: Filter
+vergleichen kanonisch. Der geratene Name bleibt für Query, Anzeige und
+Telemetrie in Gebrauch; nur zum Wegwerfen taugt er nicht. Umgestellt sind
+Write-, Prompt- und Todo-Lane.
+
+**Die SessionStart-Lane bleibt bewusst bei `detectProject()`.** Dort ist
+`project` keine Filterdimension, sondern eine Suchdimension — sie stellt eine
+zusätzliche Query mit `scope: <projekt>`. Ein Confidence-Gate wäre hier
+fail-CLOSED: Wer seine Repos außerhalb der bekannten Wurzelsegmente liegen hat
+(`PROJECT_ROOTS` kennt projekte/projects/code/workspace/src/repos), verlöre
+seinen Projekt-Kontext beim Sitzungsstart komplett. Der Grundsatz ist deshalb
+eng gefasst: Das Gate greift dort, wo ein geratener Name etwas WEGNIMMT, nicht
+dort, wo er etwas hinzufügt.
+
+## 21. Sechste Gegenprüfung: was die Kanonisierung selbst kaputt gemacht hat (26.08.2026)
+
+Codex prüfte den Stand aus Abschnitt 20 und fand drei Restprobleme — eines
+davon hatte ich in Abschnitt 20 selbst eingeführt. Alle drei bestätigt, alle
+drei behoben. Bei einem stimmt der Mechanismus, aber nicht die Zahl; das steht
+unten.
+
+### 21.1 Die Kanonisierung machte Bestandsdaten unerreichbar
+
+`canonicalMemoryId()` faltet jede explizite id. Der Bestandsfall war nicht
+mitgedacht, und er hatte zwei Ausgänge, beide falsch:
+
+- **case-sensitives Dateisystem:** `upper-id.md` entsteht NEBEN dem
+  vorhandenen `Upper-ID.md`. `overwrite: true` legt still ein Duplikat an.
+- **case-insensitives Dateisystem** (auf APFS nachgestellt): Der Write trifft
+  die alte Datei, ihr Name bleibt `Upper-ID.md`, das Frontmatter trägt jetzt
+  `id: upper-id`. Datei und id fallen auseinander.
+
+Codex' Empfehlung war, die globale Kanonisierung zurückzunehmen. Der Auftrag
+war das Gegenteil — Kleinschreibung durchziehen —, also ist sie geblieben und
+hat einen **Bestandsschutz** bekommen (`resolveAgainstExisting` in
+`core/save-target.ts`): Existiert das kanonische Ziel EXAKT nicht, das rohe
+aber schon, wird das rohe bedient und die alte Schreibweise beibehalten. Kein
+Rename, keine Migration. Alles Neue ist kanonisch, alles Alte bleibt genau so
+bedienbar wie vorher.
+
+Der Vergleich läuft segmentweise über `readdirSync`, nicht über `existsSync`:
+Ein case-insensitives Dateisystem meldet für `upper-id.md` true, wenn
+`Upper-ID.md` daliegt, und öffnet für `…/proj` klaglos `Proj/`. Genau diese
+Verwechslung ist hier auseinanderzuhalten. Der Zweig läuft nur, wenn roh und
+kanonisch überhaupt auseinandergehen — bei jedem normalen Save kostet er nichts.
+
+`MemoryTarget` trägt jetzt zusätzlich den `scope`, den das Frontmatter tragen
+MUSS: kanonisch im Normalfall, im Bestandsfall die alte Schreibweise. Sonst
+zeigte das Frontmatter auf ein Regal, in dem die Datei gar nicht liegt.
+
+Zweiter Teil desselben Fundes: `tool-handlers.ts` leitete die id für das
+Quality-Scoring mit einer EIGENEN Kopie ab (`parsed.data.id ?? slugify(title)`)
+und wich seit der Faltung vom tatsächlich geschriebenen Ziel ab — der
+Selbstausschluss (#239) hätte das Memory als sein eigenes Duplikat gewertet.
+Es fragt jetzt `resolveMemoryTarget`, also dieselbe Stelle, die auch schreibt.
+Dieselbe Duplikation war schon einmal die Wurzel von #240/C6.
+
+### 21.2 `root-match` ist keine Projekterkennung
+
+Das Confidence-Gate aus 20.6 vertraute jedem `root-match`. Das heißt aber nur
+„ein Pfadsegment hieß workspace/src/code", nicht „der Name danach ist ein
+Vault-Scope". Nachgestellt:
+
+```
+/workspace/packages/core     → root-match, Filterprojekt "packages"
+/Users/me/src/packages/core  → root-match, Filterprojekt "packages"
+```
+
+Das trifft die **Write-Lane**, deren Filter scharf ist: In so einem Verzeichnis
+verschwindet das ganze eigene Projektgedächtnis. Mein Bericht zu 20.6 hat
+behauptet, der Fix schließe das — er tat es nicht.
+
+Der belastbare Beleg ist, ob der VAULT den Namen als Scope oder
+Familienmitglied kennt. Die Frage ist nur im Daemon beantwortbar, wo der Vault
+liegt; die Lanes sprechen ihn über HTTP an. Also beantwortet ihn der
+Recall-Handler und schickt das Ergebnis als `project_known` mit
+(`vaultKnowsProject`, früher Abbruch beim ersten Treffer — der Normalfall
+kostet nichts, nur der seltene Fehlerfall läuft einmal durch).
+
+Fehlt das Feld — älterer Daemon, fremder Aufrufer —, fällt der Filter auf einen
+schwächeren Beleg zurück: Trägt kein Treffer der Ergebnisliste einen passenden
+Scope, wird nicht gefiltert. Globale Scopes zählen dabei nicht als Beleg; sie
+passen per Definition zu jedem Namen und würden auch einen erfundenen
+bestätigen. An einem unbekannten Feld darf ein Filter nie strenger werden.
+
+In der Telemetrie steht jetzt `filter_project` (der Name, gegen den tatsächlich
+verglichen wurde) und `scope_filter_skipped` (`no-project` /
+`no-scope-evidence`). `project_confidence: root-match` allein hätte nicht
+gezeigt, dass gegen „packages" verglichen wurde.
+
+Die **Write-Lane** läuft dabei auf denselben gemeinsamen Pfad
+(`applyLaneScopeFilter`, fest im enforce-Modus). Sie gewinnt damit den
+Beleg-Schutz und die Reflex-Ausnahme, die sie vorher nicht hatte; die
+Anker-Ausnahme aus #148 bleibt unverändert.
+
+### 21.3 BM25-only: der Mechanismus stimmt, die Zahl nicht
+
+Codex' Befund: Die RRF-Schwellen 50 und 100 werden weiterhin auf rohe
+BM25-Scores angewendet, und er misst an 991 Memories einen eindeutigen exakten
+`recall_when`-Treffer auf Rang 1 bei **48,707** — unter dem Floor 50, also
+verworfen.
+
+**Nachgemessen an Daniels Vault (997 Memories), und das reproduziert sich so
+nicht.** Über 400 echte `recall_when`-Trigger als Query, jeweils Rang 1:
+
+| | Anzahl |
+|---|---:|
+| Rang-1-Score < 50 (Floor) | **0** von 400 |
+| Rang-1-Score < 100 (REQUIRED) | **19** von 400 |
+
+Die Skala ist stark query-längenabhängig: Lange Prompts liefern Rang-1-Werte
+von 2000–3800, Einwort-Queries 57–200. Ein Rang-1-Treffer unter dem Floor 50
+ist mir in dieser Messung nicht untergekommen. Was zutrifft: 4,75 % der
+Rang-1-Treffer liegen unter 100 und werden als OPTIONAL behandelt statt als
+REQUIRED — und Treffer auf Rang 2 und tiefer fallen sehr wohl unter 50
+(gemessen: 8,5 bei einer Einwort-Query).
+
+Behoben wurde deshalb der Teil, der keine Kalibrierung braucht, sondern nur
+Konsistenz: Die **Write-Lane** teilte rohe BM25-Werte weiter bei 100 in
+REQUIRED/OPTIONAL und ließ REQUIRED den Backoff umgehen — die dritte Stelle
+derselben P0-Sache. Ohne Fusion stehen dort jetzt alle Treffer in EINER Liste
+unter der ehrlichen Überschrift, ohne Score, und es gibt keinen Bypass. Ihre
+Cross-Scope-Ausnahme nutzt im unfused-Fall ebenfalls keinen 100er-Wert mehr —
+das kam mit der Umstellung auf den gemeinsamen Filterpfad (21.2).
+
+**Nicht behoben und ausdrücklich offen:** die Floors selbst. `SCORE_FLOOR = 50`
+stammt aus dem RRF-Raum (`RRF_SCALE/(RRF_K + rank) ≥ 50` ⇔ Rang ≤ 4) und
+bedeutet auf der BM25-Skala nichts. Das braucht eine eigene BM25-only-Kalibrierung
+mit Labels, kein weiteres Argument. Der Bericht behauptet nicht, dass das
+Problem vollständig gelöst ist.
+
+### 21.4 Zwei Folgepunkte
+
+**Produktdokumente überlebten den Rename nur halb.** Abschnitt 20.2 schrieb den
+Scope um, aber die Identität nicht: `save_product_doc` baut den Projektnamen in
+die id (`doku-<projekt>-<area>`, zugleich der Dateiname), in `topic_path[1]` und
+in die Tags. Ein Dokument blieb also `doku-carnexus-area`, während der nächste
+Aufruf für `new-project` nach `doku-new-project-area` sucht — und ein zweites
+Dokument anlegte, statt das vorhandene zu aktualisieren. Genau das, was die
+Update-in-place-Semantik dieses Tools ausschließen soll. `rewriteDocIdentity()`
+zieht id, Dateiname, `topic_path` und Tag jetzt mit; ist der Zielname schon
+belegt, bleibt das Dokument liegen (lieber eine alte id als ein überschriebenes
+Dokument). Der von Codex vermisste Regressionstest existiert und geht den
+ganzen Weg: Doc anlegen → Projekt umbenennen → dieselbe Area erneut speichern →
+weiterhin genau ein Dokument.
+
+**Die Prompt-Lane meldete `status: "ok"` bei null Treffern**, wenn der Filter im
+enforce-Modus alles abtrug: `no-hits` wurde vor dem neuen Scope-Filter bestimmt.
+Die Telemetrie hätte den Filter nicht von einem stillen Recall unterscheiden
+können — also genau das nicht gezeigt, wofür der Shadow-Modus da ist. Todo- und
+Write-Lane setzen ihren Status schon nach dem Filter und waren nicht betroffen.
+
+### 21.5 Was jetzt offen ist
+
+**Die Shadow-Daten.** Sobald der Daemon eine Weile mit diesem Stand lief, sagen
+`dropped_scope_count`, `dropped_scopes`, `filter_project` und
+`scope_filter_skipped` in den Prompt- und Todo-Serien, ob `enforce` trägt.
+Umlegen ist dann ein Env-Wert.
+
+**Die BM25-only-Floors** (21.3). Braucht Labels, kein weiteres Argument — und
+hängt damit am selben Blocker wie Router und schneller Lexikpfad.
+
+### 21.6 Verifikation
+
+1643 Tests, 1641 grün, 0 rot (1 skipped, 1 todo). Typechecks für core, daemon,
+statusline und eval grün. Neue Tests, jeder reproduziert seinen Defekt vor dem
+Fix: `core/__tests__/canonical-id.test.ts` (6), `lane-scope-filter.test.ts`
+(19), `write-lane-project-confidence.test.ts` (2), `webui-areas.test.ts` (+2),
+`product-docs.test.ts` (+2), `todo-hook.test.ts` (+5), `taxonomy.test.ts` (+1).

@@ -247,3 +247,200 @@ test("integration — wrong tool_name emits empty object", async () => {
     await daemon.close();
   }
 });
+
+/**
+ * Codex-Gegenreview: die Todo-Lane las `unfused` überhaupt nicht. Für
+ * BM25-only-Maschinen (kein Embedding-Modell) wurden rohe, nach oben offene
+ * Scores an 50/100 gemessen, als wären es RRF-Werte — praktisch jeder Treffer
+ * landete im REQUIRED-Band, samt Backoff-Bypass.
+ */
+test("formatHintBlock — unfused: no bands, no scores, honest headline", () => {
+  const hits: RecallHit[] = [
+    {
+      id: "roher-bm25-treffer",
+      title: "Roher Treffer",
+      type: "project-fact",
+      scope: "bastra-recall",
+      summary: "Ein lexikalischer Treffer auf offener Skala.",
+      score: 41337, // #302: rohe BM25-Spitzen sind fünf-/sechsstellig
+    },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", ["daemon"], true);
+  // Kein Band-Vokabular: weder REQUIRED noch OPTIONAL noch "both search paths".
+  assert.doesNotMatch(block, /REQUIRED|OPTIONAL/);
+  assert.doesNotMatch(block, /agreed/);
+  assert.match(block, /open-ended scale/);
+  // Die Zahl wird nicht gezeigt — sie lädt zum Vergleichen ein, den sie nicht trägt.
+  assert.doesNotMatch(block, /41337/);
+  assert.doesNotMatch(block, /score \d/);
+  assert.match(block, /roher-bm25-treffer/);
+});
+
+test("formatHintBlock — fused path keeps its bands and scores", () => {
+  const hits: RecallHit[] = [
+    {
+      id: "fusionierter-treffer",
+      title: "Fusioniert",
+      type: "project-fact",
+      scope: "bastra-recall",
+      summary: "Beide Arme stimmten überein.",
+      score: 130,
+    },
+  ];
+  const block = formatHintBlock(hits, "bastra-recall", ["daemon"], false);
+  assert.match(block, /score 130/);
+  assert.doesNotMatch(block, /open-ended scale/);
+});
+
+test("integration — an unfused recall response reaches the block honestly", async () => {
+  const daemon = await startMockDaemon((req, res) => {
+    let body = "";
+    req.on("data", (c: Buffer) => (body += c.toString()));
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          hits: [
+            {
+              id: "bm25-only-treffer",
+              title: "Nur lexikalisch",
+              type: "project-fact",
+              scope: "bastra-recall",
+              summary: "Kein Vektor-Arm gelaufen.",
+              score: 98765,
+            },
+          ],
+          vault_size: 100,
+          latency_ms: 10,
+          recall_id: "test",
+          unfused: true,
+        }),
+      );
+    });
+  });
+
+  try {
+    const { stdout } = await runLane(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "TodoWrite",
+        session_id: `unfused-${Date.now()}`,
+        cwd: process.cwd(),
+        tool_input: {
+          todos: [
+            { content: "Implement bastra-recall daemon hook for TodoWrite", status: "pending" },
+            { content: "Wire up bastra-recall daemon telemetry", status: "pending" },
+            { content: "Test the daemon hook pipeline", status: "pending" },
+          ],
+        },
+      },
+      `http://127.0.0.1:${daemon.port}`,
+    );
+    const ctx =
+      (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? "";
+    assert.match(ctx, /bm25-only-treffer/);
+    assert.match(ctx, /open-ended scale/);
+    assert.doesNotMatch(ctx, /REQUIRED/);
+    assert.doesNotMatch(ctx, /98765/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+/**
+ * §20.5: der Scope-Filter dieser Lane. Shadow misst und lässt durch, enforce
+ * verwirft — hier über die echte Lane, damit die Verdrahtung mitgeprüft ist.
+ */
+function startForeignScopeDaemon() {
+  return startMockDaemon((req, res) => {
+    let body = "";
+    req.on("data", (c: Buffer) => (body += c.toString()));
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          hits: [
+            {
+              id: "eigener-fakt",
+              title: "Eigen",
+              type: "project-fact",
+              scope: "bastra-recall",
+              summary: "Gehört zu diesem Projekt.",
+              score: 135,
+            },
+            {
+              id: "fremder-fakt",
+              title: "Fremd",
+              type: "project-fact",
+              scope: "carnexus",
+              summary: "Gehört zu einem anderen Projekt.",
+              score: 130,
+              matched_recall_when: true,
+              anchor_strength: "strong",
+            },
+          ],
+          vault_size: 100,
+          latency_ms: 10,
+          recall_id: "test",
+        }),
+      );
+    });
+  });
+}
+
+const SCOPE_TODOS = {
+  todos: [
+    { content: "Implement bastra-recall daemon hook for TodoWrite", status: "pending" },
+    { content: "Wire up bastra-recall daemon telemetry", status: "pending" },
+    { content: "Test the daemon hook pipeline", status: "pending" },
+  ],
+};
+
+async function runScopeLane(mode: string | undefined, port: number): Promise<string> {
+  const before = process.env.BASTRA_SCOPE_FILTER_LANES;
+  if (mode === undefined) delete process.env.BASTRA_SCOPE_FILTER_LANES;
+  else process.env.BASTRA_SCOPE_FILTER_LANES = mode;
+  try {
+    const { stdout } = await runLane(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "TodoWrite",
+        session_id: `scope-${mode}-${Date.now()}`,
+        // Ein echter Projekt-Root-Pfad: detectProject liefert "bastra-recall".
+        cwd: "/Users/x/Projekte/bastra-recall",
+        tool_input: SCOPE_TODOS,
+      },
+      `http://127.0.0.1:${port}`,
+    );
+    return (
+      (JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string } })
+        .hookSpecificOutput?.additionalContext ?? ""
+    );
+  } finally {
+    if (before === undefined) delete process.env.BASTRA_SCOPE_FILTER_LANES;
+    else process.env.BASTRA_SCOPE_FILTER_LANES = before;
+  }
+}
+
+test("scope filter — shadow (default) lets a foreign project-fact through", async () => {
+  const daemon = await startForeignScopeDaemon();
+  try {
+    const ctx = await runScopeLane(undefined, daemon.port);
+    assert.match(ctx, /eigener-fakt/);
+    assert.match(ctx, /fremder-fakt/);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("scope filter — enforce drops it, anchor or not (this lane has no exception)", async () => {
+  const daemon = await startForeignScopeDaemon();
+  try {
+    const ctx = await runScopeLane("enforce", daemon.port);
+    assert.match(ctx, /eigener-fakt/);
+    assert.doesNotMatch(ctx, /fremder-fakt/);
+  } finally {
+    await daemon.close();
+  }
+});

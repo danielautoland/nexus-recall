@@ -34,6 +34,8 @@ import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
+import { applyLaneScopeFilter, projectConfidence, projectForFilter, type ScopeFilterMode } from "./scope-filter.js";
+
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
@@ -114,6 +116,10 @@ interface RecallResponse {
    * „beide Suchpfade waren sich einig" angekündigt, während nur einer lief.
    */
   unfused?: boolean;
+  /** Codex-Gegenreview: Kennt der VAULT den mitgeschickten Projektnamen als
+   *  Scope (oder Familienmitglied)? Nur der Daemon kann das beantworten — die
+   *  Lane sieht den Vault nicht. `false` heißt: nicht filtern. */
+  project_known?: boolean;
   /** #342: warum die Fusion ausfiel — `vector-arm-timeout` | `vector-arm-error`
    *  | `vector-arm-empty`. Trennt „diese Maschine degradiert gerade" von
    *  „Embeddings sind hier aus". */
@@ -372,7 +378,10 @@ export async function runPromptLane(
     detectedMode = "none";
   }
 
-  const project = detectProject(payload.cwd ?? process.cwd());
+  const cwd = payload.cwd ?? process.cwd();
+  const project = detectProject(cwd);
+  // §20.5: geratenes Projekt filtert nicht — siehe projectForFilter.
+  const filterProject = projectForFilter(cwd);
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
 
   // #217 Reflex-Lane: feuert unabhängig vom Retrieval-Gate — auch bei
@@ -517,6 +526,31 @@ export async function runPromptLane(
     recallHits = kept;
   }
 
+  // §20.5: Diese Lane filterte nie nach Projekt-Scope — fremde Treffer kamen
+  // durch, während Write-Lane und SessionStart seit #110 hart filtern. Der
+  // Filter läuft hier zuerst im SHADOW-Modus: er misst, was er verwerfen
+  // würde, und verwirft nichts. Die Anker-Ausnahme bleibt (ein hand-
+  // geschriebener Trigger aus einem anderen Projekt IST eine Absicht),
+  // Reflex-Treffer sind ausgenommen, und ohne Fusion ist die Ausnahme zu.
+  const scopeFilter = applyLaneScopeFilter(
+    recallHits,
+    filterProject,
+    {
+      allowAnchoredCrossScope: true,
+      mustLoadScore: MUST_LOAD_SCORE,
+      unfused: resp?.unfused === true,
+      exemptReflex: true,
+      projectKnown: resp?.project_known,
+    },
+  );
+  recallHits = scopeFilter.hits;
+  // Codex-Gegenreview: `no-hits` wurde oben bestimmt, VOR diesem Filter. Trägt
+  // er im enforce-Modus alles ab, meldete die Telemetrie weiter "ok" bei null
+  // injizierten Treffern — die Serie hätte den Filter nicht von einem stillen
+  // Recall unterscheiden können, also genau das nicht gezeigt, wofür der
+  // Shadow-Modus da ist.
+  if (resp && recallHits.length === 0) status = "no-hits";
+
   let backoffStreak = 0;
   let suppressed = false;
   let suppressedTokensEst = 0;
@@ -606,6 +640,19 @@ export async function runPromptLane(
     top_score: resp?.hits?.[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     backoff_streak: backoffStreak,
+    // §20.5 Shadow-Messung: was ein Scope-Filter hier verwerfen WÜRDE, plus
+    // der Kontext, in dem die Entscheidung fällt — Modus (shadow/enforce),
+    // Projekt-Scope, Retrieval-Modus (steht schon als detected_mode oben) und
+    // `unfused`. Die Scope-Namen kommen mit, damit sich auswerten lässt, ob
+    // dieselben zwei Fremdprojekte alles ausmachen oder ob es breit streut.
+    scope_filter_mode: scopeFilter.mode,
+    dropped_scope_count: scopeFilter.droppedCount,
+    project_confidence: projectConfidence(cwd),
+    filter_project: scopeFilter.filterProject,
+    ...(scopeFilter.skipped ? { scope_filter_skipped: scopeFilter.skipped } : {}),
+    ...(scopeFilter.droppedScopes.length > 0
+      ? { dropped_scopes: scopeFilter.droppedScopes }
+      : {}),
     ...(resp?.unfused === true ? { unfused: true } : {}),
     ...(resp?.degraded ? { degraded: resp.degraded } : {}),
     suppressed,
@@ -810,6 +857,22 @@ interface PromptHookTelemetry {
    *  connectivity counter (#352): it is the empty-injection suppression
    *  cadence and climbs on perfectly healthy `status:"ok"` responses. */
   backoff_streak?: number;
+  /**
+   * §20.5 Shadow-Messung: In welchem Modus der Lane-Scope-Filter lief
+   * ("shadow" misst nur) und wie viele Treffer ein Erzwingen verworfen hätte.
+   * `dropped_scopes` nennt die fremden Scope-Namen — ohne sie ist eine Zahl
+   * nicht auswertbar: „12 verworfen" kann ein einziges Nachbarprojekt sein
+   * oder breite Streuung, und das sind zwei verschiedene Entscheidungen.
+   */
+  scope_filter_mode?: ScopeFilterMode;
+  dropped_scope_count?: number;
+  dropped_scopes?: string[];
+  /** §20.5: "fallback" heißt, der Projektname war geraten — dann filtert die
+   *  Lane nicht, und ein `dropped_scope_count` von 0 sagt nichts über Scopes. */
+  project_confidence?: "root-match" | "fallback" | "none";
+  /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert. */
+  filter_project?: string | null;
+  scope_filter_skipped?: "no-project" | "no-scope-evidence";
   /** #161: true when the empty-streak backoff suppressed the injection. */
   suppressed?: boolean;
   /** #161: est. tokens of the NOT-injected block — the savings side of ROI. */

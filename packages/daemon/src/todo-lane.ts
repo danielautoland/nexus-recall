@@ -19,7 +19,8 @@
 // start against +0.8ms for the three leafs, on a fresh spawn per event.
 import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
-import { requiredHeadline } from "./band-wording.js";
+import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
+import { applyLaneScopeFilter, projectConfidence, projectForFilter, type ScopeFilterMode } from "./scope-filter.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { request } from "node:http";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -75,6 +76,19 @@ interface RecallResponse {
   vault_size: number;
   latency_ms: number;
   recall_id: string;
+  /**
+   * Der Recall lief OHNE Vektor-Arm — keine Fusion, keine Bänder, rohe
+   * BM25-Werte auf offener Skala (#302 maß Spitzentreffer sechsstellig).
+   * Diese Lane las das Feld gar nicht (Codex-Gegenreview): Formatter und
+   * Backoff maßen die rohen Werte an 50/100, als wären es RRF-Scores — also
+   * war für BM25-only-Maschinen praktisch ALLES "REQUIRED". Prompt- und
+   * Write-Lane behandeln das Feld seit P0, die Todo-Lane jetzt genauso.
+   */
+  unfused?: boolean;
+  /** Codex-Gegenreview: Kennt der VAULT den mitgeschickten Projektnamen als
+   *  Scope (oder Familienmitglied)? Nur der Daemon kann das beantworten — die
+   *  Lane sieht den Vault nicht. `false` heißt: nicht filtern. */
+  project_known?: boolean;
 }
 
 // Tiny stopword list — covers the most-common DE/EN noise tokens that would
@@ -198,7 +212,10 @@ export async function runTodoLane(
     return "{}";
   }
 
-  const project = detectProject(payload.cwd ?? process.cwd());
+  const cwd = payload.cwd ?? process.cwd();
+  const project = detectProject(cwd);
+  // §20.5: geratenes Projekt filtert nicht — siehe projectForFilter.
+  const filterProject = projectForFilter(cwd);
   // The self-call target is passed in by the route (this server's own
   // address), not read from the environment: the lane IS the daemon.
   const url = selfBaseUrl;
@@ -233,13 +250,30 @@ export async function runTodoLane(
     }
   }
 
-  const filtered: RecallHit[] = [];
+  const aboveFloor: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < SCORE_FLOOR) continue;
-      filtered.push(h);
+      aboveFloor.push(h);
     }
   }
+  // §20.5: Diese Lane filterte nie nach Projekt-Scope. Sie fragt ausdrücklich
+  // nach `type: project-fact` für den AKTUELLEN Arbeitsplan — ein fremder
+  // Projekt-Fakt ist hier fast immer Kontamination, nicht Kontext. Deshalb
+  // ohne Cross-Scope-Ausnahme, anders als in der Prompt-Lane. Läuft zuerst im
+  // SHADOW-Modus: misst, verwirft nichts (BASTRA_SCOPE_FILTER_LANES=enforce).
+  const scopeFilter = applyLaneScopeFilter(
+    aboveFloor,
+    filterProject,
+    {
+      allowAnchoredCrossScope: false,
+      mustLoadScore: MUST_LOAD_SCORE,
+      unfused: resp?.unfused === true,
+      exemptReflex: true,
+      projectKnown: resp?.project_known,
+    },
+  );
+  const filtered = scopeFilter.hits;
   if (resp && filtered.length === 0) status = "no-hits";
 
   let backoffStreak = 0;
@@ -256,11 +290,15 @@ export async function runTodoLane(
     const state = await loadSessionState(sessionId);
     const entry = state.sources?.[BACKOFF_SOURCE];
     const consumed = await wasEmitConsumed(entry);
-    const hasRequired = filtered.some((h) => h.score >= MUST_LOAD_SCORE);
+    // Auf der unfused Skala ist `>= MUST_LOAD_SCORE` keine Aussage — ein
+    // Bypass daraus hieße: Der Backoff hört genau dann auf zu greifen, wenn
+    // der Recall am wenigsten weiß. Wortgleich zu prompt-lane.ts.
+    const unfused = resp?.unfused === true;
+    const hasRequired = !unfused && filtered.some((h) => h.score >= MUST_LOAD_SCORE);
     const decision = decideBackoff(entry, consumed, hasRequired);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
-    const block = formatHintBlock(filtered, project, extraction.topics);
+    const block = formatHintBlock(filtered, project, extraction.topics, unfused);
     if (suppressed) {
       // Suppressed emits {} exactly like the empty path (#161).
       suppressedTokensEst = Math.ceil(block.length / 4);
@@ -295,27 +333,45 @@ export async function runTodoLane(
     suppressed_tokens_est: suppressedTokensEst,
     status: suppressed ? "suppressed" : status,
     error: errMsg,
+    scope_filter_mode: scopeFilter.mode,
+    dropped_scope_count: scopeFilter.droppedCount,
+    project_confidence: projectConfidence(cwd),
+    filter_project: scopeFilter.filterProject,
+    ...(scopeFilter.skipped ? { scope_filter_skipped: scopeFilter.skipped } : {}),
+    ...(scopeFilter.droppedScopes.length > 0
+      ? { dropped_scopes: scopeFilter.droppedScopes }
+      : {}),
+    ...(resp?.unfused === true ? { unfused: true } : {}),
   });
   return out;
 }
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
+  // Auf der unfused Skala ist die Zahl weder mit den Bändern noch zwischen
+  // zwei Aufrufen vergleichbar — sie wegzulassen ist ehrlicher, als eine
+  // Größenordnung zu zeigen, die zum Vergleichen einlädt.
+  return hideScore
+    ? `- ${h.id} (${h.type}): ${summary}`
+    : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
 export function formatHintBlock(
   hits: RecallHit[],
   project: string | null,
   topics: string[],
+  unfused = false,
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const topicsAttr = topics.length > 0 ? ` topics="${escapeAttr(topics.join(","))}"` : "";
   const head = `<recall-hints surface="claude-code" trigger="todo-plan"${projAttr}${topicsAttr}>`;
   const tail = `</recall-hints>`;
 
-  const required = hits.filter((h) => h.score >= MUST_LOAD_SCORE);
-  const optional = hits.filter((h) => h.score < MUST_LOAD_SCORE);
+  // Ohne Fusion gibt es keine Bänder: die Werte stammen aus einer offenen
+  // Skala, auf der die 100 kein Signal ist. Dann wird nicht gebandet, sondern
+  // gesagt, woran das Modell die Treffer stattdessen misst — Titel und Summary.
+  const required = unfused ? [] : hits.filter((h) => h.score >= MUST_LOAD_SCORE);
+  const optional = unfused ? [] : hits.filter((h) => h.score < MUST_LOAD_SCORE);
   const sections: string[] = [];
 
   sections.push(
@@ -324,6 +380,13 @@ export function formatHintBlock(
       `the current file layout / past decisions in this area. ` +
       `load_memory(id) the hits relevant to these todos; treat the rest as candidates (hints, not obligations).`,
   );
+
+  if (unfused) {
+    sections.push("");
+    sections.push(unfusedHeadline("these todos"));
+    sections.push("");
+    for (const h of hits) sections.push(formatHintLine(h, true));
+  }
 
   if (required.length > 0) {
     sections.push("");
@@ -428,6 +491,23 @@ interface TodoHookTelemetry {
   latency_ms_total: number;
   /** #161: resolved streak of this event's backoff decision. */
   backoff_streak?: number;
+  /** Der Recall lief ohne Vektor-Arm — die Scores sind roh und nicht mit den
+   *  Bändern vergleichbar. Ohne dieses Feld ist `top_score` in der Auswertung
+   *  eine Zahl ohne Skala. */
+  unfused?: boolean;
+  /**
+   * §20.5 Shadow-Messung, gleiche Felder wie in der Prompt-Lane, damit sich
+   * beide Lanes in einer Auswertung vergleichen lassen: der harte Filter hier
+   * gegen den anker-tolerierenden dort.
+   */
+  scope_filter_mode?: ScopeFilterMode;
+  dropped_scope_count?: number;
+  dropped_scopes?: string[];
+  /** §20.5, siehe Prompt-Lane. */
+  project_confidence?: "root-match" | "fallback" | "none";
+  /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert. */
+  filter_project?: string | null;
+  scope_filter_skipped?: "no-project" | "no-scope-evidence";
   /** #161: true when the empty-streak backoff suppressed the injection. */
   suppressed?: boolean;
   /** #161: est. tokens of the NOT-injected block — the savings side of ROI. */

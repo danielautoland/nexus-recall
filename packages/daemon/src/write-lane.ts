@@ -27,7 +27,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
-import { passesScopeFilter } from "./scope-filter.js";
+import { applyLaneScopeFilter, projectConfidence, projectForFilter } from "./scope-filter.js";
 import { fileSizeNote } from "./file-size-check.js";
 import { memoryLocationNote } from "./memory-location.js";
 import { reportHinted } from "./hook-hinted.js";
@@ -92,6 +92,10 @@ interface RecallResponse {
   /** #302: no vector arm, so no RRF ran and the score is raw BM25 — an
    *  unbounded scale with no ceiling. The band cuts describe nothing there. */
   unfused?: boolean;
+  /** Codex-Gegenreview: Kennt der VAULT den mitgeschickten Projektnamen als
+   *  Scope (oder Familienmitglied)? Nur der Daemon kann das beantworten — die
+   *  Lane sieht den Vault nicht. `false` heißt: nicht filtern. */
+  project_known?: boolean;
 }
 
 type HookStatus =
@@ -145,7 +149,13 @@ export async function runWriteLane(
     content_excerpt: extractContentExcerpt(toolName, toolInput),
   };
   const topics = detectTopics(intent);
-  const project = detectProject(payload.cwd ?? process.cwd());
+  const cwd = payload.cwd ?? process.cwd();
+  const project = detectProject(cwd);
+  // §20.5: Der Name, den der Filter benutzen darf, ist NICHT immer der Name,
+  // den Query und Anzeige benutzen. `projectForFilter` liefert null, sobald
+  // die Erkennung nur geraten war — dann filtert diese Lane nicht, statt auf
+  // einem Fallback-Namen eigene Treffer wegzuwerfen.
+  const filterProject = projectForFilter(cwd);
   const remainingMs = Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
 
   // Recall — loopback self-call, any failure → silent degrade.
@@ -178,18 +188,32 @@ export async function runWriteLane(
   // fremden Projekt-Scopes fliegen raus — seit #110 auch im REQUIRED-Band.
   // #148: nur ein Hit, der auf seinem HAND-geschriebenen recall_when matchte
   // UND im REQUIRED-Band sitzt, passiert cross-scope (passesScopeFilter).
-  const filteredHits: RecallHit[] = [];
-  let droppedScopeCount = 0;
+  const aboveFloor: RecallHit[] = [];
   if (resp && Array.isArray(resp.hits)) {
     for (const h of resp.hits) {
       if (h.score < SCORE_FLOOR) continue;
-      if (!passesScopeFilter(h, project, MUST_LOAD_SCORE)) {
-        droppedScopeCount++;
-        continue;
-      }
-      filteredHits.push(h);
+      aboveFloor.push(h);
     }
   }
+  // Diese Lane filtert seit #110 hart und tut es weiter — sie läuft deshalb
+  // fest im enforce-Modus. Der gemeinsame Pfad bringt ihr zwei Dinge, die sie
+  // vorher nicht hatte: die Reflex-Ausnahme und den Beleg-Schutz (ein Filter,
+  // der seinen eigenen Projektnamen im Ergebnis nicht wiederfindet, wirft
+  // nichts weg). Die Anker-Ausnahme aus #148 bleibt unverändert.
+  const scopeFilter = applyLaneScopeFilter(
+    aboveFloor,
+    filterProject,
+    {
+      allowAnchoredCrossScope: true,
+      mustLoadScore: MUST_LOAD_SCORE,
+      unfused: resp?.unfused === true,
+      exemptReflex: true,
+      projectKnown: resp?.project_known,
+    },
+    "enforce",
+  );
+  const filteredHits = scopeFilter.hits;
+  const droppedScopeCount = scopeFilter.droppedCount;
 
   // Per-session dedup (#32). Best-effort throughout — no error in this
   // section ever blocks the response.
@@ -217,10 +241,17 @@ export async function runWriteLane(
     survivingHits.push(h);
   }
 
+  // Codex-Gegenreview: Diese Lane teilte rohe BM25-Werte weiter bei 100 in
+  // REQUIRED/OPTIONAL — die dritte Stelle derselben P0-Sache, nachdem Prompt-
+  // und Todo-Lane sie schon behandeln. Ohne Fusion gibt es keine Bänder: Alle
+  // Treffer stehen dann in EINER Liste unter der ehrlichen Überschrift, statt
+  // an einer Schwelle geteilt zu werden, die auf dieser Skala nichts bedeutet.
+  const unfused = resp?.unfused === true;
   const requiredHits: RecallHit[] = [];
   const optionalHits: RecallHit[] = [];
   for (const h of survivingHits) {
-    if (h.score >= MUST_LOAD_SCORE) requiredHits.push(h);
+    if (unfused) requiredHits.push(h);
+    else if (h.score >= MUST_LOAD_SCORE) requiredHits.push(h);
     else optionalHits.push(h);
   }
 
@@ -238,7 +269,10 @@ export async function runWriteLane(
   if (dedupActive && totalHints > 0) {
     const entry = sessionState.sources?.[BACKOFF_SOURCE];
     backoffConsumed = await wasEmitConsumed(entry);
-    const decision = decideBackoff(entry, backoffConsumed, requiredHits.length > 0);
+    // Der Backoff-Bypass hängt am REQUIRED-Band — das es ohne Fusion nicht
+    // gibt. Sonst hörte er genau dann auf zu greifen, wenn der Recall am
+    // wenigsten weiß (wortgleich zu prompt-lane.ts).
+    const decision = decideBackoff(entry, backoffConsumed, !unfused && requiredHits.length > 0);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
     if (suppressed) status = "suppressed";
@@ -314,6 +348,10 @@ export async function runWriteLane(
     latency_ms_total: Date.now() - startedAt,
     dropped_dedup_count: droppedDedupCount,
     dropped_scope_count: droppedScopeCount,
+    project_confidence: projectConfidence(cwd),
+    filter_project: scopeFilter.filterProject,
+    ...(scopeFilter.skipped ? { scope_filter_skipped: scopeFilter.skipped } : {}),
+    ...(scopeFilter.droppedScopes.length > 0 ? { dropped_scopes: scopeFilter.droppedScopes } : {}),
     hint_tokens_est: hintTokensEst,
     hinted_ids: hintedIds,
     backoff_streak: backoffStreak,
@@ -330,10 +368,14 @@ export async function runWriteLane(
 
 // ─── formatting ─────────────────────────────────────────────────────────────
 
-function formatHintLine(h: RecallHit): string {
+function formatHintLine(h: RecallHit, hideScore = false): string {
   // Truncate summary to keep total payload small.
   const summary = h.summary.length > 220 ? h.summary.slice(0, 217) + "…" : h.summary;
-  return `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
+  // Auf der unfused Skala ist die Zahl weder mit den Bändern noch zwischen
+  // zwei Aufrufen vergleichbar — dieselbe Regel wie in den anderen Lanes.
+  return hideScore
+    ? `- ${h.id} (${h.type}): ${summary}`
+    : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
 export function formatHintBlock(
@@ -373,7 +415,7 @@ export function formatHintBlock(
           `load_memory(id) the ones that bear on this edit. ` +
           `Hints, not obligations: load only what fits, don't batch-load the list.`,
     );
-    for (const h of required) sections.push(formatHintLine(h));
+    for (const h of required) sections.push(formatHintLine(h, unfused));
   }
 
   if (optional.length > 0) {
@@ -388,7 +430,7 @@ export function formatHintBlock(
           `OPTIONAL — found by ONE search path only, or by both but ranked lower. ` +
           `Load only if the title/summary directly relates to the pending change:`,
     );
-    for (const h of optional) sections.push(formatHintLine(h));
+    for (const h of optional) sections.push(formatHintLine(h, unfused));
   }
 
   // #152: reference-only frame + anti-spoof — vault-derived text (titles,
@@ -481,6 +523,16 @@ interface HookCallTelemetry {
   latency_ms_total: number;
   dropped_dedup_count: number;
   dropped_scope_count: number;
+  /** §20.5: "root-match" = echtes Repo-Wurzelsegment getroffen, "fallback" =
+   *  letztes Pfadsegment geraten (dann filtert die Lane nicht), "none" = kein
+   *  Pfad. Ohne dieses Feld ist `dropped_scope_count` nicht interpretierbar. */
+  project_confidence?: "root-match" | "fallback" | "none";
+  /** Der Name, gegen den verglichen wurde — null heißt: nicht gefiltert.
+   *  `project_confidence: "root-match"` allein zeigt nicht, dass irrtümlich
+   *  gegen "packages" verglichen wurde; dieses Feld zeigt es. */
+  filter_project?: string | null;
+  scope_filter_skipped?: "no-project" | "no-scope-evidence";
+  dropped_scopes?: string[];
   /** Geschätzte Tokens des injizierten <recall-hints>-Blocks (#72). */
   hint_tokens_est: number;
   /** IDs, die tatsächlich emittiert wurden (#72 context-tax per memory). */

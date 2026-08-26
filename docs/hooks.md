@@ -366,6 +366,7 @@ new MCP tool):
 | `BASTRA_REFLEX_MAX_PER_TURN`  | `2`              | Reflex injection budget per prompt (clamp 1–5)                |
 | `BASTRA_REFLEX_PROMOTION_MIN` | `3`              | Acted-on recalls (30d) before the curator proposes a reflex promotion |
 | `BASTRA_ADOPTION_PROMOTION_MIN` | `2`            | Acted-on recalls (30d) before the curator proposes adopting an intake memory (#217) |
+| `BASTRA_SCOPE_FILTER_LANES`   | `shadow`         | `shadow` \| `enforce` — Projekt-Scope-Filter für Prompt- und Todo-Lane. `shadow` misst nur (`dropped_scope_count`, `dropped_scopes`, `project_confidence` in der Telemetrie), `enforce` verwirft. Write-Lane und SessionStart filtern unabhängig davon seit #110 |
 | `BASTRA_SALIENCE_RANK`        | `shadow`         | `off` \| `shadow` \| `live` — salience ranking multiplier (#217, lift-gated) |
 | `BASTRA_SALIENCE_RANK_CAP`    | `0.25`           | Max salience score boost (`1 + salience × cap`)               |
 | `BASTRA_SAMPLE_ROT_DAYS`      | `28`             | Sample floor: days a memory may go unmeasured before it must re-enter the sample, whatever its salience (#160) |

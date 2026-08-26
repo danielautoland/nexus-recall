@@ -12,6 +12,7 @@ import type {
   RecallStage,
   StageListener,
 } from "@bastra-recall/core";
+import { vaultKnowsProject } from "./scope-filter.js";
 import { routeRetrieval } from "@bastra-recall/core";
 import { fireAndForget, type Telemetry } from "./telemetry.js";
 import { envBool, envInt } from "./env.js";
@@ -168,6 +169,7 @@ export function handleHookRecall(
       const k = clampInt(body.k, 1, 10, 3);
       const hookSessionId = typeof body.session_id === "string" ? body.session_id : null;
       const hookToolName = typeof body.tool_name === "string" ? body.tool_name : null;
+      const hookProject = typeof body.project === "string" ? body.project : null;
       if (hookToolName === "UserPromptSubmit") {
         telemetry.rotateTurn(hookSessionId);
       }
@@ -433,7 +435,7 @@ export function handleHookRecall(
             ? (body.topics as unknown[]).filter((t): t is string => typeof t === "string")
             : [],
           tool_name: hookToolName,
-          project: typeof body.project === "string" ? body.project : null,
+          project: hookProject,
           k,
           scope: scope ?? null,
           type: type ?? null,
@@ -559,6 +561,16 @@ export function handleHookRecall(
         // P0: derselbe explizite Score-Raum wie auf dem MCP-Pfad. `unfused`
         // sagt es indirekt, aber ein Konsument soll das Feld lesen können,
         // statt aus einer Abwesenheit zu schließen.
+        // Codex-Gegenreview zum Confidence-Gate: Kennt der Vault den
+        // Projektnamen überhaupt? `detectProject()` liefert für
+        // `/workspace/packages/core` das Projekt "packages" — mit voller
+        // Zuversicht, denn ein Pfadsegment hieß "workspace". Ein scharfer
+        // Scope-Filter würde damit das ganze eigene Gedächtnis entfernen.
+        // Die Frage ist nur HIER beantwortbar, wo der Vault liegt; die Lanes
+        // sehen ihn nicht. Früher Abbruch beim ersten Treffer: der Normalfall
+        // (eigenes Projekt) kostet nichts, nur der seltene Fehlerfall läuft
+        // einmal durch.
+        ...(hookProject !== null ? { project_known: vaultKnowsProject(vault, hookProject) } : {}),
         score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
         ...(hybridActiveAtRecall ? {} : { unfused: true }),
         // #342: name the reason on the wire too. `unfused` says the bands do
