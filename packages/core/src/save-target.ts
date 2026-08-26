@@ -9,7 +9,7 @@
  * this land" without a write.
  */
 import { readdirSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { SaveMemoryInput } from "./save-schema.js";
 import { canonicalMemoryId } from "./save-text.js";
 import { normalizeScopeKey } from "./scope.js";
@@ -60,23 +60,29 @@ export function subfolderFor(scope: string, type: string): string {
  * Bestandsschutz für die Kanonisierung (Codex-Gegenreview zu #360-D).
  *
  * Die Faltung ist richtig für NEUE Memories, darf aber kein bestehendes
- * unerreichbar machen. Ein Vault mit `Upper-ID.md` (oder einem Regal `Proj/`)
- * hätte sonst zwei Ausgänge, beide falsch: auf einem case-SENSITIVEN System
- * entsteht `upper-id.md` daneben — ein Duplikat, das `overwrite: true` still
- * ignoriert; auf einem case-INSENSITIVEN System trifft der Schreibvorgang die
- * alte Datei, lässt ihren Namen stehen und setzt im Frontmatter die neue id —
- * Datei und id fallen auseinander (auf APFS nachgestellt).
+ * unerreichbar machen. Ein Vault mit `Upper-ID.md` hätte sonst zwei Ausgänge,
+ * beide falsch: auf einem case-SENSITIVEN System entsteht `upper-id.md`
+ * daneben — ein Duplikat, das `overwrite: true` still ignoriert; auf einem
+ * case-INSENSITIVEN System trifft der Schreibvorgang die alte Datei, lässt
+ * ihren Namen stehen und setzt im Frontmatter die neue id — Datei und id
+ * fallen auseinander (auf APFS nachgestellt).
  *
- * Also: Existiert das kanonische Ziel EXAKT nicht, das rohe aber schon, wird
- * das rohe bedient und die alte Schreibweise beibehalten. Kein Rename, keine
- * Migration — Bestandsdaten bleiben genau so bedienbar wie vorher, und alles
- * Neue ist kanonisch.
+ * Gesucht wird VAULTWEIT, nicht an den zwei naheliegenden Orten. Die erste
+ * Fassung prüfte nur „kanonisches Regal + kanonische id" gegen „rohes Regal +
+ * rohe id" und übersah damit jede Mischform (`memories/projects/proj/Upper-ID.md`)
+ * ebenso wie die Ablagen, die der Vault ausdrücklich unterstützt: die flache
+ * Legacy-Ablage `memorys/` und jedes per `folder` gesetzte Regal
+ * (`memories/people/`). Der Vault scannt rekursiv — der Resolver muss es auch.
  *
- * `readdirSync` statt `existsSync`, weil `existsSync` auf case-insensitiven
- * Dateisystemen für `upper-id.md` true meldet, wenn `Upper-ID.md` daliegt —
- * genau die Verwechslung, die hier auseinandergehalten werden muss. Der
- * Zweig läuft nur, wenn roh und kanonisch überhaupt auseinandergehen: bei
- * jedem normalen Save kostet er nichts.
+ * Der Scan läuft nur, wenn roh und kanonisch überhaupt auseinandergehen UND
+ * das kanonische Ziel nicht schon dasteht: bei jedem normalen Save kostet er
+ * nichts, und im Sonderfall ist er ein Verzeichnisdurchlauf gegen einen
+ * Datei-Write.
+ *
+ * Verglichen wird EXAKT, über `readdirSync`. `existsSync` meldet auf
+ * case-insensitiven Dateisystemen für `upper-id.md` true, wenn `Upper-ID.md`
+ * daliegt, und öffnet für `…/proj` klaglos `Proj/` — genau die Verwechslung,
+ * die hier auseinanderzuhalten ist.
  */
 function resolveAgainstExisting(
   vaultRoot: string,
@@ -84,18 +90,42 @@ function resolveAgainstExisting(
   canonicalId: string,
   canonicalSubdir: string,
 ): { id: string; subdir: string } {
+  const canonical = { id: canonicalId, subdir: canonicalSubdir };
   const rawId = input.id ?? canonicalId;
   const rawSubdir = input.folder ?? subfolderFor(input.scope, input.type);
-  if (rawId === canonicalId && rawSubdir === canonicalSubdir) {
-    return { id: canonicalId, subdir: canonicalSubdir };
+  // Beide Achsen können abweichen, und jede allein genügt: eine rohe id in
+  // einem kanonischen Regal ist derselbe Bestandsfall wie eine kanonische id
+  // in einem rohen Regal (`memories/projects/Proj/alte-id.md`).
+  if (rawId === canonicalId && rawSubdir === canonicalSubdir) return canonical;
+  if (existsExactPath(vaultRoot, `${canonicalSubdir}/${canonicalId}.md`)) return canonical;
+  const found = findExactFile(vaultRoot, vaultRoot, `${rawId}.md`);
+  return found === null ? canonical : { id: rawId, subdir: found };
+}
+
+/** Verzeichnis (relativ zum Vault-Root), in dem `fileName` mit GENAU dieser
+ *  Schreibweise liegt — oder null. Erster Treffer gewinnt; zwei Dateien mit
+ *  derselben id sind ohnehin ein Vault-Defekt, den der Index meldet. */
+function findExactFile(vaultRoot: string, dir: string, fileName: string): string | null {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
   }
-  if (existsExactPath(vaultRoot, `${canonicalSubdir}/${canonicalId}.md`)) {
-    return { id: canonicalId, subdir: canonicalSubdir };
+  for (const e of entries) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    if (e.isFile()) {
+      if (e.name === fileName) {
+        const rel = relative(vaultRoot, dir);
+        return rel === "" ? "." : rel.split(sep).join("/");
+      }
+      continue;
+    }
+    if (!e.isDirectory()) continue;
+    const hit = findExactFile(vaultRoot, join(dir, e.name), fileName);
+    if (hit !== null) return hit;
   }
-  if (existsExactPath(vaultRoot, `${rawSubdir}/${rawId}.md`)) {
-    return { id: rawId, subdir: rawSubdir };
-  }
-  return { id: canonicalId, subdir: canonicalSubdir };
+  return null;
 }
 
 /** Existiert dieser Pfad mit GENAU dieser Schreibweise? Jedes Segment einzeln,

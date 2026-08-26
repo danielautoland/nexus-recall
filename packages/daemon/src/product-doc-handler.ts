@@ -20,6 +20,7 @@ import { z } from "zod";
 import {
   isPathSafeComponent,
   normalizeScopeKey,
+  scopeEquals,
   saveMemory,
   slugify,
   truncateSummaryTo,
@@ -47,6 +48,27 @@ export interface SaveProductDocResult {
   updated: boolean;
 }
 
+/**
+ * Das Dokument dieser Area, über seine Identität statt über seinen Namen:
+ * type `doc` + Scope + Area-Segment im topic_path. Scope gefaltet (#360), denn
+ * ein Bestandsdokument kann `scope: CarNexus` tragen.
+ */
+function findDocFor(
+  deps: ToolDeps,
+  projectKey: string,
+  areaSlug: string,
+): { fm: { id: string } } | undefined {
+  for (const m of deps.vault.list()) {
+    const fm = m.fm as { id: string; type?: unknown; scope?: unknown; topic_path?: unknown };
+    if (fm.type !== "doc") continue;
+    if (typeof fm.scope !== "string" || !scopeEquals(fm.scope, projectKey)) continue;
+    const path = fm.topic_path;
+    if (!Array.isArray(path) || path[2] !== areaSlug) continue;
+    return m as { fm: { id: string } };
+  }
+  return undefined;
+}
+
 export async function saveProductDocHandler(
   deps: ToolDeps,
   rawArgs: unknown,
@@ -63,7 +85,16 @@ export async function saveProductDocHandler(
   // Doku — auf case-insensitiven Dateisystemen ein stilles Überschreiben.
   // Kanonischer Key für jede IDENTITÄT, rohe Schreibweise nur in title/body.
   const projectKey = normalizeScopeKey(project);
-  const id = `doku-${projectKey}-${areaSlug}`;
+
+  // Codex-Gegenreview: Die id ist ein historischer NAME, kein Schlüssel. Nach
+  // einem Projekt-Rename heißt das Dokument weiter `doku-carnexus-area` — die
+  // id umzubenennen würde jedes `related:` und jeden `[[wikilink]]` darauf
+  // brechen (der Graph löst keine Aliase auf). Gesucht wird deshalb zuerst
+  // über die IDENTITÄT dieses Dokuments — Scope + Area —, und erst wenn es
+  // keines gibt, wird eine id abgeleitet. Genau so bleibt die
+  // update-in-place-Semantik über einen Rename hinweg erhalten.
+  const existing = findDocFor(deps, projectKey, areaSlug);
+  const id = existing?.fm.id ?? `doku-${projectKey}-${areaSlug}`;
 
   const before = deps.vault.get(id);
   const existed = before !== undefined;

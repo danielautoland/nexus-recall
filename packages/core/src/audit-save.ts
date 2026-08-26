@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { saveMemory } from "./save.js";
-import { canonicalMemoryId } from "./save-text.js";
+import { resolveMemoryTarget } from "./save-target.js";
 import type { SaveMemoryInput, SaveMemoryResult } from "./save-schema.js";
 import {
   AuditLog,
@@ -56,7 +56,12 @@ export async function auditedSave(args: {
   // deshalb JEDER slug-inferred Overwrite als `create` mit `diff_before: null`
   // auditiert — das Vorbild eines destruktiven Overwrites war damit weg und
   // die Mutation aus dem Trail nicht rekonstruierbar.
-  const candidateID = canonicalMemoryId(input.id, input.title);
+  // Codex-Gegenreview: `canonicalMemoryId` allein reichte hier nicht — eine
+  // Bestands-Datei mit roher Groß-id wurde unter der kanonischen id gesucht
+  // und nicht gefunden, also jeder Overwrite darauf als `create` mit
+  // `diff_before: null` auditiert. `resolveMemoryTarget` kennt den
+  // Bestandsschutz und nennt genau die id, die gleich geschrieben wird.
+  const candidateID = resolveMemoryTarget(vaultRoot, input).id;
   const existing = vault.get(candidateID);
   const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
 

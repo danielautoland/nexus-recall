@@ -356,9 +356,9 @@ async function saveMemoryInner(
   // id-Ableitung. Seit die Faltung existiert, wich sie vom tatsächlich
   // geschriebenen Ziel ab — der Quality-Selbstausschluss (#239) hätte das
   // Memory dann als sein eigenes Duplikat gewertet. `resolveMemoryTarget`
-  // ist die Stelle, die das Ziel bestimmt, inklusive Bestandsschutz; sie
-  // fasst nichts an und ist deshalb auch vor dem Schreiben die richtige
-  // Auskunft.
+  // ist die Stelle, die das Ziel bestimmt, inklusive Bestandsschutz (auch
+  // für Memories, die in memorys/ oder einem folder-Regal liegen); sie fasst
+  // nichts an und ist deshalb auch vor dem Schreiben die richtige Auskunft.
   const finalId = resolveMemoryTarget(deps.vaultPath, parsed.data).id;
 
   // #205: a save declaring a contradiction is a conflict report, not a write —

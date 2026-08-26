@@ -133,3 +133,42 @@ test("ohne Bestand bleibt alles kanonisch — der Schutz greift nur rückwärts"
     await rm(v, { recursive: true, force: true });
   }
 });
+
+/**
+ * Zweite Codex-Runde zum Bestandsschutz: Die erste Fassung prüfte nur zwei
+ * Kombinationen — kanonisches Regal + kanonische id gegen rohes Regal + rohe
+ * id. Jede Mischform und jede der Ablagen, die der Vault ausdrücklich kennt
+ * (flaches `memorys/`, per `folder` gesetztes Regal), fiel durch.
+ */
+for (const [label, rel, scope, folder] of [
+  ["Mischform: kanonisches Regal, rohe id", "memories/projects/proj/Upper-ID.md", "Proj", undefined],
+  ["flache Legacy-Ablage memorys/", "memorys/Upper-ID.md", "proj", undefined],
+  ["folder-Regal, Save ohne folder", "memories/people/Upper-ID.md", "proj", undefined],
+  ["folder-Regal, Save mit folder", "memories/people/Upper-ID.md", "proj", "memories/people"],
+] as const) {
+  test(`Bestandsschutz findet den Bestand — ${label}`, async () => {
+    const v = await mkdtemp(join(tmpdir(), "canon-any-"));
+    try {
+      const full = join(v, rel);
+      await mkdir(join(full, ".."), { recursive: true });
+      await writeFile(
+        full,
+        `---\nid: Upper-ID\ntitle: T\ntype: reference\nsummary: s\ntopic_path:\n  - t\ntags:\n  - t\nscope: ${scope}\nrecall_when:\n  - t\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nAlt.\n`,
+      );
+      const r = await saveMemory(v, {
+        ...base,
+        id: "Upper-ID",
+        scope,
+        body: "Neu.",
+        overwrite: true,
+        ...(folder ? { folder } : {}),
+      });
+      assert.equal(r.created, false, "kein zweites Memory");
+      assert.equal(r.id, "Upper-ID", "die Bestands-id bleibt die Identität");
+      assert.equal(r.file_path, full, "und die Bestands-Datei bleibt die Datei");
+      assert.equal(matter(await readFile(full, "utf8")).data.id, "Upper-ID");
+    } finally {
+      await rm(v, { recursive: true, force: true });
+    }
+  });
+}

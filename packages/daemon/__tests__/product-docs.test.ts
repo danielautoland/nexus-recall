@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
@@ -221,7 +221,7 @@ test("save_product_doc: rename then update keeps exactly one doc", async () => {
 
     const r = await renameArea(dir, "project", "carnexus", "new-project");
     assert.equal(r.docsFolderMoved, true);
-    assert.equal(r.docsRenamed, 1);
+    assert.equal(r.docsRetagged, 1);
     await deps.vault.reconcile?.();
 
     const second = await saveProductDocHandler(deps, {
@@ -231,17 +231,45 @@ test("save_product_doc: rename then update keeps exactly one doc", async () => {
       summary: "s",
       body: "# Nach dem Rename\n",
     });
-    assert.equal(second.id, "doku-new-project-recall-ansicht");
+    // Die id bleibt der historische Name — ein Umbenennen würde jedes
+    // `related:` und jeden `[[wikilink]]` darauf brechen. Gefunden wird das
+    // Dokument über Scope + Area.
+    assert.equal(second.id, "doku-carnexus-recall-ansicht");
     assert.equal(second.created, false, "kein zweites Dokument");
 
     const docs = await readdir(join(dir, "dokumentationen", "new-project"));
-    assert.deepEqual(docs, ["doku-new-project-recall-ansicht.md"]);
+    assert.deepEqual(docs, ["doku-carnexus-recall-ansicht.md"]);
     const raw = await readFile(join(dir, "dokumentationen", "new-project", docs[0]), "utf8");
     assert.match(raw, /Nach dem Rename/);
     assert.match(raw, /^scope: new-project$/m);
-    // topic_path und Tag tragen den Projektnamen ebenfalls.
+    // topic_path und Tag tragen den neuen Projektnamen.
     assert.match(raw, /- new-project/);
-    assert.doesNotMatch(raw, /carnexus/);
+  } finally {
+    await close();
+  }
+});
+
+test("save_product_doc: findet ein Bestandsdokument mit roher Scope-Schreibweise", async () => {
+  const { deps, dir, close } = await makeDeps();
+  try {
+    // Wie es vor der Kanonisierung im Vault lag: Regal und Scope groß.
+    await mkdir(join(dir, "dokumentationen", "CarNexus"), { recursive: true });
+    await writeFile(
+      join(dir, "dokumentationen", "CarNexus", "doku-CarNexus-area.md"),
+      "---\nid: doku-CarNexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - CarNexus\n  - area\ntags:\n  - product-doc\nscope: CarNexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nAlt.\n",
+    );
+    await deps.vault.reconcile?.();
+
+    const r = await saveProductDocHandler(deps, {
+      project: "carnexus",
+      area: "area",
+      title: "D",
+      summary: "s",
+      body: "# Neu\n",
+    });
+    assert.equal(r.id, "doku-CarNexus-area", "das Bestandsdokument, nicht ein neues");
+    assert.equal(r.created, false);
+    assert.match(await readFile(r.file_path, "utf8"), /Neu/);
   } finally {
     await close();
   }

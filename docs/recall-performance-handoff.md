@@ -1478,7 +1478,70 @@ Die Telemetrie hätte den Filter nicht von einem stillen Recall unterscheiden
 können — also genau das nicht gezeigt, wofür der Shadow-Modus da ist. Todo- und
 Write-Lane setzen ihren Status schon nach dem Filter und waren nicht betroffen.
 
-### 21.5 Was jetzt offen ist
+## 22. Siebte Gegenprüfung: der Bestandsschutz war zu schmal, das Rename zu grob (26.08.2026)
+
+Der Hook- und Scope-Teil aus Abschnitt 21 hat die Gegenprüfung überstanden.
+Zwei Save-/Rename-Lücken blieben, beide bestätigt und behoben.
+
+### 22.1 Bestandsschutz suchte an zwei Orten statt im Vault
+
+`resolveAgainstExisting()` prüfte genau zwei Kombinationen — kanonisches Regal
+plus kanonische id gegen rohes Regal plus rohe id. Jede Mischform fiel durch,
+und ebenso jede Ablage, die der Vault ausdrücklich unterstützt. Nachgestellt:
+
+```
+memories/projects/proj/Upper-ID.md  → id upper-id, Datei bleibt Upper-ID.md
+memorys/Upper-ID.md                 → zweites kanonisches Memory daneben
+memories/people/Upper-ID.md         → zweites kanonisches Memory daneben
+```
+
+Der Vault scannt rekursiv; der Resolver tut es jetzt auch. Findet er das
+kanonische Ziel nicht EXAKT, sucht er die rohe id vaultweit und übernimmt
+deren Verzeichnis. Der Scan läuft nur, wenn roh und kanonisch überhaupt
+auseinandergehen — auf einer der beiden Achsen genügt, denn eine kanonische id
+in einem rohen Regal ist derselbe Fall wie umgekehrt.
+
+`auditedSave()` hatte dieselbe Lücke an anderer Stelle: Sein Vorab-Lookup
+suchte unter der kanonischen id und fand eine Bestands-Groß-id nicht, also
+wurde jeder Overwrite darauf als `create` mit `diff_before: null` auditiert —
+das Vorbild eines destruktiven Overwrites wäre wieder weg gewesen, genau die
+Wurzel von #240/C6. Es fragt jetzt `resolveMemoryTarget`, also dieselbe
+Stelle, die auch schreibt.
+
+### 22.2 Das Rename benannte Produktdoku-ids um und brach ihre Beziehungen
+
+`rewriteDocIdentity()` aus 21.4 zog id und Dateiname mit. Das löst zwar den
+Doppel-Dokument-Fall, bricht aber jedes `related: [doku-carnexus-area]` und
+jeden `[[doku-carnexus-area]]` im Vault: Der Graph löst keine Aliase auf, es
+bliebe ein Geisterknoten. Es widersprach außerdem der Grundregel dieses
+Moduls, dass ids einen Rename überleben — die im selben File als Kommentar
+steht.
+
+Der Fix folgt Codex' Vorschlag und macht den Rename-Code kleiner statt größer:
+
+- Das Rename zieht nur noch `scope`, `topic_path` und Tags mit
+  (`rewriteDocMetadata`, gefaltet über `scopeEquals` — ein Bestandsdokument
+  kann `topic_path: [doku, CarNexus, …]` tragen; das case-sensitive
+  `startsWith()` der alten Fassung hätte es nicht erkannt).
+- `save_product_doc` sucht das Dokument über seine IDENTITÄT — type `doc` plus
+  Scope plus Area-Segment — und leitet erst dann eine id ab, wenn es keines
+  gibt.
+
+Die id ist damit ein historischer Name, kein Schlüssel: genau der Status, den
+sie bei jedem anderen Memory auch hat. Der Regressionstest geht weiter den
+ganzen Weg (anlegen → umbenennen → dieselbe Area speichern → ein Dokument),
+prüft jetzt aber, dass die id dabei stehen bleibt.
+
+### 22.3 Verifikation
+
+1648 Tests, 1646 grün, 0 rot (1 skipped, 1 todo). Typechecks für core, daemon,
+statusline und eval grün. Neu: vier Bestandslagen in
+`core/__tests__/canonical-id.test.ts`, ein Bestandsdokument mit roher
+Scope-Schreibweise in `product-docs.test.ts`.
+
+Unverändert offen bleiben die beiden Punkte aus 21.5.
+
+### 21.5 Was offen blieb
 
 **Die Shadow-Daten.** Sobald der Daemon eine Weile mit diesem Stand lief, sagen
 `dropped_scope_count`, `dropped_scopes`, `filter_project` und

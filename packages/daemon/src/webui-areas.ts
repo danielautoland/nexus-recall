@@ -15,7 +15,7 @@
  *     vault.reconcile() — drops run before adds there, so renames resolve
  *     cleanly. Never mix per-file reindexFile into a bulk move.
  */
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import matter from "gray-matter";
@@ -172,36 +172,35 @@ export interface RenameResult {
   name: string;
   scopesRewritten: number;
   docsFolderMoved: boolean;
-  /** Produktdokumente, deren id/Dateiname/topic_path/Tag auf das neue
-   *  Projekt gezogen wurden (siehe {@link rewriteDocIdentity}). */
-  docsRenamed: number;
+  /** Produktdokumente, deren topic_path/Tags auf das neue Projekt gezogen
+   *  wurden. Die id bleibt bewusst stehen — siehe {@link rewriteDocMetadata}. */
+  docsRetagged: number;
 }
 
 /**
- * Produktdokumente tragen den Projektnamen in ihrer IDENTITÄT, nicht nur im
- * Scope: `save_product_doc` baut `doku-<projekt>-<area>` als id (= Dateiname),
- * `["doku", <projekt>, <area>]` als topic_path und `<projekt>` als Tag.
+ * Produktdokumente tragen den Projektnamen nicht nur im Scope, sondern auch in
+ * `topic_path[1]` und in den Tags. Die zieht ein Rename mit.
  *
- * Codex-Gegenreview: Ein Rename schrieb bisher nur den Scope um. Die id blieb
- * `doku-carnexus-area`, während der nächste `save_product_doc`-Aufruf für
- * `new-project` nach `doku-new-project-area` sucht — und ein ZWEITES Dokument
- * anlegt, statt das vorhandene zu aktualisieren. Genau das, was die
- * update-in-place-Semantik dieses Tools ausschließen soll.
+ * Was er ausdrücklich NICHT mitzieht, ist die id (Codex-Gegenreview): Ein
+ * Umbenennen von `doku-carnexus-area` nach `doku-new-project-area` bricht
+ * jedes `related: [doku-carnexus-area]` und jeden `[[doku-carnexus-area]]` im
+ * Vault — der Graph löst keine Aliase auf, es bliebe ein Geisterknoten, und
+ * die Verbindung zum echten Dokument wäre weg. Es widerspräche auch der
+ * Grundregel dieses Moduls, dass ids einen Rename überleben.
  *
- * Umgeschrieben wird nur, was den Projektnamen an der id-Position trägt; ein
- * Dokument mit fremder id bleibt unangetastet. Ist der Zielname schon belegt,
- * bleibt das Dokument liegen — lieber eine alte id als ein überschriebenes
- * Dokument.
+ * Dass der nächste `save_product_doc`-Aufruf das Dokument trotzdem findet,
+ * löst der Handler auf der anderen Seite: Er sucht zuerst über Scope + Area
+ * im Index und leitet erst dann eine neue id ab. Die id ist damit ein
+ * historischer Name, kein Schlüssel — genau wie bei jedem anderen Memory.
  */
-async function rewriteDocIdentity(dir: string, oldName: string, newName: string): Promise<number> {
-  let renamed = 0;
+async function rewriteDocMetadata(dir: string, oldName: string, newName: string): Promise<number> {
+  let touched = 0;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return 0;
   }
-  const prefix = `doku-${oldName}-`;
   for (const e of entries) {
     if (!e.isFile() || !e.name.toLowerCase().endsWith(".md")) continue;
     const full = join(dir, e.name);
@@ -209,38 +208,35 @@ async function rewriteDocIdentity(dir: string, oldName: string, newName: string)
       const raw = await readFile(full, "utf8");
       const parsed = matter(raw);
       const data = parsed.data as Record<string, unknown>;
-      const id = data.id;
-      if (typeof id !== "string" || !id.startsWith(prefix)) continue;
-      const nextId = `doku-${newName}-${id.slice(prefix.length)}`;
-      const nextPath = join(dir, `${nextId}.md`);
-      if (nextPath !== full && (await pathExists(nextPath))) continue;
-      data.id = nextId;
-      if (Array.isArray(data.topic_path) && data.topic_path[1] === oldName) {
-        data.topic_path = [...data.topic_path];
-        (data.topic_path as unknown[])[1] = newName;
+      let changed = false;
+      // #360: gefaltet — ein Bestandsdokument kann `doku-CarNexus-…` heißen
+      // und `topic_path: [doku, CarNexus, …]` tragen.
+      if (Array.isArray(data.topic_path) && typeof data.topic_path[1] === "string" &&
+          scopeEquals(data.topic_path[1] as string, oldName)) {
+        const next = [...(data.topic_path as unknown[])];
+        next[1] = newName;
+        data.topic_path = next;
+        changed = true;
       }
       if (Array.isArray(data.tags)) {
-        data.tags = (data.tags as unknown[]).map((t) => (t === oldName ? newName : t));
+        const next = (data.tags as unknown[]).map((t) =>
+          typeof t === "string" && scopeEquals(t, oldName) ? newName : t,
+        );
+        if (next.some((t, i) => t !== (data.tags as unknown[])[i])) {
+          data.tags = next;
+          changed = true;
+        }
       }
+      if (!changed) continue;
       const tmp = `${full}.tmp-${process.pid}`;
       await writeFile(tmp, matter.stringify(parsed.content, data), "utf8");
-      await rename(tmp, nextPath);
-      if (nextPath !== full) await rm(full, { force: true });
-      renamed++;
+      await rename(tmp, full);
+      touched++;
     } catch {
       // unparseable file — leave it untouched rather than corrupt it
     }
   }
-  return renamed;
-}
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
+  return touched;
 }
 
 /**
@@ -267,7 +263,7 @@ export async function renameArea(
 
   let scopesRewritten = 0;
   let docsFolderMoved = false;
-  let docsRenamed = 0;
+  let docsRetagged = 0;
   if (kind === "project") {
     scopesRewritten = await rewriteScopes(to, name, newName);
     // dokumentationen/<scope> is the same area's docs shelf — keep it in step.
@@ -284,10 +280,10 @@ export async function renameArea(
     // Scope-Rewrites derselben Area.
     if (await isDir(docsTo)) {
       scopesRewritten += await rewriteScopes(docsTo, name, newName);
-      docsRenamed = await rewriteDocIdentity(docsTo, name, newName);
+      docsRetagged = await rewriteDocMetadata(docsTo, name, newName);
     }
   }
-  return { name: newName, scopesRewritten, docsFolderMoved, docsRenamed };
+  return { name: newName, scopesRewritten, docsFolderMoved, docsRetagged };
 }
 
 export interface DeleteResult {

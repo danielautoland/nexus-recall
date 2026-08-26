@@ -129,7 +129,7 @@ async function makeMixedCaseVault(): Promise<string> {
   await mkdir(join(root, "dokumentationen", "carnexus"), { recursive: true });
   await writeFile(
     join(root, "dokumentationen", "carnexus", "doku-carnexus-area.md"),
-    "---\nid: doku-carnexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\ntags:\n  - product-doc\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc.\n",
+    "---\nid: doku-carnexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - CarNexus\n  - area\ntags:\n  - product-doc\n  - carnexus\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc.\n",
   );
   return root;
 }
@@ -150,22 +150,22 @@ test("renameArea: scope rewrite is case-folded — CarNexus counts as carnexus",
   }
 });
 
-test("renameArea: product docs move, and scope AND identity are rewritten", async () => {
+test("renameArea: product docs move, scope and tags follow, id stays", async () => {
   const v = await makeMixedCaseVault();
   try {
     const r = await renameArea(v, "project", "carnexus", "new-project");
     assert.equal(r.docsFolderMoved, true);
-    // Codex-Gegenreview: nicht nur der Scope — die id trägt den Projektnamen
-    // ebenfalls, und ein gebliebenes `doku-carnexus-area` hätte beim nächsten
-    // save_product_doc für new-project ein ZWEITES Dokument erzeugt.
-    assert.equal(r.docsRenamed, 1);
+    assert.equal(r.docsRetagged, 1);
     const docs = await readdir(join(v, "dokumentationen", "new-project"));
-    assert.deepEqual(docs, ["doku-new-project-area.md"]);
+    // Die id überlebt den Rename — sonst bräche jedes `related:` und jeder
+    // `[[wikilink]]` darauf (Codex-Gegenreview).
+    assert.deepEqual(docs, ["doku-carnexus-area.md"]);
     const raw = await readFile(join(v, "dokumentationen", "new-project", docs[0]), "utf8");
     // Der Kernfehler: das Dokument lag im neuen Regal, hieß aber noch carnexus
     // — und wurde beim Recall für new-project als fremd gefiltert.
     assert.equal(matter(raw).data.scope, "new-project");
-    assert.equal(matter(raw).data.id, "doku-new-project-area");
+    assert.equal(matter(raw).data.id, "doku-carnexus-area");
+    assert.deepEqual(matter(raw).data.topic_path, ["doku", "new-project", "area"]);
   } finally {
     await rm(v, { recursive: true, force: true });
   }
