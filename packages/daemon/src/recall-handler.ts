@@ -12,6 +12,7 @@ import { isWeakResult, isNoHome } from "./weak-result.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { commonsRankFactor } from "./cli/commons.js";
+import { fuseCommonsHits } from "./commons-fusion.js";
 import { expandQuery } from "./learned-recall/bridges.js";
 import { mergeBatchResults, dedupeQueries, batchDuplicateNote } from "./recall-batch.js";
 import type { ToolDeps } from "./tool-deps.js";
@@ -106,6 +107,11 @@ export interface RecallResult {
   query_count?: number;
   /** #351 batch only: one recall_id per executed sub-query. */
   recall_ids?: string[];
+  /** #351 batch only: woraus die Reihenfolge entstand. `"query-rank-fusion"`
+   *  heißt: die Phrasierungen lagen in verschiedenen Score-Räumen, also kam die
+   *  Ordnung aus den Rängen und die Scores sind untereinander nicht
+   *  vergleichbar (der Response ist dann `unfused`). */
+  merged_by?: "score" | "query-rank-fusion";
   /** #351 guard: near-duplicate queries collapsed before searching. */
   queries_collapsed?: number;
   /** #351 guard: corrective note when queries were collapsed. */
@@ -261,6 +267,13 @@ export async function recallHandler(
   // #121: capture the deeper candidate pool (incl. below-floor) for the far slice.
   let candidatePool: { id: string; score: number }[] = [];
   const recallOpts = {
+    // Codex-Gegenreview: Der Anker misst AUTORENABSICHT — ein hand-geschriebener
+    // Trigger trifft ein selbst getipptes Wort. Ohne `authored_query` galten die
+    // maschinell ergänzten Bridge-Terme als exakte Query-Terme und konnten
+    // `matched_recall_when`, `weak_result` und den Cross-Scope-Anker setzen,
+    // ohne dass der Benutzer den Term je geschrieben hat. Ranking bleibt auf der
+    // erweiterten Query.
+    authored_query: query,
     k: parsed.data.k,
     scope: parsed.data.scope,
     type: parsed.data.type,
@@ -287,20 +300,26 @@ export async function recallHandler(
     ? await deps.search.recallHybrid(expansion.query, recallOpts)
     : deps.search.recall(expansion.query, recallOpts);
 
-  // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, gedämpft
-  // fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
+  // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, per RRF über
+  // die RÄNGE fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
   // expliziter scope-Filter (außer "commons") überspringt die Fusion.
+  //
+  // Codex-Gegenreview: Vorher wurden die rohen Commons-BM25-Scores mit 0.8
+  // gedämpft und dann NUMERISCH gegen die persönlichen RRF-Scores sortiert.
+  // Das ist ein Vergleich zwischen zwei Skalen: die persönliche ist bei 163.934
+  // gedeckelt, die Commons-Skala nach oben offen — 80 % eines sechsstelligen
+  // BM25-Werts ist immer noch sechsstellig und gewann jedes Mal. Seit der
+  // Rang-Fusion (`commons-fusion.ts`) liegt alles in EINEM Raum.
+  let commonsFused = false;
   if (deps.commonsSearch && (!parsed.data.scope || parsed.data.scope === "commons")) {
-    const commonsHits = deps.commonsSearch
-      .recall(query, { k: recallOpts.k, type: parsed.data.type })
-      .map((h) => {
-        const v = deps.commonsVerifications?.get(h.id) ?? { works: 0, fails: 0 };
-        return { ...h, score: h.score * commonsRankFactor(v.works, v.fails) };
-      });
-    const ownIds = new Set(rawHits.map((h) => h.id));
-    rawHits = [...rawHits, ...commonsHits.filter((h) => !ownIds.has(h.id))]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, recallOpts.k ?? 5);
+    const commonsHits = deps.commonsSearch.recall(query, { k: recallOpts.k, type: parsed.data.type });
+    if (commonsHits.length > 0) {
+      rawHits = fuseCommonsHits(rawHits, commonsHits, (id) => {
+        const v = deps.commonsVerifications?.get(id) ?? { works: 0, fails: 0 };
+        return commonsRankFactor(v.works, v.fails);
+      }).slice(0, recallOpts.k ?? 5);
+      commonsFused = true;
+    }
   }
   const latencyMs = Date.now() - t0;
 
@@ -324,6 +343,13 @@ export async function recallHandler(
   const degradedDuringCall = collector.degraded();
   const hybridActive =
     deps.search.hasEmbeddings() && !embeddingDegraded && degradedDuringCall === undefined;
+  // Codex-Gegenreview: `score_kind` beschreibt die ZAHL, die serviert wird.
+  // Lief die Commons-Rang-Fusion, sind ALLE Scores auf die RRF-Skala
+  // umgeschrieben (auch die eines degradierten persönlichen Arms) — dann gibt
+  // es keinen rohen, unbegrenzten Wert mehr, den ein Band falsch lesen könnte.
+  // `weak_result`/`no_home` bleiben an `hybridActive` hängen: die beantworten
+  // eine andere Frage (waren sich zwei PERSÖNLICHE Arme einig?).
+  const scoreKind: "rrf" | "bm25" = hybridActive || commonsFused ? "rrf" : "bm25";
   const weakResult = isWeakResult(hits, hybridActive);
   // #230: the stricter claim — not just "nothing anchored" but "this fact has
   // no home here". Strict subset of weakResult, so it can only ever narrow it.
@@ -395,8 +421,8 @@ export async function recallHandler(
     ...(weakResult ? { weak_result: true } : {}),
     ...(noHome ? { no_home: true } : {}),
     // P0: Kein Caller darf den Score-Raum aus der Höhe der Zahl erraten.
-    score_kind: hybridActive ? "rrf" : "bm25",
-    ...(hybridActive ? {} : { unfused: true }),
+    score_kind: scoreKind,
+    ...(scoreKind === "bm25" ? { unfused: true } : {}),
     ...(degradedDuringCall ? { degraded: degradedDuringCall } : {}),
     ...(full ? { stages: collector.timings } : {}),
   };

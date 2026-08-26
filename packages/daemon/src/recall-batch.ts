@@ -9,7 +9,14 @@
  * deliberately NOT re-fused into a new scale (RRF across queries), because
  * the tool description's 30/100 score bands are a contract the model acts
  * on; every returned score must remain a real single-query score.
+ *
+ * Das gilt, SOLANGE alle Phrasierungen im selben Score-Raum landen. Tun sie es
+ * nicht (eine degradiert, die andere fusioniert), ist ein Score-Vergleich
+ * bedeutungslos; dann bestimmen die Ränge die Reihenfolge und der Response sagt
+ * das ausdrücklich — siehe `mergeBatchResults`.
  */
+
+import { RRF_K } from "@bastra-recall/core/rrf";
 
 import { contentTokens } from "./save-similarity.js";
 
@@ -71,45 +78,87 @@ export function batchDuplicateNote(collapsedCount: number, total: number): strin
   );
 }
 
+export type BatchHit = { id: string; score: number } & Record<string, unknown>;
+
 export interface BatchSubResult {
-  hits?: Array<{ id: string; score: number } & Record<string, unknown>>;
+  hits?: BatchHit[];
   vault_size?: number;
   recall_id?: string;
   weak_result?: boolean;
   no_home?: boolean;
+  /** In welchem Score-Raum `hits[].score` DIESER Sub-Query liegt. */
+  score_kind?: "rrf" | "bm25";
+  /** Kurzform von `score_kind === "bm25"`. */
+  unfused?: boolean;
 }
 
 export interface BatchMerged {
   query: string;
   query_count: number;
   vault_size: number | undefined;
-  hits: Array<{ id: string; score: number } & Record<string, unknown>>;
+  hits: BatchHit[];
   recall_id: string | undefined;
   recall_ids: string[];
   weak_result?: true;
   no_home?: true;
+  /** Der Score-Raum, in dem die zurückgegebenen Zahlen zu lesen sind. Nie
+   *  optional: eine fehlende Angabe war genau der Weg, auf dem rohe BM25-Werte
+   *  als Rang-Summen gelesen wurden. */
+  score_kind: "rrf" | "bm25";
+  unfused?: true;
+  /** Woraus die Reihenfolge entstanden ist — `"score"` nur, wenn alle
+   *  Sub-Ergebnisse im selben Raum lagen. */
+  merged_by: "score" | "query-rank-fusion";
 }
 
-/** Dedupe by id keeping the best-scoring occurrence, resort, cut to k.
- *  weak_result/no_home only survive when EVERY sub-result carried them —
- *  one anchored phrasing is enough to make the batch answerable. */
+/** Der Raum EINES Sub-Ergebnisses. Fail-closed: Sagt ein Sub-Ergebnis nichts,
+ *  gilt der unbegrenzte Raum — die Bänder dürfen nur greifen, wenn jemand
+ *  ausdrücklich zusichert, dass sie etwas beschreiben. */
+function spaceOf(s: BatchSubResult): "rrf" | "bm25" {
+  if (s.unfused === true) return "bm25";
+  return s.score_kind ?? "bm25";
+}
+
+/**
+ * Merge über mehrere Phrasierungen (#351).
+ *
+ * Codex-Gegenreview: Die Sub-Queries laufen als eigenständige Recalls, und ein
+ * einzelner Ollama-Aufruf kann degradieren, während die anderen fusionieren.
+ * Dann liegt Query 1 auf der RRF-Skala (≤163.934) und Query 2 auf roher
+ * BM25-Skala (sechsstellig). Der alte Best-Score-Merge stellte 405585
+ * vor 160 — nicht weil der Treffer besser war, sondern weil seine Skala keine
+ * Obergrenze hat. Der zusammengeführte Response trug außerdem WEDER
+ * `score_kind` NOCH `unfused`, sodass die Lanes den Rohwert bandeten.
+ *
+ * Deshalb zwei getrennte Fälle:
+ *   - EIN Raum: Best-Score-Merge wie bisher. Die Zahlen sind vergleichbar, und
+ *     jeder ausgewiesene Score bleibt ein echter Einzelquery-Score (das ist die
+ *     Zusage im Kopfkommentar dieser Datei).
+ *   - GEMISCHT: Die Reihenfolge kommt aus einer RRF über die RÄNGE der
+ *     Sub-Listen — das Einzige, was zwischen den Räumen vergleichbar ist. Die
+ *     ausgewiesenen Scores bleiben die echten Einzelquery-Werte, aber der
+ *     Response meldet fail-closed `bm25`/`unfused`: gemischt heißt „kein Band".
+ *
+ * weak_result/no_home überleben weiterhin nur, wenn JEDES Sub-Ergebnis sie
+ * trug — eine verankerte Phrasierung macht den Batch beantwortbar.
+ */
 export function mergeBatchResults(queries: string[], subs: BatchSubResult[], k: number): BatchMerged {
-  const best = new Map<string, { id: string; score: number } & Record<string, unknown>>();
   const recallIds: string[] = [];
   let vaultSize: number | undefined;
   let weakAll = true;
   let noHomeAll = true;
+  const spaces = new Set<"rrf" | "bm25">();
   for (const s of subs) {
     if (typeof s.vault_size === "number") vaultSize = s.vault_size;
     if (typeof s.recall_id === "string") recallIds.push(s.recall_id);
     if (s.weak_result !== true) weakAll = false;
     if (s.no_home !== true) noHomeAll = false;
-    for (const h of s.hits ?? []) {
-      const existing = best.get(h.id);
-      if (!existing || h.score > existing.score) best.set(h.id, h);
-    }
+    spaces.add(spaceOf(s));
   }
-  const hits = [...best.values()].sort((a, b) => b.score - a.score).slice(0, k);
+  const mixed = spaces.size > 1;
+  const scoreKind: "rrf" | "bm25" = spaces.size === 1 ? [...spaces][0]! : "bm25";
+
+  const hits = mixed ? fuseByQueryRank(subs, k) : mergeByScore(subs, k);
   return {
     query: queries.join(" | "),
     query_count: queries.length,
@@ -119,5 +168,48 @@ export function mergeBatchResults(queries: string[], subs: BatchSubResult[], k: 
     recall_ids: recallIds,
     ...(weakAll && subs.length > 0 ? { weak_result: true as const } : {}),
     ...(noHomeAll && subs.length > 0 ? { no_home: true as const } : {}),
+    score_kind: scoreKind,
+    ...(scoreKind === "bm25" ? { unfused: true as const } : {}),
+    merged_by: mixed ? "query-rank-fusion" : "score",
   };
+}
+
+/** Ein Raum: dedupe by id, bester Score gewinnt, resort, auf k schneiden. */
+function mergeByScore(subs: BatchSubResult[], k: number): BatchHit[] {
+  const best = new Map<string, BatchHit>();
+  for (const s of subs) {
+    for (const h of s.hits ?? []) {
+      const existing = best.get(h.id);
+      if (!existing || h.score > existing.score) best.set(h.id, h);
+    }
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score).slice(0, k);
+}
+
+/** Gemischte Räume: Reihenfolge aus den Rängen (RRF), Scores bleiben echt.
+ *  Das ausgewiesene Hit-Objekt ist das aus der Sub-Query, in der der Treffer am
+ *  BESTEN rankte — ein echter Score aus einem benennbaren Recall, statt einer
+ *  Zahl, die aus zwei Skalen zusammengerechnet wurde. */
+function fuseByQueryRank(subs: BatchSubResult[], k: number): BatchHit[] {
+  const fused = new Map<string, { hit: BatchHit; rank: number; rrf: number }>();
+  for (const s of subs) {
+    (s.hits ?? []).forEach((h, index) => {
+      const rank = index + 1;
+      const contribution = 1 / (RRF_K + rank);
+      const existing = fused.get(h.id);
+      if (!existing) {
+        fused.set(h.id, { hit: h, rank, rrf: contribution });
+        return;
+      }
+      existing.rrf += contribution;
+      if (rank < existing.rank) {
+        existing.hit = h;
+        existing.rank = rank;
+      }
+    });
+  }
+  return [...fused.values()]
+    .sort((a, b) => b.rrf - a.rrf)
+    .slice(0, k)
+    .map((e) => e.hit);
 }

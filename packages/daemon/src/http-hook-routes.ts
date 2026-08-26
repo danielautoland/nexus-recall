@@ -111,6 +111,25 @@ const hookVectorDeadlineMs = (): number => envInt("BASTRA_VECTOR_DEADLINE_MS", 1
  *  Schatten-Router seine Kostenschätzung hält. Das Milestone-Ziel ist 200. */
 const hookBudgetMs = (): number => envInt("BASTRA_HOOK_BUDGET_MS", 200);
 
+/**
+ * Zwei Recalls über DASSELBE Memory zu einem Treffer zusammenlegen: der höhere
+ * Score gewinnt, und zwar MIT seinem ganzen Beleg-Bündel.
+ *
+ * Codex-Gegenreview: Vorher wurde der Gewinner genommen, aber
+ * `matched_recall_when` per ODER und `matched_terms` per Vereinigung aus BEIDEN
+ * Treffern zusammengesetzt. Damit entstand ein Treffer, den es nie gab:
+ * Prompt-Treffer mit Score 150 ohne Triggeranker + Content-Treffer mit Score 80,
+ * `matched_recall_when: true` und `anchor_strength: "weak"` ergaben Score 150 UND
+ * `matched_recall_when: true` — die `anchor_strength` blieb dabei weg, weil sie
+ * vom Gewinner kam. Eine fehlende `anchor_strength` behandelt
+ * `passesScopeFilter` aus Kompatibilitätsgründen wie den alten Boolean, also
+ * genügten Flag + Score ≥ mustLoadScore für einen Cross-Scope-Bypass, den
+ * keiner der beiden Recalls je gerechtfertigt hat.
+ *
+ * Score, Ankerstärke und Matchbeweis gehören zu EINER Query. Sie werden hier
+ * deshalb nicht mehr getrennt: Der Gewinner geht unverändert weiter, die Belege
+ * des Verlierers gehen mit dem Verlierer.
+ */
 export function mergeHookRecallHits(
   first: RecallHit[],
   second: RecallHit[],
@@ -119,16 +138,7 @@ export function mergeHookRecallHits(
   const byId = new Map<string, RecallHit>();
   for (const hit of [...first, ...second]) {
     const previous = byId.get(hit.id);
-    if (!previous) {
-      byId.set(hit.id, hit);
-      continue;
-    }
-    const winner = hit.score > previous.score ? hit : previous;
-    byId.set(hit.id, {
-      ...winner,
-      matched_terms: [...new Set([...previous.matched_terms, ...hit.matched_terms])],
-      matched_recall_when: previous.matched_recall_when || hit.matched_recall_when,
-    });
+    if (!previous || hit.score > previous.score) byId.set(hit.id, hit);
   }
   return [...byId.values()]
     .sort((a, b) => b.score - a.score)
@@ -289,6 +299,7 @@ export function handleHookRecall(
         search.hasEmbeddings() && (embeddingDegraded?.() ?? false);
       let hits = search.hasEmbeddings()
         ? await search.recallHybrid(expansion.query, {
+            authored_query: query,
             k,
             scope,
             type,
@@ -298,6 +309,7 @@ export function handleHookRecall(
             vector_deadline_ms: vectorDeadlineMs,
           })
         : search.recall(expansion.query, {
+            authored_query: query,
             k,
             scope,
             type,
@@ -305,6 +317,12 @@ export function handleHookRecall(
             onStage,
             onCandidatePool: onQueryCandidatePool,
           });
+
+      // #342/P0: Lief für DIESE Anfrage eine echte Fusion? Direkt hier
+      // festgehalten, weil der Content-Recall gleich seinen eigenen
+      // Degradations-Grund bekommt und die beiden nicht vermischt werden dürfen.
+      const promptFused =
+        search.hasEmbeddings() && !embeddingDegradedAtRecall && degradedReason === undefined;
 
       const contentQuery = typeof body.tool_input_excerpt === "string"
         ? body.tool_input_excerpt.trim().slice(0, 4096)
@@ -316,6 +334,7 @@ export function handleHookRecall(
             rescored_count: number;
             latency_ms: number;
             failed?: boolean;
+            skipped_score_space?: true;
           }
         | undefined;
       if (
@@ -326,12 +345,25 @@ export function handleHookRecall(
       ) {
         const contentRecallStarted = Date.now();
         try {
+          // Codex-Gegenreview: Der Content-Recall ist ein EIGENER Recall und
+          // degradiert unabhängig — sein Vektor-Arm kann in die Deadline laufen,
+          // während der Prompt-Recall fusioniert hat. Sein Degradations-Grund
+          // ging bisher verloren (kein onStage), und der Score-Modus wurde nur
+          // aus dem ERSTEN Recall abgeleitet. Ergebnis: rohe BM25-Werte, in eine
+          // RRF-Liste einsortiert und als „rrf" gemeldet.
+          let contentDegradedReason: string | undefined;
+          const collectContentStage = (st: RecallStage): void => {
+            if (st.name === "done" && typeof st.meta?.degraded === "string") {
+              contentDegradedReason = st.meta.degraded;
+            }
+          };
           const contentHits = search.hasEmbeddings()
             ? await search.recallHybrid(contentQuery, {
                 k,
                 scope,
                 type,
                 expand_hops,
+                onStage: collectContentStage,
                 // Same deadline, not a remaining-budget split: by the time this
                 // runs the query recall above has either warmed the model (so
                 // this costs ~120ms) or is still loading it (so this expires
@@ -344,22 +376,39 @@ export function handleHookRecall(
                 type,
                 expand_hops,
               });
-          const queryHitsById = new Map(hits.map((hit) => [hit.id, hit]));
-          const contentHitsById = new Map(contentHits.map((hit) => [hit.id, hit]));
-          const mergedHits = mergeHookRecallHits(hits, contentHits, k);
-          contentRecall = {
-            hit_count: contentHits.length,
-            added_count: mergedHits.filter((hit) => !queryHitsById.has(hit.id)).length,
-            rescored_count: mergedHits.filter((hit) => {
-              const queryHit = queryHitsById.get(hit.id);
-              const contentHit = contentHitsById.get(hit.id);
-              return queryHit !== undefined
-                && contentHit !== undefined
-                && contentHit.score > queryHit.score;
-            }).length,
-            latency_ms: Date.now() - contentRecallStarted,
-          };
-          hits = mergedHits;
+          const contentFused =
+            search.hasEmbeddings() && !embeddingDegradedAtRecall && contentDegradedReason === undefined;
+          if (contentFused !== promptFused) {
+            // Fail-closed: Die beiden Listen liegen in verschiedenen Räumen, und
+            // „der höhere Score gewinnt" heißt dann nur „die Skala ohne
+            // Obergrenze gewinnt". Der Content-Arm fällt weg, statt die
+            // fusionierte Liste zu verunreinigen — die servierten Zahlen kommen
+            // dann alle aus dem Prompt-Recall und `score_kind` beschreibt sie.
+            contentRecall = {
+              hit_count: contentHits.length,
+              added_count: 0,
+              rescored_count: 0,
+              latency_ms: Date.now() - contentRecallStarted,
+              skipped_score_space: true,
+            };
+          } else {
+            const queryHitsById = new Map(hits.map((hit) => [hit.id, hit]));
+            const contentHitsById = new Map(contentHits.map((hit) => [hit.id, hit]));
+            const mergedHits = mergeHookRecallHits(hits, contentHits, k);
+            contentRecall = {
+              hit_count: contentHits.length,
+              added_count: mergedHits.filter((hit) => !queryHitsById.has(hit.id)).length,
+              rescored_count: mergedHits.filter((hit) => {
+                const queryHit = queryHitsById.get(hit.id);
+                const contentHit = contentHitsById.get(hit.id);
+                return queryHit !== undefined
+                  && contentHit !== undefined
+                  && contentHit.score > queryHit.score;
+              }).length,
+              latency_ms: Date.now() - contentRecallStarted,
+            };
+            hits = mergedHits;
+          }
         } catch {
           contentRecall = {
             hit_count: 0,
@@ -413,8 +462,10 @@ export function handleHookRecall(
       // bands describe nothing and `unfused` has to say so (#302). Reading only
       // the breaker was already blind to `vector-arm-empty`; the deadline makes
       // that blind spot common instead of rare, which is why it is fixed here.
-      const hybridActiveAtRecall =
-        search.hasEmbeddings() && !embeddingDegradedAtRecall && degradedReason === undefined;
+      // Nach dem Merge-Gate oben stammen alle servierten Hits entweder aus
+      // beiden gleich fusionierten Recalls oder allein aus dem Prompt-Recall —
+      // in beiden Fällen beschreibt `promptFused` die servierten Zahlen.
+      const hybridActiveAtRecall = promptFused;
       const weakResult = isWeakResult(hits, hybridActiveAtRecall);
       const noHome = isNoHome(hits, hybridActiveAtRecall);
 

@@ -257,6 +257,11 @@ export interface HookRecallEvent extends BaseEvent {
     rescored_count: number;
     latency_ms: number;
     failed?: boolean;
+    /** P0: Der Content-Arm degradierte anders als der Prompt-Arm — seine Hits
+     *  lagen in einem anderen Score-Raum und wurden deshalb NICHT gemischt.
+     *  Aufgezeichnet, weil ein stillschweigend verworfener Arm sonst wie ein
+     *  Arm ohne Ertrag aussieht (`hit_count > 0`, `added_count = 0`). */
+    skipped_score_space?: true;
   };
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
