@@ -76,7 +76,23 @@ export function fuseCommonsHits(
     // es stehen und erklärt weiterhin den PERSÖNLICHEN Anteil; `isNoHome`
     // hängt daran, und ohne es meldete derselbe Recall mit aktiven Commons
     // plötzlich `no_home: false`.
-    const kept = opts.personalFused ? hit : (({ rrf: _dropped, ...rest }) => rest as RecallHit)(hit);
+    // Auf dem Kollaps-Pfad wird das alte `rrf` nicht nur verworfen, sondern
+    // ERSETZT. Codex-Gegenreview: Es fiel ersatzlos weg, und ein Treffer, den
+    // die Commons zusätzlich kannten, kam am Ende mit 147.541 heraus, ohne
+    // dass irgendein Feld diese Zahl erklärte — kein `rrf`, kein
+    // `rank_commons`, kein `personal_score`. Die Ränge, aus denen der Score
+    // hier gebildet wird, sind bekannt; also gehören sie auch hin.
+    const kept = opts.personalFused
+      ? hit
+      : ({
+          ...hit,
+          rrf: {
+            rank_bm25: null,
+            rank_vector: null,
+            raw: score / RRF_SCALE,
+            rank_personal_list: index + 1,
+          },
+        } as RecallHit);
     fused.set(hit.id, { hit: kept, raw: score });
   });
   commons.forEach((hit, index) => {

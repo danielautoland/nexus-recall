@@ -370,7 +370,7 @@ test("ein Projektregal, das als Symlink nach außen zeigt, ist kein Regal dieses
     );
     await symlink(outside, join(v, "memories", "projects", "geliehen"));
 
-    await assert.rejects(renameArea(v, "project", "geliehen", "neu"), /outside the vault/);
+    await assert.rejects(renameArea(v, "project", "geliehen", "neu"), /outside memories\/projects/);
     const fm = matter(await readFile(join(outside, "fremd.md"), "utf8")).data;
     assert.equal(fm.scope, "geliehen", "die fremde Datei bleibt unangetastet");
   } finally {
@@ -398,6 +398,46 @@ test("renameArea: ein unlesbares Memory lässt den Rename scheitern statt still 
     assert.deepEqual(projects, ["carnexus"]);
   } finally {
     await chmod(locked, 0o644).catch(() => {});
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Sicherheitsrunde: Die Grenze einer Area ist ihr ELTERNREGAL, nicht der
+ * Vault. Ein Projektordner als Symlink auf `memories/people` verlässt den
+ * Vault nicht — er verlässt aber den Bereich, den diese Area besitzt, und der
+ * Rename schrieb dort fremde Scopes um.
+ */
+test("ein Projektregal, das INNERHALB des Vaults woanders hinzeigt, ist trotzdem kein Regal dieser Area", async () => {
+  const v = await makeVault();
+  try {
+    await symlink(join(v, "memories", "people"), join(v, "memories", "projects", "geliehen"));
+    await assert.rejects(
+      renameArea(v, "project", "geliehen", "neu"),
+      /outside memories\/projects/,
+    );
+    const fm = matter(await readFile(join(v, "memories", "people", "someone.md"), "utf8")).data;
+    assert.equal(fm.scope, "bastra-recall", "die fremde Datei bleibt unangetastet");
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Dasselbe für das Doku-Regal: `dokumentationen/<name>` als Symlink auf ein
+ * anderes Regal ließ den Rename dort fremde Dokumente umschreiben und das
+ * Delete sie in den Trash schieben — gemeldet als „die Area ist umgezogen".
+ */
+test("auch das Doku-Regal einer Area darf nicht woanders hinzeigen", async () => {
+  const v = await makeVault();
+  try {
+    await mkdir(join(v, "dokumentationen"), { recursive: true });
+    await symlink(join(v, "memories", "people"), join(v, "dokumentationen", "carnexus"));
+    await assert.rejects(
+      renameArea(v, "project", "carnexus", "neuer-name"),
+      /outside dokumentationen/,
+    );
+  } finally {
     await rm(v, { recursive: true, force: true });
   }
 });

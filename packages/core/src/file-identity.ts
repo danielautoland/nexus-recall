@@ -85,12 +85,64 @@ export function realpathOfNearestExisting(p: string): string {
  * Auflösung schlüge die Prüfung dort für jeden legitimen Pfad fehl.
  */
 export function assertInsideVault(vaultRoot: string, dest: string, action = "write"): void {
-  const vaultReal = realpathOfNearestExisting(vaultRoot);
-  const destReal = realpathOfNearestExisting(dest);
-  if (destReal !== vaultReal && !destReal.startsWith(vaultReal + sep)) {
+  assertInsideDir(vaultRoot, dest, action, "the vault");
+}
+
+/**
+ * Liegt `dest` REAL innerhalb von `boundary`? Wirft, wenn nicht.
+ *
+ * Der Vault ist nicht die einzige Grenze, die zählt. Sicherheitsrunde: Die
+ * Containment-Prüfung war überall an den GESAMTEN Vault gebunden, und damit
+ * blieb ein Symlink, der den Vault gar nicht verlässt, unbemerkt:
+ *
+ *   - `dokumente/linked -> ../memories` ließ `save_document` das Original und
+ *     sein Sidecar mitten ins Memory-Regal schreiben. Der Pfad liegt im Vault,
+ *     das Dokumentenregal hat er trotzdem verlassen.
+ *   - `.bastra -> memories` oder `.bastra/trash -> <aktives Regal>` machte aus
+ *     dem Löschen ein Verschieben in den aktiven Bestand: „gelöscht" gemeldet,
+ *     im Vault weiterhin auffindbar.
+ *   - Ein Projektordner als Symlink auf ein anderes Regal ließ `renameArea()`
+ *     dort die Scopes umschreiben.
+ *
+ * Wer eine Grenze meint, muss sie also benennen — `assertInsideVault` ist nur
+ * der Sonderfall „die äußerste".
+ */
+/**
+ * Ist `dir` das EIGENE Unterverzeichnis von `parent` — und kein Link
+ * irgendwohin?
+ *
+ * Für `.bastra` reicht „liegt im Vault" nicht. Sicherheitsrunde: Zeigt
+ * `.bastra` selbst auf ein aktives Regal, liegt sein Inhalt formal weiterhin
+ * im Vault, und jede Containment-Prüfung geht durch — Lock-Dateien und
+ * gelöschte Memories landen dann mitten im Bestand: in Obsidian sichtbar,
+ * mitsynchronisiert, und ein Aufräumen dort öffnet einen gehaltenen Lock.
+ *
+ * `.bastra` ist private Daemon-Ablage. Wer sie woanders haben will, sagt das
+ * über Konfiguration, nicht über einen Symlink, den kein Aufrufer sieht.
+ */
+export function assertOwnSubdir(parent: string, dir: string, action = "write"): void {
+  const expected = join(realpathOfNearestExisting(parent), basename(dir));
+  const actual = realpathOfNearestExisting(dir);
+  if (actual !== expected) {
     throw new Error(
-      `refusing to ${action} outside the vault: ${dest} resolves to ${destReal}, ` +
-        `which is not inside ${vaultReal}.`,
+      `refusing to ${action}: ${dir} is not ${parent}'s own ${basename(dir)} — ` +
+        `it resolves to ${actual}. Private daemon state must not be a symlink.`,
+    );
+  }
+}
+
+export function assertInsideDir(
+  boundary: string,
+  dest: string,
+  action = "write",
+  label = boundary,
+): void {
+  const boundaryReal = realpathOfNearestExisting(boundary);
+  const destReal = realpathOfNearestExisting(dest);
+  if (destReal !== boundaryReal && !destReal.startsWith(boundaryReal + sep)) {
+    throw new Error(
+      `refusing to ${action} outside ${label}: ${dest} resolves to ${destReal}, ` +
+        `which is not inside ${boundaryReal}.`,
     );
   }
 }

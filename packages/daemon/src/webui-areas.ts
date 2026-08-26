@@ -18,7 +18,7 @@
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { assertInsideVault, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
+import { assertInsideDir, assertInsideVault, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
 import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
@@ -51,11 +51,26 @@ export interface AreaInfo {
   reserved: boolean;
 }
 
+/**
+ * Liegt dort ein Verzeichnis?
+ *
+ * Codex-Gegenreview: Jeder `stat`-Fehler galt als „nein". Ein Doku-Regal, das
+ * nur nicht LESBAR war, sah damit aus wie ein nicht vorhandenes — der Rename
+ * meldete Erfolg, das Projekt war umbenannt, die Dokumentation blieb unter dem
+ * alten Namen; das Delete meldete Erfolg, die Memories lagen im Trash, die
+ * Dokumentation blieb aktiv. Nur ENOENT/ENOTDIR beweisen Abwesenheit, alles
+ * andere ist eine offene Frage und muss die Operation anhalten.
+ */
 async function isDir(p: string): Promise<boolean> {
   try {
     return (await stat(p)).isDirectory();
-  } catch {
-    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw new Error(
+      `cannot tell whether ${p} exists (${code ?? String(err)}) — refusing to continue: ` +
+        `treating it as absent would leave the area half moved.`,
+    );
   }
 }
 
@@ -111,7 +126,9 @@ export async function listAreas(vaultRoot: string): Promise<AreaInfo[]> {
 }
 
 function areaPath(vaultRoot: string, kind: "project" | "top", name: string): string {
-  const p = kind === "project" ? join(vaultRoot, "memories", "projects", name) : join(vaultRoot, "memories", name);
+  const memRoot = join(vaultRoot, "memories");
+  const parent = kind === "project" ? join(memRoot, "projects") : memRoot;
+  const p = join(parent, name);
   // Belt-and-suspenders containment — name is validated, but re-check the join.
   if (!resolve(p).startsWith(resolve(vaultRoot) + sep)) {
     throw new Error(`refusing to touch a path outside the vault: ${p}`);
@@ -119,9 +136,31 @@ function areaPath(vaultRoot: string, kind: "project" | "top", name: string): str
   // Codex-Gegenreview (P0): Die Prüfung war rein lexikalisch. Ein
   // Projektordner, der als Symlink nach außen zeigt, ging glatt durch — und
   // `renameArea()` schrieb dann in fremden Dateien außerhalb des Vaults die
-  // Scopes um. Dieselbe Realpath-Schranke wie im Save-Pfad: Ein Regal, das in
-  // Wahrheit woanders liegt, ist kein Regal dieses Vaults.
-  assertInsideVault(vaultRoot, p, "touch an area at");
+  // Scopes um.
+  //
+  // Sicherheitsrunde: Die Grenze ist nicht der Vault, sondern das ELTERNREGAL.
+  // Ein Projektordner als Symlink auf `memories/people` oder auf
+  // `dokumentationen/` verlässt den Vault nicht — er verlässt aber den Bereich,
+  // den diese Area besitzt, und ein Rename schrieb dort fremde Scopes um oder
+  // schob ein fremdes Regal in den Trash.
+  assertInsideVault(vaultRoot, parent, "touch an area");
+  assertInsideDir(parent, p, "touch an area", `${kind === "project" ? "memories/projects" : "memories"}`);
+  return p;
+}
+
+/**
+ * Das Doku-Regal einer Area — mit derselben Grenze wie das Memory-Regal.
+ *
+ * Sicherheitsrunde: Diese beiden Pfade wurden bisher nur zusammengesetzt.
+ * `dokumentationen/<name>` als Symlink auf ein anderes Regal ließ den Rename
+ * dort fremde Dokumente umschreiben und das Delete sie in den Trash schieben —
+ * gemeldet als „die Area ist umgezogen".
+ */
+function docsShelfPath(vaultRoot: string, name: string): string {
+  const parent = join(vaultRoot, "dokumentationen");
+  const p = join(parent, name);
+  assertInsideVault(vaultRoot, parent, "touch a docs shelf");
+  assertInsideDir(parent, p, "touch a docs shelf", "dokumentationen");
   return p;
 }
 
@@ -194,11 +233,6 @@ async function rewriteScopes(
       continue;
     }
     if (occupant.kind !== "memory") continue;
-    // `null` aus dem Patch heißt „nichts zu tun", `raced` heißt „jemand hat
-    // dazwischengeschrieben" — `mutateMemoryFile` meldet beides als `raced`.
-    // Ohne diese Unterscheidung wäre jedes fremde Memory im Ordner ein
-    // vermeintlicher Fehlschlag.
-    let intended = false;
     try {
       const outcome = await mutateMemoryFile(
         full,
@@ -207,16 +241,17 @@ async function rewriteScopes(
           frontmatter: (fm) => {
             const cur = fm.scope;
             if (typeof cur !== "string" || !scopeEquals(cur, oldScope)) return null;
-            intended = true;
             return { ...fm, scope: newScope };
           },
         },
         { vaultRoot },
       );
+      // `noop` heißt „hier war nichts umzuschreiben" (ein fremdes Memory im
+      // Ordner), `raced` und `identity-mismatch` heißen „mein Stempel liegt
+      // NICHT drauf". Erst seit `mutateMemoryFile` die beiden trennt, ist das
+      // hier ohne Hilfsflagge unterscheidbar.
       if (outcome.kind === "written") rewritten++;
-      else if (intended || outcome.kind === "identity-mismatch") {
-        failed.push(`${full} (${outcome.kind})`);
-      }
+      else if (outcome.kind !== "noop") failed.push(`${full} (${outcome.kind})`);
     } catch (err) {
       // Nicht schreibbar — melden statt still übergehen.
       failed.push(`${full} (${(err as Error).message})`);
@@ -321,10 +356,8 @@ async function rewriteDocMetadata(
           return changed ? next : null;
         },
       }, { vaultRoot });
-      // Nur `identity-mismatch` ist hier ein Fehlschlag: `raced` meldet auch
-      // der Patch, der `null` zurückgibt — das ist „nichts zu tun".
       if (outcome.kind === "written") touched++;
-      else if (outcome.kind === "identity-mismatch") failed.push(`${full} (${outcome.kind})`);
+      else if (outcome.kind !== "noop") failed.push(`${full} (${outcome.kind})`);
     } catch (err) {
       failed.push(`${full} (${(err as Error).message})`);
     }
@@ -353,8 +386,8 @@ export async function renameArea(
   if (!(await isDir(from))) throw new Error(`area not found: ${name}`);
   if (await isDir(to)) throw new Error(`area already exists: ${newName}`);
   // dokumentationen/<scope> is the same area's docs shelf — keep it in step.
-  const docsFrom = join(vaultRoot, "dokumentationen", name);
-  const docsTo = join(vaultRoot, "dokumentationen", newName);
+  const docsFrom = docsShelfPath(vaultRoot, name);
+  const docsTo = docsShelfPath(vaultRoot, newName);
   // Codex-Befund 3: Existierten BEIDE Doku-Regale, verschob der Rename nur das
   // Projektregal, ließ `dokumentationen/<alt>` verwaist zurück, das fremde
   // `dokumentationen/<neu>` stehen — und meldete Erfolg. Die Kollision gehört
@@ -521,7 +554,7 @@ export async function deleteArea(
   // nicht plötzlich eine Ebene tiefer suchen muss.
   let docsTrashedTo: string | undefined;
   if (kind === "project") {
-    const docsFrom = join(vaultRoot, "dokumentationen", name);
+    const docsFrom = docsShelfPath(vaultRoot, name);
     if (await isDir(docsFrom)) {
       try {
         await rename(docsFrom, docsDest);

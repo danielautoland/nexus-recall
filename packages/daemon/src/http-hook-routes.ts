@@ -531,6 +531,7 @@ export function handleHookRecall(
           // hinweg mittelt, misst zwei verschiedene Größen als eine.
           score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
           score_arms: armsOf({ hybridActive: hybridActiveAtRecall, commonsFused: false }),
+          score_version: hybridActiveAtRecall ? SCORE_VERSION : undefined,
           candidate_pool_score_kind:
             candidatePool.length > 0 ? (hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const)) : undefined,
           content_recall: contentRecall,
@@ -638,8 +639,8 @@ export function handleHookRecall(
         // das muss auf der Leitung stehen, statt vom Konsumenten geraten zu
         // werden.
         score_arms: armsOf({ hybridActive: hybridActiveAtRecall, commonsFused: false }),
-        score_version: SCORE_VERSION,
-        ...(hybridActiveAtRecall ? {} : { unfused: true }),
+        // Keine Formelversion auf einer rohen Skala — siehe recall-handler.ts.
+        ...(hybridActiveAtRecall ? { score_version: SCORE_VERSION } : { unfused: true }),
         // #342: name the reason on the wire too. `unfused` says the bands do
         // not apply; this says why, so a slow machine degrading on every call
         // is distinguishable from embeddings being off — from the response

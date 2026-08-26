@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Vault, saveMemory } from "../src/index.js";
+import { Vault, saveMemory, scanVaultForIdAsync } from "../src/index.js";
 
 function memoryMarkdown(id: string): string {
   return [
@@ -162,4 +162,69 @@ test("wer neu indexiert wird, ist kein quarantänisiertes Duplikat mehr", async 
     "die umbenannte Datei darf nicht weiter als Duplikat der alten id gelten",
   );
   assert.deepEqual(vault.pathsFor("eigenstaendig"), [second]);
+});
+
+/**
+ * Codex-Gegenreview (P0): Der autoritative Scan hatte False-Negatives.
+ *
+ * Er filterte vor dem Parse über den ROHTEXT: „steht die id nicht wörtlich
+ * drin, kann die Datei sie nicht tragen". YAML kennt aber beliebig viele
+ * Schreibweisen für denselben String — `id: "foo"` ist gültiges YAML für
+ * `foo`. Der Vault las die Datei als `foo`, der Scan meldete `none`, und der
+ * folgende Save legte eine zweite aktive `foo`-Datei an.
+ *
+ * Eine Heuristik kann nicht autoritativ sein: Der Scan muss dieselbe Semantik
+ * benutzen wie der Vault-Parser.
+ */
+test("eine YAML-escapte id wird vom autoritativen Scan gefunden", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bastra-escaped-id-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // `\u0066oo` ist `foo` — der Rohtext enthält die Zeichenfolge `foo` nicht.
+  const escaped = memoryMarkdown("getarnt").replace("id: getarnt", 'id: "\\u0066oo"');
+  assert.ok(!escaped.includes("foo"), "Kontrolle: der Rohtext trägt die id nicht wörtlich");
+  await writeFile(join(root, "getarnt.md"), escaped, "utf8");
+
+  const located = await scanVaultForIdAsync(root, "foo");
+  assert.equal(located.kind, "unique", "der Scan muss dieselbe id sehen wie der Vault");
+
+  await assert.rejects(
+    saveMemory(root, {
+      id: "foo",
+      title: "Foo",
+      type: "lesson",
+      summary: "s",
+      body: "zweite Datei",
+      topic_path: ["test"],
+      tags: ["test"],
+      scope: "proj",
+      recall_when: ["probe"],
+    }),
+    /memory already exists/,
+  );
+});
+
+/**
+ * Codex-Gegenreview: Eine einzelne unlesbare Markdown-Datei landete im
+ * `skipped`-Report, aber nicht in `scanBlindSpots()`. Der Index war damit
+ * nachweislich unvollständig und meldete trotzdem keinen blinden Fleck — ein
+ * Writer, der genau danach fragt, um fail-closed zu reagieren, bekam grünes
+ * Licht. Ein Ordner, den man nicht öffnen kann, und eine Datei, die man nicht
+ * lesen kann, verbergen beide eine id.
+ */
+test("auch eine einzelne unlesbare Datei ist ein blinder Fleck", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "bastra-blind-file-"));
+  const sealed = join(root, "verschlossen.md");
+  t.after(async () => {
+    await chmod(sealed, 0o644).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  await writeFile(sealed, memoryMarkdown("verschlossen"), "utf8");
+  await chmod(sealed, 0o000);
+
+  const vault = new Vault(root);
+  const { skipped } = await vault.init();
+  t.after(() => vault.stop());
+
+  assert.ok(skipped.some((s) => s.path === sealed), "im Report");
+  assert.deepEqual(vault.scanBlindSpots(), [sealed], "und in den blinden Flecken");
 });

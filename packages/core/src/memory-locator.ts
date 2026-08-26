@@ -27,7 +27,6 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import matter from "gray-matter";
 import { parseMemoryWith } from "./schema.js";
-import { slugFromFilename } from "./frontmatter-rescue.js";
 // Case-insensitiv: Der Vault-Watcher akzeptiert `.MD`, also darf ein Scanner
 // daneben nicht strenger sein — sonst sieht der Save eine Datei nicht, die der
 // Index sehr wohl kennt. Die Regel steht zentral in markdown-file.ts.
@@ -185,31 +184,72 @@ function walk(
  *   - Asynchron. `scanVaultForId` liest synchron; im Daemon blockiert das den
  *     Event-Loop für die Dauer des gesamten Vaults, und der Recall daneben
  *     steht still.
- *   - Ein Vorfilter vor dem Parse. Die effektive id einer Datei kommt aus
- *     genau zwei Quellen (`repairRequired`): dem Frontmatter-Feld `id` oder,
- *     wenn das fehlt oder nicht pfadsicher ist, dem Dateinamen. Enthält der
- *     Rohtext die gesuchte id nicht und ergibt auch der Dateiname sie nicht,
- *     kann diese Datei sie nicht tragen — der teure gray-matter-Parse
- *     entfällt. Gelesen wird trotzdem: nur der Inhalt beweist, dass die id
- *     nicht drinsteht.
+ *   - Sonst NICHTS. Insbesondere kein Vorfilter über den Rohtext.
+ *
+ * Hier stand ein solcher Vorfilter („enthält der Rohtext die id nicht und
+ * ergibt auch der Dateiname sie nicht, kann die Datei sie nicht tragen"), und
+ * er war falsch. Codex-Gegenreview (P0), nachgestellt mit
+ *
+ *     id: "\u0066oo"
+ *
+ * — gültiges YAML für `foo`. Der Vault und der synchrone Scan lasen die id als
+ * `foo`, der Rohtext enthält die Zeichenfolge `foo` aber nirgends, also meldete
+ * dieser Scan `none`, und der folgende Save legte eine zweite aktive
+ * `foo`-Datei an. Escapes, Quoting, Zeilenfaltung, Anker/Aliase: YAML kennt
+ * beliebig viele Schreibweisen für denselben String, und ein Stringtest bildet
+ * keine davon ab.
+ *
+ * Die Regel dahinter gilt allgemein: Eine Heuristik kann nicht autoritativ
+ * sein. Wer die Identitätsfrage verbindlich beantwortet, muss dieselbe Semantik
+ * benutzen wie der Vault-Parser — also `occupantOfRaw`, auf jeder Datei. Was
+ * das kostet, steht im Kommentar von `withIdClaim`.
  */
-export async function scanVaultForIdAsync(vaultRoot: string, id: string): Promise<Located> {
+export async function scanVaultForIdAsync(
+  vaultRoot: string,
+  id: string,
+  stats?: IdScanStats,
+): Promise<Located> {
   const found: string[] = [];
   const unreadable: string[] = [];
-  await walkAsync(vaultRoot, id, id.toLowerCase(), found, unreadable);
+  const counters: IdScanStats = stats ?? { dirs: 0, files: 0, bytes: 0, blindSpots: 0 };
+  counters.dirs = 0;
+  counters.files = 0;
+  counters.bytes = 0;
+  await walkAsync(vaultRoot, id, found, unreadable, counters);
+  counters.blindSpots = unreadable.length;
   if (unreadable.length > 0) return { kind: "incomplete", unreadable };
   if (found.length === 0) return { kind: "none" };
   if (found.length === 1) return { kind: "unique", filePath: found[0] };
   return { kind: "ambiguous", filePaths: found };
 }
 
+/**
+ * Was ein autoritativer Scan gekostet hat.
+ *
+ * Der Preis hängt nicht an der Zahl der indexierten Memories, sondern an der
+ * Gesamtzahl und Gesamtgröße ALLER Markdown-Dateien im Vault — in einem großen
+ * Obsidian-Vault oder auf einem Cloud-Mount ist das ein anderer Wert als lokal.
+ * Deshalb wird gemessen statt geschätzt.
+ */
+export interface IdScanStats {
+  /** Betretene Verzeichnisse. */
+  dirs: number;
+  /** Gelesene Markdown-Dateien. */
+  files: number;
+  /** Gelesene Bytes (UTF-8-Länge des Rohtexts). */
+  bytes: number;
+  /** Verzeichnisse und Dateien, die der Scan nicht lesen konnte. */
+  blindSpots: number;
+}
+
 async function walkAsync(
   dir: string,
   id: string,
-  idLower: string,
   out: string[],
   unreadable: string[],
+  stats: IdScanStats,
 ): Promise<void> {
+  stats.dirs++;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -223,7 +263,7 @@ async function walkAsync(
     if (e.name.startsWith(".") || e.name === "node_modules") continue;
     const full = join(dir, e.name);
     if (e.isDirectory()) {
-      await walkAsync(full, id, idLower, out, unreadable);
+      await walkAsync(full, id, out, unreadable, stats);
       continue;
     }
     if (!e.isFile() || !isMarkdown(e.name)) continue;
@@ -244,9 +284,8 @@ async function walkAsync(
             ? { kind: "skip" as const }
             : { kind: "unreadable" as const, full };
         }
-        if (!raw.toLowerCase().includes(idLower) && slugFromFilename(full) !== id) {
-          return { kind: "skip" as const };
-        }
+        stats.files++;
+        stats.bytes += raw.length;
         const occupant = occupantOfRaw(raw, full);
         return occupant.kind === "memory" && occupant.id === id
           ? { kind: "hit" as const, full }

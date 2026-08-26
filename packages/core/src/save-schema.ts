@@ -174,7 +174,12 @@ export type SaveMemoryInput = z.infer<typeof SaveMemoryInput>;
 export interface SaveMemoryResult {
   id: string;
   file_path: string;
+  /** `false` für ein Re-Filing: Ein Umzug erschafft kein Memory. */
   created: boolean;
+  /** Beim Re-Filing der Pfad, von dem das Memory kam — die Datei liegt danach
+   *  im Trash. Aufrufer mit einem Index werfen den alten Pfad damit hinaus,
+   *  ohne auf den (auf Cloud-Mounts unzuverlässigen) Watcher zu warten. */
+  refiled_from?: string;
   /** Present only when the summary was auto-truncated to fit SUMMARY_MAX. */
   summary_note?: string;
 }
@@ -200,10 +205,10 @@ export interface SaveMemoryCommitOptions {
    */
   locator?: MemoryLocator;
   /**
-   * Wer unter dem ID-Lock verbindlich sagt, wo diese id lebt. Default ist der
-   * Plattenscan — im Daemon immer die richtige Wahl. Nur ein Bulk-Import, der
-   * sonst je Datei einen Vaultscan zahlen müsste, setzt hier etwas Billigeres
-   * ein und übernimmt die Verantwortung dafür (siehe `IdAuthority`).
+   * Wer unter dem ID-Lock verbindlich sagt, wo diese id lebt. Ohne Angabe: der
+   * Plattenscan, und das ist die einzige produktiv zulässige Antwort. Der
+   * frühere Sonderfall (Bulk-Import mit einem Vault-Snapshot) war nicht
+   * prozesssicher und ist entfallen — siehe `IdAuthority`.
    */
   authority?: IdAuthority;
 }

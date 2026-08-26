@@ -61,11 +61,24 @@ export interface SaveProductDocResult {
  * wird verlangt, mit gefaltetem Projektsegment, denn ein Bestandsdokument kann
  * `[doku, CarNexus, …]` tragen. Der Scope wird aus demselben Grund gefaltet.
  */
+/**
+ * Das Produktdokument dieses Projekts für diese Area — oder ein lautes Nein.
+ *
+ * Codex-Gegenreview: Bei ZWEI Dokumenten mit derselben Signatur nahm diese
+ * Funktion still das erste. Nachgestellt: `old-one` wurde überschrieben,
+ * `old-two` blieb als zweites logisches Dokument derselben Area aktiv — der
+ * Vault hatte damit zwei Wahrheiten für dieselbe Frage, und welche ein Save
+ * traf, hing an der Iterationsreihenfolge des Index.
+ *
+ * Mehrere Treffer sind kein Auswahlproblem, sondern ein Defekt: Wer sie
+ * auflöst, muss es wissentlich tun.
+ */
 function findDocFor(
   deps: ToolDeps,
   projectKey: string,
   areaSlug: string,
 ): { fm: { id: string } } | undefined {
+  const matches: { fm: { id: string } }[] = [];
   for (const m of deps.vault.list()) {
     const fm = m.fm as { id: string; type?: unknown; scope?: unknown; topic_path?: unknown };
     if (fm.type !== "doc") continue;
@@ -75,9 +88,17 @@ function findDocFor(
     if (path[0] !== "doku") continue;
     if (typeof path[1] !== "string" || !scopeEquals(path[1], projectKey)) continue;
     if (path[2] !== areaSlug) continue;
-    return m as { fm: { id: string } };
+    matches.push(m as { fm: { id: string } });
   }
-  return undefined;
+  if (matches.length > 1) {
+    throw new Error(
+      `${matches.length} product docs claim ${projectKey}/${areaSlug}: ` +
+        `${matches.map((m) => m.fm.id).join(", ")}. ` +
+        `Merge or re-file all but one — saving now would update one of them and leave ` +
+        `the other standing as a second document for the same area.`,
+    );
+  }
+  return matches[0];
 }
 
 export async function saveProductDocHandler(

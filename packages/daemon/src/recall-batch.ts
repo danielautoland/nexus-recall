@@ -142,9 +142,18 @@ function spaceOf(s: BatchSubResult): "rrf" | "bm25" {
  * gewann, weil seine Skala höher reicht, nicht weil er besser passte. Gleiche
  * Zahl, gleiche Bauart — sonst wird über die RÄNGE fusioniert.
  */
-function signatureOf(s: BatchSubResult): string {
+function signatureOf(s: BatchSubResult, index: number): string {
   const space = spaceOf(s);
-  if (space === "bm25") return "bm25";
+  // Codex-Gegenreview (P0): Alle BM25-Sub-Queries galten hier als DERSELBE
+  // Raum und wurden per Best-Score zusammengeführt. Rohe BM25-Werte sind aber
+  // auch untereinander nicht vergleichbar: Termzahl, Querylänge und Expansion
+  // verschieben die absolute Höhe, ohne dass der Treffer besser passt. Genau
+  // deshalb war der Batch-Pfad auf Maschinen OHNE Embedding-Modell — also dem
+  // Fall, in dem jede Antwort unfused ist — durchgehend falsch.
+  //
+  // Jede unfused Liste bekommt deshalb ihre eigene Signatur: vergleichbar ist
+  // sie nur mit sich selbst, und der Merge geht über die Ränge.
+  if (space === "bm25") return `bm25/${index}`;
   const arms = s.score_arms ? [...s.score_arms].sort().join("+") : "rrf-unspecified";
   return `${s.score_version ?? "unversioned"}/${arms}`;
 }
@@ -182,13 +191,13 @@ export function mergeBatchResults(queries: string[], subs: BatchSubResult[], k: 
   let noHomeAll = true;
   const spaces = new Set<"rrf" | "bm25">();
   const signatures = new Set<string>();
-  for (const s of subs) {
+  for (const [index, s] of subs.entries()) {
     if (typeof s.vault_size === "number") vaultSize = s.vault_size;
     if (typeof s.recall_id === "string") recallIds.push(s.recall_id);
     if (s.weak_result !== true) weakAll = false;
     if (s.no_home !== true) noHomeAll = false;
     spaces.add(spaceOf(s));
-    signatures.add(signatureOf(s));
+    signatures.add(signatureOf(s, index));
   }
   // Gemischt heißt jetzt „nicht dieselbe Bauart", nicht nur „nicht derselbe
   // Score-Raum": Zwei `rrf`-Listen mit verschiedenen Armmengen sind ebenso
@@ -245,7 +254,16 @@ function fuseByQueryRank(subs: BatchSubResult[], k: number): BatchHit[] {
       // Liste kann 160 (fusioniert) und 405585 (roh) direkt hintereinander
       // führen. Jeder Hit nennt deshalb den Raum SEINER Zahl; ohne das ist ein
       // ausgewiesener Einzelquery-Score im gemischten Batch nicht lesbar.
-      const tagged: BatchHit = { ...h, score_kind: space };
+      // Codex-Gegenreview: `score_kind` allein reichte auch hier nicht. Zwei
+      // Hits können beide `rrf` sein und trotzdem aus verschiedenen Armmengen
+      // stammen — 163.934 gedeckelt neben 241.803 gedeckelt. Jeder Hit nennt
+      // deshalb die Bauart SEINER Zahl, nicht nur ihren Raum.
+      const tagged: BatchHit = {
+        ...h,
+        score_kind: space,
+        ...(space === "rrf" && s.score_arms ? { score_arms: s.score_arms } : {}),
+        ...(space === "rrf" && s.score_version ? { score_version: s.score_version } : {}),
+      };
       const existing = fused.get(h.id);
       if (!existing) {
         fused.set(h.id, { hit: tagged, rank, rrf: contribution });

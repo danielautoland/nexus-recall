@@ -26,11 +26,10 @@
  * recall_when_expanded survive each other). The LLM gen takes ~1-3 s, well after
  * the in-memory related write lands, so the fresh read sees it.
  */
-import { randomUUID } from "node:crypto";
-import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import matter from "gray-matter";
 import type { Vault } from "./vault.js";
+import { mutateMemoryFile, type MutateOutcome } from "./memory-mutate.js";
+import { MEMORY_WRITE_CONFLICT } from "./save-schema.js";
 import type { EmbeddingIndex } from "./embeddings.js";
 import type { Memory } from "./schema.js";
 import { scrubInjectedBlocks } from "./scrub.js";
@@ -205,7 +204,10 @@ export class TriggerExpander {
       // source on every embed. Empty here means the parser or the self-test
       // dropped everything — the failed-generation case returned above.
       if (this.writeGate && !(await this.writeGate())) return null;
-      await rewriteFile(memory.filePath, kept, srcHash);
+      const outcome = await rewriteFile(this.vault.root, memory.filePath, id, kept, srcHash);
+      // Ein Hintergrundlauf darf ausfallen: Hat ein anderer Writer die Datei
+      // inzwischen angefasst, bleibt dessen Fassung stehen.
+      if (outcome.kind !== "written") return null;
       await this.vault.reindexFile(memory.filePath);
       return kept;
     } finally {
@@ -317,38 +319,37 @@ export function parseExpansions(raw: string, existing: string[], max: number): s
  * before writing (not the cached Memory) so a concurrent RelatedEnricher write
  * isn't clobbered. Atomic via temp+rename, same as RelatedEnricher.
  */
-async function rewriteFile(filePath: string, expanded: string[], srcHash: string): Promise<void> {
-  const raw = await readFile(filePath, "utf8");
-  const parsed = matter(raw);
-  // Copy, don't mutate parsed.data: gray-matter caches matter(content) by
-  // string, so mutating the parsed object in place poisons that cache entry —
-  // any later parse of identical content would inherit our fields.
-  const fm = { ...(parsed.data as Record<string, unknown>) };
-  fm.recall_when_expanded = expanded;
-  fm.recall_when_expanded_src = srcHash;
-  const next = matter.stringify(
-    parsed.content.startsWith("\n") ? parsed.content : `\n${parsed.content}`,
-    fm,
-  );
-  // Der Temp-Name trug nur die PID, war für dieselbe Datei also innerhalb
-  // EINES Prozesses konstant: Zwei überlappende Expansionen desselben Memories
-  // schrieben in dieselbe Zwischendatei, und die zweite veröffentlichte, was
-  // die erste halb geschrieben hatte (Codex-Gegenreview, P1). `related-enrich`
-  // hatte denselben Fehler bereits, mit derselben Lösung.
-  const tmp = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.expand.tmp`;
-  await writeFile(tmp, next, "utf8");
+/**
+ * Codex-Gegenreview (P0): Auch hier stand eine Handkopie von
+ * `mutateMemoryFile` — ohne ID-Transaktion und ohne Identitätsprüfung. Ein
+ * Hintergrundlauf stempelte damit auf eine Datei, die inzwischen ein anderes
+ * Memory hielt, und sein Rename konnte einen parallelen Save rückgängig
+ * machen. Jetzt derselbe Weg wie jeder andere Writer; ein Write-Conflict am
+ * id-Lock ist für einen Hintergrundlauf schlicht `raced`.
+ */
+async function rewriteFile(
+  vaultRoot: string,
+  filePath: string,
+  id: string,
+  expanded: string[],
+  srcHash: string,
+): Promise<MutateOutcome> {
   try {
-    // Compare-and-Swap: Hat zwischen Read und Rename ein anderer Writer die
-    // Datei angefasst, gewinnt er — sonst überschreibt diese Expansion, die
-    // auf dem ALTEN Inhalt rechnet, dessen Ergebnis vollständig.
-    const current = await readFile(filePath, "utf8").catch(() => null);
-    if (current !== raw) {
-      await unlink(tmp).catch(() => {});
-      return;
-    }
-    await rename(tmp, filePath);
+    return await mutateMemoryFile(
+      filePath,
+      id,
+      {
+        frontmatter: (parsed) => ({
+          ...parsed,
+          recall_when_expanded: expanded,
+          recall_when_expanded_src: srcHash,
+        }),
+        body: (content) => (content.startsWith("\n") ? content : `\n${content}`),
+      },
+      { vaultRoot },
+    );
   } catch (err) {
-    await unlink(tmp).catch(() => {});
+    if ((err as { code?: string })?.code === MEMORY_WRITE_CONFLICT) return { kind: "raced" };
     throw err;
   }
 }

@@ -21,6 +21,7 @@ export type TelemetryEvent =
   | HookReflexEvent
   | HookActEvent
   | RecallEpisodeEvent
+  | IdScanEvent
   | OllamaLifecycleEvent;
 
 /**
@@ -130,6 +131,12 @@ export interface RecallEvent extends BaseEvent {
    * die Auswertung ist das die entscheidende Dimension, nicht `score_kind`.
    */
   score_arms?: string[];
+  /** Version der Score-FORMEL. Ohne sie wäre eine spätere Formeländerung
+   *  historisch nicht auswertbar: Zwei Zeilen mit derselben Armmenge sähen
+   *  vergleichbar aus, obwohl die Zahl dazwischen ihre Bedeutung geändert
+   *  hat. Nur auf fusionierten Antworten gesetzt — auf einer rohen Skala gibt
+   *  es keine Formel, deren Version man nennen könnte. */
+  score_version?: string;
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
@@ -209,6 +216,39 @@ export interface SaveMemoryEvent extends BaseEvent {
 /** #144: lightweight act-signal from the PostToolUse:Bash hook — no recall,
  *  no injection; only widens the acted_on measuring surface so shell-driven
  *  applications of a memory can close their recall_episode. */
+/**
+ * Was ein autoritativer ID-Scan gekostet hat.
+ *
+ * Der Scan ist der Preis der Invariante „eine ID, eine Datei, ein
+ * transaktionaler Writer": Jeder besitzverändernde Writer liest dafür jede
+ * Markdown-Datei des Vaults. Lokal auf APFS ist das zweistellig in
+ * Millisekunden — auf einem Cloud-Mount oder in einem großen Obsidian-Vault
+ * ist es eine offene Frage, und der Preis hängt an der Gesamtzahl ALLER
+ * Markdown-Dateien, nicht an der Zahl der indexierten Memories.
+ *
+ * Deshalb misst der Daemon ihn dauerhaft statt einmal: `ms` gegen `files` und
+ * `bytes` gestellt zeigt, ob eine Verlangsamung vom Vault oder vom Mount kommt,
+ * und `blind_spots` sagt, ob der Scan überhaupt vollständig war.
+ */
+export interface IdScanEvent extends BaseEvent {
+  kind: "id_scan";
+  /** Die id, für die gescannt wurde. */
+  id: string;
+  /** Der Writer, der den Scan ausgelöst hat (`save_memory`, `save_document`,
+   *  `archive`, …) — sonst lassen sich Create, Update und Import nicht
+   *  getrennt auswerten. */
+  op: string;
+  ms: number;
+  files: number;
+  bytes: number;
+  dirs: number;
+  blind_spots: number;
+  /** Liegt der Vault auf einem Cloud-Provider-Mount? Die Latenz dort ist eine
+   *  andere Größenordnung, und beide Verteilungen in einen Topf zu werfen
+   *  verwischt genau den Unterschied, um den es geht. */
+  cloud_mount: boolean;
+}
+
 export interface HookActEvent extends BaseEvent {
   kind: "hook_act";
   tool_name: string | null;
@@ -307,6 +347,12 @@ export interface HookRecallEvent extends BaseEvent {
    *  Feiner als `score_kind`, und seit dem Commons-Arm die Dimension, an der
    *  Vergleichbarkeit hängt. */
   score_arms?: string[];
+  /** Version der Score-FORMEL. Ohne sie wäre eine spätere Formeländerung
+   *  historisch nicht auswertbar: Zwei Zeilen mit derselben Armmenge sähen
+   *  vergleichbar aus, obwohl die Zahl dazwischen ihre Bedeutung geändert
+   *  hat. Nur auf fusionierten Antworten gesetzt — auf einer rohen Skala gibt
+   *  es keine Formel, deren Version man nennen könnte. */
+  score_version?: string;
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */

@@ -15,8 +15,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm, symlink, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Vault, AuditLog, auditedSoftDelete, auditedRestore, auditedSave, saveMemory } from "../src/index.js";
 
@@ -263,5 +264,71 @@ test("auditedSave räumt beim Re-Filing die alte Datei weg", async () => {
   } finally {
     await vault.stop?.();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Codex-Gegenreview (P0): Delete vertraute einem veralteten Vault-Objekt.
+ *
+ * Nachgestellt: Der Vault lädt Memory `x`, die Datei wird extern durch eine
+ * gewöhnliche Notiz ersetzt, `auditedSoftDelete("x")` verschiebt die fremde
+ * Notiz in den Trash — und das Audit behauptet, `x` sei gelöscht worden.
+ *
+ * Ein Löschen ist eine besitzverändernde Operation und gehört unter denselben
+ * Claim wie ein Schreiben, mit derselben autoritativen Auskunft.
+ */
+test("auditedSoftDelete verschiebt nicht, was der Cache für das Memory hält", async () => {
+  const { root, vault, auditLog } = await makeVault("bastra-del-stale-");
+  const file = join(root, "doomed.md");
+  try {
+    assert.ok(vault.get("doomed"), "Kontrolle: indexiert");
+    // Extern ersetzt: derselbe Pfad, eine gewöhnliche Notiz statt des Memorys.
+    await writeFile(file, "# Nur eine Notiz\n\nKein Frontmatter.\n", "utf8");
+
+    await assert.rejects(
+      auditedSoftDelete({
+        vault, auditLog, vaultRoot: root, memoryID: "doomed", context: { actor: "user" },
+      }),
+      /no file on disk holds it|not conclusive/,
+    );
+    assert.match(
+      await readFile(file, "utf8"),
+      /Nur eine Notiz/,
+      "die fremde Notiz muss unangetastet an ihrem Platz liegen",
+    );
+  } finally {
+    await vault.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+/**
+ * Sicherheitsrunde: Der Trash ist eine eigene Grenze.
+ *
+ * Zeigt `.bastra/trash` auf ein AKTIVES Regal, wird aus dem Löschen ein
+ * Verschieben in den Bestand: Die Operation meldet „gelöscht", das Memory ist
+ * danach weiterhin im Vault auffindbar — und ein Restore holte umgekehrt eine
+ * beliebige Vault-Datei an den Originalpfad. Der Symlink verlässt den Vault
+ * dabei nie, die alte vaultweite Prüfung sah ihn deshalb nicht.
+ */
+test("ein Trash, der in ein aktives Regal zeigt, ist kein Trash", async () => {
+  const { root, vault, auditLog } = await makeVault("bastra-trash-shelf-");
+  const shelf = join(root, "memories", "projects", "aktiv");
+  try {
+    await mkdir(shelf, { recursive: true });
+    await mkdir(join(root, ".bastra"), { recursive: true });
+    await symlink(shelf, join(root, ".bastra", "trash"));
+
+    await assert.rejects(
+      auditedSoftDelete({
+        vault, auditLog, vaultRoot: root, memoryID: "doomed", context: { actor: "user" },
+      }),
+      /outside the \.bastra folder|not .*own \.bastra/,
+    );
+    assert.deepEqual(await readdir(shelf), [], "nichts darf im aktiven Regal gelandet sein");
+    assert.ok(existsSync(join(root, "doomed.md")), "und das Memory liegt noch, wo es lag");
+  } finally {
+    await vault.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });

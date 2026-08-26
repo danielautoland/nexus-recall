@@ -12,7 +12,7 @@
  * alive. Details on each rule are at the function that implements it.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, access, open, stat, unlink } from "node:fs/promises";
+import { readFile, access, open, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { MemoryWriteConflictError } from "./save-schema.js";
@@ -149,14 +149,114 @@ export async function acquireCommitClaim(
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
       if (attempt === 0 && (await claimIsAbandoned(lockPath))) {
-        await unlink(lockPath).catch(() => {});
-        continue;
+        if (await reclaimStaleClaim(lockPath, body)) return token;
+        // Der Reclaim ging an jemand anderen, oder der Claim war zwischendurch
+        // wieder frisch. Beides ist ein Konflikt, kein zweiter Versuch.
+        throw writeConflict(id, filePath, "another save is reclaiming this claim");
       }
       throw writeConflict(id, filePath, "another save is committing this target");
     }
   }
   /* c8 ignore next */
   throw writeConflict(id, filePath, "another save is committing this target");
+}
+
+/**
+ * Wie lange eine Reclaim-Markierung liegen darf, bevor sie selbst als
+ * verwaist gilt. Bewusst das Doppelte des Claim-Fensters: Ein Reclaim dauert
+ * einen Read und ein Rename, und die Markierung soll nie vor dem Claim
+ * ablaufen, den sie gerade übernimmt.
+ */
+const RECLAIM_MARK_STALE_MS = COMMIT_CLAIM_STALE_MS * 2;
+
+/**
+ * Einen verwaisten Claim übernehmen — als EINZIGER, und ohne Lücke.
+ *
+ * Codex-Gegenreview (P0): Hier stand `unlink(lockPath)` gefolgt von einem
+ * neuen `open(wx)`. Zwei Fehler in drei Zeilen:
+ *
+ *   - Mehrere Reclaimer konnten denselben alten Claim gleichzeitig als
+ *     verwaist erkennen und ihn danach jeweils blind löschen — einer entfernte
+ *     dabei den gerade neu angelegten Lock des anderen. Gemessen: 200 Runden
+ *     mit je 16 Reclaimern, 85 Runden mit mehr als einem Gewinner, bis zu drei
+ *     gleichzeitig. Mit echten Saves: 11 von 80 Runden mit zwei aktiven
+ *     Dateien derselben id.
+ *   - Zwischen `unlink` und `open` war der Lock ABWESEND. Ein ganz normaler
+ *     Acquirer, der in dieses Fenster lief, hielt den Lock für frei.
+ *
+ * Beides schließt dieselbe Konstruktion. Die Übernahme wird über eine
+ * Markierung serialisiert, deren NAME aus dem Inhalt des verwaisten Claims
+ * abgeleitet ist: Genau ein Prozess kann sie mit O_EXCL anlegen, und zwei
+ * Reclaimer desselben Claims streiten damit um denselben Pfad. Veröffentlicht
+ * wird per `rename` über den bestehenden Lock — der Pfad ist zu keinem
+ * Zeitpunkt leer, es gibt also kein Fenster, in dem er frei aussieht.
+ *
+ * Was das NICHT löst: Ein Reclaimer, der zwischen Prüfung und `rename` länger
+ * als {@link RECLAIM_MARK_STALE_MS} stillsteht, kann seine Markierung an einen
+ * Nachfolger verlieren. Dafür ist die Lease per Heartbeat gedacht, die noch
+ * aussteht — auf geteilten Cloud-Vaults bleibt sie nötig.
+ *
+ * @returns `true`, wenn dieser Aufrufer den Claim jetzt hält.
+ */
+async function reclaimStaleClaim(lockPath: string, body: string): Promise<boolean> {
+  let stale: string;
+  try {
+    stale = await readFile(lockPath, "utf8");
+  } catch {
+    // Weg oder unlesbar: nichts zu übernehmen, was wir belegen könnten.
+    return false;
+  }
+  // Der Name der Markierung IST die Identität des verwaisten Claims. Ein
+  // Reclaim für eine andere Generation kollidiert damit nicht, und zwei
+  // Reclaims für dieselbe können es nicht vermeiden.
+  const markPath = `${lockPath}.reclaim-${createHash("sha256").update(stale).digest("hex").slice(0, 16)}`;
+  if (!(await takeReclaimMark(markPath))) return false;
+  try {
+    // Zwischen dem Lesen oben und der Markierung kann jemand schneller
+    // gewesen sein. Dann steht dort ein anderer Claim, und dieser Reclaim ist
+    // gegenstandslos.
+    const current = await readFile(lockPath, "utf8").catch(() => null);
+    if (current !== stale) return false;
+    // Per rename statt unlink+create: der Lockpfad trägt durchgehend einen
+    // gültigen Claim, erst den alten, dann unseren.
+    const tmp = `${lockPath}.${process.pid}.${randomUUID().slice(0, 8)}.take`;
+    await writeFile(tmp, body, "utf8");
+    try {
+      await rename(tmp, lockPath);
+    } catch (err) {
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
+    return true;
+  } finally {
+    await unlink(markPath).catch(() => {});
+  }
+}
+
+/** Die Markierung nehmen. Eine liegengebliebene (der Reclaimer starb mitten
+ *  im Vorgang) würde den Claim sonst dauerhaft unübernehmbar machen — sie
+ *  altert deshalb selbst aus. */
+async function takeReclaimMark(markPath: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(markPath, "wx", 0o600);
+      await handle.close();
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") return false;
+      if (attempt === 1) return false;
+      let ageMs: number;
+      try {
+        ageMs = Date.now() - (await stat(markPath)).mtimeMs;
+      } catch {
+        continue; // gerade verschwunden — noch ein Versuch
+      }
+      if (ageMs <= RECLAIM_MARK_STALE_MS) return false;
+      await unlink(markPath).catch(() => {});
+    }
+  }
+  /* c8 ignore next */
+  return false;
 }
 
 /**

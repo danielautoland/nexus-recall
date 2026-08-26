@@ -71,6 +71,18 @@ export class Vault {
    * das erfahren — `pathsFor()` allein kann es nicht ausdrücken.
    */
   private unreadablePaths: string[] = [];
+  /**
+   * Einzelne Dateien, die nicht GELESEN werden konnten — dieselbe Auskunft wie
+   * `unreadablePaths`, nur eine Ebene tiefer.
+   *
+   * Codex-Gegenreview: Eine beim Start unlesbare Markdown-Datei landete zwar im
+   * `skipped`-Report, aber nicht in den blinden Flecken. Der Index war damit
+   * nachweislich unvollständig und meldete trotzdem keinen — und ein Writer,
+   * der `scanBlindSpots()` fragt, um fail-closed zu reagieren, bekam grünes
+   * Licht. Ein Verzeichnis, das man nicht öffnen kann, und eine Datei, die man
+   * nicht lesen kann, verbergen beide eine id.
+   */
+  private unreadableFiles = new Set<string>();
 
   constructor(public readonly root: string) {}
 
@@ -108,6 +120,10 @@ export class Vault {
             results[i + j] = { kind: "skip" };
           } else {
             const msg = (err as Error).message ?? String(err);
+            // Unlesbar ist ein blinder Fleck, kaputtes Frontmatter nicht: Die
+            // eine Datei kann jede id tragen, die andere trägt nachweislich
+            // keine.
+            if (err instanceof VaultIOError) this.unreadableFiles.add(f);
             console.warn(`[vault] init skipped (${basename(f)}): ${msg}`);
             results[i + j] = { kind: "fail", file: f, err: msg };
           }
@@ -314,7 +330,7 @@ export class Vault {
   /** Die blinden Flecken des letzten Scans. Leer heißt: der Index kennt den
    *  ganzen Baum. Nicht leer heißt: er kann für KEINE id `none` belegen. */
   scanBlindSpots(): string[] {
-    return [...this.unreadablePaths];
+    return [...this.unreadablePaths, ...this.unreadableFiles];
   }
 
   pathsFor(id: string): string[] {
@@ -464,6 +480,7 @@ export class Vault {
       // vermeintliches `ambiguous`. Wer erfolgreich indexiert wird, ist per
       // Definition kein quarantänisiertes Duplikat mehr.
       this.forgetDuplicate(filePath);
+      this.unreadableFiles.delete(filePath);
       this.memorys.set(m.fm.id, m);
       this.filePathToId.set(filePath, m.fm.id);
       // A file this vault already knows under the same id is a CHANGE, whatever
@@ -481,6 +498,7 @@ export class Vault {
       // last-known-good node and let the watcher or the periodic reconcile
       // retry; a real deletion still arrives as `unlink` → handleRemove.
       if (err instanceof VaultIOError) {
+        this.unreadableFiles.add(filePath);
         console.error(
           `[vault] ${kind} could not read ${basename(filePath)} (${err.cause.message}) — ` +
             `keeping the last indexed version, will retry`,
@@ -516,6 +534,7 @@ export class Vault {
 
   private handleRemove(filePath: string): void {
     this.fileStats.delete(filePath);
+    this.unreadableFiles.delete(filePath);
     this.duplicateSkipLogged.delete(filePath);
     // Eine gelöschte Datei ist kein Duplikat mehr — sonst meldete der Locator
     // `ambiguous` für einen Zustand, den es nicht mehr gibt, und blockierte

@@ -32,6 +32,7 @@ import {
   type EmbeddingProvider,
   type RecallStage,
   type StageListener,
+  onIdScan,
 } from "@bastra-recall/core";
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
@@ -216,6 +217,26 @@ async function main(): Promise<void> {
     onUsage: (events) => {
       void recordUsage(VAULT_PATH!, events);
     },
+  });
+
+  // Der Preis der ID-Transaktion, dauerhaft gemessen (Codex-Gegenreview): Jeder
+  // besitzverändernde Writer scannt den Vault. Lokal ist das zweistellig in
+  // Millisekunden, auf einem Cloud-Mount eine offene Frage — und der Preis
+  // hängt an der Gesamtzahl ALLER Markdown-Dateien, nicht an der Zahl der
+  // indexierten Memories. Ohne Messung fällt eine Regression erst auf, wenn
+  // ein Save Sekunden dauert.
+  const vaultIsCloudMount = /(CloudStorage|Dropbox|iCloud)/i.test(VAULT_PATH!);
+  onIdScan((o) => {
+    void telemetry.logIdScan({
+      id: o.id,
+      op: o.op,
+      ms: o.ms,
+      files: o.files,
+      bytes: o.bytes,
+      dirs: o.dirs,
+      blind_spots: o.blindSpots,
+      cloud_mount: vaultIsCloudMount,
+    });
   });
 
   // Curator-Demotions (#155) überleben Daemon-Restarts: Score-Set aus dem

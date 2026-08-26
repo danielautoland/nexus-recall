@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { slugify, extractWikilinks, snapshotLocator, locatorAuthority } from "@bastra-recall/core";
+import { slugify, extractWikilinks, snapshotLocator } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 import { saveMemoryWithAuditTrail } from "./audit-trail.js";
@@ -230,13 +230,22 @@ export async function importVault(
   // Import alphabetisch, verdrängt er das Original aus dem aktiven Index.
   // Ein Snapshot des ganzen Vaults, EINMAL: die Frage lautet "gehört diese id
   // schon jemandem, bevor ich anfange", und die beantwortet der Ausgangsstand.
+  // Der Snapshot beantwortet das ROUTING (welches Regal, welche Schreibweise)
+  // für alle Quelldateien mit EINEM Scan. Er ist ausdrücklich NICHT mehr die
+  // Kollisionsauskunft:
+  //
+  // Codex-Gegenreview (P0): Als Authority eingesetzt war er nicht
+  // prozesssicher. `used` kennt nur die ids, die dieser Import selbst vergeben
+  // hat — nicht die Saves eines parallel laufenden Daemons oder einer zweiten
+  // Maschine auf demselben Vault. Nachgestellt: Snapshot auf leerem Vault,
+  // danach ein normaler Save von `race-id`, danach der Import mit der alten
+  // Authority — zwei Dateien mit `race-id`. „Ein Prozess pro Import" ist keine
+  // Zusicherung, solange andere Prozesse denselben Vault schreiben dürfen.
+  //
+  // Der Import zahlt deshalb die autoritative Prüfung je id wie jeder andere
+  // Writer. Das kostet einen Vaultscan pro Datei; ein Import ist ein einmaliger
+  // Vorgang, und Korrektheit ist hier den Preis wert.
   const vaultIds = snapshotLocator(vaultRoot);
-  // Ein Import schreibt hunderte Dateien; die autoritative Auskunft der
-  // ID-Transaktion ist ein Vaultscan JE DATEI und damit quadratisch. Hier ist
-  // der eine dokumentierte Fall, in dem der Snapshot als Authority reicht:
-  // ein Prozess, ein Lauf, und die selbst vergebenen ids führt der Import in
-  // `used` mit. Siehe `locatorAuthority`.
-  const vaultIdAuthority = locatorAuthority(vaultIds);
   const importPathOf = (id: string): string => join(vaultRoot, folder, `${id}.md`);
 
   const ownership = async (
@@ -439,7 +448,7 @@ export async function importVault(
           actor: "import",
           actorDetail: "import:vault",
           sessionId: runId,
-          commit: { expectedTarget, locator: vaultIds, authority: vaultIdAuthority },
+          commit: { expectedTarget, locator: vaultIds },
         });
       } catch (err) {
         // `recordAudit` absorbs audit-only failures. Reaching this catch means
@@ -537,7 +546,7 @@ export async function importVault(
               actor: "import",
               actorDetail: "import:vault",
               sessionId: runId,
-              commit: { expectedTarget: indexCheck.target, locator: vaultIds, authority: vaultIdAuthority },
+              commit: { expectedTarget: indexCheck.target, locator: vaultIds },
             });
             landed = true;
           } catch {

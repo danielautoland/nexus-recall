@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  symlink,
   readFile,
   readdir,
   rm,
@@ -25,7 +26,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
 import { saveMemory } from "../src/save.js";
-import { commitLockPathFor } from "../src/save-commit.js";
+import { acquireCommitClaim, commitLockPathFor } from "../src/save-commit.js";
 import { scanVaultForId } from "../src/memory-locator.js";
 import { MEMORY_WRITE_CONFLICT, MemoryWriteConflictError } from "../src/save-schema.js";
 import type { SaveMemoryInput } from "../src/save-schema.js";
@@ -451,4 +452,74 @@ test("a fresh claim from an unknown host is left alone", async (t) => {
   });
   assert.equal(await readFile(seeded.file_path, "utf8"), expected);
   assert.equal(await readFile(lock, "utf8"), claim);
+});
+
+/**
+ * Codex-Gegenreview (P0): Der Reclaim verletzte die Exklusivität.
+ *
+ * Mehrere Writer konnten denselben verwaisten Claim gleichzeitig als verwaist
+ * erkennen und ihn danach jeweils blind löschen — einer entfernte dabei den
+ * gerade neu angelegten Lock des anderen. Gemessen: 200 Runden mit je 16
+ * Reclaimern, 85 Runden mit mehr als einem Gewinner, bis zu drei gleichzeitig.
+ *
+ * Geprüft wird deshalb der Claim SELBST, nicht der Save darüber: Der
+ * Byte-Vergleich vor dem Commit fängt zwei Gewinner auf DENSELBEN Pfad ohnehin
+ * ab und verdeckt damit genau den Defekt, um den es hier geht. Zwei Gewinner
+ * auf verschiedene Regale fängt er nicht.
+ */
+test("nur einer kann einen verwaisten Claim übernehmen", async (t) => {
+  const ROUNDS = 30;
+  const RECLAIMERS = 16;
+  const vault = await harness(t);
+  const lock = commitLockPathFor(vault, ID);
+  await mkdir(path.dirname(lock), { recursive: true });
+
+  for (let round = 0; round < ROUNDS; round++) {
+    // Ein Claim von einem fremden Host, alt genug für die Übernahme: keine
+    // PID auf dieser Maschine kann ihn retten, also versuchen es ALLE.
+    await writeFile(
+      lock,
+      JSON.stringify({ pid: 999999, host: "andere-maschine", ts: 0, token: `stale-${round}` }),
+      "utf8",
+    );
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+
+    const results = await Promise.allSettled(
+      Array.from({ length: RECLAIMERS }, () =>
+        acquireCommitClaim(lock, ID, path.join(vault, "x.md")),
+      ),
+    );
+    const won = results.filter((r) => r.status === "fulfilled");
+    assert.equal(won.length, 1, `Runde ${round}: ${won.length} Gewinner statt einem`);
+
+    // Und der Lock gehört genau dem Gewinner — nicht einem Nachzügler, der
+    // ihn nach dem Löschen des Vorgängers neu angelegt hat.
+    const held = JSON.parse(await readFile(lock, "utf8")) as { token: string };
+    assert.equal(
+      held.token,
+      (won[0] as PromiseFulfilledResult<string>).value,
+      `Runde ${round}: der Lock trägt nicht das Token des Gewinners`,
+    );
+    await rm(lock, { force: true });
+  }
+});
+
+/**
+ * Sicherheitsrunde: Dieselbe Grenze für das Lock-Verzeichnis.
+ *
+ * Zeigt `.bastra` auf ein AKTIVES Regal, entstehen die Lock-Dateien mitten im
+ * Bestand — sichtbar in Obsidian, mitsynchronisiert, und ein Aufräumen dort
+ * öffnet den Lock für einen zweiten Writer. Der Symlink verlässt den Vault
+ * nicht, die vaultweite Prüfung sah ihn deshalb nicht.
+ */
+test("ein .bastra, das in ein aktives Regal zeigt, trägt keine Locks", async (t) => {
+  const vault = await harness(t);
+  const shelf = path.join(vault, "memories", "projects", "aktiv");
+  await mkdir(shelf, { recursive: true });
+  await rm(path.join(vault, ".bastra"), { recursive: true, force: true });
+  await symlink(shelf, path.join(vault, ".bastra"));
+
+  await assert.rejects(saveMemory(vault, input("nope")), /not .*own \.bastra/);
+  assert.deepEqual(await readdir(shelf), [], "keine Lock-Datei im aktiven Regal");
 });

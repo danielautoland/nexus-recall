@@ -547,7 +547,7 @@ test("ein Symlink im Dokumentenordner führt nicht aus dem Vault heraus", async 
       original_path: src,
       folder_path: "linked",
     } as SaveArgs),
-    /outside the vault/,
+    /outside the documents folder/,
   );
   assert.deepEqual(
     await readdir(outside),
@@ -593,5 +593,83 @@ test("zwei Dateinamen mit derselben abgeleiteten id kollidieren auch parallel", 
     sidecars.length,
     1,
     `zwei Sidecars mit einer id wären der Defekt: ${sidecars.join(", ")}`,
+  );
+});
+
+/**
+ * Codex-Gegenreview (P0): `recategorizeDocument()` verlor Änderungen still.
+ *
+ * Es las das Sidecar, baute das Frontmatter neu und schrieb zurück — ohne
+ * Sperre und ohne Vergleich. Gemessen: 20 parallele Läufe, einer änderte den
+ * Titel, einer die Tags, BEIDE meldeten Erfolg, und in 20 von 20 Läufen blieb
+ * nur eine der beiden Änderungen übrig.
+ *
+ * Unter der ID-Transaktion gewinnt einer, und der andere erfährt es. Ein
+ * stiller Verlust ist der einzige unzulässige Ausgang.
+ */
+test("gleichzeitige Metadaten-Patches verlieren keine Änderung still", async (t) => {
+  const { dir, vault } = await harness(t);
+  const src = join(dir, "Police.pdf");
+  await writeFile(src, "POLICE", "utf8");
+  const doc = await saveDocument(vault, {
+    ...BASE,
+    title: "Police",
+    original_path: src,
+    folder_path: "vertraege",
+  } as SaveArgs);
+
+  for (let round = 0; round < 10; round++) {
+    const results = await Promise.allSettled([
+      recategorizeDocument(vault, { id: doc.id, title: `Titel-${round}`, force: true }),
+      recategorizeDocument(vault, { id: doc.id, tags: [`tag-${round}`], force: true }),
+    ]);
+    const won = results.filter((r) => r.status === "fulfilled");
+    for (const r of results) {
+      if (r.status === "rejected") {
+        assert.match((r.reason as Error).message, /write conflict/, `Runde ${round}`);
+      }
+    }
+    const fm = matter(await readFile(doc.sidecar_path, "utf8")).data;
+    if (won.length === 2) {
+      // Beide durchgekommen heißt: nacheinander gelaufen. Dann müssen auch
+      // BEIDE Änderungen auf der Platte stehen — genau das ging vorher verloren.
+      assert.equal(fm.title, `Titel-${round}`, `Runde ${round}: Titel verloren`);
+      assert.deepEqual(fm.tags, [`tag-${round}`], `Runde ${round}: Tags verloren`);
+    } else {
+      assert.equal(won.length, 1, `Runde ${round}: unerwartet ${won.length} Gewinner`);
+    }
+  }
+});
+
+/**
+ * Sicherheitsrunde: Die Grenze ist das DOKUMENTENREGAL, nicht der Vault.
+ *
+ * Ein Symlink, der den Vault gar nicht verlässt, kam an der alten Prüfung
+ * vorbei: `dokumente/linked -> ../memories` plus `folder_path: "linked"`
+ * schrieb Original UND Sidecar mitten in den Memory-Bestand. Der Pfad lag im
+ * Vault, das Regal hatte er trotzdem verlassen.
+ */
+test("ein Symlink INNERHALB des Vaults führt nicht in ein fremdes Regal", async (t) => {
+  const { dir, vault } = await harness(t);
+  const foreignShelf = join(dir, "memories", "projects", "fremd");
+  await mkdir(foreignShelf, { recursive: true });
+  await mkdir(join(dir, "documents"), { recursive: true });
+  await symlink(foreignShelf, join(dir, "documents", "linked"));
+
+  const src = join(dir, "Beleg.pdf");
+  await writeFile(src, "BELEG", "utf8");
+  await assert.rejects(
+    saveDocument(vault, {
+      ...BASE,
+      title: "Beleg",
+      original_path: src,
+      folder_path: "linked",
+    } as SaveArgs),
+    /outside the documents folder/,
+  );
+  assert.deepEqual(
+    await readdir(foreignShelf),
+    [],
+    "im fremden Regal darf nichts gelandet sein",
   );
 });

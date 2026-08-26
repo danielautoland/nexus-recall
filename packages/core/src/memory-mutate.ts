@@ -34,13 +34,23 @@ import { withIdClaim } from "./id-transaction.js";
 export type MutateOutcome =
   /** Geschrieben. */
   | { kind: "written" }
+  /** Der Patch hatte nichts zu tun (`frontmatter` gab `null` zurück). Kein
+   *  Fehlschlag — die Datei steht schon so da, wie sie soll.
+   *
+   *  Codex-Gegenreview (P0): Das meldete diese Funktion früher ebenfalls als
+   *  `raced`, und damit konnte kein Aufrufer „nichts zu tun" von „jemand hat
+   *  dazwischengeschrieben, mein Stempel liegt NICHT drauf" unterscheiden. Wer
+   *  die Vollständigkeit einer Operation prüfen will (der Area-Rename tut das),
+   *  braucht genau diese Unterscheidung. */
+  | { kind: "noop" }
   /** Zwischen Read und Commit hat jemand anderes geschrieben — nichts getan. */
   | { kind: "raced" }
   /** Die Datei hält nicht das erwartete Memory — nichts getan. */
   | { kind: "identity-mismatch"; found: string | null };
 
 export interface MemoryMutation {
-  /** Frontmatter-Patch. Rückgabe `null` bricht die Mutation ab (nichts zu tun). */
+  /** Frontmatter-Patch. Rückgabe `null` heißt „nichts zu tun" und liefert
+   *  {@link MutateOutcome} `noop` — ausdrücklich kein Fehlschlag. */
   frontmatter?: (fm: Record<string, unknown>) => Record<string, unknown> | null;
   /** Body-Transformation. */
   body?: (body: string) => string;
@@ -67,12 +77,14 @@ export async function mutateMemoryFile(
   if (opts.vaultRoot === undefined || expectedId === null) {
     return mutateUnderClaim(filePath, expectedId, mutation);
   }
-  return withIdClaim({ vaultRoot: opts.vaultRoot, id: expectedId, filePath }, () =>
+  return withIdClaim({ vaultRoot: opts.vaultRoot, id: expectedId, filePath, op: opts.op ?? "mutate" }, () =>
     mutateUnderClaim(filePath, expectedId, mutation),
   );
 }
 
 export interface MutateOptions {
+  /** Welcher Writer hier mutiert — geht in die Scan-Messung ein. */
+  op?: string;
   /** Der Vault, unter dessen ID-Transaktion die Mutation laufen soll. Jeder
    *  produktive Aufrufer gibt ihn mit; ohne ihn bleibt es beim
    *  Compare-and-Swap ohne prozessübergreifende Sperre. */
@@ -117,7 +129,7 @@ async function mutateUnderClaim(
   // späteren Parser desselben Inhalts.
   const fmBefore = { ...(parsed.data as Record<string, unknown>) };
   const fmAfter = mutation.frontmatter ? mutation.frontmatter(fmBefore) : fmBefore;
-  if (fmAfter === null) return { kind: "raced" };
+  if (fmAfter === null) return { kind: "noop" };
   const bodyAfter = mutation.body ? mutation.body(parsed.content) : parsed.content;
   const next = matter.stringify(bodyAfter, fmAfter);
 

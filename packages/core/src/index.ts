@@ -89,10 +89,11 @@ export { isMarkdownFile } from "./markdown-file.js";
 export { mutateMemoryFile } from "./memory-mutate.js";
 export type { MutateOutcome, MemoryMutation } from "./memory-mutate.js";
 export { readOccupant, occupantOfRaw, scanVaultForId, scanVaultForIdAsync, snapshotLocator, vaultRelative } from "./memory-locator.js";
-export { withIdClaim, diskAuthority, locatorAuthority } from "./id-transaction.js";
-export type { IdAuthority, IdClaim, IdClaimOptions } from "./id-transaction.js";
+export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
+export type { IdAuthority, IdClaim, IdClaimOptions, IdScanObservation } from "./id-transaction.js";
+export type { IdScanStats } from "./memory-locator.js";
 export type { Occupant, Located, MemoryLocator } from "./memory-locator.js";
-export { sameFile, assertInsideVault, realpathOfNearestExisting } from "./file-identity.js";
+export { sameFile, assertInsideVault, assertInsideDir, assertOwnSubdir, realpathOfNearestExisting } from "./file-identity.js";
 export { normalizeScopeKey, scopeEquals, isScopeCompatible, GLOBAL_SCOPES } from "./scope.js";
 
 export {

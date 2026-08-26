@@ -66,6 +66,13 @@ export interface RecallHit {
      */
     /** 1-basierter Rang im Commons-Index. */
     rank_commons?: number;
+    /**
+     * Nur auf dem KOLLAPS-Pfad (der persönliche Arm war degradiert): der Rang
+     * des Treffers in der persönlichen Liste. Dort geht nicht der persönliche
+     * Zahlenwert in den Score ein, sondern nur dieser Rang — `rank_bm25` und
+     * `rank_vector` beschreiben die Zahl dann nicht mehr und sind `null`.
+     */
+    rank_personal_list?: number;
     /** Vertrauensgewicht dieses Commons-Treffers (`commonsRankFactor`, 0.5–0.95). */
     commons_weight?: number;
     /** Der Score OHNE den Commons-Beitrag — die Zahl, die derselbe Recall

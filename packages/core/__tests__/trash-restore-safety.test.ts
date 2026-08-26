@@ -9,7 +9,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, mkdir, readdir, utimes } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile, rm, mkdir, readdir, utimes } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -164,4 +165,32 @@ test("an unrelated file in the trash folder is never a candidate", async (t) => 
   await writeFile(path.join(path.dirname(own), "victim.backup.md"), "STRAY", "utf8");
 
   assert.equal(await latestTrashPathFor(dir, "victim"), own);
+});
+
+/**
+ * Codex-Gegenreview: Der Restore erzeugt erst den Hardlink am Zielpfad und
+ * entfernt danach den Trash-Link. Scheitert dieses `unlink` — ein nicht
+ * beschreibbares Trash-Verzeichnis reicht —, meldete er einen Fehler, während
+ * BEIDE Dateien existierten: die aktive und die im Trash, mit derselben id.
+ * Ein Fehlschlag muss den Zustand von vorher hinterlassen.
+ */
+test("scheitert das Aufräumen des Trash-Links, bleibt keine halbe Wiederherstellung zurück", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-restore-halfway-"));
+  const trashDir = path.join(dir, ".bastra", "trash");
+  const trashed = path.join(trashDir, "m.md");
+  const dest = path.join(dir, "m.md");
+  try {
+    await mkdir(trashDir, { recursive: true });
+    await writeFile(trashed, "---\nid: m\ntype: lesson\n---\n\nBody.\n", "utf8");
+    // Das Verzeichnis nicht beschreibbar: der Hardlink ans Ziel gelingt, das
+    // Entfernen des Trash-Eintrags nicht.
+    await chmod(trashDir, 0o500);
+
+    await assert.rejects(restoreFromTrash(dir, trashed, dest));
+    assert.equal(existsSync(dest), false, "kein zweiter aktiver Link darf zurückbleiben");
+    assert.equal(existsSync(trashed), true, "die Trash-Fassung bleibt unangetastet");
+  } finally {
+    await chmod(trashDir, 0o700).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
 });

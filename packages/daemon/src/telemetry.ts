@@ -27,6 +27,7 @@ function defaultLogDir(): string {
 export * from "./telemetry-events.js";
 import type {
   TelemetryEvent,
+  IdScanEvent,
   RecallEvent,
   LoadMemoryEvent,
   SaveMemoryEvent,
@@ -457,6 +458,20 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "save_memory",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  /** Siehe {@link IdScanEvent} — der Preis der ID-Transaktion, dauerhaft
+   *  gemessen statt einmal geschätzt. */
+  async logIdScan(
+    payload: Omit<IdScanEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "id_scan",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

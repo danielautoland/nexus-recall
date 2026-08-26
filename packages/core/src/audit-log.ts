@@ -1,6 +1,7 @@
 import { mkdir, appendFile, rename, readdir, stat, open, link, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
+import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
 
 /**
  * Audit-Log: jede Memory-Mutation wird als JSON-Zeile in
@@ -197,13 +198,25 @@ function makeAuditID(): string {
 const TRASH_DIR = "trash";
 
 export function trashPathFor(vaultRoot: string, id: string): string {
-  const trashRoot = join(vaultRoot, AUDIT_DIR, TRASH_DIR);
+  const bastraDir = join(vaultRoot, AUDIT_DIR);
+  const trashRoot = join(bastraDir, TRASH_DIR);
   const dest = join(trashRoot, `${id}.md`);
   // The id comes from file frontmatter — a crafted `id: ../../x` must not
   // turn the soft-delete rename into a write outside the trash folder.
   if (!resolve(dest).startsWith(resolve(trashRoot) + sep)) {
     throw new Error(`refusing trash path outside the trash folder for id: ${id}`);
   }
+  // Sicherheitsrunde: Die Prüfung darüber ist lexikalisch und sieht keinen
+  // Symlink. Zeigt `.bastra` oder `.bastra/trash` auf ein AKTIVES Regal, wird
+  // aus dem Löschen ein Verschieben in den Bestand — das Memory ist als
+  // „gelöscht" gemeldet und weiterhin auffindbar —, und ein Restore holt
+  // umgekehrt eine beliebige Vault-Datei an den Originalpfad. Der Trash ist
+  // eine eigene Grenze, nicht nur ein Ordner im Vault; deshalb drei Fragen
+  // statt einer: liegt `.bastra` im Vault, liegt der Trash in `.bastra`,
+  // liegt das Ziel im Trash.
+  assertOwnSubdir(vaultRoot, bastraDir, "trash");
+  assertInsideDir(bastraDir, trashRoot, "trash", "the .bastra folder");
+  assertInsideDir(trashRoot, dest, "trash", "the trash folder");
   return dest;
 }
 
@@ -324,5 +337,15 @@ export async function restoreFromTrash(
     }
     throw err;
   }
-  await unlink(trashFile);
+  // Codex-Gegenreview: Scheitert das `unlink`, existieren BEIDE Links — die
+  // aktive Datei und die im Trash —, und Restore meldete trotzdem einen
+  // Fehler. Der Aufrufer sah „nicht wiederhergestellt", im Vault lagen aber
+  // zwei Dateien mit einer id. Also zurücknehmen, was gerade veröffentlicht
+  // wurde; erst danach ist der Fehlschlag ein ehrlicher Fehlschlag.
+  try {
+    await unlink(trashFile);
+  } catch (err) {
+    await unlink(destFile).catch(() => {});
+    throw err;
+  }
 }

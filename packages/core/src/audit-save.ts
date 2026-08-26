@@ -13,7 +13,6 @@ import type { Vault } from "./vault.js";
 import { assertInsideVault, sameFile } from "./file-identity.js";
 import type { Located, MemoryLocator } from "./memory-locator.js";
 import { access, readFile, rename } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import matter from "gray-matter";
 import { readOccupant } from "./memory-locator.js";
 import { withIdClaim } from "./id-transaction.js";
@@ -73,31 +72,15 @@ export async function auditedSave(args: {
   const candidateID = resolveMemoryTarget(vaultRoot, input, locator).id;
   const existing = vault.get(candidateID);
   const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
-  const previousPath = existing?.filePath ?? null;
 
   const result = await saveMemory(vaultRoot, input, { locator });
 
-  // Codex-Gegenreview: Dieser Pfad (Bridge, Import) kannte das Re-Filing aus
-  // #64 nicht. Ein `overwrite` mit geändertem `folder` schrieb die neue Datei
-  // und ließ die alte liegen — danach trugen zwei Dateien dieselbe id, und der
-  // Vault lud beim nächsten Start still nur eine. `tool-handlers.ts` räumt an
-  // seiner Stelle längst auf; hier fehlte es.
-  if (previousPath !== null && !(sameFile(previousPath, result.file_path))) {
-    try {
-      await moveToTrash(vaultRoot, previousPath, result.id);
-      vault.forgetFile(previousPath);
-    } catch (err) {
-      // Steht die alte Datei noch, tragen zwei Dateien dieselbe id — das darf
-      // der Aufrufer nicht nur im Log finden.
-      if (existsSync(previousPath)) {
-        throw new Error(
-          `re-file incomplete: ${previousPath} could not be trashed and now shares id ` +
-            `'${result.id}' with ${result.file_path} (${(err as Error).message}). ` +
-            `Remove or fix one of them — two files with the same id make the memory ` +
-            `disappear from the index on the next reconcile.`,
-        );
-      }
-    }
+  // Das Re-Filing selbst erledigt `saveMemory` unter der ID-Transaktion —
+  // hier bleibt nur, den Index nachzuziehen. Vorher stand das Aufräumen hier
+  // (und noch einmal in `tool-handlers.ts`), also NACH der Freigabe des Locks:
+  // ein Absturz dazwischen hinterließ zwei aktive Dateien mit einer id.
+  if (result.refiled_from !== undefined) {
+    vault.forgetFile(result.refiled_from);
   }
 
   // diff_after: aus dem result-Pfad lesen — Vault-Watcher hatte vielleicht
@@ -151,7 +134,50 @@ export async function auditedSoftDelete(args: {
   }
 
   const diffBefore = cloneFrontmatter(memory.fm);
-  const originalPath = memory.filePath;
+  // Codex-Gegenreview (P0): Gelöscht wurde der Pfad, den der CACHE nannte, ohne
+  // ihn noch einmal anzusehen. Nachgestellt: Der Vault lädt `x`, die Datei wird
+  // extern durch eine gewöhnliche Notiz ersetzt, `auditedSoftDelete("x")`
+  // verschiebt die fremde Notiz in den Trash — und das Audit behauptet, Memory
+  // `x` sei gelöscht worden. Ein Löschen ist eine besitzverändernde Operation,
+  // also gehört es unter denselben Claim wie ein Schreiben, mit derselben
+  // autoritativen Auskunft.
+  return withIdClaim(
+    { vaultRoot, id: memoryID, filePath: memory.filePath, op: "soft_delete" },
+    async (claim) => {
+      const located = await claim.locate();
+      if (located.kind !== "unique") {
+        throw new Error(
+          located.kind === "none"
+            ? `cannot delete "${memoryID}": no file on disk holds it (the index is stale).`
+            : `cannot delete "${memoryID}": the vault scan is not conclusive (${located.kind}) — ` +
+              `fix that first, deleting now would move the wrong file.`,
+        );
+      }
+      return commitSoftDelete({
+        vault,
+        auditLog,
+        vaultRoot,
+        memoryID,
+        originalPath: located.filePath,
+        diffBefore,
+        context,
+      });
+    },
+  );
+}
+
+/** Der schreibende Teil des Löschens — unter dem Claim, auf dem autoritativ
+ *  ermittelten Pfad. */
+async function commitSoftDelete(a: {
+  vault: Vault;
+  auditLog: AuditLog;
+  vaultRoot: string;
+  memoryID: string;
+  originalPath: string;
+  diffBefore: Record<string, unknown>;
+  context: AuditContext;
+}): Promise<{ id: string; trashPath: string; audit: AuditEntry }> {
+  const { vault, auditLog, vaultRoot, memoryID, originalPath, diffBefore, context } = a;
   const trashPath = await moveToTrash(vaultRoot, originalPath, memoryID);
   // Codex-Befund 5: Die Datei war weg, der Index-Eintrag blieb. Auf einem
   // Cloud-Mount pollt der Watcher (Intervall 1500ms) und bekommt den unlink
@@ -232,7 +258,7 @@ export async function auditedRestore(args: {
   // Ab hier unter der ID-Transaktion: Besitzprüfung und Veröffentlichung
   // sehen denselben Vault, und kein anderer Writer kann die id dazwischen
   // belegen.
-  return withIdClaim({ vaultRoot, id: memoryID, filePath: dest }, async (claim) => {
+  return withIdClaim({ vaultRoot, id: memoryID, filePath: dest, op: "restore" }, async (claim) => {
     // Codex-Gegenreview: Geprüft wurde nur der ZIELPFAD, und die Frage „lebt
     // diese id inzwischen woanders?" hing an einem optionalen Index. Beides
     // ersetzt der autoritative Plattenscan unter dem Lock: Ein prozessübergreifend

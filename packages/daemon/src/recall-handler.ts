@@ -451,6 +451,10 @@ export async function recallHandler(
         // und das Bridge-Harvesting „schwache" Fälle aus rohen BM25-Werten.
         score_kind: scoreKind,
         score_arms: scoreArms,
+        // Ohne die Version wäre eine spätere Formeländerung historisch nicht
+        // auswertbar — zwei Zeilen mit derselben Armmenge sähen vergleichbar
+        // aus, obwohl die Zahl dazwischen ihre Bedeutung geändert hat.
+        score_version: scoreKind === "rrf" ? SCORE_VERSION : undefined,
         candidate_pool_score_kind: candidatePool.length > 0 ? candidatePoolKind : undefined,
         embedding_degraded: embeddingDegraded ? true : undefined,
         // Codex-Gegenreview (P1): Der Grund stand in der ANTWORT, aber nicht im
@@ -482,9 +486,13 @@ export async function recallHandler(
     ...(noHome ? { no_home: true } : {}),
     // P0: Kein Caller darf den Score-Raum aus der Höhe der Zahl erraten.
     score_kind: scoreKind,
+    // `score_arms` beschreibt auch eine rohe Liste ehrlich („nur der
+    // BM25-Arm lief"). `score_version` dagegen NICHT: Codex-Gegenreview (P0)
+    // — eine Formelversion auf einer unfusionierten Zahl behauptet eine
+    // Vergleichbarkeit, die es dort nicht gibt. Rohe BM25-Werte sind nicht
+    // einmal untereinander vergleichbar.
     score_arms: scoreArms,
-    score_version: SCORE_VERSION,
-    ...(scoreKind === "bm25" ? { unfused: true } : {}),
+    ...(scoreKind === "rrf" ? { score_version: SCORE_VERSION } : { unfused: true }),
     ...(degradedDuringCall ? { degraded: degradedDuringCall } : {}),
     ...(full ? { stages: collector.timings } : {}),
   };

@@ -22,6 +22,7 @@ import { fileExists, readTarget, writeConflict } from "./save-commit.js";
 import { withIdClaim, type IdClaim } from "./id-transaction.js";
 import { sameFile } from "./file-identity.js";
 import { resolveMemoryTarget } from "./save-target.js";
+import { moveToTrash } from "./audit-log.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
@@ -39,7 +40,7 @@ export async function saveMemory(
   // nicht plötzlich woanders auftaucht. Die verbindliche Frage — gehört die
   // id schon jemandem? — stellt die Transaktion unten, und zwar an die Platte.
   const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input, locator);
-  return withIdClaim({ vaultRoot, id, filePath, authority: commit.authority }, (claim) =>
+  return withIdClaim({ vaultRoot, id, filePath, authority: commit.authority, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
     commitMemory(vaultRoot, input, commit, { id, filePath, scope }, claim),
   );
 }
@@ -118,10 +119,28 @@ async function commitMemory(
   target: { id: string; filePath: string; scope: string },
   claim: IdClaim,
 ): Promise<SaveMemoryResult> {
-  const { id, filePath, scope } = target;
+  const { id, filePath: filePath0, scope } = target;
   // EINE autoritative Auskunft für die gesamte Transaktion: Sie beantwortet
-  // die Kollisionsfrage UND sagt, welche Datei beim Re-Filing die Vorlage ist.
+  // die Kollisionsfrage, sie bestimmt das ZIEL, und sie sagt, welche Datei
+  // beim Re-Filing die Vorlage ist.
   const located = await claim.locate();
+
+  // Codex-Gegenreview (P0): Der Zielpfad kam aus dem injizierten Locator, also
+  // im Daemon aus dem Vault-Index — und der darf veraltet sein. War die Datei
+  // extern von `memories/projects/p/` nach `memories/people/` gezogen, routete
+  // der Save weiter auf den alten Pfad, und die autoritative Auskunft las die
+  // Abweichung als bewusstes Re-Filing: Am Ende lagen zwei aktive Dateien mit
+  // einer id.
+  //
+  // Die Unterscheidung, die vorher fehlte: Ein vom Index ABGELEITETER Ordner
+  // ist kein Re-File-Auftrag. Nur ein ausdrücklich übergebener `folder` ist
+  // einer. Ohne ihn gewinnt deshalb die Platte — sie weiß, wo das Memory
+  // wirklich liegt.
+  const filePath =
+    input.folder === undefined && located.kind === "unique" && !sameFile(located.filePath, filePath0)
+      ? located.filePath
+      : filePath0;
+
   assertIdIsNotClaimedElsewhere(vaultRoot, id, filePath, input.overwrite === true, located);
 
   const observedTarget = await readTarget(filePath);
@@ -420,10 +439,42 @@ async function commitMemory(
   } finally {
     await unlink(tmp).catch(() => {});
   }
+
+  // Das Re-Filing ist erst hier zu Ende: Die neue Datei steht, die ALTE muss
+  // weg. Codex-Gegenreview (P0): Dieses Aufräumen lag in den Aufrufern
+  // (`tool-handlers.ts`, `auditedSave`) und lief NACH der Freigabe des
+  // id-Locks — ein direkter `saveMemory(overwrite, folder)` räumte gar nicht
+  // auf und meldete obendrein `created: true`, und ein Absturz dazwischen
+  // hinterließ zwei aktive Dateien mit einer id. Ein Umzug ist eine
+  // Operation, also gehört er ganz unter denselben Claim.
+  if (refiledFrom !== null) {
+    try {
+      await moveToTrash(vaultRoot, refiledFrom, id);
+    } catch (err) {
+      // Die Quelle steht noch, das neue Ziel auch — das wären zwei aktive
+      // Dateien mit einer id. Also zurück, so weit es geht: Ein Ziel, das wir
+      // gerade erst angelegt haben, wird entfernt; ein überschriebenes bekommt
+      // seine Vorbilder-Bytes zurück.
+      const undone = await rollbackPublish(filePath, observedTarget);
+      throw new Error(
+        `re-file aborted: ${vaultRelative(vaultRoot, refiledFrom)} could not be trashed ` +
+          `(${(err as Error).message}). ` +
+          (undone
+            ? `Nothing was changed.`
+            : `AND ${vaultRelative(vaultRoot, filePath)} could not be rolled back — both files ` +
+              `now carry id '${id}'. Remove or fix one of them by hand.`),
+      );
+    }
+  }
+
   return {
     id,
     file_path: filePath,
-    created: !exists,
+    // Ein Umzug erschafft nichts. Vorher meldete er `created: true`, weil das
+    // ZIEL neu war — der Aufrufer konnte einen Move nicht von einem Neuanlegen
+    // unterscheiden.
+    created: !exists && refiledFrom === null,
+    ...(refiledFrom !== null ? { refiled_from: refiledFrom } : {}),
     ...(summaryTruncated
       ? {
           summary_note:
@@ -432,6 +483,29 @@ async function commitMemory(
         }
       : {}),
   };
+}
+
+/**
+ * Ein gerade veröffentlichtes Ziel zurücknehmen. `true`, wenn der Zustand von
+ * vor dem Commit wiederhergestellt ist.
+ *
+ * `preimage === null` heißt „das Ziel gab es nicht" — dann ist Entfernen die
+ * Rücknahme. Sonst müssen die alten Bytes zurück, und zwar atomar: Ein halb
+ * geschriebenes Rollback wäre schlimmer als gar keins.
+ */
+async function rollbackPublish(filePath: string, preimage: string | null): Promise<boolean> {
+  try {
+    if (preimage === null) {
+      await unlink(filePath);
+      return true;
+    }
+    const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.undo`;
+    await writeFile(tmp, preimage, "utf8");
+    await rename(tmp, filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface DeleteMemoryResult {

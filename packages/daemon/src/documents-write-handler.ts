@@ -29,7 +29,7 @@ import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
-import { readOccupant, assertInsideVault, withIdClaim, type IdClaim } from "@bastra-recall/core";
+import { readOccupant, assertInsideDir, assertInsideVault, withIdClaim, type IdClaim } from "@bastra-recall/core";
 import {
   scanForInjection,
   injectionCategories,
@@ -253,8 +253,14 @@ function resolveDocsFolder(vaultRoot: string, docsRoot: string, folderPath: stri
   // `dokumente/linked -> /außerhalb` plus `folder_path: "linked"` ging glatt
   // durch — der String beginnt brav mit dem Dokumentenordner, das Dateisystem
   // geht trotzdem woanders hin, und Original wie Sidecar landeten außerhalb
-  // des Vaults. Dieselbe Realpath-Schranke, die der Save-Pfad benutzt.
-  assertInsideVault(vaultRoot, folder, "write a document to");
+  // des Vaults.
+  //
+  // Sicherheitsrunde: Die Grenze ist NICHT der Vault, sondern das
+  // Dokumentenregal. `dokumente/linked -> ../memories` verlässt den Vault
+  // nicht, verlässt aber sehr wohl das Regal — Original und Sidecar landeten
+  // damit mitten im Memory-Bestand. Wer eine Grenze meint, muss sie benennen.
+  assertInsideVault(vaultRoot, docsRoot, "write a document");
+  assertInsideDir(docsRoot, folder, "write a document", "the documents folder");
   return folder;
 }
 
@@ -574,7 +580,7 @@ export async function saveDocument(
   // slugifizieren auf DIESELBE id `doc-a-b-pdf` — beide legten ein Sidecar an,
   // und der Vault lud beim nächsten Start still nur eines davon. Ab hier gilt
   // dieselbe Sperre und dieselbe autoritative Auskunft wie im Save-Pfad.
-  return withIdClaim({ vaultRoot: root, id: docID, filePath: sidecarPath }, (claim) =>
+  return withIdClaim({ vaultRoot: root, id: docID, filePath: sidecarPath, op: "save_document" }, (claim) =>
     commitDocument(claim, vault, args, { root, filename, docID, sidecarPath, originalDest }),
   );
 }
@@ -789,6 +795,24 @@ export async function recategorizeDocument(
       // stat-Fehler (File weg etc.) → durchlaufen, write-Logik wird erneut prüfen.
     }
   }
+  // Codex-Gegenreview (P0): Dieser Pfad las das Sidecar, baute das
+  // Frontmatter neu und schrieb es zurück — ohne Sperre und ohne Vergleich.
+  // Gemessen: 20 parallele Läufe, einer änderte den Titel, einer die Tags,
+  // BEIDE meldeten Erfolg, und in 20 von 20 Läufen blieb nur eine der beiden
+  // Änderungen übrig. Ab hier gilt dieselbe Transaktion wie im Save-Pfad: Es
+  // gewinnt einer, und der andere erfährt es.
+  return withIdClaim(
+    { vaultRoot: vaultRoot(vault), id: args.id, filePath: m.filePath, op: "recategorize_document" },
+    (claim) => commitRecategorize(claim, vault, args, m),
+  );
+}
+
+async function commitRecategorize(
+  claim: IdClaim,
+  vault: Vault,
+  args: z.infer<typeof RecategorizeDocumentArgs> & { force?: boolean },
+  m: { fm: Record<string, unknown> & { id: string; title: string; tags: string[]; summary: string; recall_when: string[]; created: string }; filePath: string },
+): Promise<{ id: string; sidecar_path: string; reindexed: boolean }> {
   const fm = m.fm as typeof m.fm & {
     original_path?: string;
     document_category?: string;
@@ -798,9 +822,21 @@ export async function recategorizeDocument(
     injection_flags?: string[];
   };
 
+  // Wo das Sidecar WIRKLICH liegt — von der Platte, unter dem Lock. Der
+  // Index kann veraltet sein, und ein Frontmatter-Patch auf einen veralteten
+  // Pfad schreibt in eine Datei, die dieses Dokument nicht mehr ist.
+  const located = await claim.locate();
+  if (located.kind !== "unique") {
+    throw new Error(
+      located.kind === "none"
+        ? `document not found on disk: ${args.id}`
+        : `cannot recategorize ${args.id}: the vault scan is not conclusive (${located.kind}).`,
+    );
+  }
+
   // Wenn Folder geändert: erst move (verschiebt Files + Sidecar). Sonst nur
   // Sidecar-Frontmatter aktualisieren.
-  let sidecarPath = m.filePath;
+  let sidecarPath = located.filePath;
   let originalPath = fm.original_path ?? m.filePath.replace(/\.md$/, "");
   let folderPath = fm.folder_path ?? "";
 
@@ -876,16 +912,45 @@ export async function moveDocument(
   if (!isDocumentSidecar(m.fm)) {
     throw new Error(`not a document sidecar: ${args.id}`);
   }
+  // Dieselbe Transaktion wie beim Recategorize: Ein Move liest, verschiebt und
+  // patcht — ohne Sperre trat er sich mit einem gleichzeitigen Metadaten-Patch
+  // desselben Dokuments auf die Füße, und beide meldeten Erfolg.
+  return withIdClaim(
+    { vaultRoot: vaultRoot(vault), id: args.id, filePath: m.filePath, op: "move_document" },
+    (claim) => commitMoveDocument(claim, vault, args, m),
+  );
+}
+
+async function commitMoveDocument(
+  claim: IdClaim,
+  vault: Vault,
+  args: z.infer<typeof MoveDocumentArgs>,
+  m: { fm: Record<string, unknown> & { id: string; title: string; tags: string[]; summary: string; recall_when: string[]; created: string }; filePath: string },
+): Promise<{
+  id: string;
+  sidecar_path: string;
+  original_path: string;
+  reindexed: boolean;
+}> {
   const fm = m.fm as typeof m.fm & {
     original_path?: string;
     folder_path?: string;
     linked_file?: boolean;
     aliases?: string[];
+    injection_flags?: string[];
   };
+  const located = await claim.locate();
+  if (located.kind !== "unique") {
+    throw new Error(
+      located.kind === "none"
+        ? `document not found on disk: ${args.id}`
+        : `cannot move ${args.id}: the vault scan is not conclusive (${located.kind}).`,
+    );
+  }
 
   const moved = await moveDocumentFiles(vault, {
-    sidecarPath: m.filePath,
-    originalPath: fm.original_path ?? m.filePath.replace(/\.md$/, ""),
+    sidecarPath: located.filePath,
+    originalPath: fm.original_path ?? located.filePath.replace(/\.md$/, ""),
     currentFolderPath: fm.folder_path ?? "",
     newFolderPath: args.folder_path,
     linkedFile: fm.linked_file ?? false,
@@ -893,7 +958,7 @@ export async function moveDocument(
   // #240/A3: drop the old path from the index before the new one is read —
   // otherwise both paths carry the same id and the next reconcile deletes
   // the moved document.
-  if (moved.newSidecarPath !== m.filePath) vault.forgetFile(m.filePath);
+  if (moved.newSidecarPath !== located.filePath) vault.forgetFile(located.filePath);
 
   // Frontmatter im neuen Sidecar patchen — ein Move ändert Pfade, sonst
   // nichts. Der frühere Rebuild verlor dabei `related`, `related_via`,

@@ -502,3 +502,37 @@ test("Befund D — recallHandler: scope 'Commons' zählt als Commons-Scope", asy
     await rm(dirC, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+/**
+ * Codex-Gegenreview: Auf dem KOLLAPS-Pfad (persönlicher Arm degradiert) plus
+ * Commons-ID-Übereinstimmung fehlte das Evidence-Bundle vollständig. Heraus kam
+ * `147.541` — und kein `rrf`, kein `rank_commons`, kein `personal_score`, die
+ * diese Zahl erklärt hätten.
+ *
+ * Die Ränge, aus denen der Score hier gebildet wird, sind bekannt; also gehören
+ * sie auch in den Beleg. `rank_bm25`/`rank_vector` bleiben `null`: Auf diesem
+ * Pfad geht nicht der persönliche Zahlenwert ein, sondern nur sein LISTENRANG.
+ */
+test("Befund E — fuseCommonsHits(collapse): der Score erklärt sich auch auf dem Kollaps-Pfad", () => {
+  const personal = [{ id: "same", score: 120, scope: "personal" } as unknown as RecallHit];
+  const commons = [{ id: "same", score: 7, scope: "commons" } as unknown as RecallHit];
+  const fused = fuseCommonsHits(personal, commons, () => 0.8, { personalFused: false });
+
+  const rrf = fused[0]!.rrf;
+  assert.ok(rrf, "ohne Beleg ist die Zahl unerklärt");
+  assert.equal(rrf!.rank_personal_list, 1, "Rang 1 in der persönlichen Liste");
+  assert.equal(rrf!.rank_bm25, null, "der persönliche ZAHLENWERT geht hier nicht ein");
+  assert.equal(rrf!.rank_vector, null);
+  assert.equal(rrf!.rank_commons, 1);
+  assert.equal(rrf!.commons_weight, 0.8);
+  assert.equal(
+    rrf!.personal_score,
+    Math.round((RRF_SCALE / (RRF_K + 1)) * 1000) / 1000,
+    "der Anteil ohne Commons muss ablesbar bleiben",
+  );
+  // Und der Beleg muss die ausgelieferte Zahl auch wirklich tragen.
+  assert.equal(
+    fused[0]!.score,
+    Math.round((rrf!.personal_score! + 0.8 * (RRF_SCALE / (RRF_K + 1))) * 1000) / 1000,
+  );
+});

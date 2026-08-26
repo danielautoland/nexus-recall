@@ -26,9 +26,9 @@
  * Datei, ein transaktionaler Writer.**
  */
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
-import { assertInsideVault } from "./file-identity.js";
-import { scanVaultForIdAsync, type Located, type MemoryLocator } from "./memory-locator.js";
+import { dirname, join } from "node:path";
+import { assertInsideDir, assertInsideVault, assertOwnSubdir } from "./file-identity.js";
+import { scanVaultForIdAsync, type IdScanStats, type Located } from "./memory-locator.js";
 import {
   acquireCommitClaim,
   commitLockPathFor,
@@ -38,33 +38,78 @@ import {
 /**
  * Wer beantwortet unter dem Lock die Frage „wo lebt diese id?".
  *
- * Der Default ist der Plattenscan, und das ist die einzige Antwort, die ein
- * Writer im Daemon benutzen darf. Die Schnittstelle existiert für den einen
- * Fall, in dem der Scan nicht bezahlbar ist: ein Bulk-Import, der N Dateien
- * schreibt und mit einem Scan JE DATEI quadratisch würde. Wer hier etwas
- * anderes einsetzt, übernimmt ausdrücklich die Verantwortung dafür, dass seine
- * Quelle für die Dauer des Laufs vollständig ist — der Import tut das, indem
- * er in einem Prozess läuft und die von ihm selbst vergebenen ids mitführt.
+ * In der Produktion IMMER der Plattenscan. Die Schnittstelle bleibt für Tests
+ * einsetzbar, hat aber keinen produktiven Sonderfall mehr:
+ *
+ * Codex-Gegenreview (P0): Der Bulk-Import setzte hier einen Vault-Snapshot
+ * ein, weil ein Scan je Datei quadratisch ist. Prozesssicher war das nicht —
+ * der Snapshot kennt keinen Save, der währenddessen aus einem anderen Prozess
+ * oder von einer zweiten Maschine kommt, und „ein Prozess pro Import" ist
+ * keine Zusicherung, solange andere denselben Vault schreiben dürfen.
+ * Nachgestellt: Snapshot auf leerem Vault, normaler Save von `race-id`, dann
+ * Import — zwei Dateien mit einer id. Der Import zahlt jetzt wie jeder andere
+ * Writer.
  */
 export interface IdAuthority {
   locate(id: string): Promise<Located>;
 }
 
-/** Der autoritative Scan: liest die Platte, nicht den Index. */
-export function diskAuthority(vaultRoot: string): IdAuthority {
-  return { locate: (id: string) => scanVaultForIdAsync(vaultRoot, id) };
+/**
+ * Was ein autoritativer Scan gekostet hat — plus, wofür er lief.
+ *
+ * Der Scan ist der Preis dieser Invariante, und er hängt NICHT an der Zahl der
+ * indexierten Memories, sondern an der Gesamtzahl und Gesamtgröße aller
+ * Markdown-Dateien im Vault. Lokal auf APFS ist das zweistellig in
+ * Millisekunden; auf einem Cloud-Mount oder in einem großen Obsidian-Vault ist
+ * es eine offene Frage. Deshalb wird gemessen und nicht geschätzt: Wer den
+ * Preis nicht sieht, merkt eine Regression erst, wenn ein Save Sekunden dauert.
+ */
+export interface IdScanObservation extends IdScanStats {
+  vaultRoot: string;
+  id: string;
+  /** Welcher Writer den Scan ausgelöst hat. Ohne diese Angabe lassen sich
+   *  Create, Update und Import nicht getrennt auswerten — und genau die haben
+   *  verschiedene Verteilungen. */
+  op: string;
+  /** Dauer des Scans in Millisekunden. */
+  ms: number;
 }
 
-/**
- * Eine synchrone Locator-Auskunft als Authority.
- *
- * NUR für den einen dokumentierten Fall: ein Bulk-Lauf, der in EINEM Prozess
- * viele Dateien schreibt und mit einem Vaultscan je Datei quadratisch würde.
- * Der Snapshot altert währenddessen — wer ihn benutzt, muss die ids, die er
- * selbst vergibt, selbst mitführen (der Folder-Import tut das mit `used`).
- */
-export function locatorAuthority(locator: MemoryLocator): IdAuthority {
-  return { locate: (id: string) => Promise.resolve(locator.locate(id)) };
+const scanObservers = new Set<(o: IdScanObservation) => void>();
+
+/** Jeden autoritativen Scan mithören. Gibt die Abmeldung zurück. */
+export function onIdScan(fn: (o: IdScanObservation) => void): () => void {
+  scanObservers.add(fn);
+  return () => scanObservers.delete(fn);
+}
+
+/** Der autoritative Scan: liest die Platte, nicht den Index. */
+export function diskAuthority(vaultRoot: string, op = "unknown"): IdAuthority {
+  return {
+    async locate(id: string): Promise<Located> {
+      const stats: IdScanStats = { dirs: 0, files: 0, bytes: 0, blindSpots: 0 };
+      const started = Date.now();
+      try {
+        return await scanVaultForIdAsync(vaultRoot, id, stats);
+      } finally {
+        const observation: IdScanObservation = {
+          ...stats,
+          vaultRoot,
+          id,
+          op,
+          ms: Date.now() - started,
+        };
+        for (const fn of scanObservers) {
+          // Ein Beobachter darf einen Schreibvorgang nie zum Scheitern bringen.
+          try {
+            fn(observation);
+          } catch {
+            /* ignoriert */
+          }
+        }
+      }
+    },
+  };
 }
 
 export interface IdClaim {
@@ -88,6 +133,9 @@ export interface IdClaimOptions {
   filePath: string;
   /** Siehe {@link IdAuthority}. Ohne Angabe: Plattenscan. */
   authority?: IdAuthority;
+  /** Welcher Writer hier schreibt (`save_memory`, `save_document`, `archive`,
+   *  …). Geht in die Scan-Messung ein; siehe {@link IdScanObservation}. */
+  op?: string;
 }
 
 /**
@@ -111,10 +159,17 @@ export async function withIdClaim<T>(
 ): Promise<T> {
   assertInsideVault(opts.vaultRoot, opts.filePath);
   const lockPath = commitLockPathFor(opts.vaultRoot, opts.id);
-  assertInsideVault(opts.vaultRoot, lockPath, "lock");
+  // Sicherheitsrunde: Der Lock lag bisher nur „irgendwo im Vault". Zeigt
+  // `.bastra` auf ein AKTIVES Regal, entstehen die Lock-Dateien mitten im
+  // Bestand — sichtbar in Obsidian, mitsynchronisiert, und ein Aufräumen dort
+  // öffnet den Lock für einen zweiten Writer. `.bastra` ist eine eigene
+  // Grenze: erst muss sie im Vault liegen, dann der Lock in ihr.
+  const bastraDir = join(opts.vaultRoot, ".bastra");
+  assertOwnSubdir(opts.vaultRoot, bastraDir, "lock");
+  assertInsideDir(bastraDir, lockPath, "lock", "the .bastra folder");
   await mkdir(dirname(lockPath), { recursive: true });
   const token = await acquireCommitClaim(lockPath, opts.id, opts.filePath);
-  const authority = opts.authority ?? diskAuthority(opts.vaultRoot);
+  const authority = opts.authority ?? diskAuthority(opts.vaultRoot, opts.op);
   try {
     return await fn({
       id: opts.id,

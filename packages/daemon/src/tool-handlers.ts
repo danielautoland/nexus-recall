@@ -9,15 +9,13 @@
  * Damit teilen sich beide Pfade dieselbe Validierung, Telemetry und
  * Vault-Mutation — kein doppelter Code, kein Drift.
  */
-import { relative, dirname } from "node:path";
-import { existsSync } from "node:fs";
 import { z } from "zod";
 import {
   saveMemory,
   mutateMemoryFile,
+  withIdClaim,
   resolveMemoryTarget,
   moveToTrash,
-  sameFile,
   SaveMemoryInput,
   stripAutoRelatedSection,
 } from "@bastra-recall/core";
@@ -430,52 +428,25 @@ async function saveMemoryInner(
     );
   }
 
-  // In-place update: overwriting an existing memory WITHOUT an explicit folder
-  // must keep it where it already lives. Otherwise the scope/type default
-  // routing silently relocates it on any edit (and trashes the original) — e.g.
-  // a memories/people/ memo updated without folder gets re-routed to
-  // memories/projects/<scope>/. An explicit folder still moves it (#64 re-filing).
-  // #188: Bestehende Obsidian-Aliases durchreichen — saveMemory erhält sie
-  // sonst nur beim Same-Path-Overwrite; beim Re-Filing (neuer Ordner) liest
-  // es den neuen Pfad und fände sie nicht. Kein Tool-Schema-Feld: aliases
-  // ist Substrat-Plumbing, kein Agent-Knob.
-  const base =
-    previous && parsed.data.aliases === undefined
-      ? { ...parsed.data, aliases: previous.fm.aliases }
-      : parsed.data;
-  const input =
-    previous && !parsed.data.folder
-      ? { ...base, folder: relative(deps.vaultPath, dirname(previous.filePath)) }
-      : base;
-
-  const result = await saveMemory(deps.vaultPath, input, { locator: vaultLocator(deps.vault) });
-  let refileWarning: string | undefined;
-  // Identität über das Dateisystem, nicht über den Pfad-String: Auf APFS
-  // (case-insensitiv) trifft ein Save mit `folder: memories/people` die
-  // bestehende Datei `memories/People/case-id.md` und meldet die andere
-  // Schreibweise zurück. Der Stringvergleich hielt die beiden für zwei Dateien
-  // und trashte den „alten" Pfad — dieselbe Datei, die gerade geschrieben
-  // worden war. Ergebnis: „Save complete", und danach existiert keiner der
-  // beiden gemeldeten Pfade mehr.
-  if (previous && !sameFile(previous.filePath, result.file_path)) {
-    try {
-      await moveToTrash(deps.vaultPath, previous.filePath, finalId);
-      deps.vault.forgetFile(previous.filePath);
-    } catch (err) {
-      // Alte Datei schon weg (extern gelöscht/verschoben) → nichts aufzuräumen.
-      console.error(`[bastra-recall] re-file: could not trash old path: ${(err as Error).message}`);
-      // …aber wenn sie NOCH da ist, tragen jetzt zwei Dateien dieselbe id.
-      // Der Vault nimmt beim Init still eine davon, und das Aufräumen der
-      // anderen reißt die Memory mit aus dem Index (#240/A2.3). Das darf der
-      // Caller nicht nur im Daemon-Log finden.
-      if (existsSync(previous.filePath)) {
-        refileWarning =
-          `re-file incomplete: the old file at ${previous.filePath} could not be trashed and now shares ` +
-          `id '${finalId}' with ${result.file_path}. Remove or fix one of them — two files with the same ` +
-          `id make the memory disappear from the index on the next reconcile.`;
-      }
-    }
-  }
+  // Codex-Gegenreview (P0): Hier stand eine Ordner-Injektion — ein Overwrite
+  // ohne expliziten `folder` bekam den Ordner der INDEXIERTEN Datei mit, damit
+  // das Default-Routing das Memory nicht bei jeder Bearbeitung verschiebt. Das
+  // machte aus einer Index-Auskunft eine Anweisung: War die Datei extern
+  // verschoben worden, schrieb der Save auf den veralteten Pfad, und die
+  // autoritative Auskunft las die Abweichung als bewusstes Re-Filing — danach
+  // zwei aktive Dateien mit einer id.
+  //
+  // Dasselbe leistet jetzt `saveMemory` selbst, und zwar richtig: Ohne
+  // ausdrücklichen `folder` zeigt es unter dem Claim auf die Datei, die die
+  // PLATTE nennt. Aus demselben Grund entfällt auch die Aliases-Injektion —
+  // die Patch-Basis ist seither die Quelldatei, nicht der Index.
+  const result = await saveMemory(deps.vaultPath, parsed.data, {
+    locator: vaultLocator(deps.vault),
+  });
+  // Das Trashen der alten Datei erledigt `saveMemory` unter der Transaktion;
+  // hier bleibt nur der Index.
+  if (result.refiled_from !== undefined) deps.vault.forgetFile(result.refiled_from);
+  const refileWarning: string | undefined = undefined;
   // Don't trust the watcher on cloud-storage mounts — force-index now
   // so a follow-up recall() in the same session sees the new memory.
   await deps.vault.reindexFile(result.file_path);
@@ -586,20 +557,41 @@ export async function archiveMemoryHandler(
   if (!mem) {
     throw new Error(`unknown memory: ${id} — archive_memory only archives memories that exist in the vault.`);
   }
-  const archivedTo = await moveToTrash(deps.vaultPath, mem.filePath, id);
-  deps.vault.forgetFile(mem.filePath);
-  if (superseded_by) {
-    try {
-      // `expectedId: null` — die Datei liegt im Trash und ist per Definition
-      // kein indexiertes Memory mehr; geprüft wird nur, dass niemand sie
-      // zwischen Lesen und Schreiben angefasst hat.
-      await mutateMemoryFile(archivedTo, null, {
-        frontmatter: (fm) => ({ ...fm, obsolete: true, superseded_by }),
-      });
-    } catch {
-      /* Audit-Stempel ist best-effort — das Archiv selbst steht bereits. */
-    }
-  }
+  // Codex-Gegenreview (P0): Verschoben wurde der Pfad aus dem CACHE, ohne ihn
+  // noch einmal anzusehen. War die Datei extern durch etwas anderes ersetzt
+  // worden, wanderte diese fremde Datei in den Trash — und das Archiv
+  // behauptete, es sei dieses Memory gewesen. Archivieren ist eine
+  // besitzverändernde Operation und gehört unter denselben Claim wie ein
+  // Schreiben, mit derselben autoritativen Auskunft.
+  const { archivedTo, originalPath } = await withIdClaim(
+    { vaultRoot: deps.vaultPath, id, filePath: mem.filePath, op: "archive" },
+    async (claim) => {
+      const located = await claim.locate();
+      if (located.kind !== "unique") {
+        throw new Error(
+          located.kind === "none"
+            ? `cannot archive "${id}": no file on disk holds it (the index is stale).`
+            : `cannot archive "${id}": the vault scan is not conclusive (${located.kind}) — ` +
+              `fix that first, archiving now would move the wrong file.`,
+        );
+      }
+      const to = await moveToTrash(deps.vaultPath, located.filePath, id);
+      deps.vault.forgetFile(located.filePath);
+      if (superseded_by) {
+        try {
+          // `expectedId: null` — die Datei liegt im Trash und ist per
+          // Definition kein indexiertes Memory mehr; geprüft wird nur, dass
+          // niemand sie zwischen Lesen und Schreiben angefasst hat.
+          await mutateMemoryFile(to, null, {
+            frontmatter: (fm) => ({ ...fm, obsolete: true, superseded_by }),
+          });
+        } catch {
+          /* Audit-Stempel ist best-effort — das Archiv selbst steht bereits. */
+        }
+      }
+      return { archivedTo: to, originalPath: located.filePath };
+    },
+  );
   // #206: archiving is the one operation that takes a memory out of the active
   // index, so it is the one that most needs a record. `diff_before` keeps the
   // frontmatter as it was — the trash file is recoverable, but the log is what
@@ -612,7 +604,7 @@ export async function archiveMemoryHandler(
     actorDetail: "mcp:archive_memory",
     diffBefore: { ...mem.fm },
     diffAfter: null,
-    filePath: mem.filePath,
+    filePath: originalPath,
     ...(superseded_by ? { reason: `superseded by ${superseded_by}` } : {}),
     sessionId: deps.telemetry.runId(),
   });
