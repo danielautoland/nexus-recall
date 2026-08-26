@@ -11,8 +11,10 @@
  * primary release criterion and the owner check is only the fast path. Details
  * on each rule are at the function that implements it.
  */
+import { createHash } from "node:crypto";
 import { readFile, access, open, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
+import { join } from "node:path";
 import { MemoryWriteConflictError } from "./save-schema.js";
 
 export async function fileExists(path: string): Promise<boolean> {
@@ -138,4 +140,26 @@ export async function acquireCommitClaim(
 
 export function writeConflict(id: string, filePath: string, detail: string): MemoryWriteConflictError {
   return new MemoryWriteConflictError(id, filePath, detail);
+}
+
+/**
+ * Der Lock-Pfad für eine Memory-ID — nicht für einen Zielpfad.
+ *
+ * Codex-Gegenreview: Der Commit-Claim lag auf `<zielpfad>.bastra-write.lock`.
+ * Zwei gleichzeitige Saves DERSELBEN id in verschiedene `folder`-Regale
+ * nahmen damit zwei verschiedene Locks und gelangen beide — danach trugen
+ * zwei Dateien dieselbe id, und der Vault lud beim nächsten Start still nur
+ * eine davon. Der Kommentar über dem Lock sprach schon von der id; die
+ * Umsetzung tat es nicht.
+ *
+ * Der Lock liegt unter `.bastra/locks/`, weil er sonst als Datei NEBEN dem
+ * Memory läge und beim Re-Filing im falschen Regal zurückbliebe. Der
+ * id-Anteil wird gehasht statt eingesetzt: Eine id darf Zeichen tragen, die
+ * `isPathSafeComponent` durchlässt, aber auf einem anderen Dateisystem
+ * unbrauchbar sind — und der Lock muss auf JEDEM funktionieren, gerade auf
+ * den Cloud-Mounts, für die er da ist.
+ */
+export function commitLockPathFor(vaultRoot: string, id: string): string {
+  const digest = createHash("sha256").update(id).digest("hex").slice(0, 32);
+  return join(vaultRoot, ".bastra", "locks", `${digest}.bastra-write.lock`);
 }
