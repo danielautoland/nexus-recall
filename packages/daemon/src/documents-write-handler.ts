@@ -14,12 +14,27 @@
  *   `save_memory`-Pattern. Damit ist `save+find im selben Turn` zuverlässig.
  *   Triage-Acceptance: erfüllt.
  */
-import { writeFile, mkdir, copyFile, unlink, stat, rename, access } from "node:fs/promises";
+import {
+  writeFile,
+  readFile,
+  mkdir,
+  copyFile,
+  unlink,
+  stat,
+  rename,
+  access,
+} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
-import { scanForInjection, injectionCategories, formatInjectionAdvisory } from "@bastra-recall/core";
+import { readOccupant } from "@bastra-recall/core";
+import {
+  scanForInjection,
+  injectionCategories,
+  formatInjectionAdvisory,
+} from "@bastra-recall/core";
 import { truncateSummaryTo, SUMMARY_MAX } from "@bastra-recall/core";
 
 // ─── Argument schemas ───────────────────────────────────────────
@@ -236,9 +251,17 @@ function resolveDocsFolder(docsRoot: string, folderPath: string): string {
   return folder;
 }
 
-/** write-to-tmp + rename, so a crash mid-write never leaves a torn sidecar. */
+/**
+ * write-to-tmp + rename, so a crash mid-write never leaves a torn sidecar.
+ *
+ * Der Tempname trug nur die PID — zwei gleichzeitige Writes auf DASSELBE
+ * Sidecar (derselbe Prozess, zwei Tool-Calls) benutzten damit dieselbe
+ * Tempdatei: der erste rename zog sie weg, der zweite lief ins Leere
+ * (ENOENT) und meldete einen Fehler für einen Write, der inhaltlich fertig
+ * war. Pro Write ein eigener Name.
+ */
 async function atomicWriteFile(path: string, content: string): Promise<void> {
-  const tmp = `${path}.tmp-${process.pid}`;
+  const tmp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   await writeFile(tmp, content, "utf8");
   await rename(tmp, path);
 }
@@ -327,6 +350,136 @@ function renderSidecar(fm: DocumentFrontmatter, body: string): string {
   return matter.stringify(body, fm as unknown as Record<string, unknown>);
 }
 
+// ─── Identität: was darf ein Document-Write überhaupt anfassen ───
+
+/**
+ * Ein PRODUKTDOKUMENT aus `save_product_doc` — die lebende Nutzer-Doku unter
+ * `dokumentationen/<projekt>/`. Sie trägt `type: doc` wie ein Sidecar, ist
+ * aber ein völlig anderes Ding: kein Original-File, kein Documents-Ordner.
+ * Ihre Signatur ist der topic_path `["doku", <projekt>, <area>]` (siehe
+ * findDocFor in product-doc-handler.ts).
+ */
+export function isProductDoc(fm: unknown): boolean {
+  const f = fm as { type?: unknown; topic_path?: unknown };
+  if (f?.type !== "doc") return false;
+  const path = f.topic_path;
+  return Array.isArray(path) && path.length === 3 && path[0] === "doku";
+}
+
+/**
+ * Ein Document-Hub-Sidecar — und nur das darf save/recategorize/move
+ * überschreiben, verschieben oder umschreiben.
+ *
+ * `type === "doc"` allein war die Prüfung, und sie war zu weit: eine
+ * Produktdoku ging damit glatt durch `recategorize_document` und kam als
+ * Sidecar mit `scope: documents` wieder heraus — der Text blieb, das Dokument
+ * war weg. Ein Sidecar muss deshalb seine VOLLE Signatur zeigen: den Scope,
+ * unter dem der Hub schreibt, und die beiden Felder, über die es sein
+ * Original wiederfindet. `expectedId` kommt dazu, wo der Aufrufer weiß,
+ * welches Dokument an einem Pfad liegen müsste.
+ */
+export function isDocumentSidecar(fm: unknown, expectedId?: string): boolean {
+  const f = fm as {
+    id?: unknown;
+    type?: unknown;
+    scope?: unknown;
+    original_path?: unknown;
+    folder_path?: unknown;
+  };
+  if (f?.type !== "doc") return false;
+  if (f.scope !== "documents") return false;
+  if (typeof f.original_path !== "string" || f.original_path.length === 0)
+    return false;
+  if (typeof f.folder_path !== "string") return false;
+  if (isProductDoc(f)) return false;
+  if (expectedId !== undefined && f.id !== expectedId) return false;
+  return true;
+}
+
+/**
+ * Das Frontmatter, wie es auf der Platte steht — nicht wie der Vault es
+ * geparst hat. Genau die Felder, die das Schema wegnormalisiert oder gar
+ * nicht kennt, sind die, die ein Metadaten-Patch nicht verlieren darf.
+ */
+async function readSidecarRaw(
+  path: string,
+): Promise<{ data: Record<string, unknown>; body: string }> {
+  const parsed = matter(await readFile(path, "utf8"));
+  return {
+    data: { ...(parsed.data as Record<string, unknown>) },
+    body: parsed.content,
+  };
+}
+
+/**
+ * Metadaten PATCHEN statt Frontmatter neu bauen.
+ *
+ * Der Rebuild kannte nur seine eigene Feldliste — alles andere fiel beim
+ * Recategorize lautlos raus: die Graph-Kanten des Related-Enrichers
+ * (`related`, `related_via`), das Sensitivity-Level, die Provenienz
+ * (`source`) und eine von Hand heruntergesetzte `confidence`. Ein
+ * Ordnerwechsel ist keine Neuerfassung; er ändert genau die Felder, die er
+ * meint.
+ */
+function patchSidecarFrontmatter(
+  existing: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries({ ...existing, ...patch })) {
+    // YAML liefert `created: 2026-05-01` als Date zurück; ungefiltert
+    // zurückgeschrieben würde daraus ein Zeitstempel mit Uhrzeit.
+    out[key] = value instanceof Date ? value.toISOString().slice(0, 10) : value;
+  }
+  return out;
+}
+
+function renderPatched(fm: Record<string, unknown>, body: string): string {
+  return matter.stringify(body, fm);
+}
+
+/**
+ * Was eine Metadaten-Operation tatsächlich ändern darf.
+ *
+ * `buildFrontmatter` ERFINDET Werte für Felder, über die ein Ordner- oder
+ * Titelwechsel nichts weiß: `related: []`, `confidence: 1.0`, dazu Summary,
+ * Trigger und `created` aus dem Vault-geparsten Stand. Nur die Felder, die
+ * dieser Call meint, wandern in den Patch; alles andere bleibt, was auf der
+ * Platte steht — und `related_via`, `sensitivity`, `source` und der Rest
+ * werden gar nicht erst angefasst.
+ */
+function metadataPatch(
+  existing: Record<string, unknown>,
+  rebuilt: DocumentFrontmatter,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {
+    id: rebuilt.id,
+    title: rebuilt.title,
+    type: rebuilt.type,
+    aliases: rebuilt.aliases,
+    topic_path: rebuilt.topic_path,
+    tags: rebuilt.tags,
+    scope: rebuilt.scope,
+    updated: rebuilt.updated,
+    original_path: rebuilt.original_path,
+    document_category: rebuilt.document_category,
+    linked_file: rebuilt.linked_file,
+    folder_path: rebuilt.folder_path,
+  };
+  if (rebuilt.injection_flags) patch.injection_flags = rebuilt.injection_flags;
+  // Pflichtfelder, die ein hand-editiertes Sidecar verloren haben kann: der
+  // Vault repariert sie beim Indexieren, die Datei kennt sie dann nicht.
+  for (const field of [
+    "summary",
+    "recall_when",
+    "created",
+    "confidence",
+  ] as const) {
+    if (existing[field] === undefined) patch[field] = rebuilt[field];
+  }
+  return patch;
+}
+
 // ─── save_document ──────────────────────────────────────────────
 
 export interface SaveDocumentResult {
@@ -346,8 +499,17 @@ export async function saveDocument(
   if (!isAbsolute(args.original_path)) {
     throw new Error(`original_path must be absolute: ${args.original_path}`);
   }
-  if (!(await pathExists(args.original_path))) {
+  // #240/A5.2: `stat` statt `access`. Ein Verzeichnis als Quelle kam bis
+  // hierher durch, scheiterte erst beim copyFile — und da war die vorhandene
+  // Zieldatei bereits gelöscht.
+  let sourceStat;
+  try {
+    sourceStat = await stat(args.original_path);
+  } catch {
     throw new Error(`source file not found: ${args.original_path}`);
+  }
+  if (!sourceStat.isFile()) {
+    throw new Error(`source is not a regular file: ${args.original_path}`);
   }
 
   const root = vaultRoot(vault);
@@ -359,16 +521,44 @@ export async function saveDocument(
   const docID = makeDocId(args.folder_path ?? "", filename);
 
   const sidecarPath = join(folder, `${filename}.md`);
-  const originalDest = args.linked_file ? args.original_path : join(folder, filename);
+  const originalDest = args.linked_file
+    ? args.original_path
+    : join(folder, filename);
   // #240/A5: PREFLIGHT — jede Kollision prüfen, BEVOR irgendetwas mutiert
   // wird. Vorher lief erst der Copy und danach der Sidecar-Check: ein
   // Sidecar-Konflikt meldete einen Fehler und ließ die Kopie trotzdem im
   // Vault zurück (halb ausgeführte Operation).
-  if (!args.linked_file && (await pathExists(originalDest)) && !args.overwrite) {
+  if (
+    !args.linked_file &&
+    (await pathExists(originalDest)) &&
+    !args.overwrite
+  ) {
     throw new Error(`destination already exists: ${originalDest}`);
   }
-  if ((await pathExists(sidecarPath)) && !args.overwrite) {
-    throw new Error(`sidecar already exists: ${sidecarPath}`);
+  const occupant = readOccupant(sidecarPath);
+  if (occupant.kind !== "absent") {
+    if (!args.overwrite) {
+      throw new Error(`sidecar already exists: ${sidecarPath}`);
+    }
+    // `overwrite` heißt „ersetze MEIN Sidecar", nie „ersetze, was da liegt".
+    // Eine handgeschriebene Obsidian-Notiz an `<original>.md` wurde vorher
+    // vollständig überschrieben, weil allein der Pfad entschied.
+    const occupantFm =
+      occupant.kind === "memory"
+        ? (await readSidecarRaw(sidecarPath)).data
+        : undefined;
+    if (occupant.kind === "foreign" || !isDocumentSidecar(occupantFm, docID)) {
+      throw new Error(
+        `refusing to overwrite ${sidecarPath}: not a document sidecar for ${docID}`,
+      );
+    }
+  }
+  // `a+b.pdf` und `a-b.pdf` slugifizieren auf DIESELBE id. Vorher entstanden
+  // zwei Sidecars mit einer id, und der Vault-Index behielt nur eines davon —
+  // das andere Dokument war still nicht mehr auffindbar.
+  const idHolder = vault.get(docID);
+  if (idHolder && resolve(idHolder.filePath) !== resolve(sidecarPath)) {
+    throw new Error(`id ${docID} already belongs to ${idHolder.filePath}`);
   }
 
   if (!args.linked_file) {
@@ -381,23 +571,36 @@ export async function saveDocument(
     if (resolve(args.original_path) === resolve(originalDest)) {
       // Nichts zu kopieren — die Datei ist schon da, wo sie hingehört.
     } else {
-      if (await pathExists(originalDest)) await unlink(originalDest);
-      await copyFile(args.original_path, originalDest);
+      // #240/A5.2: erst in eine eindeutige Tempdatei kopieren, dann atomar
+      // über das Ziel ziehen. Vorher wurde das Ziel ZUERST gelöscht — schlug
+      // der Copy danach fehl, war das alte Dokument unwiederbringlich weg.
+      const tmpDest = `${originalDest}.tmp-${randomUUID()}`;
+      try {
+        await copyFile(args.original_path, tmpDest);
+        await rename(tmpDest, originalDest);
+      } catch (err) {
+        await unlink(tmpDest).catch(() => {});
+        throw err;
+      }
     }
   }
 
   const summary = args.summary ?? `${args.category}: ${args.title}`;
-  const recallWhen = args.recall_when ?? [
-    `find document ${args.title}`,
-    args.tags.slice(0, 3).join(" "),
-    `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
-  ].filter(Boolean);
+  const recallWhen =
+    args.recall_when ??
+    [
+      `find document ${args.title}`,
+      args.tags.slice(0, 3).join(" "),
+      `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
+    ].filter(Boolean);
 
   // #147: Dokument-Inhalt ist Third-Party-Content — der Capture-Scan flaggt
   // Injection-Marker (nie blocken: der Flag ist billig, ein verpasster
   // Marker nicht). Kategorien wandern ins Sidecar-Frontmatter, die Advisory
   // in die Tool-Response.
-  const injectionFindings = scanForInjection([args.title, summary, args.body ?? ""].join("\n"));
+  const injectionFindings = scanForInjection(
+    [args.title, summary, args.body ?? ""].join("\n"),
+  );
   const injectionFlags = injectionCategories(injectionFindings);
 
   const today = todayISO();
@@ -446,8 +649,14 @@ export async function recategorizeDocument(
   args: z.infer<typeof RecategorizeDocumentArgs> & { force?: boolean },
 ): Promise<{ id: string; sidecar_path: string; reindexed: boolean }> {
   const m = vault.get(args.id);
-  if (!m || m.fm.type !== "doc") {
+  if (!m) {
     throw new Error(`document not found: ${args.id}`);
+  }
+  // `type === "doc"` allein reichte, und damit fiel eine PRODUKTDOKU in
+  // diesen Pfad: sie kam als Document-Hub-Sidecar mit `scope: documents`
+  // wieder heraus, der Text blieb, das Dokument war weg.
+  if (!isDocumentSidecar(m.fm)) {
+    throw new Error(`not a document sidecar: ${args.id}`);
   }
   // Phase 3.2 Conflict-Detection: wenn das Sidecar zwischen letztem
   // Vault-Read und jetzt extern editiert wurde, refusen wir den Update —
@@ -501,7 +710,10 @@ export async function recategorizeDocument(
   }
 
   const category = args.category ?? fm.document_category ?? "sonstiges";
-  const updated: DocumentFrontmatter = buildFrontmatter({
+  // Nur die Felder anfassen, die dieser Call meint. Der frühere Rebuild aus
+  // buildFrontmatter warf alles weg, was nicht in seiner Feldliste stand.
+  const raw = await readSidecarRaw(sidecarPath);
+  const rebuilt = buildFrontmatter({
     id: m.fm.id,
     title: args.title ?? m.fm.title,
     summary: m.fm.summary,
@@ -513,13 +725,18 @@ export async function recategorizeDocument(
     folderPath,
     created: m.fm.created,
     updated: todayISO(),
-    aliases: fm.aliases,
-    // #147: Capture-Flags überleben den Frontmatter-Rebuild — Metadaten-Ops
-    // ändern nie die Provenienz-Bewertung des Inhalts.
-    injectionFlags: fm.injection_flags,
+    aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
+    // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
+    // Provenienz-Bewertung des Inhalts.
+    injectionFlags:
+      (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
   });
+  const updated = patchSidecarFrontmatter(
+    raw.data,
+    metadataPatch(raw.data, rebuilt),
+  );
 
-  await atomicWriteFile(sidecarPath, renderSidecar(updated, m.body));
+  await atomicWriteFile(sidecarPath, renderPatched(updated, raw.body));
   await vault.reindexFile(sidecarPath);
 
   return { id: m.fm.id, sidecar_path: sidecarPath, reindexed: true };
@@ -530,10 +747,20 @@ export async function recategorizeDocument(
 export async function moveDocument(
   vault: Vault,
   args: z.infer<typeof MoveDocumentArgs>,
-): Promise<{ id: string; sidecar_path: string; original_path: string; reindexed: boolean }> {
+): Promise<{
+  id: string;
+  sidecar_path: string;
+  original_path: string;
+  reindexed: boolean;
+}> {
   const m = vault.get(args.id);
-  if (!m || m.fm.type !== "doc") {
+  if (!m) {
     throw new Error(`document not found: ${args.id}`);
+  }
+  // Wie im Recategorize: eine Produktdoku ist kein Sidecar und wird hier
+  // weder verschoben noch umgeschrieben.
+  if (!isDocumentSidecar(m.fm)) {
+    throw new Error(`not a document sidecar: ${args.id}`);
   }
   const fm = m.fm as typeof m.fm & {
     original_path?: string;
@@ -554,25 +781,34 @@ export async function moveDocument(
   // the moved document.
   if (moved.newSidecarPath !== m.filePath) vault.forgetFile(m.filePath);
 
-  // Frontmatter im neuen Sidecar aktualisieren.
-  const updated: DocumentFrontmatter = buildFrontmatter({
+  // Frontmatter im neuen Sidecar patchen — ein Move ändert Pfade, sonst
+  // nichts. Der frühere Rebuild verlor dabei `related`, `related_via`,
+  // `sensitivity`, `source` und eine gepflegte `confidence`.
+  const raw = await readSidecarRaw(moved.newSidecarPath);
+  const rebuilt = buildFrontmatter({
     id: m.fm.id,
     title: m.fm.title,
     summary: m.fm.summary,
     tags: m.fm.tags,
-    category: (fm as { document_category?: string }).document_category ?? "sonstiges",
+    category:
+      (fm as { document_category?: string }).document_category ?? "sonstiges",
     recallWhen: m.fm.recall_when,
     originalPath: moved.newOriginalPath,
     linkedFile: fm.linked_file ?? false,
     folderPath: args.folder_path,
     created: m.fm.created,
     updated: todayISO(),
-    aliases: fm.aliases,
-    // #147: Capture-Flags überleben den Frontmatter-Rebuild — Metadaten-Ops
-    // ändern nie die Provenienz-Bewertung des Inhalts.
-    injectionFlags: fm.injection_flags,
+    aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
+    // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
+    // Provenienz-Bewertung des Inhalts.
+    injectionFlags:
+      (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
   });
-  await atomicWriteFile(moved.newSidecarPath, renderSidecar(updated, m.body));
+  const updated = patchSidecarFrontmatter(
+    raw.data,
+    metadataPatch(raw.data, rebuilt),
+  );
+  await atomicWriteFile(moved.newSidecarPath, renderPatched(updated, raw.body));
   await vault.reindexFile(moved.newSidecarPath);
 
   return {
@@ -611,7 +847,8 @@ async function moveDocumentFiles(
   // der Sidecar — Ergebnis war ein gemeldeter Fehler bei halb ausgeführtem
   // Move: Original im Zielordner, Sidecar in der Quelle, Frontmatter und
   // Platte widersprachen sich.
-  const movesOriginal = !args.linkedFile && newOriginalPath !== args.originalPath;
+  const movesOriginal =
+    !args.linkedFile && newOriginalPath !== args.originalPath;
   const movesSidecar = newSidecarPath !== args.sidecarPath;
   if (movesOriginal && (await pathExists(newOriginalPath))) {
     throw new Error(`target original already exists: ${newOriginalPath}`);
