@@ -26,6 +26,7 @@
  * recall_when_expanded survive each other). The LLM gen takes ~1-3 s, well after
  * the in-memory related write lands, so the fresh read sees it.
  */
+import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import matter from "gray-matter";
@@ -329,9 +330,22 @@ async function rewriteFile(filePath: string, expanded: string[], srcHash: string
     parsed.content.startsWith("\n") ? parsed.content : `\n${parsed.content}`,
     fm,
   );
-  const tmp = `${filePath}.${process.pid}.expand.tmp`;
+  // Der Temp-Name trug nur die PID, war für dieselbe Datei also innerhalb
+  // EINES Prozesses konstant: Zwei überlappende Expansionen desselben Memories
+  // schrieben in dieselbe Zwischendatei, und die zweite veröffentlichte, was
+  // die erste halb geschrieben hatte (Codex-Gegenreview, P1). `related-enrich`
+  // hatte denselben Fehler bereits, mit derselben Lösung.
+  const tmp = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.expand.tmp`;
   await writeFile(tmp, next, "utf8");
   try {
+    // Compare-and-Swap: Hat zwischen Read und Rename ein anderer Writer die
+    // Datei angefasst, gewinnt er — sonst überschreibt diese Expansion, die
+    // auf dem ALTEN Inhalt rechnet, dessen Ergebnis vollständig.
+    const current = await readFile(filePath, "utf8").catch(() => null);
+    if (current !== raw) {
+      await unlink(tmp).catch(() => {});
+      return;
+    }
     await rename(tmp, filePath);
   } catch (err) {
     await unlink(tmp).catch(() => {});

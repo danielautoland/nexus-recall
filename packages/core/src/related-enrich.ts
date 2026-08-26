@@ -275,6 +275,18 @@ async function rewriteFile(
   const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
   await writeFile(tmp, next, "utf8");
   try {
+    // Compare-and-Swap (Codex-Gegenreview, P1): Ein eindeutiger Temp-Name
+    // verhindert, dass sich zwei Enrichments gegenseitig die Zwischendatei
+    // wegziehen — er verhindert NICHT den Lost Update. Landet zwischen Read
+    // und Rename ein anderer Writer (ein Save, eine Trigger-Expansion), trägt
+    // `next` dessen Änderung nicht, und das Rename macht sie rückgängig. Dann
+    // gewinnt der andere: Diese Anreicherung ist ein Hintergrundlauf und darf
+    // jederzeit ausfallen, ein Save nicht.
+    const current = await readFile(filePath, "utf8").catch(() => null);
+    if (current !== raw) {
+      await unlink(tmp).catch(() => {});
+      return;
+    }
     await rename(tmp, filePath);
   } catch (err) {
     await unlink(tmp).catch(() => {});
