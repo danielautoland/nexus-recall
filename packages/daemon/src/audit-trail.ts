@@ -31,11 +31,8 @@
  * That is a deliberate trade: this log is for reconstructing what happened,
  * not a transaction gate.
  */
-import { readFile } from "node:fs/promises";
-import matter from "gray-matter";
 import {
   AuditLog,
-  resolveMemoryTarget,
   saveMemory,
   type AuditActor,
   type AuditOperation,
@@ -114,14 +111,13 @@ export interface SaveMemoryWithAuditTrailInput {
 /**
  * Audit a direct daemon `saveMemory` caller without requiring a live Vault
  * instance. Imports and onboarding both write before the watcher/index exists;
- * this wrapper snapshots the exact target path around the write, then delegates
+ * this wrapper takes the pre- and postimage FROM the mutation, then delegates
  * to the same best-effort `recordAudit` seam as MCP writes.
  *
  * Failure boundary for auditors:
- * - target resolution and `saveMemory` are the mutation path; their errors
- *   propagate to the caller;
- * - frontmatter reads are evidence only, so missing/unreadable data becomes
- *   `null` instead of changing the write outcome;
+ * - `saveMemory` is the mutation path; its errors propagate to the caller;
+ * - the pre-/postimage travels with the result, so there is no separate read
+ *   that could describe a different file than the one that was written;
  * - `recordAudit` runs after the committed write and never throws, so an audit
  *   append failure cannot roll back or misreport a successful save.
  *
@@ -131,37 +127,25 @@ export interface SaveMemoryWithAuditTrailInput {
 export async function saveMemoryWithAuditTrail(
   args: SaveMemoryWithAuditTrailInput,
 ): Promise<SaveMemoryResult> {
-  // Denselben Locator wie der Save, sonst zeigt `diff_before` auf einen
-  // anderen Pfad als der, der gleich geschrieben wird (#360-D).
-  const target = resolveMemoryTarget(args.vaultRoot, args.input, args.commit?.locator);
-  const diffBefore = await readFrontmatter(target.filePath);
+  // Codex-Gegenreview (P1): Das Vorbild wurde hier aus dem aufgelösten
+  // ZIELPFAD gelesen. Bei einem Re-File existiert dieses Ziel aber noch gar
+  // nicht — die Vorlage ist die Quelldatei. Nachgestellt: ein gewöhnliches
+  // Re-File protokollierte `operation: update` mit `diff_before: null`, also
+  // eine Änderung ohne Vorzustand. Vor- und Nachbild kommen deshalb aus der
+  // Mutation selbst, die beide unter ihrem Claim gelesen bzw. geschrieben hat.
   const result = await saveMemory(args.vaultRoot, args.input, args.commit);
-  const diffAfter = await readFrontmatter(result.file_path);
   await recordAudit({
     vaultRoot: args.vaultRoot,
     memoryId: result.id,
     operation: result.created ? "create" : "update",
     actor: args.actor,
     actorDetail: args.actorDetail,
-    diffBefore,
-    diffAfter,
+    diffBefore: result.audit_before,
+    diffAfter: result.audit_after,
     filePath: result.file_path,
     sessionId: args.sessionId,
   });
   return result;
-}
-
-async function readFrontmatter(
-  filePath: string,
-): Promise<Record<string, unknown> | null> {
-  try {
-    const raw = await readFile(filePath, "utf8");
-    return matter(raw).data as Record<string, unknown>;
-  } catch {
-    // Audit evidence is optional. The authoritative save path decides whether
-    // the mutation succeeded; an unreadable snapshot must not override it.
-    return null;
-  }
 }
 
 /** Test seam — the module-level cache would otherwise leak between vaults. */

@@ -90,6 +90,14 @@ export { mutateMemoryFile } from "./memory-mutate.js";
 export type { MutateOutcome, MemoryMutation } from "./memory-mutate.js";
 export { readOccupant, occupantOfRaw, scanVaultForId, scanVaultForIdAsync, snapshotLocator, vaultRelative } from "./memory-locator.js";
 export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
+export {
+  assertAreaWritable,
+  clearAreaMark,
+  markAreaDeleted,
+  markAreaRenamed,
+  readAreaMark,
+} from "./area-claim.js";
+export type { AreaMark } from "./area-claim.js";
 export type { IdAuthority, IdClaim, IdClaimOptions, IdScanObservation } from "./id-transaction.js";
 export type { IdScanStats } from "./memory-locator.js";
 export type { Occupant, Located, MemoryLocator } from "./memory-locator.js";
@@ -100,8 +108,13 @@ export {
   AuditLog,
   trashPathFor,
   latestTrashPathFor,
-  moveToTrash,
-  restoreFromTrash,
+  // Codex-Gegenreview (P0): Hier standen `moveToTrash` und `restoreFromTrash`
+  // als nackte Primitiven. Zwei parallele direkte `moveToTrash()`-Aufrufe mit
+  // derselben id meldeten beide Erfolg, und im Trash lag nur eine der beiden
+  // Fassungen — erreichbar über die öffentliche Core-API, ohne jede
+  // Transaktion. Nach außen geht deshalb nur noch die claim-bewusste Fassung:
+  // Wer sie ruft, muss einen `IdClaim` in der Hand haben.
+  moveToTrashUnderClaim,
 } from "./audit-log.js";
 export type { AuditEntry, AuditOperation, AuditActor } from "./audit-log.js";
 export {

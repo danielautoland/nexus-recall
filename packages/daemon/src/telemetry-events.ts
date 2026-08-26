@@ -122,6 +122,27 @@ export interface RecallEvent extends BaseEvent {
    *  Commons-Runde — die beiden können auseinanderfallen. */
   candidate_pool_score_kind?: "rrf" | "bm25";
   /**
+   * Die ARMMENGE und die FORMELVERSION des `candidate_pool` — dieselbe volle
+   * Signatur, die `score_arms`/`score_version` für `top_score` tragen.
+   *
+   * Codex-Gegenreview (P1): Der Pool trug nur seinen `score_kind`. Gemessen:
+   * `top_score: 150` aus drei Armen (bm25+commons+vector) gegen einen Pool mit
+   * Spitzenwert 80 aus zwei Armen (bm25+vector) — beide meldeten `"rrf"`, also
+   * hielt `extractCandidatePools()` sie für denselben Raum und las 150 als
+   * Pool-Score. Ein schwacher persönlicher Recall wurde damit nie zum
+   * Bridge-Reranking geschickt. `score_kind` allein reicht nicht; nur Kind +
+   * Version + Armmenge zusammen bestimmen den Raum.
+   *
+   * Optional: ältere Events haben die Felder nicht — ein fehlender Wert heißt
+   * „unbekannt", nicht „gleich wie top_score".
+   */
+  candidate_pool_score_arms?: string[];
+  /** Version der Pool-FORMEL. Wie beim Haupt-Score NUR auf einer fusionierten
+   *  Skala gesetzt — auf rohem BM25 gibt es keine Formel, deren Version man
+   *  nennen könnte, und eine dort hingeschriebene Version ließe zwei
+   *  unvergleichbare Räume vergleichbar aussehen. */
+  candidate_pool_score_version?: string;
+  /**
    * Welche ARME den ausgelieferten Score gebildet haben, sortiert.
    *
    * Codex-Gegenreview (P0): `score_kind: "rrf"` steht für mehrere verschiedene
@@ -343,6 +364,27 @@ export interface HookRecallEvent extends BaseEvent {
    *  der Pool aus der persönlichen Suche und `top_score` aus der Liste nach der
    *  Commons-Runde — die beiden können auseinanderfallen. */
   candidate_pool_score_kind?: "rrf" | "bm25";
+  /**
+   * Die ARMMENGE und die FORMELVERSION des `candidate_pool` — dieselbe volle
+   * Signatur, die `score_arms`/`score_version` für `top_score` tragen.
+   *
+   * Codex-Gegenreview (P1): Der Pool trug nur seinen `score_kind`. Gemessen:
+   * `top_score: 150` aus drei Armen (bm25+commons+vector) gegen einen Pool mit
+   * Spitzenwert 80 aus zwei Armen (bm25+vector) — beide meldeten `"rrf"`, also
+   * hielt `extractCandidatePools()` sie für denselben Raum und las 150 als
+   * Pool-Score. Ein schwacher persönlicher Recall wurde damit nie zum
+   * Bridge-Reranking geschickt. `score_kind` allein reicht nicht; nur Kind +
+   * Version + Armmenge zusammen bestimmen den Raum.
+   *
+   * Optional: ältere Events haben die Felder nicht — ein fehlender Wert heißt
+   * „unbekannt", nicht „gleich wie top_score".
+   */
+  candidate_pool_score_arms?: string[];
+  /** Version der Pool-FORMEL. Wie beim Haupt-Score NUR auf einer fusionierten
+   *  Skala gesetzt — auf rohem BM25 gibt es keine Formel, deren Version man
+   *  nennen könnte, und eine dort hingeschriebene Version ließe zwei
+   *  unvergleichbare Räume vergleichbar aussehen. */
+  candidate_pool_score_version?: string;
   /** Welche ARME den Score gebildet haben, sortiert — siehe `score-space.ts`.
    *  Feiner als `score_kind`, und seit dem Commons-Arm die Dimension, an der
    *  Vergleichbarkeit hängt. */

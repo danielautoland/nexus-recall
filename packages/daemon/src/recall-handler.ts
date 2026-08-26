@@ -333,6 +333,14 @@ export async function recallHandler(
   // #121: der geloggte Kandidaten-Pool kommt aus der PERSÖNLICHEN Suche, also
   // aus deren Raum — die Commons-Runde unten schreibt ihn nicht mit um.
   const candidatePoolKind: "rrf" | "bm25" = hybridActive ? "rrf" : "bm25";
+  // Codex-Gegenreview (P1): Der Pool trug bisher nur seinen `score_kind`.
+  // Gemessen: `top_score: 150` aus drei Armen gegen einen Pool mit Spitzenwert
+  // 80 aus zwei Armen — beide meldeten `"rrf"`, und `extractCandidatePools()`
+  // las deshalb die 150 als Pool-Score. Der Pool braucht dieselbe volle
+  // Signatur wie der Haupt-Score. `commonsFused: false` ist kein Vergessen:
+  // Der Pool stammt aus der PERSÖNLICHEN Suche, die Commons-Runde schreibt ihn
+  // nicht mit um.
+  const candidatePoolArms = armsOf({ hybridActive, commonsFused: false });
 
   // Bastra Commons (read-only Zusatz-Index): zweite BM25-Runde, per RRF über
   // die RÄNGE fusioniert. Bei ID-Kollision gewinnt das persönliche Memory. Ein
@@ -456,6 +464,12 @@ export async function recallHandler(
         // aus, obwohl die Zahl dazwischen ihre Bedeutung geändert hat.
         score_version: scoreKind === "rrf" ? SCORE_VERSION : undefined,
         candidate_pool_score_kind: candidatePool.length > 0 ? candidatePoolKind : undefined,
+        candidate_pool_score_arms: candidatePool.length > 0 ? candidatePoolArms : undefined,
+        // Dieselbe Regel wie beim Haupt-Score: eine Formelversion NUR auf der
+        // fusionierten Skala. Auf rohem BM25 gibt es keine Formel, deren
+        // Version etwas bedeutet.
+        candidate_pool_score_version:
+          candidatePool.length > 0 && candidatePoolKind === "rrf" ? SCORE_VERSION : undefined,
         embedding_degraded: embeddingDegraded ? true : undefined,
         // Codex-Gegenreview (P1): Der Grund stand in der ANTWORT, aber nicht im
         // Telemetrie-Eintrag — `embedding_degraded` unterscheidet nur „Breaker

@@ -160,8 +160,12 @@ export async function saveProductDocHandler(
     operation: result.created ? "create" : "update",
     actor: "assistant",
     actorDetail: "mcp:save_product_doc",
-    diffBefore: before ? { ...before.fm } : null,
-    diffAfter: { ...(deps.vault.get(result.id)?.fm ?? {}) },
+    // Codex-Gegenreview (P1): Vorbild aus dem Vault-CACHE, Nachbild aus dem
+    // Index — beides musste nicht die Datei beschreiben, die der Save wirklich
+    // gepatcht hat (bei einem Re-File war die Vorlage die Quelldatei). Der
+    // Save reicht beides jetzt selbst heraus, unter seinem Claim gelesen.
+    diffBefore: result.audit_before,
+    diffAfter: result.audit_after,
     filePath: result.file_path,
     sessionId: deps.telemetry.runId(),
   });

@@ -38,6 +38,7 @@ import { mergeHookRecallHits } from "../src/http.js";
 import { recallHandler, type ToolDeps } from "../src/tool-handlers.js";
 import { startHttpServer } from "../src/http.js";
 import { Telemetry } from "../src/telemetry.js";
+import { extractCandidatePools, type TelemetryEvent } from "../src/learned-recall/harvest.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -462,6 +463,14 @@ test("Befund C — recall-Event trägt den Raum von top_score UND candidate_pool
     assert.equal(logged.length, 1);
     assert.equal(logged[0]!.score_kind, "bm25", "ohne Vektor-Arm ist top_score ein roher Wert");
     assert.equal(logged[0]!.candidate_pool_score_kind, "bm25", "und der Pool liegt im selben rohen Raum");
+    // Codex-Gegenreview (P1): `score_kind` allein ist zu grob — der Pool muss
+    // seine volle Signatur tragen (Kind + Armmenge + Version).
+    assert.deepEqual(logged[0]!.candidate_pool_score_arms, ["bm25"], "der Pool nennt seine Armmenge");
+    assert.equal(
+      logged[0]!.candidate_pool_score_version,
+      undefined,
+      "auf roher BM25-Skala gibt es keine Formelversion — dieselbe Regel wie beim Haupt-Score",
+    );
 
     search.stop();
     await vault.stop?.();
@@ -589,4 +598,94 @@ test("Befund F — fuseCommonsHits: ein Treffer NUR aus den Commons erklärt sic
   const hit = fused[0]!;
   assert.equal(reconstructed(hit), hit.score);
   assert.equal(hit.rrf!.personal_score, 0);
+});
+
+// ─── Befund P1: der Candidate-Pool trägt seine Armmenge ───────────────────
+
+/** Baut ein recall-Event mit frei wählbarer Signatur für top_score und Pool. */
+function poolEvent(over: Record<string, unknown>): TelemetryEvent {
+  return {
+    kind: "recall",
+    ts: new Date().toISOString(),
+    query: "warum schließt sich mein Panel beim Dialog",
+    candidate_pool: [
+      { id: "a", score: 80 },
+      { id: "b", score: 12 },
+    ],
+    ...over,
+  };
+}
+
+test("Befund P1 — extractCandidatePools: drei Arme im top_score sind kein Pool-Score", () => {
+  // Die gemessene Gegenprobe: top_score 150 aus bm25+commons+vector (Skala bis
+  // 241.803), Pool-Spitzenwert 80 aus bm25+vector (bis 163.934). Beide melden
+  // `"rrf"` — vorher galten sie deshalb als derselbe Raum und der Harvester las
+  // 150. Der `< maxScore`-Schnitt (100) sah damit einen starken Treffer, den es
+  // im Pool-Raum nie gab, und der schwache Recall ging nie ins Reranking.
+  const [entry] = extractCandidatePools([
+    poolEvent({
+      top_score: 150,
+      score_kind: "rrf",
+      score_arms: ["bm25", "commons", "vector"],
+      score_version: "rrf-1",
+      candidate_pool_score_kind: "rrf",
+      candidate_pool_score_arms: ["bm25", "vector"],
+      candidate_pool_score_version: "rrf-1",
+    }),
+  ]);
+  assert.equal(entry!.topScore, 80, "verschiedene Armmengen → top_score ist im Pool-Raum nicht lesbar");
+  assert.deepEqual(entry!.scoreArms, ["bm25", "vector"], "der gemeldete Raum ist der des Pools");
+  assert.ok(entry!.topScore < 100, "und der Fall gilt weiterhin als far — genau darum ging es");
+});
+
+test("Befund P1 — identische Signatur: top_score bleibt lesbar", () => {
+  const [entry] = extractCandidatePools([
+    poolEvent({
+      top_score: 150,
+      score_kind: "rrf",
+      score_arms: ["bm25", "vector"],
+      score_version: "rrf-1",
+      candidate_pool_score_kind: "rrf",
+      candidate_pool_score_arms: ["bm25", "vector"],
+      candidate_pool_score_version: "rrf-1",
+    }),
+  ]);
+  assert.equal(entry!.topScore, 150, "gleiche Armmenge + gleiche Version → derselbe Raum");
+  assert.equal(entry!.scoreVersion, "rrf-1");
+});
+
+test("Befund P1 — fehlende Felder heißen unbekannt, nicht gleich (fail-closed)", () => {
+  // Altbestand: `score_kind` auf beiden Seiten, aber keine Armmenge. Vorher
+  // reichte das für „selber Raum". Ein fehlender Wert ist keine Zusage.
+  const [old] = extractCandidatePools([
+    poolEvent({ top_score: 150, score_kind: "rrf", candidate_pool_score_kind: "rrf" }),
+  ]);
+  assert.equal(old!.topScore, 80, "ohne Armmenge ist die Vergleichbarkeit unbekannt → Pool-Spitzenwert");
+
+  // Nur eine Seite nennt die Armmenge: ebenfalls unbekannt.
+  const [half] = extractCandidatePools([
+    poolEvent({
+      top_score: 150,
+      score_kind: "rrf",
+      score_arms: ["bm25", "vector"],
+      score_version: "rrf-1",
+      candidate_pool_score_kind: "rrf",
+    }),
+  ]);
+  assert.equal(half!.topScore, 80);
+
+  // Gleiche Arme, aber verschiedene Formelversion: die Zahl hat dazwischen ihre
+  // Bedeutung geändert.
+  const [ver] = extractCandidatePools([
+    poolEvent({
+      top_score: 150,
+      score_kind: "rrf",
+      score_arms: ["bm25", "vector"],
+      score_version: "rrf-2",
+      candidate_pool_score_kind: "rrf",
+      candidate_pool_score_arms: ["bm25", "vector"],
+      candidate_pool_score_version: "rrf-1",
+    }),
+  ]);
+  assert.equal(ver!.topScore, 80);
 });

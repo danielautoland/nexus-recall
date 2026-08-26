@@ -18,7 +18,7 @@
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { assertInsideDir, assertInsideVault, assertOwnSubdir, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
+import { assertInsideDir, assertInsideVault, assertOwnSubdir, clearAreaMark, isMarkdownFile, isPathSafeComponent, markAreaDeleted, markAreaRenamed, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
 import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
@@ -181,6 +181,13 @@ export async function createArea(vaultRoot: string, rawName: string): Promise<Ar
   const dir = areaPath(vaultRoot, "project", name);
   if (await isDir(dir)) throw new Error(`area already exists: ${name}`);
   await mkdir(dir, { recursive: true });
+  // Der eine Weg, einen Grabstein wieder abzuräumen (siehe `markAreaRenamed`
+  // in core/area-claim.ts): Wer eine Area unter einem fortgezogenen oder
+  // gelöschten Namen NEU anlegt, tut das bewusst — und ab hier ist der Name
+  // wieder ein lebendes Regal. Ein Grabstein blockiert `createArea` deshalb
+  // ausdrücklich NICHT; er soll nur verhindern, dass ein stale Save das Regal
+  // beiläufig wiederbelebt, ohne dass jemand hinsieht.
+  await clearAreaMark(vaultRoot, name);
   return { name, kind: "project", count: 0, reserved: false };
 }
 
@@ -456,6 +463,31 @@ async function rewriteDocMetadata(
  * `scope:` frontmatter rewritten (recall filters, hook scope-gate and save
  * routing all key on it) and a sibling `dokumentationen/<scope>` moves along.
  * Memory ids never change, so related[]-links survive by construction.
+ *
+ * WAS DIE KONSTRUKTION AUS GRABSTEIN + NACHPRÜFUNG GARANTIERT — und was
+ * nicht. Beide Hälften decken verschiedene Richtungen desselben Rennens ab:
+ *   - Der Grabstein (unten, vor dem `rename()`) deckt den Save auf das ALTE
+ *     Regal ab. Ein Save mit dem alten Scope scheitert ab jetzt laut, egal wie
+ *     lange nach dem Rename er kommt — der alte Name wird nicht durch einen
+ *     Save wiederbelebt, sondern nur durch ein ausdrückliches `createArea`.
+ *   - Die Nachprüfung ({@link findStaleScopes}) deckt die Gegenrichtung ab:
+ *     ein Memory, das im NEUEN Regal weiterhin den alten Scope trägt. Sie
+ *     bleibt, weil sie billig ist (ein Read je Memory) und ein Fall ist, den
+ *     der Grabstein prinzipiell nicht sieht.
+ * Was NICHT garantiert ist: Zwischen `assertAreaWritable()` im Save-Pfad und
+ * dem eigentlichen Schreiben liegt ein mikroskopisches Fenster. Ein Save, der
+ * den Grabstein eine Mikrosekunde vor `markAreaRenamed()` liest, darf noch
+ * schreiben — und trifft dann auf die Nachprüfung, wenn er ins neue Regal
+ * geschrieben hat, bzw. bleibt als frisch angelegtes altes Regal stehen, wenn
+ * er das alte getroffen hat. Das Fenster ist von Sekunden auf einen
+ * Syscall-Abstand geschrumpft, aber nicht zu. Es ganz zu schließen, hieße
+ * Save und Rename unter EINE Sperre zu stellen, die es im Vault nicht gibt
+ * und deren Freigabe nach einem Absturz ein neues Problem wäre — siehe die
+ * Begründung in core/area-claim.ts.
+ * Ebenfalls nicht garantiert: Der Grabstein trägt nur den NAMEN. Wird eine
+ * Area gelöscht und später unter demselben Namen neu angelegt, gilt sie
+ * danach als dieselbe — der Vault kennt keine Area-Identität jenseits des
+ * Ordnernamens.
  */
 export async function renameArea(
   vaultRoot: string,
@@ -485,7 +517,41 @@ export async function renameArea(
         `renaming would leave dokumentationen/${name} behind.`,
     );
   }
+  // Codex-Gegenreview (P0): Die Nachprüfung am Ende (`findStaleScopes`) sieht
+  // nur ins NEUE Regal. Nachgestellt: Nachdem das vorhandene Memory nach `neu`
+  // gewandert war, legte ein Save mit `scope: carnexus` das ALTE Regal wieder
+  // an — `memories/projects/carnexus` existierte danach neben
+  // `memories/projects/neu`, und der Rename meldete trotzdem Erfolg. Derselbe
+  // Save kann auch lange NACH dem Rename kommen, etwa aus einer Agent-Session,
+  // die den alten Projektnamen noch im Kontext hat; eine Marke, die nur
+  // „Rename läuft gerade“ sagt, hilft dagegen nicht. Der alte Name bleibt
+  // deshalb dauerhaft als fortgezogen registriert (core/area-claim.ts).
+  //
+  // REIHENFOLGE, und warum genau so: Der Grabstein steht VOR dem `rename()`
+  // des Ordners. Die beiden Absturzfenster sind nicht gleich viel wert:
+  //   - Grabstein zuerst, Absturz dazwischen → alter Name gesperrt, nichts
+  //     bewegt. Ein Save auf den alten Namen scheitert LAUT; aufzuheben ist das
+  //     mit `createArea(<alt>)`, der bewussten Wiederinbetriebnahme.
+  //   - `rename()` zuerst, Absturz dazwischen → Regal umgezogen, alter Name
+  //     FREI. Das ist exakt der gemeldete Defekt, nur ohne jeden Zeugen.
+  // Nur die erste Richtung ist im Zweifel still nicht falsch. Deshalb bleibt
+  // der Grabstein auch stehen, wenn das `rename()` unten selbst scheitert: Ob
+  // ein Absturz vor oder in der Bewegung lag, ist hinterher nicht mehr zu
+  // unterscheiden, und „gesperrt“ ist die Seite, auf der niemand Daten
+  // verliert.
+  //
+  // Nur für Projekt-Areas: Ein Save landet über `subfolderFor()` in
+  // `memories/projects/<scope>` bzw. `dokumentationen/<scope>` — ein Top-Regal
+  // (`memories/<name>`) kann er gar nicht wiederbeleben. Ein Grabstein auf
+  // einen Top-Namen würde dafür ein gleichnamiges PROJEKT sperren, das mit
+  // dem umbenannten Ordner nichts zu tun hat.
+  if (kind === "project") await markAreaRenamed(vaultRoot, name, newName);
   await rename(from, to);
+  // Und die Gegenrichtung: `a → b` und später `b → a` liefe sonst in den
+  // eigenen alten Grabstein — das Regal läge wieder unter `a`, und kein Save
+  // dürfte hinein. Ein Rename NIMMT den Zielnamen in Betrieb, genau wie
+  // `createArea`.
+  if (kind === "project") await clearAreaMark(vaultRoot, newName);
 
   let scopesRewritten = 0;
   let docsFolderMoved = false;
@@ -619,6 +685,13 @@ async function rollbackRename(
       `rename failed AND could not be fully undone: ${cause.message}. ${detail.join(". ")}.`,
     );
   }
+  // Vollständig zurückgerollt: Das Regal liegt wieder unter dem alten Namen,
+  // also ist der alte Name wieder der richtige — der Grabstein muss weg, sonst
+  // wäre ein Projekt nach einem gescheiterten Rename dauerhaft unbeschreibbar.
+  // Bewusst NUR hier, hinter dem `return` oben: Blieb etwas stecken oder konnte
+  // eine Datei nicht zurückgeschrieben werden, ist der Zustand geteilt, und
+  // dann ist „alter Name gesperrt“ die sichere Seite.
+  if (a.kind === "project") await clearAreaMark(a.vaultRoot, a.name);
   return new Error(`rename failed, nothing was changed: ${cause.message}`);
 }
 
@@ -646,13 +719,29 @@ export interface DeleteResult {
  * dieselben vier Fragen wie beim Memory-Trash, jede an ihr eigenes
  * Elternverzeichnis: gehört `.bastra` dem Vault selbst (kein Symlink), liegt
  * `trash` in `.bastra`, liegt `areas` im Trash, liegt das Ziel in `areas`.
+ *
+ * Sicherheitsrunde, zweite Ebene (die Invariante war hier nur zur Hälfte
+ * nachgezogen): `.bastra` war über `assertOwnSubdir` geschützt, seine privaten
+ * UNTERREGALE aber nur über `assertInsideDir` — und das fragt lediglich, ob
+ * das Ziel IRGENDWO unter dem Elternpfad landet. Ein nach INNEN zeigender
+ * Symlink kam damit glatt durch, obwohl `trashPathFor()` in
+ * core/audit-log.ts für denselben Trash längst `assertOwnSubdir` verlangt.
+ * Nachgestellt:
+ *   - `.bastra/trash -> .bastra/locks`: Die gelöschte Area landet zwischen den
+ *     Lock-Dateien. Wer dort aufräumt, nimmt gelöschte Memories mit — oder
+ *     öffnet einen gehaltenen Lock.
+ *   - `.bastra/trash/areas -> .bastra/trash`: Die Area-Ordner liegen dann
+ *     zwischen den einzelnen Memory-Trash-Dateien, und `latestTrashPathFor()`
+ *     stolpert über Verzeichnisse, wo es Dateien erwartet.
+ * Für private Daemon-Ablage gilt auf JEDER Ebene dieselbe Regel wie für
+ * `.bastra` selbst: kein Symlink, auch kein nach innen zeigender.
  */
 function assertAreaTrashBoundary(vaultRoot: string, areasRoot: string, dests: string[]): void {
   const bastraDir = join(vaultRoot, ".bastra");
   const trashDir = join(bastraDir, "trash");
   assertOwnSubdir(vaultRoot, bastraDir, "trash an area");
-  assertInsideDir(bastraDir, trashDir, "trash an area", "the .bastra folder");
-  assertInsideDir(trashDir, areasRoot, "trash an area", "the trash folder");
+  assertOwnSubdir(bastraDir, trashDir, "trash an area");
+  assertOwnSubdir(trashDir, areasRoot, "trash an area");
   for (const dest of dests) {
     assertInsideDir(areasRoot, dest, "trash an area", "the area trash folder");
   }
@@ -691,6 +780,15 @@ export async function deleteArea(
   // Und danach noch einmal: zwischen Prüfung und mkdir liegt ein await, und
   // erst jetzt existieren die Ordner, deren Realpfad wirklich zählt.
   assertAreaTrashBoundary(vaultRoot, trashRoot, [dest, docsDest]);
+  // Codex-Gegenreview (P0), dieselbe Klasse wie beim Rename: Nachgestellt —
+  // die Area wandert in den Trash, danach schreibt ein Save mit `scope:
+  // carnexus` (aus einer Session, die das Projekt noch kennt) und legt
+  // `memories/projects/carnexus` neu an. Die Area war „gelöscht“ und ist mit
+  // einem einzelnen Memory still wieder da, ohne dass jemand das entschieden
+  // hätte. Der Grabstein steht wie beim Rename VOR der Bewegung: Ein Absturz
+  // dazwischen lässt den Namen gesperrt zurück, und das ist die Richtung, in
+  // der nichts unbemerkt passiert.
+  if (kind === "project") await markAreaDeleted(vaultRoot, name);
   await rename(from, dest);
   // Nebeneinander statt ineinander: der Trash-Ordner der Memories behält
   // seine Form (`<name>-<stamp>/<memory>.md`), damit ein Restore von Hand
@@ -715,6 +813,10 @@ export async function deleteArea(
               `Von Hand zu richten: ${dest} (sollte ${from} sein).`,
           );
         }
+        // Vollständig zurück: Das Regal liegt wieder an seinem Platz, also
+        // ist der Name wieder in Betrieb. Nur hier — auf dem Pfad darüber
+        // (`could not be fully undone`) bleibt der Grabstein bewusst stehen.
+        await clearAreaMark(vaultRoot, name);
         throw new Error(
           `delete failed, nothing was changed: ${(err as Error).message}`,
         );

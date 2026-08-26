@@ -14,11 +14,24 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
-  moveToTrash,
-  restoreFromTrash,
+  moveToTrashUnderClaim,
+  restoreFromTrashUnderClaim,
   trashPathFor,
   latestTrashPathFor,
 } from "../src/audit-log.js";
+import type { IdClaim } from "../src/id-transaction.js";
+
+/**
+ * Die Trash-Primitiven verlangen seit der Codex-Gegenreview einen `IdClaim` —
+ * die id kommt aus ihm, und wer ihn hat, hält den Lock. Diese Tests prüfen die
+ * Pfad- und Rename-Mechanik, nicht die Transaktion; ein Stellvertreter-Claim
+ * reicht dafür.
+ */
+const claimFor = (id: string): IdClaim => ({ id, locate: async () => ({ kind: "none" }) });
+const moveToTrash = (vaultRoot: string, filePath: string, id: string) =>
+  moveToTrashUnderClaim(vaultRoot, filePath, claimFor(id));
+const restoreFromTrash = (vaultRoot: string, trashFile: string, destFile: string) =>
+  restoreFromTrashUnderClaim(vaultRoot, trashFile, destFile, claimFor("restore-test"));
 
 async function vaultWith(t: { after: (fn: () => unknown) => void }, content: string) {
   const dir = await mkdtemp(path.join(tmpdir(), "bastra-trash-"));

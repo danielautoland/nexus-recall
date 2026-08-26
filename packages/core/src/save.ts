@@ -17,12 +17,14 @@ import type {
   SaveMemoryResult,
   SaveMemoryCommitOptions,
 } from "./save-schema.js";
+import { MemoryWriteConflictError } from "./save-schema.js";
 import { extractWikilinks, todayISO, dedupe } from "./save-text.js";
 import { fileExists, readTarget, writeConflict } from "./save-commit.js";
 import { withIdClaim, type IdClaim } from "./id-transaction.js";
 import { sameFile } from "./file-identity.js";
 import { resolveMemoryTarget } from "./save-target.js";
-import { moveToTrash } from "./audit-log.js";
+import { moveToTrashUnderClaim } from "./audit-log.js";
+import { assertAreaWritable } from "./area-claim.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
@@ -145,6 +147,15 @@ async function commitMemory(
 
   assertIdIsNotClaimedElsewhere(vaultRoot, id, filePath, input.overwrite === true, located);
 
+  // Gehört der Zielscope überhaupt noch einer lebenden Area? Ein Grabstein
+  // unter `.bastra/areas/` sagt: Dieser Regalname ist umgezogen oder gelöscht.
+  // Nachgestellt (siehe area-claim.ts): Ein Save mit dem ALTEN Scope kam nach
+  // dem Rename an und legte das gerade weggezogene Regal einfach neu an —
+  // danach existierten beide. Die Prüfung steht UNTER dem Claim und vor jedem
+  // Schreibvorgang: Der Grabstein ist ein Fakt auf der Platte, also wird er
+  // gelesen wie die autoritative Auskunft daneben.
+  await assertAreaWritable(vaultRoot, scope);
+
   const observedTarget = await readTarget(filePath);
   const exists = observedTarget !== null;
 
@@ -257,6 +268,17 @@ async function commitMemory(
       prev[key] = value.toISOString().slice(0, 10);
     }
   }
+  // Codex-Gegenreview (P1): Das Audit-Vorbild bildeten die AUFRUFER selbst —
+  // aus dem Vault-Cache, aus dem Zielpfad oder aus einem zweiten Vaultscan
+  // neben der Mutation. Nachgestellt: Bei einem audit-behafteten Re-File
+  // meldete `diff_before` Version 1, während der Save tatsächlich Version 0.4
+  // (die Quelldatei) als Vorlage benutzt hat, und `saveMemoryWithAuditTrail`
+  // schrieb bei einem normalen Re-File `operation: update` mit
+  // `diff_before: null`. Die Mutation kennt ihr Vorbild aber genau — sie hat
+  // es gerade unter dem Claim gelesen. Also gibt sie es heraus, statt es
+  // rekonstruieren zu lassen. Das spart nebenbei den zweiten Vaultscan.
+  const auditBefore = baseRaw === null ? null : cloneForAudit(prev);
+
   /** Übernimmt den Bestandswert nur, wenn er den erwarteten Typ hat. */
   const kept = <T>(value: unknown, ok: (v: unknown) => boolean): T | undefined =>
     ok(value) ? (value as T) : undefined;
@@ -476,13 +498,34 @@ async function commitMemory(
   // Operation, also gehört er ganz unter denselben Claim.
   if (refiledFrom !== null) {
     try {
-      await moveToTrash(vaultRoot, refiledFrom, id);
+      // Codex-Gegenreview (P0): Die Quelle wurde VOR dem Publish gegen
+      // `baseRaw` geprüft und danach ungeprüft weggeräumt. Eine externe
+      // Änderung, die genau dazwischen eintraf — also sobald das neue Ziel
+      // sichtbar wurde —, ging still verloren. Nachgestellt:
+      //
+      //   outcome: fulfilled, sourceExists: false,
+      //   activeHasBastra: true, activeHasExternal: false,
+      //   trashHasExternal: true
+      //
+      // Die alte Fassung stand aktiv im Vault, die neuere lag nur noch im
+      // Trash — wiederherstellbar, aber aus dem Bestand verschwunden, und der
+      // Save meldete Erfolg. Prüfung und Rename liegen deshalb beieinander,
+      // in `moveToTrashUnderClaim`. Bei Abweichung wird der Ziel-Publish
+      // zurückgenommen und die Quelle bleibt aktiv: Ein Write-Conflict, den
+      // der Aufrufer wiederholen kann, statt eines stillen Verlusts.
+      await moveToTrashUnderClaim(vaultRoot, refiledFrom, claim, baseRaw);
     } catch (err) {
       // Die Quelle steht noch, das neue Ziel auch — das wären zwei aktive
       // Dateien mit einer id. Also zurück, so weit es geht: Ein Ziel, das wir
       // gerade erst angelegt haben, wird entfernt; ein überschriebenes bekommt
       // seine Vorbilder-Bytes zurück.
       const undone = await rollbackPublish(filePath, observedTarget);
+      // Der Grund zählt für den Aufrufer: „jemand hat die Quelle geändert" ist
+      // wiederholbar, „der Trash ist kaputt" nicht. Ein Konflikt bleibt
+      // deshalb ein Konflikt (`MEMORY_WRITE_CONFLICT`) — aber nur, wenn das
+      // Rollback wirklich alles zurückgenommen hat; sonst steht ein
+      // Doppelzustand im Vault, und den darf keine Retry-Logik übersehen.
+      if (undone && err instanceof MemoryWriteConflictError) throw err;
       throw new Error(
         `re-file aborted: ${vaultRelative(vaultRoot, refiledFrom)} could not be trashed ` +
           `(${(err as Error).message}). ` +
@@ -501,6 +544,11 @@ async function commitMemory(
     // ZIEL neu war — der Aufrufer konnte einen Move nicht von einem Neuanlegen
     // unterscheiden.
     created: !exists && refiledFrom === null,
+    // Vor- und Nachbild, beide unter DIESEM Claim entstanden: das Vorbild aus
+    // der Datei, die wirklich die Vorlage war (beim Re-File die Quelle, nicht
+    // das Ziel), das Nachbild aus dem Frontmatter, das eben geschrieben wurde.
+    audit_before: auditBefore,
+    audit_after: cloneForAudit(fm),
     ...(refiledFrom !== null ? { refiled_from: refiledFrom } : {}),
     ...(summaryTruncated
       ? {
@@ -510,6 +558,22 @@ async function commitMemory(
         }
       : {}),
   };
+}
+
+/**
+ * Ein Frontmatter-Abbild fürs Audit — TIEF kopiert.
+ *
+ * Codex-Gegenreview (P1): gray-matter cached `matter(content)` je Input-String
+ * und gibt allen Parsern desselben Inhalts DASSELBE `data`-Objekt zurück. Wer
+ * es einfach durchreicht, hält über mehrere `await`s hinweg einen fremden
+ * Cache-Eintrag: Der Reviewer konnte ein bereits gebildetes `diff_before`
+ * NACHTRÄGLICH verändern, indem ein zweiter Parser den Eintrag mutierte.
+ * Dieselbe Falle wie in related-enrich.ts:230 und trigger-expand.ts:322 — hier
+ * aber über den JSON-Umweg, weil das Abbild ohnehin als JSON im Ledger landet
+ * (Dates werden dabei zu ISO-Strings, genau wie beim Schreiben des Logs).
+ */
+function cloneForAudit(fm: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(fm)) as Record<string, unknown>;
 }
 
 /**

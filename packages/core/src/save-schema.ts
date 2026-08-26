@@ -175,6 +175,24 @@ export interface SaveMemoryResult {
   file_path: string;
   /** `false` für ein Re-Filing: Ein Umzug erschafft kein Memory. */
   created: boolean;
+  /**
+   * Das Frontmatter, das dieser Save als VORLAGE benutzt hat — unter dem
+   * ID-Claim gelesen, aus derselben Datei, die er gleich anfasst (beim
+   * Re-Filing also aus der QUELLE, nicht aus dem Zielpfad). `null`, wenn es
+   * keine Vorlage gab (echter Create).
+   *
+   * Codex-Gegenreview (P1): Jeder Audit-Aufrufer bildete sein `diff_before`
+   * vorher selbst — aus dem Vault-Cache, aus dem Zielpfad oder aus einem
+   * zweiten Vaultscan. Alle drei können etwas anderes beschreiben als das,
+   * was die Mutation tatsächlich gepatcht hat, und genau das taten sie:
+   * `diff_before` meldete Version 1, während der Save Version 0.4 als Vorlage
+   * hatte. Das Audit-Vorbild gehört deshalb an die Mutation, nicht an ihre
+   * Aufrufer.
+   */
+  audit_before: Record<string, unknown> | null;
+  /** Das geschriebene Frontmatter — dieselbe Bindung an die Mutation wie
+   *  {@link audit_before}, deshalb ohne zweiten Read des Zielpfads. */
+  audit_after: Record<string, unknown>;
   /** Beim Re-Filing der Pfad, von dem das Memory kam — die Datei liegt danach
    *  im Trash. Aufrufer mit einem Index werfen den alten Pfad damit hinaus,
    *  ohne auf den (auf Cloud-Mounts unzuverlässigen) Watcher zu warten. */

@@ -351,6 +351,22 @@ function frontmatterOf(content: string): Record<string, unknown> | undefined {
  * handgeschriebene Notiz, das Sidecar eines fremden Dokuments), ist das kein
  * Konflikt, den jemand abnicken konnte, sondern fremdes Material — dagegen
  * hilft kein Flag. `force` überstimmt eine Bearbeitung, nie eine Identität.
+ *
+ * Codex-Gegenreview (P0): Der Vergleich lag VOR dem eigentlichen
+ * Commit-Fenster. Geprüft wurde, DANN die Tempdatei geschrieben, DANN
+ * veröffentlicht — bei einem großen Sidecar liegt zwischen Prüfung und
+ * `rename` also das komplette Schreiben der Tempdatei. Nachgestellt: eine
+ * externe Änderung, die einsetzt, sobald die Tempdatei erscheint, war danach
+ * spurlos überschrieben (`externalSurvived: false`), und der Call meldete
+ * Erfolg. Geprüft wird deshalb ZWEIMAL — einmal früh, um billig zu scheitern,
+ * und einmal unmittelbar vor der Veröffentlichung, wenn die Tempdatei fertig
+ * dasteht. Preis: ein zusätzlicher Sidecar-Read.
+ *
+ * Was bleibt, wird nicht verschwiegen: Zwischen der späten Prüfung und dem
+ * `rename` bleibt ein mikroskopisches Restfenster. Es zuzumachen bräuchte
+ * einen atomaren Compare-and-Swap des Dateisystems, den POSIX nicht anbietet.
+ * Das Fenster schrumpft von „so lange wie das Schreiben dauert" auf „zwei
+ * Syscalls" — es verschwindet nicht.
  */
 async function publishSidecar(
   path: string,
@@ -363,8 +379,15 @@ async function publishSidecar(
     force?: boolean;
   },
 ): Promise<void> {
-  const current = await readTargetRaw(path);
-  if (current !== opts.preimage) {
+  const preimage = opts.preimage;
+  /**
+   * Was gerade an `path` liegt, gegen das Preimage. Gibt den gelesenen Stand
+   * zurück, damit der Aufrufer weiß, ob er per `link` (Pfad frei) oder per
+   * `rename` (Pfad belegt) veröffentlichen muss.
+   */
+  const check = async (): Promise<string | null> => {
+    const current = await readTargetRaw(path);
+    if (current === preimage) return current;
     if (!opts.force) {
       throw new Error(
         `${path} changed on disk while this update was being prepared — something ` +
@@ -377,6 +400,10 @@ async function publishSidecar(
             : `.`),
       );
     }
+    // Auch spät gilt: `force` heißt „überschreib die fremde BEARBEITUNG", nie
+    // „schreib in irgendeine Datei". Wer erst nach der frühen Prüfung eine
+    // handgeschriebene Notiz an den Pfad legt, hat dort kein Sidecar mehr
+    // liegen, dessen Verlust jemand hätte abnicken können.
     if (current === null || !isDocumentSidecar(frontmatterOf(current), opts.id)) {
       throw new Error(
         `refusing to write ${path} even with force=true: the file there is no longer ` +
@@ -387,10 +414,15 @@ async function publishSidecar(
           `the conflict.`,
       );
     }
-  }
+    return current;
+  };
+
+  await check();
   const tmp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   await writeFile(tmp, content, "utf8");
   try {
+    // Die maßgebliche Prüfung: die Tempdatei steht, gleich wird veröffentlicht.
+    const current = await check();
     if (current === null) {
       try {
         await link(tmp, path);
@@ -805,6 +837,18 @@ async function commitDocument(
     throw new Error(`id ${docID} already belongs to ${holder}`);
   }
 
+  // Codex-Gegenreview (P0): Die Originaldatei wurde ersetzt, BEVOR das Sidecar
+  // veröffentlicht war. Nachgestellt mit einer externen Sidecar-Änderung im
+  // Commit-Fenster: der Aufruf scheiterte („changed on disk"), das Original war
+  // trotzdem schon durch die neue Fassung ersetzt — und die Meldung behauptete
+  // „Nothing was written here". Ein Halbzustand, den niemand sieht.
+  //
+  // Ab hier bleibt die Kopie bis zum geglückten Sidecar-Commit rückrollbar:
+  // Beim Overwrite wandert die alte Originaldatei in ein Backup neben dem Ziel,
+  // ein NEU entstandenes Original wird im Fehlerfall wieder entfernt. Preis:
+  // eine zusätzliche temporäre Datei und ein rename mehr.
+  let rollbackOriginal: (() => Promise<void>) | undefined;
+  let commitOriginal: (() => Promise<void>) | undefined;
   if (!args.linked_file) {
     // #240/A5.1: Same-File-Erkennung. Liegt die Quelle bereits exakt am Ziel
     // (der Normalfall bei einem Metadaten-Refresh — buildFrontmatter schreibt
@@ -813,89 +857,122 @@ async function commitDocument(
     // löschte `unlink(originalDest)` die QUELLE und das folgende
     // copyFile(src, src) schlug mit ENOENT fehl. Die Datei war weg.
     if (resolve(args.original_path) === resolve(originalDest)) {
-      // Nichts zu kopieren — die Datei ist schon da, wo sie hingehört.
+      // Nichts zu kopieren — die Datei ist schon da, wo sie hingehört, und
+      // damit gibt es auch nichts zurückzurollen.
     } else {
       // #240/A5.2: erst in eine eindeutige Tempdatei kopieren, dann atomar
       // über das Ziel ziehen. Vorher wurde das Ziel ZUERST gelöscht — schlug
       // der Copy danach fehl, war das alte Dokument unwiederbringlich weg.
       const tmpDest = `${originalDest}.tmp-${randomUUID()}`;
+      const backupDest = `${originalDest}.bak-${randomUUID()}`;
+      const hadOriginal = await pathExists(originalDest);
       try {
         await copyFile(args.original_path, tmpDest);
+        // Die alte Fassung nicht überschreiben, sondern zur Seite legen —
+        // sonst gibt es nichts mehr, worauf man zurückrollen könnte.
+        if (hadOriginal) await rename(originalDest, backupDest);
         await rename(tmpDest, originalDest);
       } catch (err) {
         await unlink(tmpDest).catch(() => {});
+        if (hadOriginal) await rename(backupDest, originalDest).catch(() => {});
         throw err;
       }
+      rollbackOriginal = hadOriginal
+        ? async () => {
+            await unlink(originalDest).catch(() => {});
+            await rename(backupDest, originalDest).catch(() => {});
+          }
+        : async () => {
+            await unlink(originalDest).catch(() => {});
+          };
+      commitOriginal = hadOriginal
+        ? async () => {
+            await unlink(backupDest).catch(() => {});
+          }
+        : undefined;
     }
   }
 
-  const existingSummary =
-    typeof existing?.data.summary === "string" ? existing.data.summary : undefined;
-  // Ein Refresh ohne `summary` MEINT die Summary nicht — der abgeleitete
-  // Default (`kategorie: titel`) hätte eine von Hand geschriebene ersetzt.
-  const summary = args.summary ?? existingSummary ?? `${args.category}: ${args.title}`;
-  const recallWhen =
-    args.recall_when ??
-    (Array.isArray(existing?.data.recall_when)
-      ? (existing.data.recall_when as string[])
-      : undefined) ??
-    [
-      `find document ${args.title}`,
-      args.tags.slice(0, 3).join(" "),
-      `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
-    ].filter(Boolean);
+  // Wird im try unten gesetzt, aber im Ergebnis unten gebraucht.
+  let injectionFindings: ReturnType<typeof scanForInjection> = [];
+  try {
+    const existingSummary =
+      typeof existing?.data.summary === "string" ? existing.data.summary : undefined;
+    // Ein Refresh ohne `summary` MEINT die Summary nicht — der abgeleitete
+    // Default (`kategorie: titel`) hätte eine von Hand geschriebene ersetzt.
+    const summary = args.summary ?? existingSummary ?? `${args.category}: ${args.title}`;
+    const recallWhen =
+      args.recall_when ??
+      (Array.isArray(existing?.data.recall_when)
+        ? (existing.data.recall_when as string[])
+        : undefined) ??
+      [
+        `find document ${args.title}`,
+        args.tags.slice(0, 3).join(" "),
+        `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
+      ].filter(Boolean);
 
-  // #147: Dokument-Inhalt ist Third-Party-Content — der Capture-Scan flaggt
-  // Injection-Marker (nie blocken: der Flag ist billig, ein verpasster
-  // Marker nicht). Kategorien wandern ins Sidecar-Frontmatter, die Advisory
-  // in die Tool-Response.
-  const injectionFindings = scanForInjection(
-    [args.title, summary, args.body ?? ""].join("\n"),
-  );
-  const injectionFlags = injectionCategories(injectionFindings);
+    // #147: Dokument-Inhalt ist Third-Party-Content — der Capture-Scan flaggt
+    // Injection-Marker (nie blocken: der Flag ist billig, ein verpasster
+    // Marker nicht). Kategorien wandern ins Sidecar-Frontmatter, die Advisory
+    // in die Tool-Response.
+    injectionFindings = scanForInjection(
+      [args.title, summary, args.body ?? ""].join("\n"),
+    );
+    const injectionFlags = injectionCategories(injectionFindings);
 
-  const today = todayISO();
-  const fm = buildFrontmatter({
-    id: docID,
-    title: args.title,
-    summary: truncateSummaryTo(summary, SUMMARY_MAX),
-    tags: args.tags,
-    category: args.category,
-    recallWhen,
-    originalPath: originalDest,
-    linkedFile: args.linked_file,
-    folderPath: args.folder_path ?? "",
-    created: today,
-    updated: today,
-    // Ein in Obsidian von Hand vergebener Alias ist Nutzer-Eingabe; der
-    // Rebuild kannte nur die id und warf ihn weg.
-    aliases: existing?.data.aliases as string[] | undefined,
-    injectionFlags: injectionFlags.length > 0 ? injectionFlags : undefined,
-  });
+    const today = todayISO();
+    const fm = buildFrontmatter({
+      id: docID,
+      title: args.title,
+      summary: truncateSummaryTo(summary, SUMMARY_MAX),
+      tags: args.tags,
+      category: args.category,
+      recallWhen,
+      originalPath: originalDest,
+      linkedFile: args.linked_file,
+      folderPath: args.folder_path ?? "",
+      created: today,
+      updated: today,
+      // Ein in Obsidian von Hand vergebener Alias ist Nutzer-Eingabe; der
+      // Rebuild kannte nur die id und warf ihn weg.
+      aliases: existing?.data.aliases as string[] | undefined,
+      injectionFlags: injectionFlags.length > 0 ? injectionFlags : undefined,
+    });
 
-  const body = args.body
-    ? `> Sidecar für \`${originalDest}\`.\n\n## Extrahierter Inhalt\n\n${args.body}`
-    : // Auch der Body ist Bestand: ein Refresh ohne `body` hat keinen Inhalt
-      // zu melden, er hat den vorhandenen nicht zu löschen.
-      (existing?.body.trim()
-        ? existing.body
-        : `> Sidecar für \`${originalDest}\`.\n\n_(Kein extrahierter Inhalt — vom Caller nicht mitgeliefert.)_`);
+    const body = args.body
+      ? `> Sidecar für \`${originalDest}\`.\n\n## Extrahierter Inhalt\n\n${args.body}`
+      : // Auch der Body ist Bestand: ein Refresh ohne `body` hat keinen Inhalt
+        // zu melden, er hat den vorhandenen nicht zu löschen.
+        (existing?.body.trim()
+          ? existing.body
+          : `> Sidecar für \`${originalDest}\`.\n\n_(Kein extrahierter Inhalt — vom Caller nicht mitgeliefert.)_`);
 
-  // Beim Overwrite wird das bestehende Frontmatter GEPATCHT, nicht neu
-  // gebaut. Der Rebuild verlor dieselben Felder, die er beim Recategorize
-  // verlor — `created`, `related`, `related_via`, `sensitivity`, `source`,
-  // eine heruntergestufte `confidence` —, nur hier zusätzlich noch über den
-  // Weg, den der Hub seinen Callern selbst als Metadaten-Refresh anbietet.
-  const content = existing
-    ? renderPatched(
-        patchSidecarFrontmatter(existing.data, savePatch(existing.data, fm)),
-        body,
-      )
-    : renderSidecar(fm, body);
-  // `save_document` kennt kein `force`: `overwrite` heißt „ersetze den
-  // Dokument-Eintrag", nicht „ich habe eine externe Bearbeitung gesehen und
-  // will sie loswerden". Der Vergleich gilt hier deshalb ausnahmslos.
-  await publishSidecar(sidecarPath, content, { id: docID, preimage });
+    // Beim Overwrite wird das bestehende Frontmatter GEPATCHT, nicht neu
+    // gebaut. Der Rebuild verlor dieselben Felder, die er beim Recategorize
+    // verlor — `created`, `related`, `related_via`, `sensitivity`, `source`,
+    // eine heruntergestufte `confidence` —, nur hier zusätzlich noch über den
+    // Weg, den der Hub seinen Callern selbst als Metadaten-Refresh anbietet.
+    const content = existing
+      ? renderPatched(
+          patchSidecarFrontmatter(existing.data, savePatch(existing.data, fm)),
+          body,
+        )
+      : renderSidecar(fm, body);
+    // `save_document` kennt kein `force`: `overwrite` heißt „ersetze den
+    // Dokument-Eintrag", nicht „ich habe eine externe Bearbeitung gesehen und
+    // will sie loswerden". Der Vergleich gilt hier deshalb ausnahmslos.
+    await publishSidecar(sidecarPath, content, { id: docID, preimage });
+  } catch (err) {
+    // Der Sidecar-Commit ist gescheitert — also darf auch die Kopie nicht
+    // stehenbleiben. Erst damit stimmt, was `publishSidecar` dem Aufrufer
+    // meldet: dass hier nichts geschrieben wurde.
+    await rollbackOriginal?.();
+    throw err;
+  }
+  // Ab hier ist der Vorgang unumkehrbar geglückt: das Backup der alten
+  // Originaldatei wird nicht mehr gebraucht.
+  await commitOriginal?.();
 
   // Cloud-Watcher-Mitigation: synchroner reindex statt auf chokidar warten.
   await vault.reindexFile(sidecarPath);
@@ -988,67 +1065,116 @@ async function commitRecategorize(
 
   // Wenn Folder geändert: erst move (verschiebt Files + Sidecar). Sonst nur
   // Sidecar-Frontmatter aktualisieren.
+  const oldSidecarPath = located.filePath;
   let sidecarPath = located.filePath;
   let originalPath = fm.original_path ?? m.filePath.replace(/\.md$/, "");
   let folderPath = fm.folder_path ?? "";
+  let moved: MovedDocumentFiles | undefined;
 
   if (args.folder_path !== undefined && args.folder_path !== folderPath) {
-    const moved = await moveDocumentFiles(vault, {
+    moved = await moveDocumentFiles(vault, {
       sidecarPath,
       originalPath,
       currentFolderPath: folderPath,
       newFolderPath: args.folder_path,
       linkedFile: fm.linked_file ?? false,
     });
-    // #240/A3: the OLD sidecar path must leave the index before the new one
-    // enters it. Without this both paths point at the same id; the next
-    // reconcile (60 s, or any /vault/count) removes the old path and takes
-    // the current memory with it — the document went silently unfindable
-    // until a daemon restart. Same fix pattern as tool-handlers.ts:839.
-    if (moved.newSidecarPath !== sidecarPath) vault.forgetFile(sidecarPath);
     sidecarPath = moved.newSidecarPath;
     originalPath = moved.newOriginalPath;
     folderPath = args.folder_path;
   }
 
-  const category = args.category ?? fm.document_category ?? "sonstiges";
-  // Nur die Felder anfassen, die dieser Call meint. Der frühere Rebuild aus
-  // buildFrontmatter warf alles weg, was nicht in seiner Feldliste stand.
-  const raw = await readSidecarRaw(sidecarPath);
-  const rebuilt = buildFrontmatter({
-    id: m.fm.id,
-    title: args.title ?? m.fm.title,
-    summary: m.fm.summary,
-    tags: args.tags ?? m.fm.tags,
-    category,
-    recallWhen: m.fm.recall_when,
-    originalPath,
-    linkedFile: fm.linked_file ?? false,
-    folderPath,
-    created: m.fm.created,
-    updated: todayISO(),
-    aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
-    // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
-    // Provenienz-Bewertung des Inhalts.
-    injectionFlags:
-      (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
-  });
-  const updated = patchSidecarFrontmatter(
-    raw.data,
-    metadataPatch(raw.data, rebuilt),
-  );
+  // Codex-Gegenreview (P0): `vault.forgetFile()` lief FRÜHER — direkt nach dem
+  // Move, also bevor die Veröffentlichung geglückt war. Scheiterte der Commit
+  // danach, war das Dokument aus dem Index verschwunden UND lag am neuen Ort:
+  // ein Halbzustand, den der gemeldete Fehler nicht einmal erwähnte. Index-
+  // Umhängen und Reindex passieren erst nach dem Gesamtcommit.
+  let raw: { data: Record<string, unknown>; body: string; raw: string } | undefined;
+  try {
+    const category = args.category ?? fm.document_category ?? "sonstiges";
+    // Nur die Felder anfassen, die dieser Call meint. Der frühere Rebuild aus
+    // buildFrontmatter warf alles weg, was nicht in seiner Feldliste stand.
+    raw = await readSidecarRaw(sidecarPath);
+    const rebuilt = buildFrontmatter({
+      id: m.fm.id,
+      title: args.title ?? m.fm.title,
+      summary: m.fm.summary,
+      tags: args.tags ?? m.fm.tags,
+      category,
+      recallWhen: m.fm.recall_when,
+      originalPath,
+      linkedFile: fm.linked_file ?? false,
+      folderPath,
+      created: m.fm.created,
+      updated: todayISO(),
+      aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
+      // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
+      // Provenienz-Bewertung des Inhalts.
+      injectionFlags:
+        (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
+    });
+    const updated = patchSidecarFrontmatter(
+      raw.data,
+      metadataPatch(raw.data, rebuilt),
+    );
 
-  // Die mtime-Prüfung oben lief VOR dem Claim und sieht nur, was bis dahin
-  // passiert ist. Hier wird gegen die Bytes verglichen, auf denen `updated`
-  // und `raw.body` tatsächlich beruhen.
-  await publishSidecar(sidecarPath, renderPatched(updated, raw.body), {
-    id: m.fm.id,
-    preimage: raw.raw,
-    force: args.force ?? false,
-  });
+    // Die mtime-Prüfung oben lief VOR dem Claim und sieht nur, was bis dahin
+    // passiert ist. Hier wird gegen die Bytes verglichen, auf denen `updated`
+    // und `raw.body` tatsächlich beruhen.
+    await publishSidecar(sidecarPath, renderPatched(updated, raw.body), {
+      id: m.fm.id,
+      preimage: raw.raw,
+      force: args.force ?? false,
+    });
+  } catch (err) {
+    if (moved) await abortMove(vault, moved, oldSidecarPath, raw?.raw, err);
+    throw err;
+  }
+
+  // #240/A3: the OLD sidecar path must leave the index before the new one
+  // enters it. Without this both paths point at the same id; the next
+  // reconcile (60 s, or any /vault/count) removes the old path and takes
+  // the current memory with it — the document went silently unfindable
+  // until a daemon restart. Same fix pattern as tool-handlers.ts:839.
+  if (sidecarPath !== oldSidecarPath) vault.forgetFile(oldSidecarPath);
   await vault.reindexFile(sidecarPath);
 
   return { id: m.fm.id, sidecar_path: sidecarPath, reindexed: true };
+}
+
+/**
+ * Ein Commit, der nach einem Datei-Move gescheitert ist. Wirft immer.
+ *
+ * Zwei Ausgänge, und nur einer davon ist der saubere: Trägt der neue
+ * Sidecar-Pfad noch genau unsere Bytes, wird der Move komplett zurückgenommen
+ * und der ursprüngliche Fehler unverändert weitergereicht — der Zustand ist
+ * dann wieder der vor dem Aufruf. Steht dort inzwischen etwas Fremdes, darf
+ * kein Rollback es anfassen; dann bleiben die Dateien am neuen Ort, der Index
+ * wird darauf umgehängt (sonst zeigte er auf einen leeren Pfad), und der
+ * Fehler SAGT, dass der Move steht. Eine Meldung darf nur behaupten, was
+ * stimmt.
+ */
+async function abortMove(
+  vault: Vault,
+  moved: MovedDocumentFiles,
+  oldSidecarPath: string,
+  expectedSidecar: string | undefined,
+  err: unknown,
+): Promise<never> {
+  const rolledBack = await moved.rollback(expectedSidecar).catch(() => false);
+  if (rolledBack) throw err;
+  if (moved.newSidecarPath !== oldSidecarPath) {
+    vault.forgetFile(oldSidecarPath);
+    await vault.reindexFile(moved.newSidecarPath).catch(() => {});
+  }
+  throw new Error(
+    `${(err as Error)?.message ?? String(err)}\n\n` +
+      `Careful: the files had already been moved to ${moved.newSidecarPath} and the ` +
+      `move could NOT be undone — something outside Bastra wrote to that path in ` +
+      `the meantime, and rolling back would have dragged that edit along. The files ` +
+      `now sit in the new folder while the sidecar frontmatter still names the old ` +
+      `one. Read the document again (read_document) and redo the move.`,
+  );
 }
 
 // ─── move_document ──────────────────────────────────────────────
@@ -1114,44 +1240,55 @@ async function commitMoveDocument(
     newFolderPath: args.folder_path,
     linkedFile: fm.linked_file ?? false,
   });
+
+  // Codex-Gegenreview (P0): `vault.forgetFile()` lief hier direkt nach dem
+  // Move — vor der Veröffentlichung. Scheiterte der Commit, fehlte das
+  // Dokument im Index, während Original und Sidecar bereits im Zielordner
+  // lagen. Index-Umhängen erst nach dem Gesamtcommit; bis dahin bleibt der
+  // Move rückrollbar.
+  let raw: { data: Record<string, unknown>; body: string; raw: string } | undefined;
+  try {
+    // Frontmatter im neuen Sidecar patchen — ein Move ändert Pfade, sonst
+    // nichts. Der frühere Rebuild verlor dabei `related`, `related_via`,
+    // `sensitivity`, `source` und eine gepflegte `confidence`.
+    raw = await readSidecarRaw(moved.newSidecarPath);
+    const rebuilt = buildFrontmatter({
+      id: m.fm.id,
+      title: m.fm.title,
+      summary: m.fm.summary,
+      tags: m.fm.tags,
+      category:
+        (fm as { document_category?: string }).document_category ?? "sonstiges",
+      recallWhen: m.fm.recall_when,
+      originalPath: moved.newOriginalPath,
+      linkedFile: fm.linked_file ?? false,
+      folderPath: args.folder_path,
+      created: m.fm.created,
+      updated: todayISO(),
+      aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
+      // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
+      // Provenienz-Bewertung des Inhalts.
+      injectionFlags:
+        (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
+    });
+    const updated = patchSidecarFrontmatter(
+      raw.data,
+      metadataPatch(raw.data, rebuilt),
+    );
+    // `move_document` kennt kein `force` — ein Ordnerwechsel ist nie der Ort,
+    // an dem jemand eine fremde Bearbeitung bewusst wegwirft.
+    await publishSidecar(moved.newSidecarPath, renderPatched(updated, raw.body), {
+      id: m.fm.id,
+      preimage: raw.raw,
+    });
+  } catch (err) {
+    await abortMove(vault, moved, located.filePath, raw?.raw, err);
+  }
+
   // #240/A3: drop the old path from the index before the new one is read —
   // otherwise both paths carry the same id and the next reconcile deletes
   // the moved document.
   if (moved.newSidecarPath !== located.filePath) vault.forgetFile(located.filePath);
-
-  // Frontmatter im neuen Sidecar patchen — ein Move ändert Pfade, sonst
-  // nichts. Der frühere Rebuild verlor dabei `related`, `related_via`,
-  // `sensitivity`, `source` und eine gepflegte `confidence`.
-  const raw = await readSidecarRaw(moved.newSidecarPath);
-  const rebuilt = buildFrontmatter({
-    id: m.fm.id,
-    title: m.fm.title,
-    summary: m.fm.summary,
-    tags: m.fm.tags,
-    category:
-      (fm as { document_category?: string }).document_category ?? "sonstiges",
-    recallWhen: m.fm.recall_when,
-    originalPath: moved.newOriginalPath,
-    linkedFile: fm.linked_file ?? false,
-    folderPath: args.folder_path,
-    created: m.fm.created,
-    updated: todayISO(),
-    aliases: (raw.data.aliases as string[] | undefined) ?? fm.aliases,
-    // #147: Capture-Flags überleben den Patch — Metadaten-Ops ändern nie die
-    // Provenienz-Bewertung des Inhalts.
-    injectionFlags:
-      (raw.data.injection_flags as string[] | undefined) ?? fm.injection_flags,
-  });
-  const updated = patchSidecarFrontmatter(
-    raw.data,
-    metadataPatch(raw.data, rebuilt),
-  );
-  // `move_document` kennt kein `force` — ein Ordnerwechsel ist nie der Ort,
-  // an dem jemand eine fremde Bearbeitung bewusst wegwirft.
-  await publishSidecar(moved.newSidecarPath, renderPatched(updated, raw.body), {
-    id: m.fm.id,
-    preimage: raw.raw,
-  });
   await vault.reindexFile(moved.newSidecarPath);
 
   return {
@@ -1160,6 +1297,35 @@ async function commitMoveDocument(
     original_path: moved.newOriginalPath,
     reindexed: true,
   };
+}
+
+/**
+ * Das Ergebnis eines Datei-Moves — inklusive der Möglichkeit, ihn wieder
+ * zurückzunehmen.
+ *
+ * Codex-Gegenreview (P0): Der Move war endgültig, sobald die beiden `rename`
+ * durch waren; scheiterte danach der Sidecar-Commit, blieb ein halber Zustand
+ * zurück. Nachgestellt: alter Ordner leer, neuer Ordner mit Original und
+ * Sidecar, das Frontmatter zeigte noch auf den alten Ordner, und im
+ * Vault-Index fehlte das Dokument ganz (weil `forgetFile` schon gelaufen war).
+ * Der Move bleibt deshalb bis zum geglückten Commit rückrollbar.
+ */
+interface MovedDocumentFiles {
+  newSidecarPath: string;
+  newOriginalPath: string;
+  /**
+   * Nimmt den Move zurück. `expectedSidecar` sind die Bytes, die der Aufrufer
+   * zuletzt am NEUEN Sidecar-Pfad gesehen hat; ohne Angabe gilt der Stand
+   * unmittelbar nach dem Move.
+   *
+   * Der Vergleich ist kein Luxus: Scheitert der Commit gerade deshalb, weil
+   * jemand von außen an den neuen Pfad geschrieben hat, würde ein blindes
+   * Zurückbenennen genau diese fremde Bearbeitung mitschleifen — der Fix wäre
+   * derselbe Datenverlust in grün. Weicht der Stand ab, bleibt alles am neuen
+   * Ort liegen und die Funktion meldet `false`; der Aufrufer zieht dann den
+   * Index nach, statt zu behaupten, es sei nichts passiert.
+   */
+  rollback(expectedSidecar?: string | null): Promise<boolean>;
 }
 
 async function moveDocumentFiles(
@@ -1171,7 +1337,7 @@ async function moveDocumentFiles(
     newFolderPath: string;
     linkedFile: boolean;
   },
-): Promise<{ newSidecarPath: string; newOriginalPath: string }> {
+): Promise<MovedDocumentFiles> {
   const root = vaultRoot(vault);
   const docsRoot = join(root, DOCUMENTS_ROOT);
   const targetFolder = resolveDocsFolder(root, docsRoot, args.newFolderPath);
@@ -1215,7 +1381,29 @@ async function moveDocumentFiles(
     }
   }
 
-  return { newSidecarPath, newOriginalPath };
+  // Der Stand direkt nach dem Move — die Erwartung für einen Rollback, dessen
+  // Aufrufer gar nicht mehr zum Lesen gekommen ist (ein Fehler zwischen Move
+  // und Sidecar-Read). Ein Read auf eine kleine Datei; ohne ihn müsste ein
+  // solcher Fehlschlag den Halbzustand stehen lassen.
+  const movedBytes = movesSidecar ? await readTargetRaw(newSidecarPath) : null;
+
+  const rollback = async (
+    expectedSidecar: string | null = movedBytes,
+  ): Promise<boolean> => {
+    if (movesSidecar) {
+      // Nur zurückrollen, was auch noch unser Sidecar ist — sonst schleift der
+      // Rollback eine fremde Bearbeitung an den alten Pfad.
+      const current = await readTargetRaw(newSidecarPath);
+      if (current !== expectedSidecar) return false;
+      await rename(newSidecarPath, args.sidecarPath);
+    }
+    if (movesOriginal) {
+      await rename(newOriginalPath, args.originalPath).catch(() => {});
+    }
+    return true;
+  };
+
+  return { newSidecarPath, newOriginalPath, rollback };
 }
 
 // ─── Conflict-Detection (Phase 3.2 — basic mtime-Check) ─────────

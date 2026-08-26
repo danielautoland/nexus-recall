@@ -125,6 +125,64 @@ export interface CandidatePoolEntry {
    *  (Altbestand). Der Far-Harvest schneidet bei einem absoluten Score (100),
    *  und dieser Schnitt bedeutet nur auf der fusionierten Skala etwas. */
   scoreKind: "rrf" | "bm25" | null;
+  /** Die ARMMENGE und die FORMELVERSION hinter `topScore`, sofern das Event sie
+   *  genannt hat. Optional, damit ältere Aufrufer (scripts/) weiter minimale
+   *  Einträge bauen können. */
+  scoreArms?: string[] | null;
+  scoreVersion?: string | null;
+}
+
+/** Die vollständige Signatur eines Score-Raums: Kind + Formelversion + Armmenge. */
+interface ScoreSpace {
+  kind: "rrf" | "bm25" | null;
+  version: string | null;
+  arms: string[] | null;
+}
+
+/**
+ * Sind zwei Scores im selben Raum — und damit gegeneinander lesbar?
+ *
+ * Codex-Gegenreview (P1): Vorher wurde nur `score_kind` verglichen. Gemessen:
+ * `top_score: 150` aus drei Armen (bm25+commons+vector, Skala bis 241.803)
+ * gegen einen Pool mit Spitzenwert 80 aus zwei Armen (bm25+vector, Skala bis
+ * 163.934) — beide melden `"rrf"`, also galten sie als derselbe Raum und die
+ * 150 wurde als Pool-Score gelesen. Ein eigentlich schwacher persönlicher
+ * Recall lief damit nie ins Bridge-Reranking: der `< maxScore`-Schnitt sah
+ * einen starken Treffer, den es im Pool-Raum gar nicht gab.
+ *
+ * FAIL-CLOSED: Ein fehlendes Feld heißt „unbekannt", nicht „gleich". Alte
+ * Events ohne Armmenge sind deshalb NICHT vergleichbar — der Preis ist, dass
+ * für sie der Pool-Spitzenwert statt `top_score` gilt, und der liegt garantiert
+ * im Pool-Raum.
+ */
+function sameScoreSpace(a: ScoreSpace, b: ScoreSpace): boolean {
+  if (a.kind === null || b.kind === null || a.kind !== b.kind) return false;
+  if (a.arms === null || b.arms === null) return false;
+  if (a.arms.length !== b.arms.length || a.arms.some((arm, i) => arm !== b.arms![i])) return false;
+  // Auf roher Skala gibt es keine Formelversion — dort ist „beide ohne" der
+  // korrekte Zustand, nicht eine Lücke. Auf `rrf` MUSS sie dastehen und
+  // übereinstimmen, sonst hat die Zahl zwischen den beiden Zeilen ihre
+  // Bedeutung geändert.
+  if (a.kind === "rrf") return a.version !== null && a.version === b.version;
+  return a.version === null && b.version === null;
+}
+
+/** Liest eine Score-Signatur aus einem Telemetrie-Event, unbekannt = `null`. */
+function readScoreSpace(
+  e: TelemetryEvent,
+  kindKey: string,
+  versionKey: string,
+  armsKey: string,
+): ScoreSpace {
+  const rawKind = e[kindKey];
+  const rawVersion = e[versionKey];
+  const rawArms = e[armsKey];
+  return {
+    kind: rawKind === "rrf" || rawKind === "bm25" ? rawKind : null,
+    version: typeof rawVersion === "string" ? rawVersion : null,
+    arms:
+      Array.isArray(rawArms) && rawArms.every((x) => typeof x === "string") ? (rawArms as string[]) : null,
+  };
 }
 
 /** Pull (query → deeper candidate pool) entries from recall/hook_recall events (#121). */
@@ -143,18 +201,29 @@ export function extractCandidatePools(events: TelemetryEvent[]): CandidatePoolEn
     // persönlichen Suche, `top_score` aus der Liste danach). Nur wenn beide
     // denselben Raum nennen, darf `top_score` gegen den Pool gelesen werden;
     // sonst zählt der Pool-Spitzenwert, der garantiert im Pool-Raum liegt.
-    const kind = e.score_kind === "rrf" || e.score_kind === "bm25" ? e.score_kind : null;
-    const poolKind =
-      e.candidate_pool_score_kind === "rrf" || e.candidate_pool_score_kind === "bm25"
-        ? e.candidate_pool_score_kind
-        : null;
-    const sameSpace = kind === null || poolKind === null || kind === poolKind;
-    const useTop = sameSpace && typeof e.top_score === "number";
+    //
+    // Codex-Gegenreview (P1): „denselben Raum" hieß hier nur `score_kind`, und
+    // das ist zu grob. Gemessen: top_score 150 (drei Arme) gegen pool top 80
+    // (zwei Arme), beide `"rrf"` — extractCandidatePools() meldete topScore 150
+    // und der Far-Harvest hielt einen schwachen Recall für einen starken.
+    // Verglichen wird jetzt die VOLLE Signatur, und fehlende Felder gelten als
+    // unbekannt (fail-closed), nicht als gleich.
+    const topSpace = readScoreSpace(e, "score_kind", "score_version", "score_arms");
+    const poolSpace = readScoreSpace(
+      e,
+      "candidate_pool_score_kind",
+      "candidate_pool_score_version",
+      "candidate_pool_score_arms",
+    );
+    const useTop = sameScoreSpace(topSpace, poolSpace) && typeof e.top_score === "number";
+    const space = useTop ? topSpace : poolSpace;
     out.push({
       query: e.query,
       pool,
       topScore: useTop ? (e.top_score as number) : pool[0].score,
-      scoreKind: useTop ? kind : poolKind,
+      scoreKind: space.kind,
+      scoreArms: space.arms,
+      scoreVersion: space.version,
     });
   }
   return out;

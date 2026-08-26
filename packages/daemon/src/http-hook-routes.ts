@@ -534,6 +534,20 @@ export function handleHookRecall(
           score_version: hybridActiveAtRecall ? SCORE_VERSION : undefined,
           candidate_pool_score_kind:
             candidatePool.length > 0 ? (hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const)) : undefined,
+          // Codex-Gegenreview (P1): Der Pool trug nur seinen `score_kind`.
+          // Gemessen: `top_score: 150` aus drei Armen gegen einen Pool mit
+          // Spitzenwert 80 aus zwei Armen — beide meldeten `"rrf"`, also hielt
+          // `extractCandidatePools()` sie für denselben Raum und las die 150
+          // als Pool-Score. Der Pool braucht dieselbe volle Signatur wie der
+          // Haupt-Score: Kind + Version + Armmenge.
+          candidate_pool_score_arms:
+            candidatePool.length > 0
+              ? armsOf({ hybridActive: hybridActiveAtRecall, commonsFused: false })
+              : undefined,
+          // Version NUR auf der fusionierten Skala — dieselbe Regel wie beim
+          // Haupt-Score, auf rohem BM25 gibt es keine Formel zu versionieren.
+          candidate_pool_score_version:
+            candidatePool.length > 0 && hybridActiveAtRecall ? SCORE_VERSION : undefined,
           content_recall: contentRecall,
           // #165: pre-recall festgehalten, siehe oben / recallHandler.
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,

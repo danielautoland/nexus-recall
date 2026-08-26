@@ -1,7 +1,9 @@
-import { mkdir, appendFile, rename, readdir, stat, open, link, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, appendFile, readdir, stat, open, link, unlink } from "node:fs/promises";
 import { join, dirname, resolve, sep } from "node:path";
 import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
+import { readTarget } from "./save-commit.js";
+import { MemoryWriteConflictError } from "./save-schema.js";
+import type { IdClaim } from "./id-transaction.js";
 
 /**
  * Audit-Log: jede Memory-Mutation wird als JSON-Zeile in
@@ -239,19 +241,18 @@ export function trashPathFor(vaultRoot: string, id: string): string {
  * Der Basis-Pfad `<id>.md` bleibt der erste Wurf (damit bestehende Trash-
  * Dateien und `lastDeleteFor()`-Lookups weiter funktionieren); jede weitere
  * Version bekommt einen Zeitstempel-Suffix.
+ *
+ * Die Kandidaten kommen als Folge, nicht als fertiger Pfad: Ausgewählt wird
+ * erst durch das ATOMARE Belegen unten. Siehe {@link moveToTrashUnderClaim}.
  */
-async function uniqueTrashPath(vaultRoot: string, id: string): Promise<string> {
-  const base = trashPathFor(vaultRoot, id);
-  if (!existsSync(base)) return base;
+function* trashCandidates(base: string): Generator<string> {
+  yield base;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const versioned = base.replace(/\.md$/, `.${stamp}.md`);
-  if (!existsSync(versioned)) return versioned;
+  yield base.replace(/\.md$/, `.${stamp}.md`);
   // Zwei Löschungen derselben id in derselben Millisekunde — Zähler dran.
   for (let n = 2; n < 1000; n++) {
-    const candidate = base.replace(/\.md$/, `.${stamp}-${n}.md`);
-    if (!existsSync(candidate)) return candidate;
+    yield base.replace(/\.md$/, `.${stamp}-${n}.md`);
   }
-  throw new Error(`could not find a free trash path for id: ${id}`);
 }
 
 /**
@@ -308,21 +309,86 @@ export async function latestTrashPathFor(
   return withTime[0].full;
 }
 
-export async function moveToTrash(
+/**
+ * Eine Datei in den Trash bewegen — NUR unter dem Anspruch auf ihre id.
+ *
+ * Codex-Gegenreview (P0), zwei Defekte in einem:
+ *
+ * 1. Die Pfadwahl war `existsSync` + `rename`. Nachgestellt mit zwei
+ *    parallelen Aufrufen für dieselbe id: Beide sahen den Basis-Pfad frei,
+ *    beide benannten dorthin um, der zweite Rename ERSETZTE den ersten —
+ *    `settled: ["fulfilled","fulfilled"]`, im Trash lag nur Inhalt B. Eine
+ *    Fassung war weg, in einer Operation, deren ganze Zusage
+ *    „recoverable — never a hard delete" ist. Belegt wird deshalb atomar:
+ *    `link()` schlägt mit EEXIST fehl, wenn der Kandidat schon existiert,
+ *    also gewinnt genau ein Aufrufer je Pfad. Dasselbe O_EXCL-Muster wie im
+ *    Save-Pfad (`link(tmp, filePath)`) und in `restoreFromTrashUnderClaim`.
+ *
+ * 2. Die Funktion war öffentlich exportiert und nahm eine nackte id entgegen —
+ *    jeder Aufrufer konnte ohne die ID-Transaktion eine Datei wegbewegen. Der
+ *    `claim` ist deshalb Parameter, nicht Konvention: Wer ihn hat, hält den
+ *    Lock; die id kommt aus ihm und kann nicht mehr danebenliegen.
+ *
+ * @param expectedPreimage Die Bytes, die die Datei tragen MUSS. Weggelassen =
+ *   keine Prüfung. Damit liegen Prüfung und Rename direkt beieinander — das
+ *   Fenster dazwischen ist ein Read plus ein Link, mikroskopisch, aber NICHT
+ *   null: Ein externer Writer (Obsidian, Cloud-Sync) kennt den id-Lock nicht
+ *   und kann genau dort noch dazwischenschreiben. Kleiner wird es nur mit
+ *   einem Vergleich, den das Dateisystem selbst atomar mitführt — den gibt es
+ *   für Markdown-Dateien nicht.
+ */
+export async function moveToTrashUnderClaim(
   vaultRoot: string,
   filePath: string,
-  id: string,
+  claim: IdClaim,
+  expectedPreimage?: string | null,
 ): Promise<string> {
-  const dest = await uniqueTrashPath(vaultRoot, id);
-  await mkdir(dirname(dest), { recursive: true });
-  await rename(filePath, dest);
-  return dest;
+  const id = claim.id;
+  if (expectedPreimage !== undefined) {
+    const now = await readTarget(filePath);
+    if (now !== expectedPreimage) {
+      throw new MemoryWriteConflictError(
+        id,
+        filePath,
+        now === null
+          ? "the file disappeared before it could be trashed"
+          : "the file changed before it could be trashed",
+      );
+    }
+  }
+  const base = trashPathFor(vaultRoot, id);
+  await mkdir(dirname(base), { recursive: true });
+  for (const dest of trashCandidates(base)) {
+    try {
+      await link(filePath, dest);
+    } catch (err) {
+      // Belegt — nächster Kandidat. Jeder andere Fehler gehört nach oben.
+      if ((err as NodeJS.ErrnoException)?.code === "EEXIST") continue;
+      throw err;
+    }
+    try {
+      await unlink(filePath);
+    } catch (err) {
+      // Sonst existierten BEIDE Links: die Datei im aktiven Bestand und die
+      // im Trash. Erst zurücknehmen, dann ehrlich scheitern — dieselbe Regel
+      // wie beim Restore unten.
+      await unlink(dest).catch(() => {});
+      throw err;
+    }
+    return dest;
+  }
+  throw new Error(`could not find a free trash path for id: ${id}`);
 }
 
-export async function restoreFromTrash(
+/**
+ * Eine Trash-Fassung zurückholen — NUR unter dem Anspruch auf ihre id;
+ * `claim` ist aus demselben Grund Parameter wie oben.
+ */
+export async function restoreFromTrashUnderClaim(
   vaultRoot: string,
   trashFile: string,
   destFile: string,
+  claim: IdClaim,
 ): Promise<void> {
   // #240/A4: ein blankes rename() überschrieb eine bereits wieder aktive
   // Datei am Zielpfad — beobachtet: eine laufende Bearbeitung wurde still

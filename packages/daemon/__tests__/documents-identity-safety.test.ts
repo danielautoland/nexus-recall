@@ -804,6 +804,25 @@ test("auch ein Move verliert eine externe Änderung im Commit-Fenster nicht", as
     EXTERN,
     "die externe Bearbeitung muss unangetastet auf der Platte stehen",
   );
+  // Codex-Gegenreview (P0): Bis hierher prüfte der Test nur das gerettete
+  // Sidecar — und ließ damit einen halben Zustand durch: Das Original war
+  // bereits im Zielordner, `vault.forgetFile()` schon gelaufen, und das
+  // Dokument fehlte im Index. Der Endzustand gehört gemeinsam geprüft.
+  assert.deepEqual(
+    (await readdir(join(dir, "documents", "neu"))).sort(),
+    ["Police.pdf", "Police.pdf.md"],
+    "Original und Sidecar liegen zusammen, nicht auf zwei Ordner verteilt",
+  );
+  assert.deepEqual(
+    await readdir(join(dir, "documents", "alt")).catch(() => []),
+    [],
+    "im alten Ordner bleibt nichts liegen",
+  );
+  assert.equal(
+    vault.get(doc.id)?.filePath,
+    newSidecar,
+    "der Vault-Index muss das Dokument weiter kennen — und zwar dort, wo es liegt",
+  );
 });
 
 test("ein neu entstehendes Sidecar hat kein Preimage und wird trotzdem geschrieben", async (t) => {
