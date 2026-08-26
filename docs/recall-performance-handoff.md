@@ -1820,3 +1820,75 @@ Bewusste Verhaltensänderungen, alle nur im unfused-Fall: Der Score-Floor
 entfällt in allen drei Lanes; SessionStart mischt reihum pro Query statt nach
 Score; Bash-Fail umgeht den Backoff nicht mehr; die Score-Zahl verschwindet aus
 den Hint-Zeilen. Der fusionierte Pfad bleibt bit-identisch, gepinnt.
+
+### 25.5 Unlesbar ist nicht abwesend
+
+`readOccupant` behandelte JEDEN Lesefehler wie "Datei fehlt". Eine gewöhnliche
+Obsidian-Notiz mit Dateimodus 000 am Sidecar-Pfad sah damit `absent` aus, und
+der Schutz, der genau solche Notizen bewahren sollte, ließ das `rename` durch.
+Nur ENOENT heißt jetzt `absent`; alles andere ist `unreadable` und blockiert
+den Write. Auch ein unlesbarer ORDNER macht den Identitätsscan `incomplete`:
+Ein Scan, der einen Teil des Vaults nicht sehen konnte, darf keine Aussage über
+Eindeutigkeit treffen.
+
+### 25.6 Pfadgleichheit ist keine Dateigleichheit
+
+`memories/People/case-id.md` und `memories/people/case-id.md` sind auf APFS
+DIESELBE Datei. Ein Stringvergleich hielt sie für zwei: Der Save schrieb sie,
+meldete den anders geschriebenen Pfad zurück, und das Re-Filing verschob den
+"alten" Pfad in den Trash — das einzige Exemplar. Der Aufruf meldete "Save
+complete", während beide gemeldeten Pfade nicht mehr existierten.
+
+`sameFile` vergleicht Gerät und Inode und antwortet im Zweifel "nicht
+nachweisbar dieselbe", damit niemand aufräumt, was er nicht sehen kann.
+
+### 25.7 Ein Symlink führte aus dem Vault heraus
+
+`memories/linked -> /outside` plus `folder: memories/linked` erzeugte
+`/outside/escaped.md`. Die lexikalische Prüfung sah nur den Textpfad.
+`assertInsideVault` löst den tiefsten bereits existierenden Vorfahren per
+realpath auf — dieselbe Prüfung, die der Restore schon hatte, jetzt zentral in
+`file-identity.ts`.
+
+### 25.8 Commons ist ein dritter Arm, kein zweiter Score-Raum
+
+Die RRF-Umstellung aus Runde 24 kollabierte die persönliche Liste ERNEUT auf
+Listenränge: Ein beidarmiger Rang 1 fiel von 163,934 auf 81,967, ein separater
+Commons-Rang 1 erreichte bei Gewicht 0,8 nur 65,574. Bei einer Schwelle von 100
+überlebte damit kein einziger getrennter Treffer, und `no_home` kippte, weil der
+Kollaps den rrf-Beleg strippte, den `isNoHome` verlangt.
+
+Der persönliche Score IST bereits `RRF_SCALE · Σ 1/(k+rang)` über seine Arme.
+Commons wird deshalb ein DRITTER ARM: Der Rangbeitrag wird addiert. Ein
+persönlicher Treffer bekommt mit aktiven Commons bitgleich denselben Score wie
+ohne, und keine der Schwellen 30/50/100 musste angefasst werden — sie hängen an
+neun Stellen, und ein zweiter Score-Raum hätte jeder davon eine zweite
+Schwellentabelle beibringen müssen. Der Preis ist die Obergrenze: 241,803 statt
+163,934, wenn Commons aktiv ist und beide persönlichen Arme Rang 1 liefern.
+
+Der degradierte Pfad behält den Rang-Kollaps — rohe Werte sind nicht addierbar.
+
+### 25.9 Kleinere Fälle derselben Klassen
+
+Der Sidecar-Overwrite baute das Frontmatter neu, statt zu patchen, und verlor
+`created`, `related`, `related_via`, `sensitivity`, `source`, `confidence` und
+manuelle Aliase — für Recategorize und Move war das Muster in Runde 24 gebaut
+worden, der Save-Pfad hatte es nicht bekommen.
+
+Das Area-Rename war nicht transaktional: Scheiterte nach dem Memory-Regal das
+Doku-Regal, blieb die Area geteilt und der Aufruf meldete Erfolg. Jetzt wird
+zurückgerollt.
+
+Die Reserved-Prüfung war case-sensitiv — auf APFS ließ sich `memories/projects`
+über den Namen `Projects` als editierbarer Top-Bereich ansprechen und
+vollständig umbenennen. Dasselbe im Document Hub (`scope !== "documents"`) und
+im Recall-Handler (`scope === "commons"`, das ein `Commons` stillschweigend
+abschaltete).
+
+Im gemischten Batch nennt jeder Hit jetzt seinen eigenen Raum. Und die
+Telemetrie trägt `score_kind` sowie separat `candidate_pool_score_kind`: Bei
+aktiven Commons kamen `top_score` und `candidate_pool` aus verschiedenen
+Skalen. Der Konsument zieht die Konsequenz — `harvestFarBridges` überspringt
+`bm25`-markierte Einträge, weil sein `topScore >= 100`-Schnitt auf offener
+Skala von jedem Treffer gerissen wird und dort dauerhaft falsche Bridges
+gemintet hätte.
