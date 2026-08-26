@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, basename, relative } from "node:path";
+import { join, basename, relative, sep } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import matter from "gray-matter";
 import { isMarkdownFile } from "./markdown-file.js";
@@ -65,6 +65,12 @@ export class Vault {
    * Schreibentscheidung geraten wäre: Welche der beiden ist gemeint?
    */
   private duplicatePaths = new Map<string, Set<string>>();
+  /**
+   * Verzeichnisse, die der letzte Scan nicht öffnen konnte. Der Index ist
+   * dann nachweislich unvollständig, und jeder besitzverändernde Writer muss
+   * das erfahren — `pathsFor()` allein kann es nicht ausdrücken.
+   */
+  private unreadablePaths: string[] = [];
 
   constructor(public readonly root: string) {}
 
@@ -72,8 +78,15 @@ export class Vault {
     // Reihenfolge stabil halten: nach Pfad sortieren bevor wir parallel laden.
     // So bleibt die Map-Iterationsordnung deterministisch (Maps iterieren in
     // Insertion-Order; wir setzen die Ergebnisse in Pfad-Sortierreihenfolge).
-    const files = (await this.listMarkdownFiles()).slice().sort();
+    const scan = await this.listMarkdownFiles();
+    const files = scan.files.slice().sort();
+    this.unreadablePaths = scan.unreadable;
     const skipped: { path: string; err: string }[] = [];
+    for (const dir of scan.unreadable) {
+      const err = "directory could not be read — its memories are invisible to this index";
+      console.warn(`[vault] init blind spot (${basename(dir)}): ${err}`);
+      skipped.push({ path: dir, err });
+    }
     const BATCH = 32;
     type Loaded = { kind: "ok"; file: string; memory: Memory };
     type Skipped = { kind: "skip" };
@@ -212,10 +225,27 @@ export class Vault {
    */
   async reconcile(): Promise<number> {
     const BATCH = 32;
-    const onDisk = new Set(await this.listMarkdownFiles());
-    // Drop index entries whose file is gone (missed unlink/move).
-    for (const filePath of [...this.filePathToId.keys()]) {
-      if (!onDisk.has(filePath)) this.handleRemove(filePath);
+    const scan = await this.listMarkdownFiles();
+    this.unreadablePaths = scan.unreadable;
+    const onDisk = new Set(scan.files);
+    // Drop index entries whose file is gone (missed unlink/move) — aber nur,
+    // wenn der Scan überhaupt überall hinsehen konnte. Codex-Gegenreview (P0):
+    // Wurde ein Unterordner nach dem Laden unlesbar, war er für den Walk leer,
+    // und der Reconcile warf die dort liegenden Memories aus dem Index, obwohl
+    // die Dateien unverändert existierten. Ein blinder Fleck darf nichts
+    // löschen; er darf nur nichts Neues behaupten.
+    if (scan.unreadable.length === 0) {
+      for (const filePath of [...this.filePathToId.keys()]) {
+        if (!onDisk.has(filePath)) this.handleRemove(filePath);
+      }
+    } else {
+      // Was der Scan gesehen hat, gilt weiter: Nur Dateien, die NICHT unter
+      // einem unlesbaren Teilbaum liegen, dürfen als verschwunden gelten.
+      for (const filePath of [...this.filePathToId.keys()]) {
+        if (onDisk.has(filePath)) continue;
+        if (scan.unreadable.some((dir) => filePath.startsWith(dir + sep))) continue;
+        this.handleRemove(filePath);
+      }
     }
     // Read files not yet indexed (handleAddOrChange silently skips non-memory).
     const toAdd = [...onDisk].filter((p) => !this.filePathToId.has(p));
@@ -281,6 +311,12 @@ export class Vault {
    * dass es eine zweite Datei gibt, und ein Save auf die eine lässt die
    * andere unverändert stehen (#240/A2.3).
    */
+  /** Die blinden Flecken des letzten Scans. Leer heißt: der Index kennt den
+   *  ganzen Baum. Nicht leer heißt: er kann für KEINE id `none` belegen. */
+  scanBlindSpots(): string[] {
+    return [...this.unreadablePaths];
+  }
+
   pathsFor(id: string): string[] {
     const out: string[] = [];
     const indexed = this.memorys.get(id);
@@ -311,18 +347,34 @@ export class Vault {
 
   // ─── internals ───────────────────────────────────────────────
 
-  private async listMarkdownFiles(): Promise<string[]> {
-    const out: string[] = [];
-    await this.walkDir(this.root, out);
-    return out;
+  private async listMarkdownFiles(): Promise<{ files: string[]; unreadable: string[] }> {
+    const files: string[] = [];
+    const unreadable: string[] = [];
+    await this.walkDir(this.root, files, unreadable);
+    return { files, unreadable };
   }
 
-  private async walkDir(dir: string, out: string[]): Promise<void> {
+  /**
+   * Traversierung mit Buchführung über die blinden Flecken.
+   *
+   * Codex-Gegenreview (P0): Ein `readdir`-Fehler wurde geschluckt, und der
+   * unlesbare Teilbaum sah damit exakt aus wie ein leerer. Zwei nachgestellte
+   * Folgen: Ein vor `init()` unlesbar gemachtes Verzeichnis enthielt bereits
+   * eine id — der Vault sah sie nicht und ließ ein zweites Memory mit
+   * derselben id zu. Und wurde ein Ordner NACH dem Laden unlesbar, entfernte
+   * `reconcile()` die dortigen Memories aus dem Index, obwohl die Dateien noch
+   * existierten. „Nicht lesbar" ist keine Aussage über den Inhalt.
+   */
+  private async walkDir(dir: string, out: string[], unreadable: string[]): Promise<void> {
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return; // unreadable subtree → ignore
+    } catch (err) {
+      // Verschwunden ist kein blinder Fleck (paralleles Aufräumen); alles
+      // andere — EACCES, EIO, ein hängender Cloud-Mount — schon.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push(dir);
+      return;
     }
     for (const e of entries) {
       // Skip noise that almost never holds memorys
@@ -330,7 +382,7 @@ export class Vault {
       if (e.name === "node_modules") continue;
       const full = join(dir, e.name);
       if (e.isDirectory()) {
-        await this.walkDir(full, out);
+        await this.walkDir(full, out, unreadable);
       } else if (e.isFile() && isMarkdownFile(e.name)) {
         out.push(full);
       }
@@ -404,6 +456,14 @@ export class Vault {
         this.memorys.delete(oldId);
         this.emit({ kind: "remove", id: oldId, filePath });
       }
+      // Codex-Gegenreview (P1): Eine Datei, die als Duplikat quarantänisiert
+      // war und danach eine ANDERE id bekam, blieb mit ihrem alten Pfad im
+      // Duplicate-Set stehen. Danach erschien sie unter beiden ids —
+      // `pathsFor(alt)` nannte sie weiter, obwohl sie diese id nicht mehr
+      // trägt, und blockierte damit jeden Save auf die alte id als
+      // vermeintliches `ambiguous`. Wer erfolgreich indexiert wird, ist per
+      // Definition kein quarantänisiertes Duplikat mehr.
+      this.forgetDuplicate(filePath);
       this.memorys.set(m.fm.id, m);
       this.filePathToId.set(filePath, m.fm.id);
       // A file this vault already knows under the same id is a CHANGE, whatever
