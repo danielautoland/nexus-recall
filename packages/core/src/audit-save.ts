@@ -14,7 +14,8 @@ import { assertInsideVault, sameFile } from "./file-identity.js";
 import type { Located, MemoryLocator } from "./memory-locator.js";
 import { access, readFile, rename } from "node:fs/promises";
 import matter from "gray-matter";
-import { readOccupant } from "./memory-locator.js";
+import { readOccupant, occupantOfRaw, scanVaultForIdAsync } from "./memory-locator.js";
+import { readTarget } from "./save-commit.js";
 import { withIdClaim } from "./id-transaction.js";
 
 /**
@@ -33,7 +34,7 @@ export type AuditContext = z.infer<typeof AuditContext>;
 /**
  * Save mit Audit-Trail.
  *
- *   1. Vorherige Memory-Frontmatter holen (für diff_before).
+ *   1. Vorherige Memory-Frontmatter von der PLATTE holen (für diff_before).
  *   2. Validation: Assistant-Mutationen brauchen `reason` (1-2 Sätze).
  *   3. saveMemory ausführen.
  *   4. AuditLog.record() mit before/after.
@@ -69,11 +70,34 @@ export async function auditedSave(args: {
   // Dateisystem, obwohl der Index in der Hand liegt — und sieht `ambiguous`
   // nicht, das nur der Vault kennt.
   const locator = vaultAsLocator(vault);
-  const candidateID = resolveMemoryTarget(vaultRoot, input, locator).id;
-  const existing = vault.get(candidateID);
-  const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
+  const target = resolveMemoryTarget(vaultRoot, input, locator);
+  const candidateID = target.id;
+  // Codex-Gegenreview (P1): Das Vorbild kam aus dem VAULT-CACHE, während die
+  // Mutation daneben längst autoritativ von der Platte arbeitet. Nachgestellt,
+  // beide Male mit einem Audit, das die falsche Datei beschreibt:
+  //
+  //   - Nach der Vault-Initialisierung erschien ein Memory extern im Vault.
+  //     `auditedSave` aktualisierte es korrekt, protokollierte aber
+  //     `diff_before: null` — im Trail steht „neu angelegt", auf der Platte
+  //     wurde überschrieben.
+  //   - Ein geladenes Memory wurde extern geändert. Im Audit stand danach die
+  //     ALTE Cache-Fassung, überschrieben wurde die neue.
+  //
+  // Das Vorbild muss also von derselben Quelle kommen wie die Mutation.
+  const preimage = await readSavePreimage(vaultRoot, candidateID, target.filePath, input.folder);
+  const diffBefore = preimage.fm;
 
-  const result = await saveMemory(vaultRoot, input, { locator });
+  const result = await saveMemory(vaultRoot, input, {
+    locator,
+    // Der Riegel gegen die verbleibende Lücke: Der Claim liegt INNERHALB von
+    // `saveMemory`, das Vorbild wird also davor gelesen. Zwischen Lesen und
+    // Lock kann die Datei sich ändern. `expectedTarget` ist genau dafür da —
+    // stimmt der Stand unter dem Lock nicht mehr mit dem überein, den wir
+    // gerade protokolliert haben, bricht der Save mit einem Write-Conflict ab,
+    // statt eine Mutation mit einem falschen Vorbild ins Log zu schreiben.
+    // Lieber ein lauter Konflikt als ein leiser Trail-Fehler.
+    ...(preimage.guardable ? { expectedTarget: preimage.raw } : {}),
+  });
 
   // Das Re-Filing selbst erledigt `saveMemory` unter der ID-Transaktion —
   // hier bleibt nur, den Index nachzuziehen. Vorher stand das Aufräumen hier
@@ -107,7 +131,7 @@ export async function auditedSave(args: {
 /**
  * Soft-Delete mit Audit-Trail.
  *
- *   1. Memory aus Vault-Cache holen (für diff_before + filePath).
+ *   1. Memory im Vault-Cache nachschlagen (nur als Pfad-Hinweis für den Claim).
  *   2. File nach <vault>/.bastra/trash/<id>.md verschieben.
  *   3. AuditLog.record() mit operation=delete.
  *
@@ -133,7 +157,6 @@ export async function auditedSoftDelete(args: {
     );
   }
 
-  const diffBefore = cloneFrontmatter(memory.fm);
   // Codex-Gegenreview (P0): Gelöscht wurde der Pfad, den der CACHE nannte, ohne
   // ihn noch einmal anzusehen. Nachgestellt: Der Vault lädt `x`, die Datei wird
   // extern durch eine gewöhnliche Notiz ersetzt, `auditedSoftDelete("x")`
@@ -153,13 +176,24 @@ export async function auditedSoftDelete(args: {
               `fix that first, deleting now would move the wrong file.`,
         );
       }
+      // Codex-Gegenreview (P1): Das Vorbild kam weiter aus dem Cache, obwohl
+      // die Lokalisierung daneben schon autoritativ war. Nachgestellt: Ein
+      // geladenes Memory wurde extern geändert und danach gelöscht — im Trash
+      // lag die NEUE Fassung, im Audit stand die ALTE. Gelesen wird deshalb
+      // die Datei, die gleich in den Trash wandert, unter demselben Claim.
+      //
+      // Fällt das Lesen aus (die Datei verschwand zwischen Scan und Read, oder
+      // der Mount hakt), bleibt der Cache-Stand als schwächere Auskunft besser
+      // als gar keine — die volle Wahrheit liegt dann ohnehin in der
+      // Trash-Kopie, die `moveToTrash` gleich anlegt.
+      const onDisk = await readFrontmatter(located.filePath);
       return commitSoftDelete({
         vault,
         auditLog,
         vaultRoot,
         memoryID,
         originalPath: located.filePath,
-        diffBefore,
+        diffBefore: onDisk ?? cloneFrontmatter(memory.fm),
         context,
       });
     },
@@ -334,6 +368,73 @@ async function publishRestore(a: {
 }
 
 // ─── helpers ────────────────────────────────────────────────────
+
+/**
+ * Das Vorbild eines Saves — von der PLATTE, aus derselben Datei, die
+ * `saveMemory` gleich anfassen wird.
+ *
+ * Warum nicht der Vault-Index: Er darf prozessübergreifend veraltet sein, und
+ * genau daraus entstanden die beiden Fehl-Audits oben. Die Frage „welche Datei
+ * trägt diese id" beantwortet deshalb derselbe Scan, den auch die
+ * ID-Transaktion stellt.
+ *
+ * Welche Datei das Vorbild ist, folgt Zug um Zug den Regeln in `commitMemory`:
+ *
+ *   - Sagt der Scan `unique`, ist DIESE Datei die Vorlage. Ohne ausdrücklichen
+ *     `folder` routet der Save ohnehin dorthin (die Platte gewinnt gegen einen
+ *     abgeleiteten Pfad); mit `folder` ist sie die Re-Filing-Quelle, aus der
+ *     `saveMemory` sein `prev`-Frontmatter patcht.
+ *   - Sagt er nichts (`none`), bleibt der aufgelöste Zielpfad. Liegt dort
+ *     nichts, ist das Vorbild `null` — und `result.created` bestätigt es.
+ *   - `ambiguous`/`incomplete` sind Vault-Defekte; `saveMemory` bricht darauf
+ *     ab, hier wird nur nichts behauptet.
+ *
+ * Preis: ein zweiter vaultweiter Scan je audit-behaftetem Save, zusätzlich zu
+ * dem unter dem Lock. Das ist der Betrag, den ein Audit kostet, der die Datei
+ * beschreibt, die wirklich mutiert wurde; billiger geht es erst, wenn
+ * `saveMemory` sein unter dem Claim gelesenes Vorbild selbst zurückgibt (siehe
+ * `guardable`).
+ */
+async function readSavePreimage(
+  vaultRoot: string,
+  id: string,
+  resolvedPath: string,
+  folder: string | undefined,
+): Promise<{
+  path: string;
+  raw: string | null;
+  fm: Record<string, unknown> | null;
+  /** Deckt sich das Vorbild mit dem ZIELPFAD des Saves? Nur dann lässt sich
+   *  `expectedTarget` als Riegel benutzen: Es prüft das Ziel, nicht die
+   *  Re-Filing-Quelle. Beim ausdrücklichen Umzug in ein anderes Regal bleibt
+   *  deshalb ein Restfenster — die Quelle kann sich zwischen diesem Lesen und
+   *  dem Claim ändern. Vollständig schließen ließe es sich nur in `save.ts`. */
+  guardable: boolean;
+}> {
+  const located = await scanVaultForIdAsync(vaultRoot, id);
+  const onDisk = located.kind === "unique" ? located.filePath : null;
+  const path = onDisk ?? resolvedPath;
+  // `readTarget` statt eines eigenen Reads: dieselbe Fail-closed-Semantik wie
+  // im Save (nur ENOENT heißt „nichts da", alles andere wirft) und exakt die
+  // Bytes, gegen die `expectedTarget` gleich verglichen wird.
+  const raw = await readTarget(path);
+  // Die Identität aus DENSELBEN Bytes ableiten, aus denen auch das Vorbild
+  // kommt: Eine fremde Notiz am Zielpfad ist kein Vorbild dieses Memories
+  // (`saveMemory` lehnt sie ohnehin ab), und ihr Frontmatter im Audit wäre eine
+  // Behauptung über eine Datei, die nie zu dieser id gehörte.
+  const isThisMemory =
+    raw !== null && (() => {
+      const occupant = occupantOfRaw(raw, path);
+      return occupant.kind === "memory" && occupant.id === id;
+    })();
+  const targetPath = folder === undefined ? path : resolvedPath;
+  return {
+    path,
+    raw,
+    fm: isThisMemory ? ((matter(raw!).data as Record<string, unknown>) ?? null) : null,
+    guardable: sameFile(path, targetPath),
+  };
+}
 
 
 

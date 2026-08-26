@@ -32,6 +32,7 @@ import {
   symlink,
   readdir,
 } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import matter from "gray-matter";
@@ -666,6 +667,244 @@ test("ein Symlink INNERHALB des Vaults führt nicht in ein fremdes Regal", async
       folder_path: "linked",
     } as SaveArgs),
     /outside the documents folder/,
+  );
+  assert.deepEqual(
+    await readdir(foreignShelf),
+    [],
+    "im fremden Regal darf nichts gelandet sein",
+  );
+});
+
+// ── Codex-Gegenreview (P1): Compare-and-Swap vor der Veröffentlichung ──
+
+/**
+ * Der Document-Hub verlor externe Änderungen still.
+ *
+ * Die mtime-Prüfung in `recategorizeDocument` läuft VOR dem ID-Claim, und der
+ * Claim serialisiert ohnehin nur Bastra-Writer. Zwischen dem Lesen des
+ * Sidecars unter dem Claim und dem `rename` liegt ein Fenster, in dem
+ * Obsidian, ein Cloud-Sync oder ein Editor schreiben darf. Was dort landete,
+ * war danach spurlos weg — und der Call meldete Erfolg.
+ *
+ * Nachgestellt wird das Fenster deterministisch statt über ein Rennen: Der
+ * Handler liest das Sidecar (`readSidecarRaw`) und greift ERST DANACH auf
+ * `args.title` zu (`title: args.title ?? m.fm.title`). Ein Getter auf genau
+ * diesem Feld schreibt also exakt in die Lücke zwischen Lesen und
+ * Veröffentlichen.
+ */
+function argsWithExternalWriteAfterRead(
+  base: Record<string, unknown>,
+  field: "title",
+  value: string,
+  external: { path: string; content: string },
+): Record<string, unknown> {
+  let fired = false;
+  return {
+    ...base,
+    get [field]() {
+      if (!fired) {
+        fired = true;
+        writeFileSync(external.path, external.content, "utf8");
+      }
+      return value;
+    },
+  };
+}
+
+const EXTERNAL_SIDECAR = (id: string) =>
+  matter.stringify("\n# Von Hand ergänzt\n\nDieser Absatz kam aus Obsidian.\n", {
+    id,
+    title: "Police",
+    type: "doc",
+    aliases: [id],
+    summary: "vertrag: Police",
+    topic_path: ["documents", "alt"],
+    tags: ["vertrag"],
+    scope: "documents",
+    recall_when: ["find document Police"],
+    related: [],
+    confidence: 1,
+    created: "2026-01-01",
+    updated: "2026-01-01",
+    original_path: "/egal/Police.pdf",
+    document_category: "vertrag",
+    linked_file: false,
+    folder_path: "alt",
+  });
+
+async function savedDoc(dir: string, vault: Vault) {
+  const src = join(dir, "Police.pdf");
+  await writeFile(src, "POLICE", "utf8");
+  return saveDocument(vault, {
+    ...BASE,
+    title: "Police",
+    original_path: src,
+    folder_path: "alt",
+  } as SaveArgs);
+}
+
+test("eine externe Änderung im Commit-Fenster geht nicht verloren", async (t) => {
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+  const EXTERN = EXTERNAL_SIDECAR(doc.id);
+
+  await assert.rejects(
+    () =>
+      recategorizeDocument(
+        vault,
+        argsWithExternalWriteAfterRead(
+          { id: doc.id },
+          "title",
+          "Police 2026",
+          { path: doc.sidecar_path, content: EXTERN },
+        ) as Parameters<typeof recategorizeDocument>[1],
+      ),
+    (err: Error) => {
+      assert.match(err.message, /changed on disk/);
+      // Die Meldung muss sagen, was der Aufrufer TUN kann.
+      assert.match(err.message, /read_document/);
+      assert.match(err.message, /force=true/);
+      return true;
+    },
+  );
+
+  assert.equal(
+    await readFile(doc.sidecar_path, "utf8"),
+    EXTERN,
+    "die externe Bearbeitung muss unangetastet auf der Platte stehen",
+  );
+});
+
+test("auch ein Move verliert eine externe Änderung im Commit-Fenster nicht", async (t) => {
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+  const newSidecar = join(dir, "documents", "neu", "Police.pdf.md");
+  const EXTERN = EXTERNAL_SIDECAR(doc.id);
+
+  // `commitMoveDocument` liest `args.folder_path` zweimal: einmal für den
+  // Datei-Move (vor dem Lesen des Sidecars), einmal beim Bauen des
+  // Frontmatters (danach). Der zweite Zugriff ist das Commit-Fenster — und
+  // das Sidecar liegt zu dem Zeitpunkt bereits am NEUEN Pfad.
+  let seen = 0;
+  const args = {
+    id: doc.id,
+    get folder_path() {
+      if (++seen === 2) writeFileSync(newSidecar, EXTERN, "utf8");
+      return "neu";
+    },
+  };
+
+  await assert.rejects(
+    () => moveDocument(vault, args as Parameters<typeof moveDocument>[1]),
+    /changed on disk/,
+  );
+  assert.equal(seen >= 2, true, "das Commit-Fenster wurde überhaupt getroffen");
+  assert.equal(
+    await readFile(newSidecar, "utf8"),
+    EXTERN,
+    "die externe Bearbeitung muss unangetastet auf der Platte stehen",
+  );
+});
+
+test("ein neu entstehendes Sidecar hat kein Preimage und wird trotzdem geschrieben", async (t) => {
+  const { dir, vault } = await harness(t);
+
+  // Fall A: nichts liegt am Pfad — „nicht vorhanden" ist ein gültiger
+  // Ausgangszustand, kein Konflikt.
+  const doc = await savedDoc(dir, vault);
+  assert.equal((await stat(doc.sidecar_path)).isFile(), true);
+
+  // Fall B: der Refresh derselben Datei über `overwrite` — Preimage vorhanden
+  // und unverändert, also muss der Vergleich durchgehen.
+  const again = await saveDocument(vault, {
+    ...BASE,
+    title: "Police 2026",
+    original_path: doc.original_path,
+    folder_path: "alt",
+    overwrite: true,
+  } as SaveArgs);
+  assert.equal(again.sidecar_path, doc.sidecar_path);
+  assert.equal(
+    matter(await readFile(doc.sidecar_path, "utf8")).data.title,
+    "Police 2026",
+  );
+});
+
+test("force=true überschreibt die externe Bearbeitung bewusst", async (t) => {
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+
+  await recategorizeDocument(
+    vault,
+    argsWithExternalWriteAfterRead(
+      { id: doc.id, force: true },
+      "title",
+      "Police 2026",
+      { path: doc.sidecar_path, content: EXTERNAL_SIDECAR(doc.id) },
+    ) as Parameters<typeof recategorizeDocument>[1],
+  );
+
+  assert.equal(
+    matter(await readFile(doc.sidecar_path, "utf8")).data.title,
+    "Police 2026",
+    "force heißt: der eigene Patch gewinnt",
+  );
+});
+
+/**
+ * `force` überstimmt eine BEARBEITUNG, nie eine IDENTITÄT. Landet im
+ * Commit-Fenster etwas, das gar nicht mehr das Sidecar dieses Dokuments ist —
+ * eine handgeschriebene Obsidian-Notiz am selben Pfad —, dann gibt es nichts,
+ * was ein Nutzer mit `force` hätte abnicken können.
+ */
+test("force überschreibt keine fremde Datei am Sidecar-Pfad", async (t) => {
+  const { dir, vault } = await harness(t);
+  const doc = await savedDoc(dir, vault);
+  const NOTIZ = "# Meine Gedanken\n\nHandgeschrieben, nirgends sonst.\n";
+
+  await assert.rejects(
+    () =>
+      recategorizeDocument(
+        vault,
+        argsWithExternalWriteAfterRead(
+          { id: doc.id, force: true },
+          "title",
+          "Police 2026",
+          { path: doc.sidecar_path, content: NOTIZ },
+        ) as Parameters<typeof recategorizeDocument>[1],
+      ),
+    /no longer the sidecar/,
+  );
+  assert.equal(
+    await readFile(doc.sidecar_path, "utf8"),
+    NOTIZ,
+    "die fremde Datei muss unangetastet sein",
+  );
+});
+
+/**
+ * Sicherheitsrunde: Geprüft wurden nur die Nachfahren der Grenze, nie ihre
+ * IDENTITÄT. Ist der Dokumentenordner SELBST ein Symlink auf ein aktives
+ * Regal, ging jede Prüfung durch — Ziel gegen Ziel verglichen — und Original
+ * wie Sidecar landeten mitten im Memory-Bestand. Zusätzlich unsichtbar für
+ * den autoritativen ID-Scan, der nicht in Symlink-Verzeichnisse absteigt.
+ */
+test("ein Dokumentenordner, der selbst ein Symlink ist, wird nicht beschrieben", async (t) => {
+  const { dir, vault } = await harness(t);
+  const foreignShelf = join(dir, "memories", "projects", "fremd");
+  await mkdir(foreignShelf, { recursive: true });
+  await symlink(foreignShelf, join(dir, "documents"));
+
+  const src = join(dir, "Beleg.pdf");
+  await writeFile(src, "BELEG", "utf8");
+  await assert.rejects(
+    saveDocument(vault, {
+      ...BASE,
+      title: "Beleg",
+      original_path: src,
+      folder_path: "",
+    } as SaveArgs),
+    /is not .*'s own documents|not .* own documents/,
   );
   assert.deepEqual(
     await readdir(foreignShelf),

@@ -214,8 +214,18 @@ export function trashPathFor(vaultRoot: string, id: string): string {
   // eine eigene Grenze, nicht nur ein Ordner im Vault; deshalb drei Fragen
   // statt einer: liegt `.bastra` im Vault, liegt der Trash in `.bastra`,
   // liegt das Ziel im Trash.
+  // Drei Fragen statt einer, jede an das Dateisystem: Ist `.bastra` das eigene
+  // Verzeichnis dieses Vaults, ist der Trash das eigene Verzeichnis von
+  // `.bastra`, und liegt das Ziel darin?
+  //
+  // Sicherheitsrunde, zweite Ebene: `.bastra` war geschützt, seine privaten
+  // UNTERREGALE nicht. Ein `.bastra/trash -> .bastra/locks` verlässt `.bastra`
+  // nicht und kam deshalb durch — gelöschte Memories lägen dann zwischen den
+  // Lock-Dateien, und das Aufräumen der einen Sorte nähme die andere mit. Für
+  // private Ablage gilt dieselbe Regel wie für `.bastra` selbst: kein Symlink,
+  // auch kein nach innen zeigender.
   assertOwnSubdir(vaultRoot, bastraDir, "trash");
-  assertInsideDir(bastraDir, trashRoot, "trash", "the .bastra folder");
+  assertOwnSubdir(bastraDir, trashRoot, "trash");
   assertInsideDir(trashRoot, dest, "trash", "the trash folder");
   return dest;
 }

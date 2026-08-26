@@ -165,8 +165,14 @@ export async function withIdClaim<T>(
   // öffnet den Lock für einen zweiten Writer. `.bastra` ist eine eigene
   // Grenze: erst muss sie im Vault liegen, dann der Lock in ihr.
   const bastraDir = join(opts.vaultRoot, ".bastra");
+  // Dieselbe Kette wie beim Trash: `.bastra` muss dem Vault gehören, das
+  // Lock-Regal muss `.bastra` gehören, und der Lock muss darin liegen. Die
+  // mittlere Frage fehlte — ein `.bastra/locks -> .bastra/trash` verlässt
+  // `.bastra` nicht und kam deshalb durch.
   assertOwnSubdir(opts.vaultRoot, bastraDir, "lock");
-  assertInsideDir(bastraDir, lockPath, "lock", "the .bastra folder");
+  const locksDir = dirname(lockPath);
+  assertOwnSubdir(bastraDir, locksDir, "lock");
+  assertInsideDir(locksDir, lockPath, "lock", "the locks folder");
   await mkdir(dirname(lockPath), { recursive: true });
   const token = await acquireCommitClaim(lockPath, opts.id, opts.filePath);
   const authority = opts.authority ?? diskAuthority(opts.vaultRoot, opts.op);

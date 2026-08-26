@@ -27,10 +27,15 @@ async function fileWith(content: string): Promise<{ dir: string; file: string }>
 test("schreibt Frontmatter und Body, atomar und ohne tmp-Leiche", async () => {
   const { dir, file } = await fileWith(memory("m"));
   try {
-    const out = await mutateMemoryFile(file, "m", {
-      frontmatter: (fm) => ({ ...fm, superseded_by: "neu" }),
-      body: (b) => `${b.trimEnd()}\n\nANGEHÄNGT\n`,
-    });
+    const out = await mutateMemoryFile(
+      file,
+      "m",
+      {
+        frontmatter: (fm) => ({ ...fm, superseded_by: "neu" }),
+        body: (b) => `${b.trimEnd()}\n\nANGEHÄNGT\n`,
+      },
+      { vaultRoot: dir },
+    );
     assert.equal(out.kind, "written");
     const raw = await readFile(file, "utf8");
     assert.equal(matter(raw).data.superseded_by, "neu");
@@ -49,9 +54,12 @@ test("eine fremde Datei am erwarteten Pfad wird nicht angefasst", async () => {
   ] as const) {
     const { dir, file } = await fileWith(content);
     try {
-      const out = await mutateMemoryFile(file, "m", {
-        frontmatter: (fm) => ({ ...fm, obsolete: true }),
-      });
+      const out = await mutateMemoryFile(
+        file,
+        "m",
+        { frontmatter: (fm) => ({ ...fm, obsolete: true }) },
+        { vaultRoot: dir },
+      );
       assert.equal(out.kind, "identity-mismatch", label);
       assert.equal(out.kind === "identity-mismatch" ? out.found : "", expectFound, label);
       assert.equal(await readFile(file, "utf8"), content, `${label}: unverändert`);
@@ -65,13 +73,18 @@ test("wer zwischendurch schreibt, gewinnt — die Mutation gibt nach", async () 
   const { dir, file } = await fileWith(memory("m"));
   try {
     const fremd = memory("m", "NEU VON JEMAND ANDEREM");
-    const out = await mutateMemoryFile(file, "m", {
-      frontmatter: (fm) => {
-        // Genau hier, zwischen Read und Commit, landet der fremde Writer.
-        void writeFile(file, fremd, "utf8");
-        return { ...fm, obsolete: true };
+    const out = await mutateMemoryFile(
+      file,
+      "m",
+      {
+        frontmatter: (fm) => {
+          // Genau hier, zwischen Read und Commit, landet der fremde Writer.
+          void writeFile(file, fremd, "utf8");
+          return { ...fm, obsolete: true };
+        },
       },
-    });
+      { vaultRoot: dir },
+    );
     // Der Vergleich vor dem Rename sieht die Änderung.
     assert.equal(out.kind, "raced");
     assert.match(await readFile(file, "utf8"), /NEU VON JEMAND ANDEREM/);

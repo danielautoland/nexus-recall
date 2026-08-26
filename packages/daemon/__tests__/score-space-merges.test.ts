@@ -536,3 +536,57 @@ test("Befund E — fuseCommonsHits(collapse): der Score erklärt sich auch auf d
     Math.round((rrf!.personal_score! + 0.8 * (RRF_SCALE / (RRF_K + 1))) * 1000) / 1000,
   );
 });
+
+/**
+ * Codex-Gegenreview (Vertragsfehler): `rrf.raw` erklärte den ausgelieferten
+ * Score nicht mehr.
+ *
+ * `fuseCommonsHits` addierte den Commons-Beitrag auf den Score, ließ das
+ * Beleg-Feld aber stehen. Gemessen: ausgeliefert `225.574`, während
+ * `rrf.raw × RRF_SCALE` weiter `160` ergab; auf dem Kollapspfad `147.541`
+ * gegen `81.967`. Der dokumentierte Vertrag in `search.ts` lautet aber
+ * „unskalierter RRF-Wert vor der RRF_SCALE-Skalierung, die `score` ergibt".
+ *
+ * Der Vertrag ist zugunsten des MITFÜHRENS entschieden: `raw` erklärt die Zahl,
+ * die wirklich rausgeht; wer den Anteil ohne Commons will, liest
+ * `personal_score`.
+ */
+const reconstructed = (hit: RecallHit): number => Math.round(hit.rrf!.raw * RRF_SCALE * 1000) / 1000;
+
+test("Befund F — fuseCommonsHits(personalFused): rrf.raw × RRF_SCALE ergibt wieder den Score", () => {
+  const personal = [
+    { id: "same", score: 163.934, rrf: { rank_bm25: 1, rank_vector: 1, raw: 2 / (RRF_K + 1) } } as unknown as RecallHit,
+  ];
+  const fused = fuseCommonsHits(personal, [{ id: "same", score: 405585 } as unknown as RecallHit], () => 0.8, {
+    personalFused: true,
+  });
+
+  const hit = fused[0]!;
+  assert.ok(hit.rrf, "ohne Beleg ist die Zahl unerklärt");
+  assert.equal(reconstructed(hit), hit.score, "der Beleg muss den ausgelieferten Score tragen");
+  assert.equal(
+    hit.rrf!.personal_score,
+    163.934,
+    "und der Anteil ohne Commons bleibt getrennt lesbar",
+  );
+});
+
+test("Befund F — fuseCommonsHits(collapse): rrf.raw trägt auch den kollabierten Score", () => {
+  const personal = [{ id: "same", score: 120, scope: "personal" } as unknown as RecallHit];
+  const fused = fuseCommonsHits(personal, [{ id: "same", score: 7 } as unknown as RecallHit], () => 0.8, {
+    personalFused: false,
+  });
+
+  const hit = fused[0]!;
+  assert.equal(reconstructed(hit), hit.score);
+});
+
+test("Befund F — fuseCommonsHits: ein Treffer NUR aus den Commons erklärt sich ebenfalls", () => {
+  const fused = fuseCommonsHits([], [{ id: "recipe", score: 405585 } as unknown as RecallHit], () => 0.95, {
+    personalFused: true,
+  });
+
+  const hit = fused[0]!;
+  assert.equal(reconstructed(hit), hit.score);
+  assert.equal(hit.rrf!.personal_score, 0);
+});

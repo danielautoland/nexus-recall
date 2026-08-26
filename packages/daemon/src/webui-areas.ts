@@ -18,7 +18,7 @@
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { assertInsideDir, assertInsideVault, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
+import { assertInsideDir, assertInsideVault, assertOwnSubdir, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
 import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
@@ -260,6 +260,92 @@ async function rewriteScopes(
   return rewritten;
 }
 
+/**
+ * Nachprüfung nach dem Umschreiben: Behauptet im umgezogenen Regal noch
+ * irgendeine Datei, zur ALTEN Area zu gehören?
+ *
+ * Codex-Gegenreview (P0): Ein Area-Rename und ein normaler Save waren nicht
+ * gegeneinander serialisiert. Nachgestellt: `renameArea(alt → neu)` hatte ein
+ * Memory bereits auf `scope: neu` umgeschrieben; danach lief ein gewöhnlicher
+ * `saveMemory` derselben id, der noch die ALTE Area-Identität in der Hand
+ * hatte. Beide meldeten Erfolg. Endzustand: Datei im neuen Regal, Frontmatter
+ * wieder `scope: alt` — im Recall des neuen Projekts als fremd gefiltert, im
+ * alten nicht auffindbar. Der id-Lock greift dabei korrekt; er sperrt nur EINE
+ * Datei für die Dauer EINER Mutation, und ein Rename ist eine Operation über
+ * ein ganzes Regal, die aus vielen solcher Mutationen besteht.
+ *
+ * ENTSCHEIDUNG (und ihre Grenze, ehrlich benannt): Zwei Wege waren denkbar.
+ * Der eine ist eine Area-Marke im Vault (`.bastra/`), die einen laufenden
+ * Rename anzeigt und die der Save-Pfad respektieren MÜSSTE — nur der schließt
+ * das Fenster wirklich, und er ist nicht hier zu bauen, sondern in
+ * `packages/core/src/save.ts`. Der andere, hier gebaute, ist diese
+ * Nachprüfung: Nach allen Rewrites wird das umgezogene Regal noch einmal
+ * gelesen, und was dort weiterhin den alten Namen trägt, lässt den Rename
+ * scheitern und zurückrollen.
+ *
+ * Was das GARANTIERT: Ein Rename, der Erfolg meldet, hat das Regal zum
+ * Zeitpunkt seiner letzten Lesung tatsächlich vollständig umgeschrieben — ein
+ * dazwischengeratener Save wird erkannt, nicht verschwiegen, und der Vault
+ * bleibt in EINEM der beiden konsistenten Zustände (alt oder neu).
+ * Was es NICHT garantiert: Das Fenster ist nicht geschlossen, nur beobachtet.
+ * Ein Save, der NACH der Nachprüfung mit der alten Area-Identität schreibt,
+ * hinterlässt denselben Zustand wie zuvor — er wird nur von niemandem mehr
+ * gesehen. Und die Nachprüfung selbst ist ein zweiter Durchgang: Kosten sind
+ * ein weiterer Read je Memory des Regals.
+ *
+ * Gelesen wird unter demselben id-Lock wie jeder Writer — `frontmatter` gibt
+ * immer `null` zurück, die Mutation ist also garantiert ein `noop` und fasst
+ * keine Datei an; sie leiht sich nur den Lock und den EINEN Read.
+ */
+async function findStaleScopes(
+  vaultRoot: string,
+  dir: string,
+  oldScope: string,
+  stale: string[],
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    // Wer nicht hinsehen konnte, darf nicht „sauber" behaupten.
+    stale.push(`${dir} (${(err as NodeJS.ErrnoException)?.code ?? String(err)})`);
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      await findStaleScopes(vaultRoot, full, oldScope, stale);
+      continue;
+    }
+    if (!e.isFile() || !isMarkdownFile(e.name)) continue;
+    const occupant = readOccupant(full);
+    if (occupant.kind === "unreadable") {
+      stale.push(`${full} (${occupant.reason})`);
+      continue;
+    }
+    if (occupant.kind !== "memory") continue;
+    let found: string | undefined;
+    const outcome = await mutateMemoryFile(
+      full,
+      occupant.id,
+      {
+        frontmatter: (fm) => {
+          const cur = fm.scope;
+          if (typeof cur === "string" && scopeEquals(cur, oldScope)) found = cur;
+          return null;
+        },
+      },
+      { vaultRoot },
+    );
+    // Fremde Scopes bleiben unangetastet — geprüft wird nur, ob der ALTE
+    // Area-Name noch irgendwo steht. Ein Memory eines anderen Projekts im
+    // Regal war schon vorher keins dieser Area und wird hier keins.
+    if (found !== undefined) stale.push(`${full} (scope: ${found})`);
+    else if (outcome.kind !== "noop") stale.push(`${full} (${outcome.kind})`);
+  }
+}
+
 export interface RenameResult {
   name: string;
   scopesRewritten: number;
@@ -436,6 +522,22 @@ export async function renameArea(
           `${failed.join("; ")}`,
       );
     }
+    // Die Transaktionsgrenze, die dieser Operation fehlt — siehe
+    // {@link findStaleScopes}: Der Rename glaubt sich fertig; nachgesehen wird
+    // trotzdem, ob inzwischen wieder jemand den alten Namen hineingeschrieben
+    // hat.
+    if (kind === "project") {
+      const stale: string[] = [];
+      await findStaleScopes(vaultRoot, to, name, stale);
+      if (await isDir(docsTo)) await findStaleScopes(vaultRoot, docsTo, name, stale);
+      if (stale.length > 0) {
+        throw new Error(
+          `der Rename ist unvollständig: ${stale.length} Datei(en) im umgezogenen Regal ` +
+            `tragen weiterhin die alte Area "${name}" — wahrscheinlich hat ein paralleler ` +
+            `Save währenddessen mit der alten Area-Identität geschrieben: ${stale.join("; ")}`,
+        );
+      }
+    }
   } catch (err) {
     throw await rollbackRename(
       { vaultRoot, kind, name, newName, from, to, docsFrom, docsTo, docsFolderMoved },
@@ -479,27 +581,42 @@ async function rollbackRename(
   cause: Error,
 ): Promise<Error> {
   const stuck: string[] = [];
+  // Codex-Gegenreview (P1): Hier standen an beiden Aufrufen NEUE LEERE
+  // `failed`-Arrays, die danach niemand mehr ansah. Nachgestellt: Ein Memory
+  // blieb nach dem Rollback auf dem NEUEN Scope, der Ordner war zurückbenannt,
+  // und die Meldung behauptete trotzdem „nothing was changed" — derselbe
+  // geteilte Zustand wie auf dem Hinweg, nur auf dem Fehlerpfad und diesmal
+  // verschwiegen. Der Rollback weiß genauso wenig wie der Hinweg, was er nicht
+  // schreiben konnte; also sammelt er es und sagt es, pfadgenau wie `stuck`.
+  const notRestored: string[] = [];
   if (a.docsFolderMoved) {
     try {
       // Gleiche Reihenfolge wie im Hinweg, nur mit vertauschten Namen: die
       // Produktdoku-Signatur prüft `scope`, der hier schon der neue ist.
-      await rewriteDocMetadata(a.vaultRoot, a.docsTo, a.newName, a.name, []);
-      await rewriteScopes(a.vaultRoot, a.docsTo, a.newName, a.name, []);
+      await rewriteDocMetadata(a.vaultRoot, a.docsTo, a.newName, a.name, notRestored);
+      await rewriteScopes(a.vaultRoot, a.docsTo, a.newName, a.name, notRestored);
       await rename(a.docsTo, a.docsFrom);
     } catch {
       stuck.push(`dokumentationen/${a.newName} (sollte dokumentationen/${a.name} sein)`);
     }
   }
   try {
-    if (a.kind === "project") await rewriteScopes(a.vaultRoot, a.to, a.newName, a.name, []);
+    if (a.kind === "project") await rewriteScopes(a.vaultRoot, a.to, a.newName, a.name, notRestored);
     await rename(a.to, a.from);
   } catch {
     stuck.push(`${a.to} (sollte ${a.from} sein)`);
   }
-  if (stuck.length > 0) {
+  if (stuck.length > 0 || notRestored.length > 0) {
+    const detail: string[] = [];
+    if (stuck.length > 0) detail.push(`Von Hand zu richten: ${stuck.join("; ")}`);
+    if (notRestored.length > 0) {
+      detail.push(
+        `${notRestored.length} Datei(en) konnten nicht zurückgeschrieben werden und tragen ` +
+          `womöglich noch "${a.newName}" in Scope oder Tags: ${notRestored.join("; ")}`,
+      );
+    }
     return new Error(
-      `rename failed AND could not be fully undone: ${cause.message}. ` +
-        `Von Hand zu richten: ${stuck.join("; ")}.`,
+      `rename failed AND could not be fully undone: ${cause.message}. ${detail.join(". ")}.`,
     );
   }
   return new Error(`rename failed, nothing was changed: ${cause.message}`);
@@ -511,6 +628,34 @@ export interface DeleteResult {
   /** Wohin `dokumentationen/<projekt>` gewandert ist — undefined, wenn das
    *  Projekt kein Doku-Regal hatte. */
   docsTrashedTo?: string;
+}
+
+/**
+ * Die Grenze des Area-Trash — dieselbe Kette wie beim Memory-Trash
+ * (`trashPathFor()` in core/audit-log.ts).
+ *
+ * Codex-Gegenreview (Sicherheit): Hier stand eine SCHWÄCHERE Prüfung als dort
+ * — ein lexikalisches `startsWith` auf den Trash-Ordner plus ein
+ * `assertInsideVault` auf `.bastra/trash/areas`. Beides ist zu wenig:
+ * `assertInsideVault` fragt nur, ob das Ziel IRGENDWO im Vault liegt. Ein
+ * `.bastra -> memories` oder ein `.bastra/trash -> dokumentationen` verlässt
+ * den Vault nicht und kam deshalb glatt durch — aus dem Löschen wurde ein
+ * Verschieben in den AKTIVEN Bestand: die Area als „in den Trash gelegt"
+ * gemeldet, ihre Memories weiterhin im Recall und in Obsidian sichtbar. Der
+ * Trash ist eine eigene Grenze, nicht bloß ein Ordner im Vault; deshalb
+ * dieselben vier Fragen wie beim Memory-Trash, jede an ihr eigenes
+ * Elternverzeichnis: gehört `.bastra` dem Vault selbst (kein Symlink), liegt
+ * `trash` in `.bastra`, liegt `areas` im Trash, liegt das Ziel in `areas`.
+ */
+function assertAreaTrashBoundary(vaultRoot: string, areasRoot: string, dests: string[]): void {
+  const bastraDir = join(vaultRoot, ".bastra");
+  const trashDir = join(bastraDir, "trash");
+  assertOwnSubdir(vaultRoot, bastraDir, "trash an area");
+  assertInsideDir(bastraDir, trashDir, "trash an area", "the .bastra folder");
+  assertInsideDir(trashDir, areasRoot, "trash an area", "the trash folder");
+  for (const dest of dests) {
+    assertInsideDir(areasRoot, dest, "trash an area", "the area trash folder");
+  }
 }
 
 /** Move the whole area folder into the vault trash — recoverable, never rm.
@@ -539,15 +684,13 @@ export async function deleteArea(
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   const dest = join(trashRoot, `${name}-${stamp}`);
   const docsDest = join(trashRoot, `${name}-${stamp}-dokumentationen`);
-  for (const p of [dest, docsDest]) {
-    if (!resolve(p).startsWith(resolve(trashRoot) + sep)) {
-      throw new Error(`refusing to trash outside the trash folder: ${p}`);
-    }
-  }
+  // VOR dem mkdir: `recursive: true` folgt einem umgebogenen `.bastra` und
+  // legt den Trash dort an, bevor irgendeine Prüfung ihn zu sehen bekommt.
+  assertAreaTrashBoundary(vaultRoot, trashRoot, [dest, docsDest]);
   await mkdir(trashRoot, { recursive: true });
-  // Über das Dateisystem, nicht über den String: Ein `.bastra`, das als
-  // Symlink nach außen zeigt, ließe den Trash außerhalb des Vaults entstehen.
-  assertInsideVault(vaultRoot, trashRoot, "trash an area to");
+  // Und danach noch einmal: zwischen Prüfung und mkdir liegt ein await, und
+  // erst jetzt existieren die Ordner, deren Realpfad wirklich zählt.
+  assertAreaTrashBoundary(vaultRoot, trashRoot, [dest, docsDest]);
   await rename(from, dest);
   // Nebeneinander statt ineinander: der Trash-Ordner der Memories behält
   // seine Form (`<name>-<stamp>/<memory>.md`), damit ein Restore von Hand

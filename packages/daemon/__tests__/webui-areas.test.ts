@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -437,6 +437,128 @@ test("auch das Doku-Regal einer Area darf nicht woanders hinzeigen", async () =>
       renameArea(v, "project", "carnexus", "neuer-name"),
       /outside dokumentationen/,
     );
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * P0: Ein Area-Rename und ein normaler Save waren nicht gegeneinander
+ * serialisiert. Nachgestellt: Der Rename hat ein Memory bereits auf
+ * `scope: neu` umgeschrieben, danach schreibt ein Save derselben id noch mit
+ * der ALTEN Area-Identität. Beide meldeten Erfolg, die Datei lag danach im
+ * neuen Regal und trug wieder den alten Scope.
+ *
+ * Der Save wird hier durch ein atomares temp+rename auf dieselbe Datei
+ * nachgestellt — genau das, was der Save-Pfad tut, nur ohne den ganzen Daemon.
+ * Das Doku-Regal mit vielen Dokumenten sorgt dafür, dass der Rename nach dem
+ * Umschreiben des Memory-Regals noch reichlich zu tun hat: das Fenster, in dem
+ * der Save real landet.
+ */
+test("renameArea: ein Save, der während des Renames die alte Area schreibt, lässt den Rename scheitern", async () => {
+  const v = await makeVault();
+  try {
+    await mkdir(join(v, "dokumentationen", "carnexus"), { recursive: true });
+    for (let i = 0; i < 60; i++) {
+      await writeFile(
+        join(v, "dokumentationen", "carnexus", `doku-carnexus-${i}.md`),
+        `---\nid: doku-carnexus-${i}\ntitle: D${i}\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - carnexus\n  - area\ntags:\n  - product-doc\n  - carnexus\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc ${i}.\n`,
+      );
+    }
+    const stale = await readFile(
+      join(v, "memories", "projects", "carnexus", "fact-one.md"),
+      "utf8",
+    );
+    const target = join(v, "memories", "projects", "neu", "fact-one.md");
+
+    let settled = false;
+    const p = renameArea(v, "project", "carnexus", "neu").finally(() => {
+      settled = true;
+    });
+    p.catch(() => {});
+
+    let injected = false;
+    while (!settled && !injected) {
+      const raw = await readFile(target, "utf8").catch(() => null);
+      if (raw && matter(raw).data.scope === "neu") {
+        // Atomar wie ein echter Save — eine halb geschriebene Datei wäre
+        // schlicht kein Memory und würde am Nachweis vorbeilaufen.
+        const tmp = `${target}.race.tmp`;
+        await writeFile(tmp, stale, "utf8");
+        await rename(tmp, target);
+        injected = true;
+      } else {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    }
+    assert.ok(injected, "der parallele Save muss überhaupt gelandet sein");
+
+    await assert.rejects(p, /unvollständig|alte Area/);
+    // Und die Area ist wieder ganz: zurückgerollt statt halb umgezogen.
+    const projects = await readdir(join(v, "memories", "projects"));
+    assert.deepEqual(projects, ["carnexus"]);
+    const fm = matter(
+      await readFile(join(v, "memories", "projects", "carnexus", "fact-one.md"), "utf8"),
+    ).data;
+    assert.equal(fm.scope, "carnexus");
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * P1: `rollbackRename()` übergab NEUE LEERE `failed`-Arrays an
+ * `rewriteScopes()` und `rewriteDocMetadata()` und sah sie nie wieder an. Was
+ * der Rollback nicht zurückschreiben konnte, verschwieg er — und meldete
+ * trotzdem „rename failed, nothing was changed".
+ */
+test("renameArea: der Rollback verschweigt nicht, was er nicht zurückschreiben konnte", async () => {
+  const v = await makeVault();
+  const locked = join(v, "memories", "projects", "carnexus", "fact-one.md");
+  try {
+    await chmod(locked, 0o000);
+    const err = await renameArea(v, "project", "carnexus", "neuer-name").then(
+      () => null,
+      (e: Error) => e,
+    );
+    assert.ok(err, "der Rename muss scheitern");
+    assert.match(
+      err!.message,
+      /nicht zurückgeschrieben/,
+      "der Rollback muss nennen, was er nicht zurückschreiben konnte",
+    );
+    assert.doesNotMatch(
+      err!.message,
+      /nothing was changed/,
+      "„nichts wurde geändert“ ist eine Behauptung, die der Rollback hier nicht belegen kann",
+    );
+    assert.match(err!.message, /fact-one\.md/, "pfadgenau, wie im stuck-Pfad");
+  } finally {
+    await chmod(locked, 0o644).catch(() => {});
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Sicherheitsrunde: `deleteArea()` prüfte die Trash-Grenze SCHWÄCHER als der
+ * Memory-Trash in core (`trashPathFor`) — lexikalisches `startsWith` plus ein
+ * `assertInsideVault` auf `.bastra/trash/areas`. Zeigt `.bastra` auf ein
+ * AKTIVES Regal, liegt der Trash formal weiterhin im Vault: aus dem Löschen
+ * wurde ein Verschieben in den Bestand, gemeldet als „in den Trash gelegt".
+ */
+test("deleteArea: ein .bastra, das auf ein aktives Regal zeigt, ist kein Trash", async () => {
+  const v = await makeVault();
+  try {
+    await symlink(join(v, "memories", "people"), join(v, ".bastra"));
+    await assert.rejects(
+      deleteArea(v, "project", "carnexus"),
+      /own \.bastra|Private daemon state/,
+    );
+    // Die Area steht noch, und im aktiven Regal ist kein Trash entstanden.
+    const projects = await readdir(join(v, "memories", "projects"));
+    assert.ok(projects.includes("carnexus"));
+    const people = await readdir(join(v, "memories", "people"));
+    assert.deepEqual(people, ["someone.md"]);
   } finally {
     await rm(v, { recursive: true, force: true });
   }

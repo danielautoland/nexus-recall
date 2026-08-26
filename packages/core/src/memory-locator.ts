@@ -285,7 +285,14 @@ async function walkAsync(
             : { kind: "unreadable" as const, full };
         }
         stats.files++;
-        stats.bytes += raw.length;
+        // Codex-Gegenreview: `raw.length` zählt UTF-16-Codeeinheiten, keine
+        // Bytes. Nachgestellt an einer Datei voller Umlaute — jedes „ä" wiegt
+        // auf der Platte 2 Bytes und zählte hier 1, ein Emoji 4 gegen 2. Das
+        // Feld heißt „Gelesene Bytes" und trägt die Kostenmessung des
+        // autoritativen Scans; auf einem deutschsprachigen Vault meldete es
+        // systematisch zu wenig. `Buffer.byteLength` misst dieselbe Zeichenkette
+        // ohne sie ein zweites Mal zu kodieren.
+        stats.bytes += Buffer.byteLength(raw, "utf8");
         const occupant = occupantOfRaw(raw, full);
         return occupant.kind === "memory" && occupant.id === id
           ? { kind: "hit" as const, full }

@@ -40,7 +40,9 @@ export async function saveMemory(
   // nicht plötzlich woanders auftaucht. Die verbindliche Frage — gehört die
   // id schon jemandem? — stellt die Transaktion unten, und zwar an die Platte.
   const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input, locator);
-  return withIdClaim({ vaultRoot, id, filePath, authority: commit.authority, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
+  // Keine `authority` aus dem Aufrufer: Der Scan unter dem Lock ist der einzige
+  // Weg — siehe die Begründung an `SaveMemoryCommitOptions`.
+  return withIdClaim({ vaultRoot, id, filePath, op: input.overwrite ? "save_memory_update" : "save_memory_create" }, (claim) =>
     commitMemory(vaultRoot, input, commit, { id, filePath, scope }, claim),
   );
 }
@@ -420,6 +422,31 @@ async function commitMemory(
       throw writeConflict(id, filePath, "target changed while the save was being prepared");
     }
 
+    // Codex-Gegenreview (P0): Beim Re-Filing war die QUELLE die Patch-Vorlage
+    // (`baseRaw`), aber verglichen wurde vor dem Publish nur das ZIEL — und
+    // getrasht wurde die Quelle danach ungeprüft. Der id-Lock hilft dagegen
+    // nicht: Ein externer Writer (Obsidian, Cloud-Sync) kennt ihn nicht.
+    // Nachgestellt: Re-File beginnt auf `source: before-external`, während die
+    // fertige Tempdatei geschrieben wird ersetzt eine externe Bearbeitung die
+    // Quelle durch `source: after-external`, das Re-File meldet Erfolg — und
+    // das aktive Memory trägt danach `before-external`, die neuere Fassung
+    // liegt nur noch im Trash. Wiederherstellbar, aber aus dem aktiven Bestand
+    // still verschwunden.
+    //
+    // Der Vergleich steht VOR dem Publish, nicht vor dem Trash: Danach wäre
+    // das neue Ziel schon veröffentlicht und der Konflikt nur noch per
+    // Rollback zurückzunehmen. So ist nichts geschrieben und nichts getrasht.
+    if (refiledFrom !== null) {
+      const commitSource = await readTarget(refiledFrom);
+      if (commitSource !== baseRaw) {
+        throw writeConflict(
+          id,
+          refiledFrom,
+          "the source file changed while the re-file was being prepared",
+        );
+      }
+    }
+
     if (commitTarget === null) {
       // rename() replaces an existing destination. A hard link publishes the
       // completed temp inode atomically but fails with EEXIST if any writer
@@ -518,12 +545,38 @@ export interface DeleteMemoryResult {
  * Remove a memory file from disk by its absolute path. Caller resolves
  * the path through the vault index (so we don't have to guess where the
  * file lives — it could sit in any subfolder).
+ *
+ * Codex-Gegenreview (P0): Dieser Writer war öffentlich exportiert und lief an
+ * der ID-Transaktion vorbei — ein blindes `unlink` auf einen Pfad, den ein
+ * (möglicherweise veralteter) Index geliefert hat. Zwei Löcher in einem:
+ * Erstens sah er keinen parallelen Save derselben id, zweitens ist ein Pfad
+ * kein Identitätsbeweis — liegt dort inzwischen ein ANDERES Memory oder eine
+ * gewöhnliche Notiz, löschte er die. `vaultRoot` ist deshalb Pflicht, der
+ * Claim gilt für die id, und gelöscht wird nur, was unter dem Lock erkennbar
+ * DIESES Memory ist.
  */
-export async function deleteMemoryFile(filePath: string, id: string): Promise<DeleteMemoryResult> {
-  if (!(await fileExists(filePath))) {
-    throw new Error(`memory file not found: ${filePath}`);
-  }
-  await unlink(filePath);
-  return { id, file_path: filePath, deleted: true };
+export async function deleteMemoryFile(
+  filePath: string,
+  id: string,
+  opts: { vaultRoot: string },
+): Promise<DeleteMemoryResult> {
+  return withIdClaim(
+    { vaultRoot: opts.vaultRoot, id, filePath, op: "delete_memory_file" },
+    async () => {
+      if (!(await fileExists(filePath))) {
+        throw new Error(`memory file not found: ${filePath}`);
+      }
+      const occupant = readOccupant(filePath);
+      if (occupant.kind !== "memory" || occupant.id !== id) {
+        throw new Error(
+          `refusing to delete ${vaultRelative(opts.vaultRoot, filePath)}: it does not hold ` +
+            `memory '${id}' (found ${occupant.kind === "memory" ? `'${occupant.id}'` : occupant.kind}). ` +
+            `Re-resolve the path — a stale index entry must not delete a foreign file.`,
+        );
+      }
+      await unlink(filePath);
+      return { id, file_path: filePath, deleted: true };
+    },
+  );
 }
 

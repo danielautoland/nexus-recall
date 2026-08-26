@@ -9,7 +9,6 @@
  */
 import { z } from "zod";
 import type { MemoryLocator } from "./memory-locator.js";
-import type { IdAuthority } from "./id-transaction.js";
 import { MemoryTypeEnum, isPathSafeComponent } from "./schema.js";
 import { isPathSafeFolder } from "./save-text.js";
 
@@ -199,18 +198,24 @@ export interface SaveMemoryCommitOptions {
    * vaultweiten Dateiscan zurück.
    *
    * Ausdrücklich NICHT die Kollisionsprüfung: „Gehört diese id schon jemandem"
-   * beantwortet seit dem Umbau auf die ID-Transaktion die {@link authority}
-   * unter dem Lock. Ein Index kann prozessübergreifend veraltet sein, und eine
-   * veraltete Antwort unter einem Lock bleibt eine veraltete Antwort.
+   * beantwortet seit dem Umbau auf die ID-Transaktion der autoritative
+   * Plattenscan unter dem Lock. Ein Index kann prozessübergreifend veraltet
+   * sein, und eine veraltete Antwort unter einem Lock bleibt eine veraltete
+   * Antwort.
    */
   locator?: MemoryLocator;
   /**
-   * Wer unter dem ID-Lock verbindlich sagt, wo diese id lebt. Ohne Angabe: der
-   * Plattenscan, und das ist die einzige produktiv zulässige Antwort. Der
-   * frühere Sonderfall (Bulk-Import mit einem Vault-Snapshot) war nicht
-   * prozesssicher und ist entfallen — siehe `IdAuthority`.
+   * KEIN `authority`-Feld mehr. Codex-Gegenreview (P0): Solange die öffentliche
+   * Core-API erlaubte, die Auskunft „wo lebt diese id" selbst mitzubringen, war
+   * der autoritative Plattenscan optional — und damit die Invariante „eine ID,
+   * eine Datei" nur eine Konvention der internen Aufrufstellen. Nachgestellt:
+   * zwei sequenzielle Saves derselben id in verschiedene Regale, der zweite mit
+   * einer veralteten Authority `{ kind: "none" }` — beide Dateien wurden
+   * angelegt, also exakt der ursprüngliche Doppel-ID-Defekt, erreichbar über
+   * `saveMemory()`. Produktive Aufrufer gab es nach dem Entfall der
+   * Import-Ausnahme keine mehr; wer die Auskunft fälschen will, muss die
+   * Transaktion direkt aufrufen, nicht den Save.
    */
-  authority?: IdAuthority;
 }
 
 export const MEMORY_WRITE_CONFLICT = "BASTRA_WRITE_CONFLICT";

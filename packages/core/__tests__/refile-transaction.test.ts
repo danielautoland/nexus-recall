@@ -22,11 +22,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
-import { saveMemory, type SaveMemoryInput, type Located } from "../src/index.js";
+import {
+  saveMemory,
+  MEMORY_WRITE_CONFLICT,
+  type SaveMemoryInput,
+  type Located,
+} from "../src/index.js";
 
 const ID = "umzug";
 
@@ -131,4 +136,60 @@ test("ein AUSDRÜCKLICHER folder bleibt ein Re-File-Auftrag", async (t) => {
   assert.match(moved.file_path, /people/, "der Auftrag des Callers gewinnt");
   assert.equal(moved.refiled_from, first.file_path);
   assert.deepEqual(await activeFiles(root), [moved.file_path]);
+});
+
+test("eine extern geänderte QUELLE bricht das Re-File ab, statt sie zu überholen", async (t) => {
+  // Codex-Gegenreview (P0): Beim Re-Filing ist die Quelle die Patch-Vorlage,
+  // aber verglichen wurde vor dem Publish nur das ZIEL — und getrasht wurde die
+  // Quelle danach ungeprüft. Der id-Lock hilft dagegen nicht: Obsidian und
+  // Cloud-Sync kennen ihn nicht. Ergebnis war ein Erfolg, nach dem das aktive
+  // Memory die ALTE Fassung trug und die neuere nur noch im Trash lag.
+  const root = await mkdtemp(join(tmpdir(), "bastra-refile-source-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const first = await saveMemory(root, input({ body: "before-external" }));
+  const beforeRaw = await readFile(first.file_path, "utf8");
+  const externalRaw = beforeRaw.replace("before-external", "after-external");
+  assert.notEqual(externalRaw, beforeRaw);
+
+  // Der externe Writer schlägt zu, NACHDEM die Vorlage gelesen ist und BEVOR
+  // veröffentlicht wird. Das Fenster ist sonst nicht deterministisch zu
+  // treffen, deshalb hängt der Test am ersten Zugriff auf `body` — der liegt
+  // im Save genau dort, zwischen Vorlage und Commit.
+  const order = input({ overwrite: true, folder: "memories/people" });
+  let fired = false;
+  const withExternalEdit = new Proxy(order, {
+    get(t2, prop, recv) {
+      if (prop === "body" && !fired) {
+        fired = true;
+        writeFileSync(first.file_path, externalRaw, "utf8");
+      }
+      return Reflect.get(t2, prop, recv);
+    },
+  }) as SaveMemoryInput;
+
+  await assert.rejects(
+    saveMemory(root, withExternalEdit),
+    (err: unknown) =>
+      (err as { code?: string }).code === MEMORY_WRITE_CONFLICT &&
+      /source file changed/.test((err as Error).message),
+    "eine überholte Vorlage ist ein Write-Conflict, kein Erfolg",
+  );
+  assert.equal(fired, true, "der externe Writer muss im Fenster gelandet sein");
+
+  assert.deepEqual(
+    await activeFiles(root),
+    [first.file_path],
+    "nichts veröffentlicht — das Ziel darf gar nicht erst entstehen",
+  );
+  assert.equal(
+    await readFile(first.file_path, "utf8"),
+    externalRaw,
+    "die neuere Fassung steht unangetastet im aktiven Bestand",
+  );
+  assert.equal(
+    existsSync(join(root, ".bastra", "trash", `${ID}.md`)),
+    false,
+    "und nichts wurde getrasht",
+  );
 });

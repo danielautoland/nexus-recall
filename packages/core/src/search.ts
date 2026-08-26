@@ -52,7 +52,16 @@ export interface RecallHit {
     rank_bm25: number | null;
     /** 1-basierter Rang im Vector-Arm, `null` wenn dieser Arm den Hit nicht führte. */
     rank_vector: number | null;
-    /** Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der RRF_SCALE-Skalierung, die `score` ergibt. */
+    /**
+     * Unskalierter RRF-Wert (Σ 1/(k+rank)) vor der RRF_SCALE-Skalierung, die
+     * `score` ergibt: `round3(raw × RRF_SCALE) === score`, auf JEDEM Pfad.
+     *
+     * Das schließt den Commons-Arm ein, wenn er zu diesem Hit beigetragen hat
+     * (siehe `commons-fusion.ts`) — der Beitrag wurde dort früher nur auf den
+     * ausgelieferten Score addiert, und `raw` erklärte danach eine Zahl, die
+     * gar nicht mehr serviert wurde (gemessen: 225.574 gegen 160). Wer den
+     * Anteil OHNE Commons braucht, liest `personal_score`.
+     */
     raw: number;
     /**
      * Der Commons-Arm, nur gesetzt wenn er zu DIESEM Hit etwas beigetragen hat

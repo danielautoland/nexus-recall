@@ -23,13 +23,20 @@ import {
   stat,
   rename,
   access,
+  link,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
-import { readOccupant, assertInsideDir, assertInsideVault, withIdClaim, type IdClaim } from "@bastra-recall/core";
+import {
+  readOccupant,
+  assertInsideDir,
+  assertOwnSubdir,
+  withIdClaim,
+  type IdClaim,
+} from "@bastra-recall/core";
 import {
   scanForInjection,
   injectionCategories,
@@ -259,24 +266,150 @@ function resolveDocsFolder(vaultRoot: string, docsRoot: string, folderPath: stri
   // Dokumentenregal. `dokumente/linked -> ../memories` verlässt den Vault
   // nicht, verlässt aber sehr wohl das Regal — Original und Sidecar landeten
   // damit mitten im Memory-Bestand. Wer eine Grenze meint, muss sie benennen.
-  assertInsideVault(vaultRoot, docsRoot, "write a document");
+  // Sicherheitsrunde, zweite Ebene: Geprüft wurden bisher nur die NACHFAHREN
+  // der Grenze — die Grenze selbst musste lediglich irgendwo im Vault liegen.
+  // Nachgestellt: `dokumente -> memories` (der Dokumentenordner SELBST ein
+  // Symlink auf ein aktives Regal). `assertInsideVault` geht durch, weil das
+  // Ziel im Vault liegt, und `assertInsideDir` vergleicht danach Ziel gegen
+  // Ziel — jeder `folder_path` gilt als „im Dokumentenordner", und Original
+  // wie Sidecar landen mitten im Memory-Bestand.
+  //
+  // Und es bleibt nicht bei falscher Ablage: Der autoritative Plattenscan der
+  // ID-Transaktion steigt nicht in Symlink-Verzeichnisse ab
+  // (`Dirent.isDirectory()` ist lstat-basiert). Läge das Dokumentenregal
+  // hinter einem Link, wäre JEDES Sidecar darin für `claim.locate()`
+  // unsichtbar — die Invariante „eine ID, eine Datei" gölte für Dokumente nur
+  // noch auf dem Papier. Der Dokumenten-Root muss deshalb das EIGENE
+  // Unterverzeichnis des Vaults sein, dieselbe Zusage wie für `.bastra`. Wer
+  // sein Dokumentenregal woanders haben will, sagt das über Konfiguration,
+  // nicht über einen Symlink, den kein Aufrufer sieht.
+  //
+  // Das frühere `assertInsideVault(vaultRoot, docsRoot)` ist damit erledigt:
+  // Das eigene Unterverzeichnis des Vaults liegt im Vault, per Definition.
+  assertOwnSubdir(vaultRoot, docsRoot, "write a document");
   assertInsideDir(docsRoot, folder, "write a document", "the documents folder");
   return folder;
 }
 
 /**
- * write-to-tmp + rename, so a crash mid-write never leaves a torn sidecar.
- *
- * Der Tempname trug nur die PID — zwei gleichzeitige Writes auf DASSELBE
- * Sidecar (derselbe Prozess, zwei Tool-Calls) benutzten damit dieselbe
- * Tempdatei: der erste rename zog sie weg, der zweite lief ins Leere
- * (ENOENT) und meldete einen Fehler für einen Write, der inhaltlich fertig
- * war. Pro Write ein eigener Name.
+ * Den Bytestand an einem Pfad lesen, ohne einen I/O-Fehler als „da liegt
+ * nichts" zu verbuchen. Nur ENOENT beweist, dass der Pfad frei ist; EACCES
+ * oder EIO müssen fail-closed nach oben, sonst ginge ein unlesbares Sidecar
+ * als leerer Ausgangszustand durch. Gleiches Muster wie `readTarget` in
+ * core/save-commit.ts.
  */
-async function atomicWriteFile(path: string, content: string): Promise<void> {
+async function readTargetRaw(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/** Frontmatter eines Rohstands, ohne dass ein Parse-Fehler den Aufrufer
+ *  wirft — an der Stelle unten ist „unparsbar" schlicht „kein Sidecar". */
+function frontmatterOf(content: string): Record<string, unknown> | undefined {
+  try {
+    return { ...(matter(content).data as Record<string, unknown>) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Ein Sidecar veröffentlichen: write-to-tmp, Compare-and-Swap, rename.
+ *
+ * write-to-tmp + rename, damit ein Absturz mitten im Schreiben nie ein
+ * zerrissenes Sidecar hinterlässt. Der Tempname trug früher nur die PID — zwei
+ * gleichzeitige Writes auf DASSELBE Sidecar (derselbe Prozess, zwei
+ * Tool-Calls) benutzten damit dieselbe Tempdatei: der erste rename zog sie
+ * weg, der zweite lief ins Leere (ENOENT) und meldete einen Fehler für einen
+ * Write, der inhaltlich fertig war. Pro Write ein eigener Name.
+ *
+ * Codex-Gegenreview (P1): Veröffentlicht wurde OHNE Bytevergleich. Die
+ * ID-Transaktion serialisiert nur BASTRA-Writer; Obsidian, ein Cloud-Sync oder
+ * ein Nutzer mit einem Editor kennen den Claim nicht, und die mtime-Prüfung in
+ * `recategorizeDocument` liegt VOR dem Claim. Nachgestellt ohne `force`: eine
+ * externe Änderung, die nach dem Lesen des Sidecars und vor dem rename landet,
+ * war danach spurlos weg — und der Call meldete Erfolg. Deshalb werden hier
+ * unmittelbar vor der Veröffentlichung noch einmal genau die Bytes geprüft,
+ * auf denen der Kandidat gebaut wurde; weichen sie ab, gewinnt der andere
+ * Writer und der eigene Vorgang meldet einen Konflikt. Dasselbe Muster wie
+ * `commitMemory` (#285) im Save-Pfad für Memories.
+ *
+ * `preimage === null` heißt „am Pfad lag nichts" — ein gültiger
+ * Ausgangszustand (das frisch entstehende Sidecar eines `save_document`), der
+ * vom Fall „hat sich geändert" unterscheidbar bleiben muss. Er wird per
+ * `link()` statt `rename()` veröffentlicht: rename ersetzt ein inzwischen
+ * entstandenes Ziel stillschweigend, link scheitert mit EEXIST.
+ *
+ * Zu `force` (nur `recategorize_document`): Es heißt „überschreib die externe
+ * Bearbeitung bewusst" — der Nutzer hat den Verlust abgenickt —, also hebt es
+ * den Vergleich auf. Aber nur, solange die Datei am Pfad nachweislich noch DAS
+ * Sidecar dieses Dokuments ist. Liegt dort inzwischen etwas anderes (eine
+ * handgeschriebene Notiz, das Sidecar eines fremden Dokuments), ist das kein
+ * Konflikt, den jemand abnicken konnte, sondern fremdes Material — dagegen
+ * hilft kein Flag. `force` überstimmt eine Bearbeitung, nie eine Identität.
+ */
+async function publishSidecar(
+  path: string,
+  content: string,
+  opts: {
+    id: string;
+    /** Die Bytes, auf denen der Kandidat gebaut wurde. `null` = Pfad war frei. */
+    preimage: string | null;
+    /** `undefined`: dieser Aufrufer kennt kein `force` (save, move). */
+    force?: boolean;
+  },
+): Promise<void> {
+  const current = await readTargetRaw(path);
+  if (current !== opts.preimage) {
+    if (!opts.force) {
+      throw new Error(
+        `${path} changed on disk while this update was being prepared — something ` +
+          `outside Bastra (Obsidian, a sync client, an editor) wrote to it. Nothing ` +
+          `was written here, so that edit is still intact. Read the document again ` +
+          `(read_document ${opts.id}), redo your change on top of what you get, and ` +
+          `write again` +
+          (opts.force === false
+            ? `. If you mean to discard the external edit, pass force=true.`
+            : `.`),
+      );
+    }
+    if (current === null || !isDocumentSidecar(frontmatterOf(current), opts.id)) {
+      throw new Error(
+        `refusing to write ${path} even with force=true: the file there is no longer ` +
+          `the sidecar of ${opts.id}` +
+          (current === null ? ` — it is gone` : ``) +
+          `. force overrides an external EDIT of this document, not a different file ` +
+          `at its path. Move that file out of the way, or run without force to see ` +
+          `the conflict.`,
+      );
+    }
+  }
   const tmp = `${path}.tmp-${process.pid}-${randomUUID()}`;
   await writeFile(tmp, content, "utf8");
-  await rename(tmp, path);
+  try {
+    if (current === null) {
+      try {
+        await link(tmp, path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+          throw new Error(
+            `${path} was created by someone else during commit — nothing was written. ` +
+              `Read the document again (read_document ${opts.id}) and repeat the change.`,
+          );
+        }
+        throw err;
+      }
+      await unlink(tmp);
+    } else {
+      await rename(tmp, path);
+    }
+  } finally {
+    await unlink(tmp).catch(() => {});
+  }
 }
 
 interface DocumentFrontmatter {
@@ -420,11 +553,17 @@ export function isDocumentSidecar(fm: unknown, expectedId?: string): boolean {
  */
 async function readSidecarRaw(
   path: string,
-): Promise<{ data: Record<string, unknown>; body: string }> {
-  const parsed = matter(await readFile(path, "utf8"));
+): Promise<{ data: Record<string, unknown>; body: string; raw: string }> {
+  // `raw` ist nicht Dekoration: Genau diese Bytes sind das Preimage des
+  // Compare-and-Swap in {@link publishSidecar}. Ein aus `data`/`body` neu
+  // gerendertes Vergleichsobjekt wäre wertlos — es zeigte Unterschiede der
+  // YAML-Serialisierung an und nicht die des Inhalts.
+  const raw = await readFile(path, "utf8");
+  const parsed = matter(raw);
   return {
     data: { ...(parsed.data as Record<string, unknown>) },
     body: parsed.content,
+    raw,
   };
 }
 
@@ -614,7 +753,14 @@ async function commitDocument(
   }
   // Der Bestand auf der Platte, sobald ein eigenes Sidecar am Pfad liegt —
   // Grundlage des Metadaten-Patches weiter unten (siehe metadataPatch).
-  let existing: { data: Record<string, unknown>; body: string } | undefined;
+  let existing:
+    | { data: Record<string, unknown>; body: string; raw: string }
+    | undefined;
+  // Der Bytestand, auf dem dieser Kandidat gebaut wird — Preimage des
+  // Compare-and-Swap unten. `null` bleibt es, wenn am Pfad nichts liegt: Ein
+  // neu entstehendes Sidecar HAT kein Preimage, und das ist ein gültiger
+  // Ausgangszustand, kein Konflikt.
+  let preimage: string | null = null;
   const occupant = readOccupant(sidecarPath);
   if (occupant.kind !== "absent") {
     if (!args.overwrite) {
@@ -623,7 +769,10 @@ async function commitDocument(
     // `overwrite` heißt „ersetze MEIN Sidecar", nie „ersetze, was da liegt".
     // Eine handgeschriebene Obsidian-Notiz an `<original>.md` wurde vorher
     // vollständig überschrieben, weil allein der Pfad entschied.
-    if (occupant.kind === "memory") existing = await readSidecarRaw(sidecarPath);
+    if (occupant.kind === "memory") {
+      existing = await readSidecarRaw(sidecarPath);
+      preimage = existing.raw;
+    }
     if (occupant.kind === "foreign" || !isDocumentSidecar(existing?.data, docID)) {
       throw new Error(
         `refusing to overwrite ${sidecarPath}: not a document sidecar for ${docID}`,
@@ -743,7 +892,10 @@ async function commitDocument(
         body,
       )
     : renderSidecar(fm, body);
-  await atomicWriteFile(sidecarPath, content);
+  // `save_document` kennt kein `force`: `overwrite` heißt „ersetze den
+  // Dokument-Eintrag", nicht „ich habe eine externe Bearbeitung gesehen und
+  // will sie loswerden". Der Vergleich gilt hier deshalb ausnahmslos.
+  await publishSidecar(sidecarPath, content, { id: docID, preimage });
 
   // Cloud-Watcher-Mitigation: synchroner reindex statt auf chokidar warten.
   await vault.reindexFile(sidecarPath);
@@ -886,7 +1038,14 @@ async function commitRecategorize(
     metadataPatch(raw.data, rebuilt),
   );
 
-  await atomicWriteFile(sidecarPath, renderPatched(updated, raw.body));
+  // Die mtime-Prüfung oben lief VOR dem Claim und sieht nur, was bis dahin
+  // passiert ist. Hier wird gegen die Bytes verglichen, auf denen `updated`
+  // und `raw.body` tatsächlich beruhen.
+  await publishSidecar(sidecarPath, renderPatched(updated, raw.body), {
+    id: m.fm.id,
+    preimage: raw.raw,
+    force: args.force ?? false,
+  });
   await vault.reindexFile(sidecarPath);
 
   return { id: m.fm.id, sidecar_path: sidecarPath, reindexed: true };
@@ -987,7 +1146,12 @@ async function commitMoveDocument(
     raw.data,
     metadataPatch(raw.data, rebuilt),
   );
-  await atomicWriteFile(moved.newSidecarPath, renderPatched(updated, raw.body));
+  // `move_document` kennt kein `force` — ein Ordnerwechsel ist nie der Ort,
+  // an dem jemand eine fremde Bearbeitung bewusst wegwirft.
+  await publishSidecar(moved.newSidecarPath, renderPatched(updated, raw.body), {
+    id: m.fm.id,
+    preimage: raw.raw,
+  });
   await vault.reindexFile(moved.newSidecarPath);
 
   return {

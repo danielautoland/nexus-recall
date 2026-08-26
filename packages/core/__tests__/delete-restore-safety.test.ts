@@ -323,10 +323,49 @@ test("ein Trash, der in ein aktives Regal zeigt, ist kein Trash", async () => {
       auditedSoftDelete({
         vault, auditLog, vaultRoot: root, memoryID: "doomed", context: { actor: "user" },
       }),
-      /outside the \.bastra folder|not .*own \.bastra/,
+      /outside the \.bastra folder|not .*own (\.bastra|trash)/,
     );
     assert.deepEqual(await readdir(shelf), [], "nichts darf im aktiven Regal gelandet sein");
     assert.ok(existsSync(join(root, "doomed.md")), "und das Memory liegt noch, wo es lag");
+  } finally {
+    await vault.stop();
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+/**
+ * Codex-Gegenreview (P1): Das Vorbild eines Deletes kam aus dem VAULT-CACHE,
+ * obwohl die Lokalisierung daneben längst autoritativ von der Platte kommt.
+ *
+ * Nachgestellt: Ein geladenes Memory wird extern geändert und danach gelöscht.
+ * Im Trash lag die NEUE Fassung, im Audit stand die ALTE — der Trail beschrieb
+ * damit nicht die Datei, die tatsächlich verschoben wurde. Für einen Restore
+ * ist das nicht nur ungenau, sondern irreführend: `auditedRestore` meldet
+ * `diff_before` des Deletes als `diff_after` des Restores.
+ */
+test("das Delete-Audit beschreibt die Datei auf der PLATTE, nicht den Cache-Stand", async () => {
+  const { root, vault, auditLog } = await makeVault("bastra-del-preimage-");
+  const file = join(root, "doomed.md");
+  try {
+    assert.equal(vault.get("doomed")?.fm.summary, "s", "Kontrolle: der Cache hält die alte Fassung");
+    // Extern geändert — dasselbe Memory, neuer Inhalt, kein Reindex.
+    await writeFile(file, memoryMarkdown("doomed").replace("summary: s", "summary: extern geaendert"), "utf8");
+    assert.equal(vault.get("doomed")?.fm.summary, "s", "Kontrolle: der Cache weiß nichts davon");
+
+    const out = await auditedSoftDelete({
+      vault, auditLog, vaultRoot: root, memoryID: "doomed", context: { actor: "user" },
+    });
+
+    assert.equal(
+      (out.audit.diff_before as Record<string, unknown>).summary,
+      "extern geaendert",
+      "das Audit muss die Fassung nennen, die wirklich in den Trash gewandert ist",
+    );
+    assert.match(
+      await readFile(out.trashPath, "utf8"),
+      /extern geaendert/,
+      "Kontrolle: im Trash liegt genau diese Fassung",
+    );
   } finally {
     await vault.stop();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

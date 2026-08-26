@@ -18,9 +18,10 @@
  * beweist nicht, welches Memory dort liegt. Wer `superseded_by` auf eine Datei
  * stempelt, muss wissen, dass es die gemeinte ist.
  *
- * Prozessübergreifend gesperrt wird über die ID-Transaktion: Wer `vaultRoot`
- * mitgibt (jeder produktive Aufrufer tut das), läuft unter demselben id-Lock
- * wie der Save-Pfad. Codex-Gegenreview (P0): Ohne ihn lag zwischen Read und
+ * Prozessübergreifend gesperrt wird über die ID-Transaktion: Jede Mutation mit
+ * einem `expectedId` läuft unter demselben id-Lock wie der Save-Pfad, und
+ * `vaultRoot` ist dafür Pflicht — optional war es genau das Loch, durch das ein
+ * Aufrufer an der Transaktion vorbeischreiben konnte. Codex-Gegenreview (P0): Ohne ihn lag zwischen Read und
  * Rename ein Fenster, in dem ein anderer Writer schrieb — und dessen Änderung
  * machte der Rename hier still rückgängig. Der Vergleich vor dem Commit
  * schließt das Fenster nicht, er erkennt nur, dass es zugeschlagen hat.
@@ -66,16 +67,41 @@ export interface MemoryMutation {
  */
 export async function mutateMemoryFile(
   filePath: string,
+  expectedId: string,
+  mutation: MemoryMutation,
+  opts: MutateOptions & { vaultRoot: string },
+): Promise<MutateOutcome>;
+export async function mutateMemoryFile(
+  filePath: string,
+  expectedId: null,
+  mutation: MemoryMutation,
+  opts?: MutateOptions,
+): Promise<MutateOutcome>;
+export async function mutateMemoryFile(
+  filePath: string,
   expectedId: string | null,
   mutation: MemoryMutation,
   opts: MutateOptions = {},
 ): Promise<MutateOutcome> {
-  // Ohne id oder ohne Vault gibt es nichts zu sperren: Der Trash-Stempel
-  // (expectedId === null) trifft eine Datei, die per Definition kein
-  // indexiertes Memory mehr ist, und ein Aufrufer ohne `vaultRoot` kann den
-  // Lock-Pfad gar nicht bilden. Beides bleibt beim Compare-and-Swap allein.
-  if (opts.vaultRoot === undefined || expectedId === null) {
+  // Der Trash-Stempel (expectedId === null) trifft eine Datei, die per
+  // Definition kein indexiertes Memory mehr ist — es gibt keine id, an der ein
+  // Lock hängen könnte. Das bleibt beim Compare-and-Swap allein.
+  if (expectedId === null) {
     return mutateUnderClaim(filePath, expectedId, mutation);
+  }
+  // Codex-Gegenreview (P0): `vaultRoot` war optional, und ohne ihn lief dieser
+  // öffentlich exportierte Writer ganz ohne Claim — die Invariante „withIdClaim
+  // ist der einzige Weg" galt damit nur für die internen Aufrufstellen, nicht
+  // für die API. Nachgestellt: ein Aufruf ohne `vaultRoot` schrieb an jeder
+  // Transaktion vorbei und machte den Rename eines parallelen Writers still
+  // rückgängig. Wer ein Memory bei seiner id anfasst, muss sagen, in welchem
+  // Vault es lebt — die Überladungen oben erzwingen das im Typsystem, diese
+  // Prüfung auch für Aufrufer ohne Typen.
+  if (opts.vaultRoot === undefined) {
+    throw new Error(
+      `mutateMemoryFile('${expectedId}') requires a vaultRoot: mutating a memory by its id ` +
+        `must run under the id transaction, never beside it.`,
+    );
   }
   return withIdClaim({ vaultRoot: opts.vaultRoot, id: expectedId, filePath, op: opts.op ?? "mutate" }, () =>
     mutateUnderClaim(filePath, expectedId, mutation),
@@ -85,9 +111,9 @@ export async function mutateMemoryFile(
 export interface MutateOptions {
   /** Welcher Writer hier mutiert — geht in die Scan-Messung ein. */
   op?: string;
-  /** Der Vault, unter dessen ID-Transaktion die Mutation laufen soll. Jeder
-   *  produktive Aufrufer gibt ihn mit; ohne ihn bleibt es beim
-   *  Compare-and-Swap ohne prozessübergreifende Sperre. */
+  /** Der Vault, unter dessen ID-Transaktion die Mutation läuft. Pflicht, sobald
+   *  ein `expectedId` im Spiel ist; nur der Trash-Stempel (`expectedId === null`)
+   *  kommt ohne aus, weil dort keine id zu sperren ist. */
   vaultRoot?: string;
 }
 

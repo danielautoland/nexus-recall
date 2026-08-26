@@ -65,7 +65,11 @@ export function fuseCommonsHits(
   weightFor: (id: string) => number,
   opts: { personalFused: boolean },
 ): RecallHit[] {
-  const fused = new Map<string, { hit: RecallHit; raw: number }>();
+  // `fromCommons` merkt sich, ob dieser Eintrag am Ende einen Commons-Beitrag
+  // trägt. Nur dann wird `rrf.raw` neu gesetzt (siehe unten) — ein Treffer, zu
+  // dem die Commons nichts gesagt haben, behält seinen exakten, ungerundeten
+  // RRF-Wert aus der persönlichen Fusion.
+  const fused = new Map<string, { hit: RecallHit; raw: number; fromCommons: boolean }>();
   personal.forEach((hit, index) => {
     // Fusioniert: der Score bleibt stehen, Commons kommt als dritter Arm dazu.
     // Degradiert: der Rohwert ist unbrauchbar, nur sein Listenrang zählt.
@@ -93,7 +97,7 @@ export function fuseCommonsHits(
             rank_personal_list: index + 1,
           },
         } as RecallHit);
-    fused.set(hit.id, { hit: kept, raw: score });
+    fused.set(hit.id, { hit: kept, raw: score, fromCommons: false });
   });
   commons.forEach((hit, index) => {
     const weight = weightFor(hit.id);
@@ -124,6 +128,7 @@ export function fuseCommonsHits(
         };
       }
       existing.raw += contribution;
+      existing.fromCommons = true;
     } else {
       fused.set(hit.id, {
         // Ein Treffer, den NUR die Commons kennen: der ganze Score kommt von
@@ -140,10 +145,36 @@ export function fuseCommonsHits(
           },
         },
         raw: contribution,
+        fromCommons: true,
       });
     }
   });
   return [...fused.values()]
-    .map(({ hit, raw }) => ({ ...hit, score: round3(raw) }))
+    .map(({ hit, raw, fromCommons }) => {
+      const scored = { ...hit, score: round3(raw) };
+      // Codex-Gegenreview (Vertragsfehler): `rrf.raw` ist laut `search.ts` „der
+      // unskalierte RRF-Wert vor der RRF_SCALE-Skalierung, die `score` ergibt".
+      // Der Commons-Beitrag wurde aber nur auf `raw` (die lokale Summe)
+      // addiert, nicht auf das Beleg-Feld. Gemessen: ausgelieferter Score
+      // 225.574 gegen `rrf.raw × RRF_SCALE = 160`, auf dem Kollapspfad 147.541
+      // gegen 81.967. Ein Feld, das eine Zahl erklären soll und eine andere
+      // erklärt, ist schlimmer als keines.
+      //
+      // Entschieden für MITFÜHREN statt Vertrag-Verengen: `raw` erklärt die
+      // ausgelieferte Zahl, `round3(raw × RRF_SCALE) === score` gilt wieder auf
+      // jedem Pfad. Der Anteil OHNE Commons bleibt separat lesbar — dafür gibt
+      // es `personal_score`, und der Commons-Anteil ist aus `rank_commons` und
+      // `commons_weight` nachrechenbar. Die Gegenrichtung („raw meint nur die
+      // persönlichen Arme") hätte `raw` zu einer Zahl gemacht, die man aus dem
+      // Response nirgends wiederfindet, und ein zweites Feld für die
+      // Score-Erklärung gebraucht.
+      //
+      // Nur bei tatsächlichem Commons-Beitrag: Ein Treffer, zu dem die Commons
+      // nichts gesagt haben, behält seinen exakten Wert aus der persönlichen
+      // Fusion — hier würde `raw / RRF_SCALE` ihn nur um die Rundung von
+      // `score` verfälschen.
+      if (fromCommons && scored.rrf) scored.rrf = { ...scored.rrf, raw: raw / RRF_SCALE };
+      return scored;
+    })
     .sort((a, b) => b.score - a.score);
 }
