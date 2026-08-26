@@ -20,6 +20,7 @@ import type {
 import { extractWikilinks, todayISO, dedupe } from "./save-text.js";
 import { fileExists, readTarget, acquireCommitClaim, writeConflict } from "./save-commit.js";
 import { resolveMemoryTarget } from "./save-target.js";
+import { readOccupant, scanVaultForId, vaultRelative } from "./memory-locator.js";
 
 /**
  * Build the .md content for a new memory and write it into the vault.
@@ -30,9 +31,62 @@ export async function saveMemory(
   input: SaveMemoryInput,
   commit: SaveMemoryCommitOptions = {},
 ): Promise<SaveMemoryResult> {
-  const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input);
+  const locator = commit.locator ?? { locate: (wanted: string) => scanVaultForId(vaultRoot, wanted) };
+  const { id, filePath, scope } = resolveMemoryTarget(vaultRoot, input, locator);
   const observedTarget = await readTarget(filePath);
   const exists = observedTarget !== null;
+
+  // Wer am Ziel liegt, entscheidet, ob überhaupt geschrieben werden darf.
+  // Vorher galt „belegt = das ist mein Memory", und daraus wurden drei
+  // Datenverlust-Pfade: eine gewöhnliche Obsidian-Notiz am kanonischen
+  // Zielpfad wurde bei `overwrite: true` ersetzt, ein FREMDES Memory am
+  // selben Pfad wurde überschrieben und dabei auf die neue id umgeschrieben,
+  // und eine Notiz mit einem zufälligen YAML-Feld `id` galt als Memory.
+  // `overwrite` ist die Erlaubnis, DIESES Memory zu ersetzen — nie die,
+  // irgendeine Datei zu ersetzen.
+  if (exists) {
+    const occupant = readOccupant(filePath);
+    if (occupant.kind === "foreign") {
+      throw new Error(
+        `refusing to overwrite ${vaultRelative(vaultRoot, filePath)}: it is not a memory ` +
+          `(no valid memory frontmatter). Pick a different id, or move that file out of the way.`,
+      );
+    }
+    if (occupant.kind === "memory" && occupant.id !== id) {
+      throw new Error(
+        `refusing to overwrite ${vaultRelative(vaultRoot, filePath)}: it holds memory ` +
+          `'${occupant.id}', not '${id}'. Two memories cannot share one file.`,
+      );
+    }
+  }
+
+  // Ein `ambiguous` ist ein Vault-Defekt (#240/A2.3), keine Wahlmöglichkeit:
+  // Der Index nimmt still eine der Dateien, und ein Save, der die andere
+  // trifft, lässt die Kopie unverändert stehen. Lieber laut abbrechen.
+  const elsewhere = locator.locate(id);
+  if (elsewhere.kind === "ambiguous") {
+    throw new Error(
+      `memory '${id}' exists in more than one file: ` +
+        `${elsewhere.filePaths.map((p) => vaultRelative(vaultRoot, p)).join(", ")}. ` +
+        `Remove or rename all but one before saving — the index silently loads only one of them.`,
+    );
+  }
+  // Dieselbe id an einem ANDEREN Ort ist eine Kollision, kein freier Platz.
+  // Ohne diese Prüfung legten zwei Saves derselben id in zwei `folder`-Regalen
+  // beide erfolgreich eine Datei an, und nach dem nächsten Neustart lud der
+  // Vault nur die alphabetisch erste.
+  //
+  // Mit `overwrite` ist es dagegen ein bewusstes Re-Filing (#64): Der Caller
+  // benennt DIESES Memory und einen neuen Ort dafür. Das Aufräumen der alten
+  // Datei liegt bei ihm — `tool-handlers.ts` trasht sie, sobald der Pfad sich
+  // geändert hat, und warnt, wenn das misslingt.
+  if (!input.overwrite && elsewhere.kind === "unique" && elsewhere.filePath !== filePath) {
+    throw new Error(
+      `memory already exists: ${id} (at ${vaultRelative(vaultRoot, elsewhere.filePath)}). ` +
+        `Saving it to ${vaultRelative(vaultRoot, filePath)} would create a second file with the ` +
+        `same id — pass the existing folder, or pick a different id.`,
+    );
+  }
   if (
     commit.expectedTarget !== undefined &&
     commit.expectedTarget !== observedTarget

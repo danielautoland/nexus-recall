@@ -29,6 +29,7 @@ import { touchLoadedMarker } from "./session-state.js";
 import { tokens as words } from "./save-similarity.js";
 
 import type { ToolDeps } from "./tool-deps.js";
+import { vaultLocator } from "./vault-locator.js";
 import { scoreSaveQuality, GENERIC_TRIGGER_WORDS, type SaveQualityResult } from "./save-quality.js";
 import { MEMORY_TOOL_DEFS } from "./tool-defs-memory.js";
 
@@ -359,7 +360,7 @@ async function saveMemoryInner(
   // ist die Stelle, die das Ziel bestimmt, inklusive Bestandsschutz (auch
   // für Memories, die in memorys/ oder einem folder-Regal liegen); sie fasst
   // nichts an und ist deshalb auch vor dem Schreiben die richtige Auskunft.
-  const finalId = resolveMemoryTarget(deps.vaultPath, parsed.data).id;
+  const finalId = resolveMemoryTarget(deps.vaultPath, parsed.data, vaultLocator(deps.vault)).id;
 
   // #205: a save declaring a contradiction is a conflict report, not a write —
   // diverted before any quality scoring or file I/O touches the vault.
@@ -447,7 +448,7 @@ async function saveMemoryInner(
       ? { ...base, folder: relative(deps.vaultPath, dirname(previous.filePath)) }
       : base;
 
-  const result = await saveMemory(deps.vaultPath, input);
+  const result = await saveMemory(deps.vaultPath, input, { locator: vaultLocator(deps.vault) });
   let refileWarning: string | undefined;
   if (previous && previous.filePath !== result.file_path) {
     try {

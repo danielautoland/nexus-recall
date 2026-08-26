@@ -8,6 +8,7 @@
  * `save_memory` accepts, and it must stay readable without the I/O around it.
  */
 import { z } from "zod";
+import type { MemoryLocator } from "./memory-locator.js";
 import { MemoryTypeEnum, isPathSafeComponent } from "./schema.js";
 import { isPathSafeFolder } from "./save-text.js";
 
@@ -185,6 +186,15 @@ export interface SaveMemoryResult {
  */
 export interface SaveMemoryCommitOptions {
   expectedTarget?: string | null;
+  /**
+   * Identitätsauskunft für den Save-Pfad. Der Daemon reicht eine Fassung
+   * durch, die den bereits geladenen Vault-Index befragt — ohne sie fällt
+   * `saveMemory` auf einen vaultweiten Dateiscan zurück, der dasselbe
+   * beantwortet, nur teurer. Nie weglassen, wo ein Index in Reichweite ist:
+   * Der Scan kostet auf einem Vault mit tausend Memories je Save spürbar
+   * Zeit, und beim Bulk-Import summiert sich das.
+   */
+  locator?: MemoryLocator;
 }
 
 export const MEMORY_WRITE_CONFLICT = "BASTRA_WRITE_CONFLICT";

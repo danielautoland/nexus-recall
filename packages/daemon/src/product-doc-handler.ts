@@ -28,6 +28,7 @@ import {
 } from "@bastra-recall/core";
 import type { ToolDeps } from "./tool-handlers.js";
 import { recordAudit } from "./audit-trail.js";
+import { vaultLocator } from "./vault-locator.js";
 
 export const SaveProductDocArgs = z.object({
   project: z.string().min(1).refine(isPathSafeComponent, {
@@ -108,21 +109,25 @@ export async function saveProductDocHandler(
 
   const before = deps.vault.get(id);
   const existed = before !== undefined;
-  const result = await saveMemory(deps.vaultPath, {
-    id,
-    title,
-    type: "doc",
-    summary: truncateSummaryTo(summary, SUMMARY_MAX),
-    body,
-    topic_path: ["doku", projectKey, areaSlug],
-    tags: parsed.data.tags ?? ["product-doc", projectKey],
-    scope: projectKey,
-    recall_when: parsed.data.recall_when ?? [
-      `how to use ${title}`,
-      `${project} ${area} user guide`,
-    ],
-    overwrite: true,
-  });
+  const result = await saveMemory(
+    deps.vaultPath,
+    {
+      id,
+      title,
+      type: "doc",
+      summary: truncateSummaryTo(summary, SUMMARY_MAX),
+      body,
+      topic_path: ["doku", projectKey, areaSlug],
+      tags: parsed.data.tags ?? ["product-doc", projectKey],
+      scope: projectKey,
+      recall_when: parsed.data.recall_when ?? [
+        `how to use ${title}`,
+        `${project} ${area} user guide`,
+      ],
+      overwrite: true,
+    },
+    { locator: vaultLocator(deps.vault) },
+  );
   // Watcher is unreliable on cloud mounts — index now so find_document sees it.
   await deps.vault.reindexFile(result.file_path);
 
