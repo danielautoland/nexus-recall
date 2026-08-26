@@ -6,9 +6,7 @@
  * (rendering lives in core/conflict.ts), the index is refreshed, and the
  * audit log records the diversion (which puts it in the #288 journal too).
  */
-import { readFile, writeFile } from "node:fs/promises";
-import matter from "gray-matter";
-import { renderConflictBlock, type SaveMemoryInput } from "@bastra-recall/core";
+import { mutateMemoryFile, renderConflictBlock, type SaveMemoryInput } from "@bastra-recall/core";
 import { recordAudit } from "./audit-trail.js";
 import type { ToolDeps } from "./tool-deps.js";
 
@@ -43,8 +41,6 @@ export async function markConflict(
     );
   }
 
-  const raw = await readFile(target.filePath, "utf8");
-  const { data, content } = matter(raw);
   const today = new Date().toISOString().slice(0, 10);
   const block = renderConflictBlock(
     {
@@ -55,8 +51,25 @@ export async function markConflict(
     { statement: input.summary, detail: input.body, date: today, source: input.source },
     today,
   );
-  const nextBody = `${content.replace(/\s*$/, "")}\n\n${block}\n`;
-  await writeFile(target.filePath, matter.stringify(nextBody, data as Record<string, unknown>), "utf8");
+  // Über `mutateMemoryFile`: atomar (ein direktes writeFile ließ die Datei
+  // kurzzeitig halb geschrieben), mit Identitätsprüfung (ein Pfad beweist
+  // nicht, welches Memory dort liegt) und mit Vergleich vor dem Commit, damit
+  // ein paralleler Save nicht rückgängig gemacht wird.
+  const outcome = await mutateMemoryFile(target.filePath, targetId, {
+    body: (content) => `${content.replace(/\s*$/, "")}\n\n${block}\n`,
+  });
+  if (outcome.kind === "identity-mismatch") {
+    throw new Error(
+      `conflict_with: ${target.filePath} does not hold memory '${targetId}' ` +
+        `(found ${outcome.found ?? "no memory"}) — refusing to mark a conflict on a foreign file.`,
+    );
+  }
+  if (outcome.kind === "raced") {
+    throw new Error(
+      `conflict_with: '${targetId}' changed while the conflict block was being written — ` +
+        `nothing was modified. Retry.`,
+    );
+  }
   await deps.vault.reindexFile(target.filePath);
 
   await recordAudit({

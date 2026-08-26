@@ -1,0 +1,97 @@
+/**
+ * Ein Memory-File ändern, ohne es zu verlieren.
+ *
+ * Der Vault hat mehrere Writer, die nicht der Save-Pfad sind: Conflict-Marking
+ * hängt einen Block an, `superseded_by` stempelt eine Kante, das Archiv setzt
+ * `obsolete`. Jeder tat es auf eigene Weise, und zwei Muster kamen dabei immer
+ * wieder vor (Codex-Audit, P1):
+ *
+ *   - Ein direktes `writeFile` auf die Zieldatei. Das lässt sie kurzzeitig
+ *     leer oder halb geschrieben — ein Fenster, in dem Watcher, Cloud-Sync und
+ *     jeder parallele Reader eine kaputte Datei sehen. Genau deshalb schreibt
+ *     der Save-Pfad seit jeher temp+rename.
+ *   - Kein Vergleich zwischen Read und Commit. Wer zwischendurch schreibt,
+ *     verliert: Der Transformierende rechnet auf dem alten Inhalt und macht
+ *     die fremde Änderung mit seinem Rename rückgängig.
+ *
+ * Dazu kommt die Identitätsfrage, die dieselbe ist wie im Save-Pfad: Ein Pfad
+ * beweist nicht, welches Memory dort liegt. Wer `superseded_by` auf eine Datei
+ * stempelt, muss wissen, dass es die gemeinte ist.
+ *
+ * Was diese Funktion NICHT tut: prozessübergreifend sperren. Ein echtes
+ * ID-Lock über alle Writer hinweg ist ein eigener Umbau; der Vergleich vor dem
+ * Commit schließt das Fenster nicht, er erkennt nur, dass es zugeschlagen hat —
+ * und lässt dann den anderen gewinnen, statt ihn zu überschreiben.
+ */
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import matter from "gray-matter";
+import { readOccupant } from "./memory-locator.js";
+
+export type MutateOutcome =
+  /** Geschrieben. */
+  | { kind: "written" }
+  /** Zwischen Read und Commit hat jemand anderes geschrieben — nichts getan. */
+  | { kind: "raced" }
+  /** Die Datei hält nicht das erwartete Memory — nichts getan. */
+  | { kind: "identity-mismatch"; found: string | null };
+
+export interface MemoryMutation {
+  /** Frontmatter-Patch. Rückgabe `null` bricht die Mutation ab (nichts zu tun). */
+  frontmatter?: (fm: Record<string, unknown>) => Record<string, unknown> | null;
+  /** Body-Transformation. */
+  body?: (body: string) => string;
+}
+
+/**
+ * Frontmatter und/oder Body eines Memory-Files ändern.
+ *
+ * @param filePath Die Datei, die geändert werden soll.
+ * @param expectedId Welches Memory dort liegen MUSS. `null` überspringt die
+ *   Identitätsprüfung — nur für Dateien, die per Definition kein indexiertes
+ *   Memory mehr sind (der Archiv-Stempel auf einer Datei im Trash).
+ */
+export async function mutateMemoryFile(
+  filePath: string,
+  expectedId: string | null,
+  mutation: MemoryMutation,
+): Promise<MutateOutcome> {
+  if (expectedId !== null) {
+    const occupant = readOccupant(filePath);
+    if (occupant.kind !== "memory" || occupant.id !== expectedId) {
+      return {
+        kind: "identity-mismatch",
+        found: occupant.kind === "memory" ? occupant.id : null,
+      };
+    }
+  }
+
+  const raw = await readFile(filePath, "utf8");
+  const parsed = matter(raw);
+  // Copy statt in-place: gray-matter cached `matter(content)` per Input-String,
+  // eine Mutation von `parsed.data` vergiftet den Cache-Eintrag für jeden
+  // späteren Parser desselben Inhalts.
+  const fmBefore = { ...(parsed.data as Record<string, unknown>) };
+  const fmAfter = mutation.frontmatter ? mutation.frontmatter(fmBefore) : fmBefore;
+  if (fmAfter === null) return { kind: "raced" };
+  const bodyAfter = mutation.body ? mutation.body(parsed.content) : parsed.content;
+  const next = matter.stringify(bodyAfter, fmAfter);
+
+  // Eindeutig je SCHREIBVORGANG, nicht je Prozess: Zwei überlappende
+  // Mutationen derselben Datei im selben Prozess teilten sich sonst die
+  // Zwischendatei und rannten um das Rename (#240/B3).
+  const tmp = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.mutate.tmp`;
+  await writeFile(tmp, next, "utf8");
+  try {
+    const current = await readFile(filePath, "utf8").catch(() => null);
+    if (current !== raw) {
+      await unlink(tmp).catch(() => {});
+      return { kind: "raced" };
+    }
+    await rename(tmp, filePath);
+    return { kind: "written" };
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+}

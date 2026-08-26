@@ -10,12 +10,11 @@
  * Vault-Mutation — kein doppelter Code, kein Drift.
  */
 import { relative, dirname } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import matter from "gray-matter";
 import { z } from "zod";
 import {
   saveMemory,
+  mutateMemoryFile,
   resolveMemoryTarget,
   moveToTrash,
   SaveMemoryInput,
@@ -485,13 +484,19 @@ async function saveMemoryInner(
     const target = deps.vault.get(supersedes);
     if (target) {
       try {
-        const raw = await readFile(target.filePath, "utf8");
-        const { data, content } = matter(raw);
-        await writeFile(
-          target.filePath,
-          matter.stringify(content, { ...(data as Record<string, unknown>), superseded_by: result.id }),
-          "utf8",
-        );
+        // Atomar, mit Identitätsprüfung und Vergleich vor dem Commit: Ein
+        // direktes writeFile ließ die Datei kurzzeitig halb geschrieben, und
+        // ein paralleler Save darauf wäre still rückgängig gemacht worden.
+        const stamped = await mutateMemoryFile(target.filePath, supersedes, {
+          frontmatter: (fm) => ({ ...fm, superseded_by: result.id }),
+        });
+        if (stamped.kind !== "written") {
+          throw new Error(
+            stamped.kind === "raced"
+              ? `'${supersedes}' changed while the supersede edge was being stamped`
+              : `${target.filePath} does not hold memory '${supersedes}'`,
+          );
+        }
         await deps.vault.reindexFile(target.filePath);
       } catch (err) {
         // The new memory is written and carries `replaces`, so the edge is
@@ -574,10 +579,12 @@ export async function archiveMemoryHandler(
   deps.vault.forgetFile(mem.filePath);
   if (superseded_by) {
     try {
-      const raw = await readFile(archivedTo, "utf8");
-      const { data, content } = matter(raw);
-      const fm = { ...(data as Record<string, unknown>), obsolete: true, superseded_by };
-      await writeFile(archivedTo, matter.stringify(content, fm), "utf8");
+      // `expectedId: null` — die Datei liegt im Trash und ist per Definition
+      // kein indexiertes Memory mehr; geprüft wird nur, dass niemand sie
+      // zwischen Lesen und Schreiben angefasst hat.
+      await mutateMemoryFile(archivedTo, null, {
+        frontmatter: (fm) => ({ ...fm, obsolete: true, superseded_by }),
+      });
     } catch {
       /* Audit-Stempel ist best-effort — das Archiv selbst steht bereits. */
     }
