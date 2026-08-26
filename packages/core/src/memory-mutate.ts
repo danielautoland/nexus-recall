@@ -18,15 +18,18 @@
  * beweist nicht, welches Memory dort liegt. Wer `superseded_by` auf eine Datei
  * stempelt, muss wissen, dass es die gemeinte ist.
  *
- * Was diese Funktion NICHT tut: prozessübergreifend sperren. Ein echtes
- * ID-Lock über alle Writer hinweg ist ein eigener Umbau; der Vergleich vor dem
- * Commit schließt das Fenster nicht, er erkennt nur, dass es zugeschlagen hat —
- * und lässt dann den anderen gewinnen, statt ihn zu überschreiben.
+ * Prozessübergreifend gesperrt wird über die ID-Transaktion: Wer `vaultRoot`
+ * mitgibt (jeder produktive Aufrufer tut das), läuft unter demselben id-Lock
+ * wie der Save-Pfad. Codex-Gegenreview (P0): Ohne ihn lag zwischen Read und
+ * Rename ein Fenster, in dem ein anderer Writer schrieb — und dessen Änderung
+ * machte der Rename hier still rückgängig. Der Vergleich vor dem Commit
+ * schließt das Fenster nicht, er erkennt nur, dass es zugeschlagen hat.
  */
 import { randomUUID } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import matter from "gray-matter";
 import { occupantOfRaw } from "./memory-locator.js";
+import { withIdClaim } from "./id-transaction.js";
 
 export type MutateOutcome =
   /** Geschrieben. */
@@ -52,6 +55,31 @@ export interface MemoryMutation {
  *   Memory mehr sind (der Archiv-Stempel auf einer Datei im Trash).
  */
 export async function mutateMemoryFile(
+  filePath: string,
+  expectedId: string | null,
+  mutation: MemoryMutation,
+  opts: MutateOptions = {},
+): Promise<MutateOutcome> {
+  // Ohne id oder ohne Vault gibt es nichts zu sperren: Der Trash-Stempel
+  // (expectedId === null) trifft eine Datei, die per Definition kein
+  // indexiertes Memory mehr ist, und ein Aufrufer ohne `vaultRoot` kann den
+  // Lock-Pfad gar nicht bilden. Beides bleibt beim Compare-and-Swap allein.
+  if (opts.vaultRoot === undefined || expectedId === null) {
+    return mutateUnderClaim(filePath, expectedId, mutation);
+  }
+  return withIdClaim({ vaultRoot: opts.vaultRoot, id: expectedId, filePath }, () =>
+    mutateUnderClaim(filePath, expectedId, mutation),
+  );
+}
+
+export interface MutateOptions {
+  /** Der Vault, unter dessen ID-Transaktion die Mutation laufen soll. Jeder
+   *  produktive Aufrufer gibt ihn mit; ohne ihn bleibt es beim
+   *  Compare-and-Swap ohne prozessübergreifende Sperre. */
+  vaultRoot?: string;
+}
+
+async function mutateUnderClaim(
   filePath: string,
   expectedId: string | null,
   mutation: MemoryMutation,

@@ -200,10 +200,13 @@ test("restore verweigert, wenn die id inzwischen woanders lebt", async () => {
     });
     await vault.reconcile?.();
 
+    // OHNE `vault`. Codex-Gegenreview (P0): Der optionale Index war die
+    // einzige Quelle der Besitzprüfung — ließ ein Caller ihn weg, entfiel sie
+    // vollständig, und der Restore legte die alte Fassung neben die neue.
+    // Jetzt fragt der Restore die Platte, und die weiß es ohne Index.
     await assert.rejects(
       auditedRestore({
         auditLog,
-        vault,
         vaultRoot,
         memoryID: "wiederkehrer",
         context: { actor: "user", actor_detail: "test" },

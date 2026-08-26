@@ -308,3 +308,38 @@ test("saved_at survives a bookmark overwrite that does not send it", async (t) =
   assert.equal(patched.read_status, "archived");
   assert.deepEqual(patched.categories, []);
 });
+
+/**
+ * Codex-Gegenreview (P0): Dasselbe Patch-Versprechen, nur beim RE-FILING.
+ *
+ * Ein Save mit neuem `folder` verschiebt das Memory. Die Patch-Basis wurde
+ * dabei vom ZIELPFAD gelesen — den es noch gar nicht gab —, also war sie leer,
+ * und das Verschieben löschte genau die Felder, die ein Overwrite bewahren
+ * soll. Nachgestellt hat Codex `created` auf heute, geleerte Beziehungen,
+ * `sensitivity: private → team`, verschwundene `source` und `confidence: 1`.
+ *
+ * Die Vorlage muss die QUELLE sein, ermittelt unter derselben ID-Transaktion,
+ * die auch die Kollision prüft — nicht in den Aufrufern einzeln nachkopiert.
+ */
+test("re-filing into another shelf carries the metadata along", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bastra-save-refile-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await seed(dir);
+
+  const result = await saveMemory(
+    dir,
+    minimalRefresh({ folder: "memories/projects/elsewhere" }),
+  );
+  assert.match(result.file_path, /elsewhere/, "das Memory muss umgezogen sein");
+
+  const fm = matter(await readFile(result.file_path, "utf8")).data;
+  assert.equal(fm.created, "2020-01-01", "created darf ein Umzug nicht neu stempeln");
+  assert.equal(fm.sensitivity, "private", "ein Umzug darf nichts öffnen");
+  assert.equal(fm.source, "manual-import");
+  assert.equal(fm.confidence, 0.4);
+  assert.equal((fm.related_via as unknown[]).length, 1);
+  assert.deepEqual(fm.affects_files, ["src/deploy.ts"]);
+  assert.deepEqual(fm.aliases, ["Runbook"]);
+  assert.equal(fm.salience, 0.9);
+  assert.deepEqual(fm.recall_when_expanded, ["how do I ship this"]);
+});

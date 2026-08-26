@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import type { MemoryLocator } from "./memory-locator.js";
+import type { IdAuthority } from "./id-transaction.js";
 import { MemoryTypeEnum, isPathSafeComponent } from "./schema.js";
 import { isPathSafeFolder } from "./save-text.js";
 
@@ -187,14 +188,24 @@ export interface SaveMemoryResult {
 export interface SaveMemoryCommitOptions {
   expectedTarget?: string | null;
   /**
-   * Identitätsauskunft für den Save-Pfad. Der Daemon reicht eine Fassung
-   * durch, die den bereits geladenen Vault-Index befragt — ohne sie fällt
-   * `saveMemory` auf einen vaultweiten Dateiscan zurück, der dasselbe
-   * beantwortet, nur teurer. Nie weglassen, wo ein Index in Reichweite ist:
-   * Der Scan kostet auf einem Vault mit tausend Memories je Save spürbar
-   * Zeit, und beim Bulk-Import summiert sich das.
+   * ROUTING-Auskunft: In welchem Regal und in welcher Schreibweise liegt ein
+   * Bestands-Memory dieser id? Der Daemon reicht eine Fassung durch, die den
+   * geladenen Vault-Index befragt; ohne sie fällt `saveMemory` auf einen
+   * vaultweiten Dateiscan zurück.
+   *
+   * Ausdrücklich NICHT die Kollisionsprüfung: „Gehört diese id schon jemandem"
+   * beantwortet seit dem Umbau auf die ID-Transaktion die {@link authority}
+   * unter dem Lock. Ein Index kann prozessübergreifend veraltet sein, und eine
+   * veraltete Antwort unter einem Lock bleibt eine veraltete Antwort.
    */
   locator?: MemoryLocator;
+  /**
+   * Wer unter dem ID-Lock verbindlich sagt, wo diese id lebt. Default ist der
+   * Plattenscan — im Daemon immer die richtige Wahl. Nur ein Bulk-Import, der
+   * sonst je Datei einen Vaultscan zahlen müsste, setzt hier etwas Billigeres
+   * ein und übernimmt die Verantwortung dafür (siehe `IdAuthority`).
+   */
+  authority?: IdAuthority;
 }
 
 export const MEMORY_WRITE_CONFLICT = "BASTRA_WRITE_CONFLICT";

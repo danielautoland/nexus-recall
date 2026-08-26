@@ -7,11 +7,11 @@
  * id. Split from the save orchestration because it answers a different
  * question: not "what does this memory look like" but "may I write right now".
  *
- * The claim outlives its process on SIGKILL, OOM or power loss, so age is the
- * primary release criterion and the owner check is only the fast path. Details
- * on each rule are at the function that implements it.
+ * The claim outlives its process on SIGKILL, OOM or power loss, so age is a
+ * release criterion — but only for a claim whose owner cannot be shown to be
+ * alive. Details on each rule are at the function that implements it.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile, access, open, stat, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -57,16 +57,24 @@ interface CommitClaim {
   pid: number;
   host: string;
   ts: number;
+  /** Wer diesen Claim genommen hat — je Erwerb neu, nicht je Prozess.
+   *
+   *  Codex-Gegenreview (P1): Freigegeben wurde per blindem `unlink`. Zwei
+   *  Writer, die denselben verwaisten Claim gleichzeitig einsammeln, löschen
+   *  sich danach gegenseitig den frisch genommenen Lock — und ein dritter
+   *  Writer läuft in die entstandene Lücke. Der Release prüft deshalb, ob der
+   *  Claim auf der Platte noch DERSELBE ist. */
+  token: string;
 }
 
 /**
  * May this writer take a claim it found already present?
  *
- * Two independent reasons, and age is the primary one: a PID is only meaningful
- * on the machine that wrote it, and this vault is expected on shared cloud
- * mounts where a foreign PID may be alive and completely unrelated. The owner
- * check is the fast path for the common case (same host, process gone), never
- * the only one — an unparseable or foreign claim still ages out.
+ * Zwei unabhängige Gründe, und der BESITZER kommt zuerst: Lebt der eingetragene
+ * Prozess auf dieser Maschine noch, ist der Claim in Benutzung, egal wie alt er
+ * ist. Das Alter bleibt für alles andere zuständig — ein fremder Host (eine PID
+ * ist nur auf ihrer Maschine aussagekräftig, und der Vault liegt erwartbar auf
+ * geteilten Cloud-Mounts) oder ein unparsebarer Claim.
  */
 export async function claimIsAbandoned(lockPath: string): Promise<boolean> {
   let raw: string;
@@ -84,21 +92,30 @@ export async function claimIsAbandoned(lockPath: string): Promise<boolean> {
     return (err as NodeJS.ErrnoException)?.code === "ENOENT";
   }
 
-  if (ageMs > COMMIT_CLAIM_STALE_MS) return true;
-
-  let claim: CommitClaim;
+  // Erst der Besitzer, dann das Alter. Codex-Gegenreview (P1): Die Reihenfolge
+  // war umgekehrt, und damit enteignete ein zweiter Writer nach 30 Sekunden
+  // einen Claim, dessen Besitzer auf DIESER Maschine nachweislich noch lief
+  // und gerade schrieb — ein langsamer Cloud-Mount reicht dafür aus. Ein
+  // lebender lokaler Prozess ist ein Beweis, das Alter nur ein Indiz.
+  let claim: CommitClaim | undefined;
   try {
     claim = JSON.parse(raw) as CommitClaim;
   } catch {
-    return false; // unreadable owner + still fresh → treat as live
+    claim = undefined;
   }
-  if (claim.host !== hostname() || typeof claim.pid !== "number") return false;
-  try {
-    process.kill(claim.pid, 0);
-    return false; // owner is alive and working
-  } catch (err) {
-    return (err as NodeJS.ErrnoException)?.code === "ESRCH";
+  if (claim && claim.host === hostname() && typeof claim.pid === "number") {
+    try {
+      process.kill(claim.pid, 0);
+      return false; // owner is alive and working — age says nothing here
+    } catch (err) {
+      // ESRCH: der Besitzer ist weg, der Claim ist sofort frei. Alles andere
+      // (EPERM — fremder Nutzer, gleiche PID) bleibt eine Altersfrage.
+      if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return true;
+    }
   }
+  // Fremder Host, unparsebarer oder nicht zuordenbarer Claim: nur das Alter
+  // kann ihn noch freigeben.
+  return ageMs > COMMIT_CLAIM_STALE_MS;
 }
 
 /**
@@ -112,11 +129,13 @@ export async function acquireCommitClaim(
   lockPath: string,
   id: string,
   filePath: string,
-): Promise<void> {
+): Promise<string> {
+  const token = randomUUID();
   const body = JSON.stringify({
     pid: process.pid,
     host: hostname(),
     ts: Date.now(),
+    token,
   } satisfies CommitClaim);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -126,7 +145,7 @@ export async function acquireCommitClaim(
       } finally {
         await handle.close();
       }
-      return;
+      return token;
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
       if (attempt === 0 && (await claimIsAbandoned(lockPath))) {
@@ -136,6 +155,31 @@ export async function acquireCommitClaim(
       throw writeConflict(id, filePath, "another save is committing this target");
     }
   }
+  /* c8 ignore next */
+  throw writeConflict(id, filePath, "another save is committing this target");
+}
+
+/**
+ * Den eigenen Claim freigeben — und NUR den eigenen.
+ *
+ * Codex-Gegenreview (P1): Der Release war ein blindes `unlink`. Wurde der
+ * Claim zwischenzeitlich als verwaist eingesammelt (langsamer Mount, 30s
+ * überschritten), löschte der Nachzügler beim Aufräumen den Lock seines
+ * Nachfolgers — und der übernächste Writer lief in eine Lücke, die es nach
+ * dem Modell gar nicht geben darf. Der Token beweist Besitz; passt er nicht,
+ * gehört der Lock jemand anderem und bleibt stehen.
+ */
+export async function releaseCommitClaim(lockPath: string, token: string): Promise<void> {
+  try {
+    const raw = await readFile(lockPath, "utf8");
+    const claim = JSON.parse(raw) as CommitClaim;
+    if (claim.token !== token) return; // nicht mehr unserer
+  } catch {
+    // Weg, unlesbar oder unparsebar: nichts davon ist nachweislich unser Lock.
+    // Stehen lassen — er altert aus, statt dass wir den eines anderen löschen.
+    return;
+  }
+  await unlink(lockPath).catch(() => {});
 }
 
 export function writeConflict(id: string, filePath: string, detail: string): MemoryWriteConflictError {

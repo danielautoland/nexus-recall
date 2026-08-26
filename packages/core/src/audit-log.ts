@@ -1,4 +1,4 @@
-import { mkdir, appendFile, rename, readdir, stat, open } from "node:fs/promises";
+import { mkdir, appendFile, rename, readdir, stat, open, link, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 
@@ -305,12 +305,24 @@ export async function restoreFromTrash(
   // Datei am Zielpfad — beobachtet: eine laufende Bearbeitung wurde still
   // durch den Trash-Stand ersetzt. Restore darf niemals Daten vernichten;
   // der Konflikt gehört dem Caller gemeldet, nicht weggeschrieben.
-  if (existsSync(destFile)) {
-    throw new Error(
-      `refusing to restore over an existing file: ${destFile}. ` +
-        `Move or delete it first — restoring would overwrite the active version.`,
-    );
-  }
+  //
+  // Codex-Gegenreview (P0): Geprüft wurde per `existsSync` und danach
+  // umbenannt — zwischen Prüfung und Rename lag ein Fenster, in dem die Datei
+  // entstehen konnte, und der Rename ersetzte sie doch. `link()` schlägt
+  // atomar mit EEXIST fehl, wenn am Ziel schon etwas liegt; erst danach wird
+  // die Trash-Fassung entfernt. Trash und Vault liegen auf demselben
+  // Dateisystem, ein Hardlink ist dort immer möglich.
   await mkdir(dirname(destFile), { recursive: true });
-  await rename(trashFile, destFile);
+  try {
+    await link(trashFile, destFile);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+      throw new Error(
+        `refusing to restore over an existing file: ${destFile}. ` +
+          `Move or delete it first — restoring would overwrite the active version.`,
+      );
+    }
+    throw err;
+  }
+  await unlink(trashFile);
 }

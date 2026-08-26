@@ -290,17 +290,20 @@ test("zwei gleichzeitige Saves derselben id: genau einer gewinnt", async (t) => 
 });
 
 /**
- * Der Lock serialisiert, er entscheidet nicht. Wer ihn erst bekommt, NACHDEM
- * der andere ihn losgelassen hat, hat seine Vorabprüfung gemacht, als das
- * Regal des Gewinners noch leer war — für ihn ist die id immer noch frei. Ohne
- * eine zweite Frage unter dem Lock schreibt er sein File trotzdem, und der
- * Vault hat wieder zwei Dateien mit einer id.
+ * Der Konkurrent, den ein VERALTETER Index nie meldet.
  *
- * Der Locator ist hier der Zeitpunkt-Seam: Er antwortet mit dem Stand VON VOR
- * dem fremden Write und legt das fremde File danach an. Die Vorabprüfung sieht
- * also „frei", jede spätere Frage sieht die Kollision.
+ * Codex-Gegenreview (P0): Der id-Lock allein genügte nicht — unter ihm wurde
+ * derselbe Locator ein zweites Mal gefragt, aus dem die Vorabprüfung schon
+ * ihre Antwort hatte. Stammt der aus einem Vault-Index, den ein anderer
+ * Prozess längst überholt hat, meldet auch die zweite Frage `none`, und zwei
+ * Saves derselben id in verschiedene Regale gelingen beide.
+ *
+ * Der Locator hier ist genau das: dauerhaft veraltet. Er antwortet immer mit
+ * dem Stand VON VOR dem fremden Write und pflanzt das fremde File nach seiner
+ * ersten Antwort. Erkannt werden muss die Kollision trotzdem — von der Platte,
+ * unter dem Lock.
  */
-test("ein Konkurrent, der zwischen Vorabprüfung und Commit landet, wird erkannt", async (t) => {
+test("ein veralteter Locator verhindert die Kollisionserkennung nicht", async (t) => {
   const vault = await harness(t);
   const rivalDir = path.join(vault, "memories/projects/rival");
   const rival = path.join(rivalDir, `${ID}.md`);
@@ -309,12 +312,10 @@ test("ein Konkurrent, der zwischen Vorabprüfung und Commit landet, wird erkannt
   const locator = {
     locate(wanted: string) {
       calls++;
-      // Die Antwort stammt vom Stand VOR dem Pflanzen — die Vorabprüfung sieht
-      // also „frei". Gepflanzt wird nach ihr (Aufruf 2: einmal fragt das
-      // Routing, einmal die Vorabprüfung), sodass erst die Frage unter dem
-      // Commit-Claim den Konkurrenten sehen kann.
+      // Der Stand VON VOR dem Pflanzen — für diesen Locator ist die id frei,
+      // heute und für immer.
       const answer = scanVaultForId(vault, wanted);
-      if (calls === 2) {
+      if (calls === 1) {
         mkdirSync(rivalDir, { recursive: true });
         writeFileSync(rival, matter.stringify("\nrival\n", {
           id: ID,
@@ -339,10 +340,10 @@ test("ein Konkurrent, der zwischen Vorabprüfung und Commit landet, wird erkannt
     }),
     /would create a second file with the same id/,
   );
-  assert.ok(calls >= 3, `der Commit muss noch einmal fragen — gefragt wurde ${calls}x`);
   assert.equal(
     existsSync(path.join(vault, "memories/projects/mine", `${ID}.md`)),
     false,
+
     "kein zweites File neben dem Konkurrenten",
   );
   assert.deepEqual(await artifacts(vault, rival), []);

@@ -16,6 +16,7 @@ import { access, readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import matter from "gray-matter";
 import { readOccupant } from "./memory-locator.js";
+import { withIdClaim } from "./id-transaction.js";
 
 /**
  * Audit-Kontext, den jeder Caller (bridge.ts, index.ts) mitgibt — beschreibt
@@ -190,13 +191,15 @@ export async function auditedRestore(args: {
   memoryID: string;
   /** Optional: bestimmten Original-Pfad erzwingen (Power-User). */
   destFilePath?: string;
-  /** Optional, aber dringend empfohlen: Ohne den Index kann der Restore nicht
-   *  sehen, ob dieselbe id inzwischen woanders LEBT — und legt dann eine
-   *  zweite aktive Datei mit derselben id an. */
+  /** Nur noch für Aufrufer, die den Index danach selbst auffrischen wollen —
+   *  die BESITZPRÜFUNG hängt nicht mehr daran. Codex-Gegenreview (P0): Fehlte
+   *  der Vault, wurde sie vollständig übersprungen, und ein Restore legte
+   *  neben einem inzwischen wieder aktiven Memory derselben id eine zweite
+   *  Datei an. Ein optionaler Sicherheitsgurt ist kein Sicherheitsgurt. */
   vault?: Vault;
   context: AuditContext;
 }): Promise<{ id: string; restoredTo: string; audit: AuditEntry }> {
-  const { auditLog, vaultRoot, memoryID, destFilePath, vault, context } = args;
+  const { auditLog, vaultRoot, memoryID, destFilePath, context } = args;
 
   const lastDelete = await auditLog.lastDeleteFor(memoryID);
   if (!lastDelete) {
@@ -226,24 +229,52 @@ export async function auditedRestore(args: {
   // zeigen, während der String brav mit dem Vault-Pfad beginnt.
   assertInsideVault(vaultRoot, dest, "restore");
 
-  // Codex-Gegenreview: Geprüft wurde nur der ZIELPFAD. Existiert dieselbe id
-  // inzwischen in einem anderen Regal — weil das Memory nach dem Löschen neu
-  // angelegt oder re-filed wurde —, landete die alte Version daneben, und
-  // danach waren ZWEI aktive Dateien mit einer id im Vault. Der Vault lädt
-  // beim nächsten Start still nur eine davon.
-  const live = vault?.pathsFor(memoryID) ?? [];
-  const stillElsewhere: string[] = [];
-  for (const p of live) {
-    if (!(sameFile(p, dest))) stillElsewhere.push(p);
-  }
-  if (stillElsewhere.length > 0) {
-    throw new Error(
-      `cannot restore "${memoryID}": it is already live at ${stillElsewhere.join(", ")}. ` +
-        `Restoring would put a second file with the same id into the vault — archive or move ` +
-        `the existing one first, or restore to that exact path to replace it.`,
-    );
-  }
+  // Ab hier unter der ID-Transaktion: Besitzprüfung und Veröffentlichung
+  // sehen denselben Vault, und kein anderer Writer kann die id dazwischen
+  // belegen.
+  return withIdClaim({ vaultRoot, id: memoryID, filePath: dest }, async (claim) => {
+    // Codex-Gegenreview: Geprüft wurde nur der ZIELPFAD, und die Frage „lebt
+    // diese id inzwischen woanders?" hing an einem optionalen Index. Beides
+    // ersetzt der autoritative Plattenscan unter dem Lock: Ein prozessübergreifend
+    // veralteter Index konnte `none` melden, während die id längst wieder lebte.
+    const located = await claim.locate();
+    if (located.kind === "incomplete") {
+      throw new Error(
+        `cannot restore "${memoryID}": the vault scan could not read ` +
+          `${located.unreadable.join(", ")} — restoring now could create a second file ` +
+          `with the same id. Fix the permissions first.`,
+      );
+    }
+    const live = located.kind === "unique"
+      ? [located.filePath]
+      : located.kind === "ambiguous"
+        ? located.filePaths
+        : [];
+    const stillElsewhere = live.filter((p) => !sameFile(p, dest));
+    if (stillElsewhere.length > 0) {
+      throw new Error(
+        `cannot restore "${memoryID}": it is already live at ${stillElsewhere.join(", ")}. ` +
+          `Restoring would put a second file with the same id into the vault — archive or move ` +
+          `the existing one first, or restore to that exact path to replace it.`,
+      );
+    }
 
+    return publishRestore({ auditLog, vaultRoot, memoryID, trashFile, dest, lastDelete, context });
+  });
+}
+
+/** Der Teil des Restores, der schreibt — abgetrennt, damit die Prüfungen oben
+ *  lesbar bleiben und der Rumpf vollständig unter dem Claim steht. */
+async function publishRestore(a: {
+  auditLog: AuditLog;
+  vaultRoot: string;
+  memoryID: string;
+  trashFile: string;
+  dest: string;
+  lastDelete: AuditEntry;
+  context: AuditContext;
+}): Promise<{ id: string; restoredTo: string; audit: AuditEntry }> {
+  const { auditLog, vaultRoot, memoryID, trashFile, dest, lastDelete, context } = a;
   await restoreFromTrash(vaultRoot, trashFile, dest);
 
   // Codex-Befund 6b: Was zurückkam, wurde nie gegen die angeforderte id

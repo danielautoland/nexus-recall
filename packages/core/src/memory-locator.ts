@@ -23,9 +23,11 @@
  * Save-Pfad in ihrer Vorstellung davon ab, was existiert.
  */
 import { readdirSync, readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import matter from "gray-matter";
 import { parseMemoryWith } from "./schema.js";
+import { slugFromFilename } from "./frontmatter-rescue.js";
 // Case-insensitiv: Der Vault-Watcher akzeptiert `.MD`, also darf ein Scanner
 // daneben nicht strenger sein — sonst sieht der Save eine Datei nicht, die der
 // Index sehr wohl kennt. Die Regel steht zentral in markdown-file.ts.
@@ -170,6 +172,91 @@ function walk(
       continue;
     }
     if (occupant.kind === "memory" && occupant.id === id) out.push(full);
+  }
+}
+
+/**
+ * Dieselbe Auskunft wie {@link scanVaultForId}, nur asynchron — die Fassung,
+ * die unter dem ID-Lock läuft ({@link ../id-transaction.js}).
+ *
+ * Zwei Unterschiede, beide notwendig, damit ein autoritativer Scan im
+ * Schreibpfad überhaupt bezahlbar ist:
+ *
+ *   - Asynchron. `scanVaultForId` liest synchron; im Daemon blockiert das den
+ *     Event-Loop für die Dauer des gesamten Vaults, und der Recall daneben
+ *     steht still.
+ *   - Ein Vorfilter vor dem Parse. Die effektive id einer Datei kommt aus
+ *     genau zwei Quellen (`repairRequired`): dem Frontmatter-Feld `id` oder,
+ *     wenn das fehlt oder nicht pfadsicher ist, dem Dateinamen. Enthält der
+ *     Rohtext die gesuchte id nicht und ergibt auch der Dateiname sie nicht,
+ *     kann diese Datei sie nicht tragen — der teure gray-matter-Parse
+ *     entfällt. Gelesen wird trotzdem: nur der Inhalt beweist, dass die id
+ *     nicht drinsteht.
+ */
+export async function scanVaultForIdAsync(vaultRoot: string, id: string): Promise<Located> {
+  const found: string[] = [];
+  const unreadable: string[] = [];
+  await walkAsync(vaultRoot, id, id.toLowerCase(), found, unreadable);
+  if (unreadable.length > 0) return { kind: "incomplete", unreadable };
+  if (found.length === 0) return { kind: "none" };
+  if (found.length === 1) return { kind: "unique", filePath: found[0] };
+  return { kind: "ambiguous", filePaths: found };
+}
+
+async function walkAsync(
+  dir: string,
+  id: string,
+  idLower: string,
+  out: string[],
+  unreadable: string[],
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push(dir);
+    return;
+  }
+  const files: string[] = [];
+  for (const e of entries) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      await walkAsync(full, id, idLower, out, unreadable);
+      continue;
+    }
+    if (!e.isFile() || !isMarkdown(e.name)) continue;
+    files.push(full);
+  }
+  const BATCH = 32;
+  for (let i = 0; i < files.length; i += BATCH) {
+    const chunk = files.slice(i, i + BATCH);
+    const settled = await Promise.all(
+      chunk.map(async (full) => {
+        let raw: string;
+        try {
+          raw = await readFile(full, "utf8");
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          // Verschwunden ist kein blinder Fleck; alles andere schon.
+          return code === "ENOENT" || code === "ENOTDIR"
+            ? { kind: "skip" as const }
+            : { kind: "unreadable" as const, full };
+        }
+        if (!raw.toLowerCase().includes(idLower) && slugFromFilename(full) !== id) {
+          return { kind: "skip" as const };
+        }
+        const occupant = occupantOfRaw(raw, full);
+        return occupant.kind === "memory" && occupant.id === id
+          ? { kind: "hit" as const, full }
+          : { kind: "skip" as const };
+      }),
+    );
+    for (const r of settled) {
+      if (r.kind === "hit") out.push(r.full);
+      else if (r.kind === "unreadable") unreadable.push(r.full);
+    }
   }
 }
 

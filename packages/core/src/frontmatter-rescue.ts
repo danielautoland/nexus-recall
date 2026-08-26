@@ -47,7 +47,7 @@ type MatterFn = (input: string) => { data: unknown; content: string };
 /** Path-safe fallback id from a filename. Deliberately NOT `slugify` from
  *  `save.ts`: that module imports the schema, and the schema imports this one,
  *  so reusing it would close an import cycle for five lines of logic. */
-function slugFromFilename(filePath: string): string {
+export function slugFromFilename(filePath: string): string {
   const base = (filePath.split(/[\\/]/).pop() ?? "").replace(/\.md$/i, "");
   return (
     base
