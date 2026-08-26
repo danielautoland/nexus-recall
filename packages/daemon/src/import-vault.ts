@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { slugify, extractWikilinks } from "@bastra-recall/core";
+import { slugify, extractWikilinks, snapshotLocator } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 import { saveMemoryWithAuditTrail } from "./audit-trail.js";
@@ -69,6 +69,9 @@ const KNOWN_ADAPTERS = new Set(["claude-code-memory", "markdown"]);
 type OwnershipCheck =
   | { owner: "free"; target: null }
   | { owner: "mine" | "foreign"; target: string }
+  /** Fremd, aber die Datei steht woanders — es gibt keinen `target` am
+   *  Importpfad zu zeigen. */
+  | { owner: "foreign"; target: null }
   | { owner: "unverifiable" };
 
 /** Result of minting an id: either a usable one, or a reason to skip the file
@@ -219,14 +222,33 @@ export async function importVault(
   // batch-allocated id could still land on a stranger. Ownership is read back
   // from the `source` stamp: files carry "<adapter>:<label>:<relKey>", the
   // synthetic index carries "index:<label>".
+  // Codex-Gegenreview: Die Prüfung sah nur den ERWARTETEN Importpfad. Ein
+  // fremdes Memory mit derselben id an einem anderen Ort — von Hand angelegt,
+  // aus einem anderen Import, re-filed — blieb unsichtbar, und der Import
+  // schrieb seine Datei daneben. Danach tragen zwei Dateien dieselbe id, und
+  // der Vault lädt beim nächsten Start still nur eine davon; gewinnt der
+  // Import alphabetisch, verdrängt er das Original aus dem aktiven Index.
+  // Ein Snapshot des ganzen Vaults, EINMAL: die Frage lautet "gehört diese id
+  // schon jemandem, bevor ich anfange", und die beantwortet der Ausgangsstand.
+  const vaultIds = snapshotLocator(vaultRoot);
+  const importPathOf = (id: string): string => join(vaultRoot, folder, `${id}.md`);
+
   const ownership = async (
     id: string,
     myKey: string,
     isIndex: boolean,
   ): Promise<OwnershipCheck> => {
+    // Liegt die id ANDERSWO im Vault, ist sie vergeben — unabhängig davon,
+    // was am Importpfad steht. Auch `ambiguous` ist vergeben: Dann ist der
+    // Vault schon defekt, und ein weiterer Anwärter macht es nicht besser.
+    const located = vaultIds.locate(id);
+    if (located.kind === "ambiguous") return { owner: "foreign", target: null };
+    if (located.kind === "unique" && located.filePath !== importPathOf(id)) {
+      return { owner: "foreign", target: null };
+    }
     let raw: string;
     try {
-      raw = await readFile(join(vaultRoot, folder, `${id}.md`), "utf8");
+      raw = await readFile(importPathOf(id), "utf8");
     } catch (err) {
       // #245 P1: fail CLOSED. Only a confirmed ENOENT means "no node here".
       // Any other failure — EACCES/EIO/ETIMEDOUT are all reachable on the
@@ -411,7 +433,7 @@ export async function importVault(
           actor: "import",
           actorDetail: "import:vault",
           sessionId: runId,
-          commit: { expectedTarget },
+          commit: { expectedTarget, locator: vaultIds },
         });
       } catch (err) {
         // `recordAudit` absorbs audit-only failures. Reaching this catch means
@@ -509,7 +531,7 @@ export async function importVault(
               actor: "import",
               actorDetail: "import:vault",
               sessionId: runId,
-              commit: { expectedTarget: indexCheck.target },
+              commit: { expectedTarget: indexCheck.target, locator: vaultIds },
             });
             landed = true;
           } catch {

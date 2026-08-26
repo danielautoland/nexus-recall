@@ -124,3 +124,54 @@ function isMarkdown(name: string): boolean {
 export function vaultRelative(vaultRoot: string, filePath: string): string {
   return relative(vaultRoot, filePath).split(sep).join("/");
 }
+
+/**
+ * Ein Locator aus EINEM Vault-Scan, für Aufrufer ohne geladenen Index, die
+ * viele Identitätsfragen hintereinander stellen — der Folder-Import etwa
+ * prüft für jede Quelldatei, ob ihre id schon jemandem gehört.
+ *
+ * `scanVaultForId` einzeln zu rufen wäre dort ein Scan JE DATEI. Dieser
+ * Snapshot kostet einen und beantwortet alle, inklusive `ambiguous`: Die Map
+ * hält je id ALLE Fundstellen, anders als ein Vault-Index, der je id genau
+ * einen Eintrag führen kann.
+ *
+ * Der Snapshot altert, sobald geschrieben wird. Für „gehört diese id schon
+ * jemandem, BEVOR ich anfange" ist genau das die richtige Frage; wer während
+ * des Laufs Geschriebenes wiederfinden muss, führt sein eigenes Set (der
+ * Import tut das mit `used`).
+ */
+export function snapshotLocator(vaultRoot: string): MemoryLocator {
+  const byId = new Map<string, string[]>();
+  collect(vaultRoot, vaultRoot, byId);
+  return {
+    locate(id: string): Located {
+      const hits = byId.get(id);
+      if (hits === undefined || hits.length === 0) return { kind: "none" };
+      if (hits.length === 1) return { kind: "unique", filePath: hits[0] };
+      return { kind: "ambiguous", filePaths: hits };
+    },
+  };
+}
+
+function collect(vaultRoot: string, dir: string, out: Map<string, string[]>): void {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      collect(vaultRoot, full, out);
+      continue;
+    }
+    if (!e.isFile() || !isMarkdown(e.name)) continue;
+    const occupant = readOccupant(full);
+    if (occupant.kind !== "memory") continue;
+    const list = out.get(occupant.id);
+    if (list === undefined) out.set(occupant.id, [full]);
+    else list.push(full);
+  }
+}

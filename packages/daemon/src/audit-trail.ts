@@ -131,7 +131,9 @@ export interface SaveMemoryWithAuditTrailInput {
 export async function saveMemoryWithAuditTrail(
   args: SaveMemoryWithAuditTrailInput,
 ): Promise<SaveMemoryResult> {
-  const target = resolveMemoryTarget(args.vaultRoot, args.input);
+  // Denselben Locator wie der Save, sonst zeigt `diff_before` auf einen
+  // anderen Pfad als der, der gleich geschrieben wird (#360-D).
+  const target = resolveMemoryTarget(args.vaultRoot, args.input, args.commit?.locator);
   const diffBefore = await readFrontmatter(target.filePath);
   const result = await saveMemory(args.vaultRoot, args.input, args.commit);
   const diffAfter = await readFrontmatter(result.file_path);
