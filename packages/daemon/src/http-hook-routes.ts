@@ -22,6 +22,7 @@ import { toLeanHit, truncateSummary } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
+import { armsOf, SCORE_VERSION } from "./score-space.js";
 import {
   MAX_BODY_BYTES,
   clampInt,
@@ -529,6 +530,7 @@ export function handleHookRecall(
           // eine Auswertung, die sie über degradierte und fusionierte Recalls
           // hinweg mittelt, misst zwei verschiedene Größen als eine.
           score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
+          score_arms: armsOf({ hybridActive: hybridActiveAtRecall, commonsFused: false }),
           candidate_pool_score_kind:
             candidatePool.length > 0 ? (hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const)) : undefined,
           content_recall: contentRecall,
@@ -630,6 +632,13 @@ export function handleHookRecall(
         // einmal durch.
         ...(hookProject !== null ? { project_known: vaultKnowsProject(vault, hookProject) } : {}),
         score_kind: hybridActiveAtRecall ? ("rrf" as const) : ("bm25" as const),
+        // Dieselbe Angabe wie auf dem MCP-Pfad: `score_kind` allein macht zwei
+        // Zahlen nicht vergleichbar, die Armmenge tut es. Der Hook-Pfad kennt
+        // keine Commons — hier sind es immer die persönlichen Arme, und genau
+        // das muss auf der Leitung stehen, statt vom Konsumenten geraten zu
+        // werden.
+        score_arms: armsOf({ hybridActive: hybridActiveAtRecall, commonsFused: false }),
+        score_version: SCORE_VERSION,
         ...(hybridActiveAtRecall ? {} : { unfused: true }),
         // #342: name the reason on the wire too. `unfused` says the bands do
         // not apply; this says why, so a slow machine degrading on every call

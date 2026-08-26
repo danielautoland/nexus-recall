@@ -10,6 +10,9 @@ import { envInt } from "./env.js";
 import { fireAndForget } from "./telemetry.js";
 import type { RecallStageBuckets } from "./telemetry-events.js";
 import { isWeakResult, isNoHome } from "./weak-result.js";
+import { armsOf, SCORE_VERSION } from "./score-space.js";
+
+export { armsOf, SCORE_VERSION } from "./score-space.js";
 import { computeSalienceShadow } from "./salience-shadow.js";
 import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shadow.js";
 import { commonsRankFactor } from "./cli/commons.js";
@@ -66,30 +69,6 @@ export const RecallArgs = z.object({
    */
   min_score: z.number().min(0).optional(),
 });
-
-/**
- * Version der Score-Formel. Zu erhöhen, sobald DIESELBE Armmenge eine andere
- * Zahl ergibt — sonst vergleicht ein Konsument über die Versionsgrenze hinweg
- * zwei Werte, die nichts miteinander zu tun haben.
- */
-export const SCORE_VERSION = "rrf-1";
-
-/**
- * Die Armmenge, aus der der ausgelieferte Score gebildet wurde.
- *
- * `personal-rank` steht bewusst NICHT für „BM25": Auf dem Kollaps-Pfad (der
- * persönliche Arm ist degradiert) geht nur noch der LISTENRANG der
- * persönlichen Liste ein, nicht ihr Zahlenwert. Das ist eine andere Zahl als
- * `bm25+commons`, und sie muss auch anders heißen.
- */
-export function armsOf(state: { hybridActive: boolean; commonsFused: boolean }): string[] {
-  if (state.commonsFused) {
-    return state.hybridActive
-      ? ["bm25", "commons", "vector"]
-      : ["commons", "personal-rank"];
-  }
-  return state.hybridActive ? ["bm25", "vector"] : ["bm25"];
-}
 
 // ─── Recall ──────────────────────────────────────────────────────
 

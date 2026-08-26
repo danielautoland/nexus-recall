@@ -303,6 +303,10 @@ export interface HookRecallEvent extends BaseEvent {
    *  der Pool aus der persönlichen Suche und `top_score` aus der Liste nach der
    *  Commons-Runde — die beiden können auseinanderfallen. */
   candidate_pool_score_kind?: "rrf" | "bm25";
+  /** Welche ARME den Score gebildet haben, sortiert — siehe `score-space.ts`.
+   *  Feiner als `score_kind`, und seit dem Commons-Arm die Dimension, an der
+   *  Vergleichbarkeit hängt. */
+  score_arms?: string[];
   /** #249: no hit lexically anchored — the hybrid score was rank-1-of-nothing.
    *  Recorded, not just returned: without it a stats run reports zero weak
    *  recalls on every vault, which reads as health and is actually silence. */
