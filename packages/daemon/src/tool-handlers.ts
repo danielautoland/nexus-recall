@@ -495,9 +495,12 @@ async function saveMemoryInner(
         // Atomar, mit Identitätsprüfung und Vergleich vor dem Commit: Ein
         // direktes writeFile ließ die Datei kurzzeitig halb geschrieben, und
         // ein paralleler Save darauf wäre still rückgängig gemacht worden.
-        const stamped = await mutateMemoryFile(target.filePath, supersedes, {
-          frontmatter: (fm) => ({ ...fm, superseded_by: result.id }),
-        });
+        const stamped = await mutateMemoryFile(
+          target.filePath,
+          supersedes,
+          { frontmatter: (fm) => ({ ...fm, superseded_by: result.id }) },
+          { vaultRoot: deps.vaultPath },
+        );
         if (stamped.kind !== "written") {
           throw new Error(
             stamped.kind === "raced"

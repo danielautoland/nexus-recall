@@ -29,6 +29,8 @@ import {
   rm,
   mkdir,
   stat,
+  symlink,
+  readdir,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -318,12 +320,22 @@ test("gleichzeitige Writes aufs selbe Sidecar treten sich nicht auf die Tempdate
     again(),
     again(),
   ]);
+  // Seit dem Umbau auf die ID-Transaktion (Codex-Gegenreview P0) gilt für
+  // Dokumente dieselbe Regel wie für Memories: Gleichzeitige Writes auf EINE
+  // id serialisieren sich, genau einer gewinnt, die übrigen bekommen einen
+  // sichtbaren Write-Conflict. Was es weiterhin NICHT geben darf, ist ein
+  // Fehlschlag an geteilter Infrastruktur — einer verschwundenen Tempdatei
+  // (ENOENT) etwa, für einen Write, der inhaltlich fertig war.
   const failed = results.filter((r) => r.status === "rejected");
-  assert.deepEqual(
-    failed.map((r) => (r as PromiseRejectedResult).reason.message),
-    [],
-    "kein paralleler Write darf an einer geteilten Tempdatei scheitern",
-  );
+  assert.equal(results.length - failed.length, 1, "genau einer gewinnt");
+  for (const r of failed) {
+    const message = (r as PromiseRejectedResult).reason.message as string;
+    assert.match(
+      message,
+      /write conflict/,
+      `nur ein Konflikt ist ein zulässiger Fehlschlag, nicht: ${message}`,
+    );
+  }
 
   const sidecar = join(dir, "documents", "belege", "Beleg.pdf.md");
   assert.ok(
@@ -508,5 +520,78 @@ test("ein quarantänisiertes Sidecar derselben id blockiert den Save", async (t)
       overwrite: true,
     } as SaveArgs),
     /already belongs to/,
+  );
+});
+
+// ── Codex-Gegenreview (P0) ──────────────────────────────────────
+
+/**
+ * Der Realpath-Schutz galt für Dokumente noch nicht: Die Containment-Prüfung
+ * war rein lexikalisch. Ein Symlink `documents/linked -> /außerhalb` plus
+ * `folder_path: "linked"` schrieb Original UND Sidecar außerhalb des Vaults.
+ */
+test("ein Symlink im Dokumentenordner führt nicht aus dem Vault heraus", async (t) => {
+  const { dir, vault } = await harness(t);
+  const outside = await mkdtemp(join(tmpdir(), "bastra-doc-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+
+  await mkdir(join(dir, "documents"), { recursive: true });
+  await symlink(outside, join(dir, "documents", "linked"));
+
+  const src = join(dir, "Geheim.pdf");
+  await writeFile(src, "GEHEIM", "utf8");
+  await assert.rejects(
+    saveDocument(vault, {
+      ...BASE,
+      title: "Geheim",
+      original_path: src,
+      folder_path: "linked",
+    } as SaveArgs),
+    /outside the vault/,
+  );
+  assert.deepEqual(
+    await readdir(outside),
+    [],
+    "nichts darf im Symlink-Ziel gelandet sein",
+  );
+});
+
+/**
+ * Zwei Dateinamen, eine abgeleitete id (`a+b.pdf` und `a-b.pdf` →
+ * `doc-a-b-pdf`). Parallel gestartet kamen beide durch, weil die
+ * Kollisionsprüfung nur den Index fragte und keine Sperre hielt. Unter der
+ * ID-Transaktion gewinnt genau einer, der andere sieht die Kollision.
+ */
+test("zwei Dateinamen mit derselben abgeleiteten id kollidieren auch parallel", async (t) => {
+  const { dir, vault } = await harness(t);
+  const plus = join(dir, "a+b.pdf");
+  const minus = join(dir, "a-b.pdf");
+  await writeFile(plus, "PLUS", "utf8");
+  await writeFile(minus, "MINUS", "utf8");
+
+  const results = await Promise.allSettled([
+    saveDocument(vault, {
+      ...BASE,
+      title: "Plus",
+      original_path: plus,
+      folder_path: "",
+    } as SaveArgs),
+    saveDocument(vault, {
+      ...BASE,
+      title: "Minus",
+      original_path: minus,
+      folder_path: "",
+    } as SaveArgs),
+  ]);
+  const ok = results.filter((r) => r.status === "fulfilled");
+  assert.equal(ok.length, 1, "genau ein Sidecar darf die id bekommen");
+
+  const sidecars = (await readdir(join(dir, "documents"))).filter((n) =>
+    n.endsWith(".md"),
+  );
+  assert.equal(
+    sidecars.length,
+    1,
+    `zwei Sidecars mit einer id wären der Defekt: ${sidecars.join(", ")}`,
   );
 });

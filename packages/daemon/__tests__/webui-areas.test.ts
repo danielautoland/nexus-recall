@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import matter from "gray-matter";
@@ -349,6 +349,55 @@ test("reservierte Bereiche sind auch in anderer Schreibweise reserviert", async 
     await assert.rejects(renameArea(v, "top", "people", "Taxonomy"), /reserved/);
     assert.ok((await readdir(join(v, "memories"))).includes("projects"));
   } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+// ── Codex-Gegenreview ───────────────────────────────────────────
+
+/**
+ * P0: Die Containment-Prüfung in `areaPath()` war rein lexikalisch. Zeigte ein
+ * Projektordner als Symlink nach außen, schrieb `renameArea()` in fremden
+ * Dateien außerhalb des Vaults die Scopes um.
+ */
+test("ein Projektregal, das als Symlink nach außen zeigt, ist kein Regal dieses Vaults", async () => {
+  const v = await makeVault();
+  const outside = await mkdtemp(join(tmpdir(), "areas-outside-"));
+  try {
+    await writeFile(
+      join(outside, "fremd.md"),
+      "---\nid: fremd\ntitle: F\ntype: reference\nsummary: s\ntopic_path:\n  - t\ntags:\n  - t\nscope: geliehen\nrecall_when:\n  - t\ncreated: 2026-07-17\nupdated: 2026-07-17\n---\n\nF.\n",
+    );
+    await symlink(outside, join(v, "memories", "projects", "geliehen"));
+
+    await assert.rejects(renameArea(v, "project", "geliehen", "neu"), /outside the vault/);
+    const fm = matter(await readFile(join(outside, "fremd.md"), "utf8")).data;
+    assert.equal(fm.scope, "geliehen", "die fremde Datei bleibt unangetastet");
+  } finally {
+    await rm(v, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+/**
+ * P1: Ein unlesbares Memory im umziehenden Projekt wurde nicht umgeschrieben,
+ * der Rename meldete trotzdem Erfolg — die Datei lag danach im neuen Ordner
+ * und trug den alten Scope. Eine Area zieht ganz um oder gar nicht.
+ */
+test("renameArea: ein unlesbares Memory lässt den Rename scheitern statt still danebenliegen", async () => {
+  const v = await makeVault();
+  const locked = join(v, "memories", "projects", "carnexus", "fact-one.md");
+  try {
+    await chmod(locked, 0o000);
+    await assert.rejects(
+      renameArea(v, "project", "carnexus", "neuer-name"),
+      /konnten nicht umgeschrieben werden|rename failed/,
+    );
+    // Und zurückgerollt: das Projekt liegt wieder unter dem alten Namen.
+    const projects = await readdir(join(v, "memories", "projects"));
+    assert.deepEqual(projects, ["carnexus"]);
+  } finally {
+    await chmod(locked, 0o644).catch(() => {});
     await rm(v, { recursive: true, force: true });
   }
 });

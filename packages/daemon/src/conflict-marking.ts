@@ -55,9 +55,12 @@ export async function markConflict(
   // kurzzeitig halb geschrieben), mit Identitätsprüfung (ein Pfad beweist
   // nicht, welches Memory dort liegt) und mit Vergleich vor dem Commit, damit
   // ein paralleler Save nicht rückgängig gemacht wird.
-  const outcome = await mutateMemoryFile(target.filePath, targetId, {
-    body: (content) => `${content.replace(/\s*$/, "")}\n\n${block}\n`,
-  });
+  const outcome = await mutateMemoryFile(
+    target.filePath,
+    targetId,
+    { body: (content) => `${content.replace(/\s*$/, "")}\n\n${block}\n` },
+    { vaultRoot: deps.vaultPath },
+  );
   if (outcome.kind === "identity-mismatch") {
     throw new Error(
       `conflict_with: ${target.filePath} does not hold memory '${targetId}' ` +

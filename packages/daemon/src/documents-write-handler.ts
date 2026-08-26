@@ -29,7 +29,7 @@ import { join, basename, isAbsolute, resolve, sep } from "node:path";
 import { z } from "zod";
 import matter from "gray-matter";
 import type { Vault } from "@bastra-recall/core";
-import { readOccupant } from "@bastra-recall/core";
+import { readOccupant, assertInsideVault, withIdClaim, type IdClaim } from "@bastra-recall/core";
 import {
   scanForInjection,
   injectionCategories,
@@ -242,13 +242,19 @@ async function pathExists(p: string): Promise<boolean> {
  * join() unharmed, so a containment check is the only reliable gate against
  * mkdir/copyFile/rename landing outside the vault.
  */
-function resolveDocsFolder(docsRoot: string, folderPath: string): string {
+function resolveDocsFolder(vaultRoot: string, docsRoot: string, folderPath: string): string {
   const folder = folderPath ? join(docsRoot, folderPath) : docsRoot;
   const docsAbs = resolve(docsRoot);
   const folderAbs = resolve(folder);
   if (folderAbs !== docsAbs && !folderAbs.startsWith(docsAbs + sep)) {
     throw new Error(`folder_path escapes the documents folder: ${folderPath}`);
   }
+  // Codex-Gegenreview (P0): Die Prüfung war rein lexikalisch. Ein Symlink
+  // `dokumente/linked -> /außerhalb` plus `folder_path: "linked"` ging glatt
+  // durch — der String beginnt brav mit dem Dokumentenordner, das Dateisystem
+  // geht trotzdem woanders hin, und Original wie Sidecar landeten außerhalb
+  // des Vaults. Dieselbe Realpath-Schranke, die der Save-Pfad benutzt.
+  assertInsideVault(vaultRoot, folder, "write a document to");
   return folder;
 }
 
@@ -552,7 +558,7 @@ export async function saveDocument(
 
   const root = vaultRoot(vault);
   const docsRoot = join(root, DOCUMENTS_ROOT);
-  const folder = resolveDocsFolder(docsRoot, args.folder_path);
+  const folder = resolveDocsFolder(root, docsRoot, args.folder_path);
   await mkdir(folder, { recursive: true });
 
   const filename = basename(args.original_path);
@@ -562,6 +568,33 @@ export async function saveDocument(
   const originalDest = args.linked_file
     ? args.original_path
     : join(folder, filename);
+
+  // Codex-Gegenreview (P0): Dokumente schrieben ganz an der ID-Transaktion
+  // vorbei. Zwei parallele `saveDocument`-Aufrufe für `a+b.pdf` und `a-b.pdf`
+  // slugifizieren auf DIESELBE id `doc-a-b-pdf` — beide legten ein Sidecar an,
+  // und der Vault lud beim nächsten Start still nur eines davon. Ab hier gilt
+  // dieselbe Sperre und dieselbe autoritative Auskunft wie im Save-Pfad.
+  return withIdClaim({ vaultRoot: root, id: docID, filePath: sidecarPath }, (claim) =>
+    commitDocument(claim, vault, args, { root, filename, docID, sidecarPath, originalDest }),
+  );
+}
+
+/** Der schreibende Teil von {@link saveDocument} — vollständig unter der
+ *  ID-Transaktion, damit Kollisionsprüfung, Kopie und Sidecar denselben Vault
+ *  sehen. Eigene Funktion statt Closure, damit der Rumpf unverändert bleibt. */
+async function commitDocument(
+  claim: IdClaim,
+  vault: Vault,
+  args: z.infer<typeof SaveDocumentArgs>,
+  ctx: {
+    root: string;
+    filename: string;
+    docID: string;
+    sidecarPath: string;
+    originalDest: string;
+  },
+): Promise<SaveDocumentResult> {
+  const { root, filename, docID, sidecarPath, originalDest } = ctx;
   // #240/A5: PREFLIGHT — jede Kollision prüfen, BEVOR irgendetwas mutiert
   // wird. Vorher lief erst der Copy und danach der Sidecar-Check: ein
   // Sidecar-Konflikt meldete einen Fehler und ließ die Kopie trotzdem im
@@ -591,16 +624,28 @@ export async function saveDocument(
       );
     }
   }
-  // `a+b.pdf` und `a-b.pdf` slugifizieren auf DIESELBE id. Vorher entstanden
-  // zwei Sidecars mit einer id, und der Vault-Index behielt nur eines davon —
-  // das andere Dokument war still nicht mehr auffindbar.
-  // `pathsFor` statt `get`: der Index führt pro id nur EINEN Pfad, die
-  // wegen Duplikat quarantänisierten verschweigt er. Ein zweites Sidecar
-  // mit derselben id an einem dritten Pfad kam damit an der Kollisions-
-  // prüfung vorbei — und der Save auf das eine ließ das andere stehen.
-  const holder = vault
-    .pathsFor(docID)
-    .find((p) => resolve(p) !== resolve(sidecarPath));
+  // `a+b.pdf` und `a-b.pdf` slugifizieren auf DIESELBE id. Entstünden zwei
+  // Sidecars mit einer id, behielte der Vault-Index nur eines davon — das
+  // andere Dokument wäre still nicht mehr auffindbar.
+  //
+  // Die Auskunft kommt von der PLATTE, nicht aus `vault.pathsFor()`: Ein
+  // Index kann prozessübergreifend veraltet sein und meldet dann `none`,
+  // während das fremde Sidecar längst liegt.
+  const located = await claim.locate();
+  if (located.kind === "incomplete") {
+    throw new Error(
+      `cannot verify who owns id ${docID}: the vault scan could not read ` +
+        `${located.unreadable.join(", ")}. Fix the permissions first — writing now ` +
+        `could create a second file with the same id.`,
+    );
+  }
+  const holder = (
+    located.kind === "unique"
+      ? [located.filePath]
+      : located.kind === "ambiguous"
+        ? located.filePaths
+        : []
+  ).find((p) => resolve(p) !== resolve(sidecarPath));
   if (holder) {
     throw new Error(`id ${docID} already belongs to ${holder}`);
   }
@@ -900,7 +945,7 @@ async function moveDocumentFiles(
 ): Promise<{ newSidecarPath: string; newOriginalPath: string }> {
   const root = vaultRoot(vault);
   const docsRoot = join(root, DOCUMENTS_ROOT);
-  const targetFolder = resolveDocsFolder(docsRoot, args.newFolderPath);
+  const targetFolder = resolveDocsFolder(root, docsRoot, args.newFolderPath);
   await mkdir(targetFolder, { recursive: true });
 
   const sidecarFilename = basename(args.sidecarPath);

@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { slugify, extractWikilinks, snapshotLocator } from "@bastra-recall/core";
+import { slugify, extractWikilinks, snapshotLocator, locatorAuthority } from "@bastra-recall/core";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
 import { saveMemoryWithAuditTrail } from "./audit-trail.js";
@@ -231,6 +231,12 @@ export async function importVault(
   // Ein Snapshot des ganzen Vaults, EINMAL: die Frage lautet "gehört diese id
   // schon jemandem, bevor ich anfange", und die beantwortet der Ausgangsstand.
   const vaultIds = snapshotLocator(vaultRoot);
+  // Ein Import schreibt hunderte Dateien; die autoritative Auskunft der
+  // ID-Transaktion ist ein Vaultscan JE DATEI und damit quadratisch. Hier ist
+  // der eine dokumentierte Fall, in dem der Snapshot als Authority reicht:
+  // ein Prozess, ein Lauf, und die selbst vergebenen ids führt der Import in
+  // `used` mit. Siehe `locatorAuthority`.
+  const vaultIdAuthority = locatorAuthority(vaultIds);
   const importPathOf = (id: string): string => join(vaultRoot, folder, `${id}.md`);
 
   const ownership = async (
@@ -433,7 +439,7 @@ export async function importVault(
           actor: "import",
           actorDetail: "import:vault",
           sessionId: runId,
-          commit: { expectedTarget, locator: vaultIds },
+          commit: { expectedTarget, locator: vaultIds, authority: vaultIdAuthority },
         });
       } catch (err) {
         // `recordAudit` absorbs audit-only failures. Reaching this catch means
@@ -531,7 +537,7 @@ export async function importVault(
               actor: "import",
               actorDetail: "import:vault",
               sessionId: runId,
-              commit: { expectedTarget: indexCheck.target, locator: vaultIds },
+              commit: { expectedTarget: indexCheck.target, locator: vaultIds, authority: vaultIdAuthority },
             });
             landed = true;
           } catch {

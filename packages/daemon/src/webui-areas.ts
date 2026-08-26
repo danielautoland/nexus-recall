@@ -18,7 +18,7 @@
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
+import { assertInsideVault, isMarkdownFile, isPathSafeComponent, mutateMemoryFile, readOccupant, slugify } from "@bastra-recall/core";
 import { normalizeScopeKey, scopeEquals } from "@bastra-recall/core/scope";
 import { sendJsonPlain } from "./webui.js";
 import { getUiEnabled } from "./settings.js";
@@ -116,6 +116,12 @@ function areaPath(vaultRoot: string, kind: "project" | "top", name: string): str
   if (!resolve(p).startsWith(resolve(vaultRoot) + sep)) {
     throw new Error(`refusing to touch a path outside the vault: ${p}`);
   }
+  // Codex-Gegenreview (P0): Die Prüfung war rein lexikalisch. Ein
+  // Projektordner, der als Symlink nach außen zeigt, ging glatt durch — und
+  // `renameArea()` schrieb dann in fremden Dateien außerhalb des Vaults die
+  // Scopes um. Dieselbe Realpath-Schranke wie im Save-Pfad: Ein Regal, das in
+  // Wahrheit woanders liegt, ist kein Regal dieses Vaults.
+  assertInsideVault(vaultRoot, p, "touch an area at");
   return p;
 }
 
@@ -147,19 +153,29 @@ export async function createArea(vaultRoot: string, rawName: string): Promise<Ar
  *  einziger Scope umgeschrieben (`scopesRewritten: 0`), und die Memories waren
  *  danach im eigenen Projekt fremd. Gefaltet über die zentrale
  *  Scope-Identität (`scopeEquals`) statt einer eigenen Kopie. */
-async function rewriteScopes(dir: string, oldScope: string, newScope: string): Promise<number> {
+async function rewriteScopes(
+  vaultRoot: string,
+  dir: string,
+  oldScope: string,
+  newScope: string,
+  failed: string[],
+): Promise<number> {
   let rewritten = 0;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    // Codex-Gegenreview (P1): Ein unlesbarer Teilbaum galt als leerer
+    // Teilbaum, und der Rename meldete Erfolg über Dateien, die er nie
+    // gesehen hat. Was nicht gelesen werden konnte, wird gemeldet.
+    failed.push(`${dir} (${(err as NodeJS.ErrnoException)?.code ?? String(err)})`);
     return 0;
   }
   for (const e of entries) {
     if (e.name.startsWith(".") || e.name === "node_modules") continue;
     const full = join(dir, e.name);
     if (e.isDirectory()) {
-      rewritten += await rewriteScopes(full, oldScope, newScope);
+      rewritten += await rewriteScopes(vaultRoot, full, oldScope, newScope, failed);
       continue;
     }
     if (!e.isFile() || !isMarkdownFile(e.name)) continue;
@@ -169,18 +185,41 @@ async function rewriteScopes(dir: string, oldScope: string, newScope: string): P
     // Memory indexieren würde, darf ein Rename nicht anfassen — dieselbe
     // Entscheidung wie im Save-Pfad, aus derselben Quelle.
     const occupant = readOccupant(full);
+    // Codex-Gegenreview (P1): `unreadable` lief hier durch dieselbe Tür wie
+    // „kein Memory". Ein Memory, das nicht gelesen werden konnte, behielt
+    // damit still seinen alten Scope, lag danach aber im neuen Ordner — und
+    // der Rename meldete Erfolg. Unlesbar ist nicht abwesend.
+    if (occupant.kind === "unreadable") {
+      failed.push(`${full} (${occupant.reason})`);
+      continue;
+    }
     if (occupant.kind !== "memory") continue;
+    // `null` aus dem Patch heißt „nichts zu tun", `raced` heißt „jemand hat
+    // dazwischengeschrieben" — `mutateMemoryFile` meldet beides als `raced`.
+    // Ohne diese Unterscheidung wäre jedes fremde Memory im Ordner ein
+    // vermeintlicher Fehlschlag.
+    let intended = false;
     try {
-      const outcome = await mutateMemoryFile(full, occupant.id, {
-        frontmatter: (fm) => {
-          const cur = fm.scope;
-          if (typeof cur !== "string" || !scopeEquals(cur, oldScope)) return null;
-          return { ...fm, scope: newScope };
+      const outcome = await mutateMemoryFile(
+        full,
+        occupant.id,
+        {
+          frontmatter: (fm) => {
+            const cur = fm.scope;
+            if (typeof cur !== "string" || !scopeEquals(cur, oldScope)) return null;
+            intended = true;
+            return { ...fm, scope: newScope };
+          },
         },
-      });
+        { vaultRoot },
+      );
       if (outcome.kind === "written") rewritten++;
-    } catch {
-      // unparseable file — leave it untouched rather than corrupt it
+      else if (intended || outcome.kind === "identity-mismatch") {
+        failed.push(`${full} (${outcome.kind})`);
+      }
+    } catch (err) {
+      // Nicht schreibbar — melden statt still übergehen.
+      failed.push(`${full} (${(err as Error).message})`);
     }
   }
   return rewritten;
@@ -226,12 +265,19 @@ function isProductDocOf(data: Record<string, unknown>, projectName: string): boo
   return typeof path[1] === "string" && scopeEquals(path[1], projectName);
 }
 
-async function rewriteDocMetadata(dir: string, oldName: string, newName: string): Promise<number> {
+async function rewriteDocMetadata(
+  vaultRoot: string,
+  dir: string,
+  oldName: string,
+  newName: string,
+  failed: string[],
+): Promise<number> {
   let touched = 0;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    failed.push(`${dir} (${(err as NodeJS.ErrnoException)?.code ?? String(err)})`);
     return 0;
   }
   for (const e of entries) {
@@ -243,6 +289,10 @@ async function rewriteDocMetadata(dir: string, oldName: string, newName: string)
     // beim Rename umgeschrieben. Erste Hürde wie überall: Ist das überhaupt
     // ein Memory?
     const occupant = readOccupant(full);
+    if (occupant.kind === "unreadable") {
+      failed.push(`${full} (${occupant.reason})`);
+      continue;
+    }
     if (occupant.kind !== "memory") continue;
     try {
       const outcome = await mutateMemoryFile(full, occupant.id, {
@@ -270,10 +320,13 @@ async function rewriteDocMetadata(dir: string, oldName: string, newName: string)
           }
           return changed ? next : null;
         },
-      });
+      }, { vaultRoot });
+      // Nur `identity-mismatch` ist hier ein Fehlschlag: `raced` meldet auch
+      // der Patch, der `null` zurückgibt — das ist „nichts zu tun".
       if (outcome.kind === "written") touched++;
-    } catch {
-      // unparseable file — leave it untouched rather than corrupt it
+      else if (outcome.kind === "identity-mismatch") failed.push(`${full} (${outcome.kind})`);
+    } catch (err) {
+      failed.push(`${full} (${(err as Error).message})`);
     }
   }
   return touched;
@@ -318,9 +371,15 @@ export async function renameArea(
   let scopesRewritten = 0;
   let docsFolderMoved = false;
   let docsRetagged = 0;
+  // Codex-Gegenreview (P1): Ein unlesbares Memory im umziehenden Projekt wurde
+  // nicht umgeschrieben, der Rename meldete trotzdem Erfolg — die Datei lag
+  // danach im neuen Ordner und trug den alten Scope. Was nicht umgeschrieben
+  // werden konnte, sammelt sich hier und lässt den Rename zurückrollen: eine
+  // Area zieht ganz um oder gar nicht.
+  const failed: string[] = [];
   try {
     if (kind === "project") {
-      scopesRewritten = await rewriteScopes(to, name, newName);
+      scopesRewritten = await rewriteScopes(vaultRoot, to, name, newName, failed);
       if (await isDir(docsFrom)) {
         await rename(docsFrom, docsTo);
         docsFolderMoved = true;
@@ -334,9 +393,15 @@ export async function renameArea(
         // Reihenfolge: erst retaggen, dann Scopes. Die Produktdoku-Signatur
         // prüft `scope` gegen den ALTEN Namen — liefe der Scope-Rewrite zuerst,
         // erkennte `rewriteDocMetadata` kein einziges Dokument mehr wieder.
-        docsRetagged = await rewriteDocMetadata(docsTo, name, newName);
-        scopesRewritten += await rewriteScopes(docsTo, name, newName);
+        docsRetagged = await rewriteDocMetadata(vaultRoot, docsTo, name, newName, failed);
+        scopesRewritten += await rewriteScopes(vaultRoot, docsTo, name, newName, failed);
       }
+    }
+    if (failed.length > 0) {
+      throw new Error(
+        `${failed.length} Datei(en) im Projekt konnten nicht umgeschrieben werden: ` +
+          `${failed.join("; ")}`,
+      );
     }
   } catch (err) {
     throw await rollbackRename(
@@ -385,15 +450,15 @@ async function rollbackRename(
     try {
       // Gleiche Reihenfolge wie im Hinweg, nur mit vertauschten Namen: die
       // Produktdoku-Signatur prüft `scope`, der hier schon der neue ist.
-      await rewriteDocMetadata(a.docsTo, a.newName, a.name);
-      await rewriteScopes(a.docsTo, a.newName, a.name);
+      await rewriteDocMetadata(a.vaultRoot, a.docsTo, a.newName, a.name, []);
+      await rewriteScopes(a.vaultRoot, a.docsTo, a.newName, a.name, []);
       await rename(a.docsTo, a.docsFrom);
     } catch {
       stuck.push(`dokumentationen/${a.newName} (sollte dokumentationen/${a.name} sein)`);
     }
   }
   try {
-    if (a.kind === "project") await rewriteScopes(a.to, a.newName, a.name);
+    if (a.kind === "project") await rewriteScopes(a.vaultRoot, a.to, a.newName, a.name, []);
     await rename(a.to, a.from);
   } catch {
     stuck.push(`${a.to} (sollte ${a.from} sein)`);
@@ -447,6 +512,9 @@ export async function deleteArea(
     }
   }
   await mkdir(trashRoot, { recursive: true });
+  // Über das Dateisystem, nicht über den String: Ein `.bastra`, das als
+  // Symlink nach außen zeigt, ließe den Trash außerhalb des Vaults entstehen.
+  assertInsideVault(vaultRoot, trashRoot, "trash an area to");
   await rename(from, dest);
   // Nebeneinander statt ineinander: der Trash-Ordner der Memories behält
   // seine Form (`<name>-<stamp>/<memory>.md`), damit ein Restore von Hand
@@ -455,8 +523,26 @@ export async function deleteArea(
   if (kind === "project") {
     const docsFrom = join(vaultRoot, "dokumentationen", name);
     if (await isDir(docsFrom)) {
-      await rename(docsFrom, docsDest);
-      docsTrashedTo = docsDest;
+      try {
+        await rename(docsFrom, docsDest);
+        docsTrashedTo = docsDest;
+      } catch (err) {
+        // Codex-Gegenreview (P1): Scheiterte der Doku-Zug, blieb ein halber
+        // Zustand zurück — Memories im Trash, Dokumente aktiv. Eine Area ist
+        // beides; sie geht ganz oder gar nicht. Dieselbe Entscheidung wie
+        // beim Rename, siehe `rollbackRename`.
+        try {
+          await rename(dest, from);
+        } catch {
+          throw new Error(
+            `delete failed AND could not be fully undone: ${(err as Error).message}. ` +
+              `Von Hand zu richten: ${dest} (sollte ${from} sein).`,
+          );
+        }
+        throw new Error(
+          `delete failed, nothing was changed: ${(err as Error).message}`,
+        );
+      }
     }
   }
   return { name, trashedTo: dest, docsTrashedTo };

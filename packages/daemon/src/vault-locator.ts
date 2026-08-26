@@ -20,9 +20,16 @@ import type { Located, MemoryLocator } from "@bastra-recall/core";
 export function vaultLocator(vault: {
   get(id: string): { filePath: string } | undefined;
   pathsFor?(id: string): string[];
+  scanBlindSpots?(): string[];
 }): MemoryLocator {
   return {
     locate(id: string): Located {
+      // Codex-Gegenreview (P0): Der Index konnte nicht ausdrücken, dass sein
+      // Scan unvollständig war — ein unlesbarer Teilbaum sah aus wie ein
+      // leerer, und `none` war dann eine Behauptung ohne Deckung. Hinter dem
+      // Ordner, den der Vault nicht öffnen konnte, kann genau diese id liegen.
+      const blind = vault.scanBlindSpots?.() ?? [];
+      if (blind.length > 0) return { kind: "incomplete", unreadable: blind };
       // `pathsFor` kennt auch die quarantänisierten Dateien — `get()` allein
       // verschwieg, dass es eine zweite gibt, und der Locator konnte
       // `ambiguous` nie melden. Ein Save lief dann durch und ließ das Duplikat
