@@ -1621,3 +1621,128 @@ bleibt unangetastet.
 Unverändert offen bleiben die beiden Punkte aus 21.5 — beides Recall-Themen,
 beides labelpflichtig.
 
+## 24. Neunte Runde: der Audit, nach dem einzelne Flicken nicht mehr reichten (26.08.2026)
+
+Der breite Audit fand elf Punkte, davon mehrere Datenverlust-Risiken. Seine
+wichtigste Aussage war keiner der elf, sondern die Diagnose darüber: Es fehlten
+zentrale Invarianten, und die Reparaturkette der vorherigen Runden hatte das
+nur überdeckt. Diese Runde baut die Invarianten, statt die Stellen einzeln zu
+flicken.
+
+### 24.1 Warum die Suite grün war, während die Defekte reproduzierbar blieben
+
+Der Befund, der alles erklärt: Der Daemon importiert `@bastra-recall/core`
+über dessen package.json-exports, also `packages/core/dist` — nicht `src`.
+Jeder daemon-Test, der core-Verhalten prüft, misst den zuletzt GEBAUTEN Core.
+
+In den Runden 20–23 lief die daemon-Suite mehrfach vollständig grün gegen eine
+dist von vor den core-Änderungen. Ein Fix in core konnte "grün" melden, ohne
+von einem einzigen daemon-Test berührt worden zu sein — und ein Defekt, den der
+Prüfer gegen den Quellstand reproduzierte, blieb hier unsichtbar. Aufgefallen
+ist es erst, als ein neuer core-Export den Typecheck brach.
+
+`pretest` baut core jetzt vor jedem Lauf, und ein Test vergleicht die mtime von
+`dist/index.js` gegen die neueste `.ts` unter `src`. Wer die Suite ohne das
+startet, bekommt gesagt, was gerade nicht geprüft wurde.
+
+### 24.2 Die Identität: eine Auskunft statt drei zu schwacher Regeln
+
+Der Save-Pfad entschied an drei Stellen getrennt, was zu einer id gehört, und
+jede Regel ließ sich in einen Datenverlust übersetzen. Alle sechs
+nachgestellt, alle sechs vorher grün in der Suite:
+
+| | Lage | vorher |
+|---|---|---|
+| A | plain note am kanonischen Zielpfad | vollständig überschrieben |
+| B | fremdes Memory (`id: other-id`) am Ziel | überschrieben, id umgeschrieben |
+| C | Notiz mit zufälligem YAML-Feld `id` | als Memory behandelt, ersetzt |
+| D | echtes Memory unter abweichendem Pfad | nicht gefunden, Duplikat |
+| E | Memory ohne id (aus Dateiname repariert) | nicht gefunden, Duplikat |
+| F | dieselbe id in zwei `folder`-Regalen | beide Saves erfolgreich |
+
+`memory-locator.ts` beantwortet die Frage jetzt an einer Stelle, mit derselben
+Parser-Semantik, mit der auch der Vault seinen Index baut (`parseMemoryWith`,
+inklusive id-Reparatur aus dem Dateinamen). Was der Index nicht als Memory
+führt, kann kein Save-Ziel sein — das schützt die gewöhnlichen Obsidian-Notizen,
+die im selben Vault liegen.
+
+Daraus folgen drei Invarianten in `saveMemory`: Ein belegtes Ziel wird nur
+überschrieben, wenn die dort geparste effektive id die erwartete ist — sonst
+harter Konflikt, auch bei `overwrite: true`. Dieselbe id an einem anderen Ort
+ist eine Kollision, kein freier Platz; mit `overwrite` bleibt es das bewusste
+Re-Filing aus #64. Und ein `ambiguous` — zwei Dateien, eine id — wird nicht
+geraten, sondern gemeldet.
+
+Der Daemon reicht seinen geladenen Index als Locator durch, der Folder-Import
+einen Snapshot des Ausgangsstands. Damit entfällt der synchrone Vault-Scan im
+Save-Pfad, der sonst je Save anfiele.
+
+Die Matrix aus negativen Identitäts- und Kollisionsfällen liegt als
+`memory-identity-matrix.test.ts` bei — genau die Testklasse, deren Fehlen die
+ganze Kette möglich gemacht hat.
+
+### 24.3 Dieselbe Verwechslung, zwei Etagen weiter
+
+Der Document Hub schrieb sein Sidecar nach `<original>.md` und akzeptierte bei
+`overwrite` alles, was dort lag; das Area-Rename ging über jede Datei mit einem
+YAML-Feld `scope`. Beide Male dieselbe Wurzel: Ein Pfad oder ein Feldname wurde
+für eine Identität gehalten. Beide lesen jetzt `readOccupant`.
+
+Dazu die Unterscheidung, die es vorher nicht gab: Produktdokumente und
+Document-Hub-Sidecars heißen beide `type: doc`, werden aber verschieden
+behandelt — `recategorizeDocument` verwandelte eine Produktdoku in ein Sidecar.
+`isProductDoc` und `isDocumentSidecar` trennen sie jetzt an jedem Eingang,
+abgeleitet aus vorhandenen Feldern, ohne Migration.
+
+### 24.4 Die Mutation: atomar, geprüft, nachgiebig
+
+Drei Writer neben dem Save-Pfad ändern Memory-Dateien — Conflict-Marking,
+`superseded_by`, der Archiv-Stempel. Jeder schrieb direkt auf die Zieldatei
+(kurzzeitig leer oder halb geschrieben) und keiner verglich zwischen Read und
+Commit (wer zwischendurch schrieb, verlor).
+
+`mutateMemoryFile(filePath, expectedId, mutation)` macht beides plus die
+Identitätsprüfung. Ein `raced` lässt den anderen gewinnen. Dieselbe
+Nachgiebigkeit gilt jetzt für die Hintergrundläufe `expandTriggers` und
+`enrichRelated`: Eine Anreicherung darf jederzeit ausfallen, ein Save nicht.
+
+**Was NICHT gebaut wurde:** ein prozessübergreifendes ID-Lock. Der Vergleich
+schließt das Fenster nicht, er erkennt nur, dass es zugeschlagen hat. Das steht
+so im Modulkopf, und für die beiden modulprivaten Hintergrund-Writer gibt es
+keinen Regressionstest — der Moment zwischen Read und Rename ist von außen
+nicht deterministisch zu treffen, und einen Injektionspunkt dafür in den
+Produktivcode zu legen wäre teurer als die Invariante wert ist.
+
+### 24.5 Absicht, die keine war
+
+Learned Bridges erweitern die Query vor der Suche, und diese hinzuerfundenen
+Terme gingen ungetrennt in den Anker: Ein Bridge-Term konnte
+`matched_recall_when` setzen, `weak_result` unterdrücken und einen
+Cross-Scope-Bypass erzeugen, obwohl der Benutzer das Wort nie geschrieben hat.
+Genau das sollte der Anker seit P0 ausschließen — er misst AUTORENABSICHT auf
+beiden Seiten. `authored_query` trägt die Regel nach: Ranking bleibt auf der
+erweiterten Query, Anker und Berechtigungen ziehen sich auf das zurück, was der
+Mensch geschrieben hat.
+
+### 24.6 Das Projekt kommt jetzt aus dem Git-Root
+
+`root-match` hieß nur "ein Pfadsegment hieß workspace/src/code" und nahm das
+ERSTE davon: `/Users/me/Projects/company/repos/real-repo/packages/core` ergab
+"company", mit voller Zuversicht. Die Write-Lane filtert scharf gegen diesen
+Namen und entfernt dann die Memories von `real-repo`.
+
+Der nächstgelegene `.git`-Ordner ist die einzige Auskunft, die wirklich "hier
+fängt ein Repo an" bedeutet; die Container-Heuristik bleibt der Rückfall. Kein
+Prozess-Spawn — `existsSync` je Ebene, Ergebnis nach cwd gecacht, weil ein Hook
+bei jedem Tool-Call mit demselben cwd feuert.
+
+### 24.7 Portabilität derselben Identitätsklasse
+
+`normalizeScopeKey` faltet jetzt Unicode: macOS legt Dateinamen in NFD ab,
+Editoren liefern NFC — ungefaltet sind das zwei Scopes, und der Unterschied ist
+unsichtbar. `extractWikilinks` erkennt ids aus nicht-lateinischer Schrift, die
+`slugify()` seit dem Cyrillic/CJK-Fix erzeugen kann. `rel.startsWith("..")`
+behandelte einen legitimen Vault-Unterordner namens `..sync` wie einen
+Ausbruch. Und `isMarkdownFile()` ist die eine Extension-Regel: Der Initialscan
+akzeptierte nur `.md`, der Watcher auch `.MD` — eine so benannte Datei war nach
+jedem Neustart verschwunden.
