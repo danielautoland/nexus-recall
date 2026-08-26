@@ -1,7 +1,8 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, basename, extname, relative } from "node:path";
+import { join, basename, relative } from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import matter from "gray-matter";
+import { isMarkdownFile } from "./markdown-file.js";
 import { type Memory, parseMemoryWith, NotAMemoryFile } from "./schema.js";
 
 /**
@@ -150,15 +151,14 @@ export class Vault {
         );
       },
     });
-    const isMarkdown = (p: string): boolean => p.toLowerCase().endsWith(".md");
     this.watcher.on("add", (p) => {
-      if (isMarkdown(p)) void this.handleAddOrChange(p, "add");
+      if (isMarkdownFile(p)) void this.handleAddOrChange(p, "add");
     });
     this.watcher.on("change", (p) => {
-      if (isMarkdown(p)) void this.handleAddOrChange(p, "change");
+      if (isMarkdownFile(p)) void this.handleAddOrChange(p, "change");
     });
     this.watcher.on("unlink", (p) => {
-      if (isMarkdown(p)) this.handleRemove(p);
+      if (isMarkdownFile(p)) this.handleRemove(p);
     });
     // #242: FSWatcher is an EventEmitter — an unhandled "error" event kills
     // the process (no uncaughtException handler anywhere in core/daemon).
@@ -285,7 +285,7 @@ export class Vault {
       const full = join(dir, e.name);
       if (e.isDirectory()) {
         await this.walkDir(full, out);
-      } else if (e.isFile() && extname(e.name) === ".md") {
+      } else if (e.isFile() && isMarkdownFile(e.name)) {
         out.push(full);
       }
     }

@@ -26,6 +26,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import matter from "gray-matter";
 import { parseMemoryWith } from "./schema.js";
+// Case-insensitiv: Der Vault-Watcher akzeptiert `.MD`, also darf ein Scanner
+// daneben nicht strenger sein — sonst sieht der Save eine Datei nicht, die der
+// Index sehr wohl kennt. Die Regel steht zentral in markdown-file.ts.
+import { isMarkdownFile as isMarkdown } from "./markdown-file.js";
 
 /** Was an einem konkreten Pfad liegt. */
 export type Occupant =
@@ -111,13 +115,6 @@ function walk(vaultRoot: string, dir: string, id: string, out: string[]): void {
     const occupant = readOccupant(full);
     if (occupant.kind === "memory" && occupant.id === id) out.push(full);
   }
-}
-
-/** Case-insensitiv: Der Vault-Watcher akzeptiert `.MD`, also darf ein Scanner
- *  daneben nicht strenger sein — sonst sieht der Save eine Datei nicht, die
- *  der Index sehr wohl kennt. */
-function isMarkdown(name: string): boolean {
-  return name.toLowerCase().endsWith(".md");
 }
 
 /** Für Fehlermeldungen: der Pfad relativ zum Vault, in Vault-Schreibweise. */

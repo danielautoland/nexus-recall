@@ -170,3 +170,146 @@ test("renameArea: product docs move, scope and tags follow, id stays", async () 
     await rm(v, { recursive: true, force: true });
   }
 });
+
+/**
+ * Codex-Befunde 1–4: Ein Area-Rename fasste Dateien an, die dem Vault nicht
+ * gehören, und Rename/Delete waren sich uneinig, was eine "Area" überhaupt ist.
+ */
+async function makeVaultWithForeignNotes(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "areas-foreign-"));
+  await mkdir(join(root, "memories", "projects", "carnexus"), { recursive: true });
+  await writeFile(
+    join(root, "memories", "projects", "carnexus", "fact-one.md"),
+    "---\nid: fact-one\ntitle: T\ntype: reference\nsummary: s\ntopic_path:\n  - t\ntags:\n  - t\nscope: carnexus\nrecall_when:\n  - t\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nBody.\n",
+  );
+  // Eine gewöhnliche Obsidian-Notiz, die zufällig ein Feld `scope:` trägt.
+  // Kein `type:` → der Vault würde sie NIE als Memory indexieren.
+  await writeFile(
+    join(root, "memories", "projects", "carnexus", "Meine Notiz.md"),
+    "---\nscope: carnexus\nauthor: daniel\n---\n\nGanz normale Notiz.\n",
+  );
+  await mkdir(join(root, "dokumentationen", "carnexus"), { recursive: true });
+  await writeFile(
+    join(root, "dokumentationen", "carnexus", "doku-carnexus-area.md"),
+    "---\nid: doku-carnexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - carnexus\n  - area\ntags:\n  - product-doc\n  - carnexus\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc.\n",
+  );
+  // Sieht einer Produktdoku ähnlich (Tags + topic_path), ist aber keine:
+  // `type: reference`, und der Vault kennt sie nicht als Doku.
+  await writeFile(
+    join(root, "dokumentationen", "carnexus", "notiz-mit-tags.md"),
+    "---\nid: notiz-mit-tags\ntitle: N\ntype: reference\nsummary: s\ntopic_path:\n  - doku\n  - carnexus\n  - area\ntags:\n  - carnexus\nscope: carnexus\nrecall_when:\n  - n\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nN.\n",
+  );
+  // Und eine reine Notiz ohne jede Memory-Signatur.
+  await writeFile(
+    join(root, "dokumentationen", "carnexus", "lose-notiz.md"),
+    "---\ntags:\n  - carnexus\ntopic_path:\n  - doku\n  - carnexus\n  - area\n---\n\nLose.\n",
+  );
+  return root;
+}
+
+test("renameArea: eine fremde Notiz mit `scope:` wird nicht umgeschrieben", async () => {
+  const v = await makeVaultWithForeignNotes();
+  try {
+    const r = await renameArea(v, "project", "carnexus", "new-project");
+    // 1 Memory + 1 Produktdoku + 1 doku-Notiz mit type: reference und scope:
+    // carnexus — alles echte Memories. Die fremde Notiz zählt NICHT mit.
+    assert.equal(r.scopesRewritten, 3);
+    const foreign = await readFile(
+      join(v, "memories", "projects", "new-project", "Meine Notiz.md"),
+      "utf8",
+    );
+    assert.equal(
+      matter(foreign).data.scope,
+      "carnexus",
+      "eine Notiz, die der Vault nicht als Memory führt, darf ein Rename nicht anfassen",
+    );
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("renameArea: nur echte Produktdokumente werden retagged", async () => {
+  const v = await makeVaultWithForeignNotes();
+  try {
+    const r = await renameArea(v, "project", "carnexus", "new-project");
+    assert.equal(r.docsRetagged, 1, "nur die eine echte Produktdoku");
+    const docDir = join(v, "dokumentationen", "new-project");
+    const doc = matter(await readFile(join(docDir, "doku-carnexus-area.md"), "utf8")).data;
+    assert.deepEqual(doc.topic_path, ["doku", "new-project", "area"]);
+    assert.deepEqual(doc.tags, ["product-doc", "new-project"]);
+    // type: reference → keine Produktdoku, auch wenn topic_path/Tags passen.
+    const notDoc = matter(await readFile(join(docDir, "notiz-mit-tags.md"), "utf8")).data;
+    assert.deepEqual(notDoc.topic_path, ["doku", "carnexus", "area"]);
+    assert.deepEqual(notDoc.tags, ["carnexus"]);
+    // Gar kein Memory → unberührt.
+    const loose = matter(await readFile(join(docDir, "lose-notiz.md"), "utf8")).data;
+    assert.deepEqual(loose.tags, ["carnexus"]);
+    assert.deepEqual(loose.topic_path, ["doku", "carnexus", "area"]);
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("renameArea: kollidierendes Doku-Regal bricht ab, bevor irgendetwas bewegt wird", async () => {
+  const v = await makeVaultWithForeignNotes();
+  try {
+    await mkdir(join(v, "dokumentationen", "new-project"), { recursive: true });
+    await writeFile(join(v, "dokumentationen", "new-project", "fremd.md"), "# fremd\n");
+    await assert.rejects(
+      renameArea(v, "project", "carnexus", "new-project"),
+      /docs folder already exists/,
+    );
+    // Nichts halb erledigt: das Projektregal liegt noch am alten Platz.
+    const projects = await readdir(join(v, "memories", "projects"));
+    assert.deepEqual(projects, ["carnexus"]);
+    const docs = (await readdir(join(v, "dokumentationen"))).sort();
+    assert.deepEqual(docs, ["carnexus", "new-project"]);
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+test("deleteArea: das Doku-Regal des Projekts wandert mit in den Trash", async () => {
+  const v = await makeVaultWithForeignNotes();
+  try {
+    const r = await deleteArea(v, "project", "carnexus");
+    assert.ok(r.docsTrashedTo, "das Doku-Regal wurde mitgenommen");
+    const trashedDocs = await readdir(r.docsTrashedTo!);
+    assert.ok(trashedDocs.includes("doku-carnexus-area.md"));
+    const remaining = await readdir(join(v, "dokumentationen"));
+    assert.deepEqual(remaining, [], "kein verwaistes dokumentationen/<projekt> bleibt aktiv");
+    // Weiterhin nichts vernichtet — beide Regale sind wiederherstellbar.
+    const trashed = await readdir(r.trashedTo);
+    assert.ok(trashed.includes("fact-one.md"));
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Beim Nachstellen von Befund 2 aufgefallen: gray-matter cacht `data` global
+ * pro Dateiinhalt. Zwei INHALTSGLEICHE Dokumente teilten damit dasselbe
+ * Frontmatter-Objekt — die erste Datei mutierte es, die zweite hielt ihre
+ * Änderung für erledigt und blieb auf der Platte unverändert.
+ */
+test("renameArea: zwei inhaltsgleiche Dokumente werden beide umgeschrieben", async () => {
+  const v = await mkdtemp(join(tmpdir(), "areas-twins-"));
+  try {
+    await mkdir(join(v, "memories", "projects", "carnexus"), { recursive: true });
+    await mkdir(join(v, "dokumentationen", "carnexus"), { recursive: true });
+    const twin =
+      "---\nid: doku-carnexus-area\ntitle: D\ntype: doc\nsummary: s\ntopic_path:\n  - doku\n  - carnexus\n  - area\ntags:\n  - product-doc\n  - carnexus\nscope: carnexus\nrecall_when:\n  - d\ncreated: 2026-08-26\nupdated: 2026-08-26\n---\n\nDoc.\n";
+    await writeFile(join(v, "dokumentationen", "carnexus", "a.md"), twin);
+    await writeFile(join(v, "dokumentationen", "carnexus", "b.md"), twin);
+    const r = await renameArea(v, "project", "carnexus", "new-project");
+    assert.equal(r.docsRetagged, 2, "beide Zwillinge, nicht nur der erste");
+    assert.equal(r.scopesRewritten, 2);
+    for (const n of ["a.md", "b.md"]) {
+      const d = matter(await readFile(join(v, "dokumentationen", "new-project", n), "utf8")).data;
+      assert.deepEqual(d.topic_path, ["doku", "new-project", "area"], `${n}: topic_path`);
+      assert.equal(d.scope, "new-project", `${n}: scope`);
+    }
+  } finally {
+    await rm(v, { recursive: true, force: true });
+  }
+});

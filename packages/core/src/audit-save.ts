@@ -10,8 +10,10 @@ import {
   latestTrashPathFor,
 } from "./audit-log.js";
 import type { Vault } from "./vault.js";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, realpath, rename } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import matter from "gray-matter";
+import { readOccupant } from "./memory-locator.js";
 
 /**
  * Audit-Kontext, den jeder Caller (bridge.ts, index.ts) mitgibt — beschreibt
@@ -120,6 +122,13 @@ export async function auditedSoftDelete(args: {
   const diffBefore = cloneFrontmatter(memory.fm);
   const originalPath = memory.filePath;
   const trashPath = await moveToTrash(vaultRoot, originalPath, memoryID);
+  // Codex-Befund 5: Die Datei war weg, der Index-Eintrag blieb. Auf einem
+  // Cloud-Mount pollt der Watcher (Intervall 1500ms) und bekommt den unlink
+  // eines Provider-Mounts oft überhaupt nicht mit — bis zum nächsten Reconcile
+  // oder Neustart lieferte der Recall damit ein Memory aus, das auf der Platte
+  // schon im Trash lag. Weder der Bridge- noch der MCP-Pfad räumte auf; die
+  // Eviction gehört deshalb hierher, in die Mutation selbst.
+  vault.forgetFile(originalPath);
 
   const audit = await auditLog.record({
     memory_id: memoryID,
@@ -176,7 +185,29 @@ export async function auditedRestore(args: {
     );
   }
 
+  // Codex-Befund 6a: `destFilePath` kam ungeprüft vom Caller — ein Restore in
+  // ein Geschwisterverzeichnis NEBEN dem Vault funktionierte. Geprüft wird
+  // über realpath, nicht über den Textpfad: Cloud-Mounts liegen im Vault
+  // regelmäßig als Symlink, und `~/vault/elsewhere/x.md` kann irgendwo hin
+  // zeigen, während der String brav mit dem Vault-Pfad beginnt.
+  await assertInsideVault(vaultRoot, dest);
+
   await restoreFromTrash(vaultRoot, trashFile, dest);
+
+  // Codex-Befund 6b: Was zurückkam, wurde nie gegen die angeforderte id
+  // geprüft. Ein von Hand angefasster oder per Sync-Konflikt ersetzter
+  // Trash-Stand landete damit unter fremdem Namen am Originalpfad — und der
+  // Reindex direkt danach hätte ihn als diese Memory in den Index gehoben.
+  const occupant = readOccupant(dest);
+  if (occupant.kind !== "memory" || occupant.id !== memoryID) {
+    // Zurückrollen, statt die falsche Datei im Vault liegen zu lassen.
+    await rename(dest, trashFile).catch(() => {});
+    const found = occupant.kind === "memory" ? `"${occupant.id}"` : "no memory at all";
+    throw new Error(
+      `the trashed file for "${memoryID}" does not hold memory "${memoryID}" (found ${found}) — ` +
+        `restore aborted, the trash file is untouched.`,
+    );
+  }
 
   const audit = await auditLog.record({
     memory_id: memoryID,
@@ -194,6 +225,43 @@ export async function auditedRestore(args: {
 }
 
 // ─── helpers ────────────────────────────────────────────────────
+
+/**
+ * Der Zielpfad muss REAL im Vault liegen. Der Pfad selbst existiert beim
+ * Restore noch nicht, also wird der tiefste bereits existierende Vorfahre
+ * aufgelöst und der Rest wieder angehängt — so hilft ein Symlink auf halbem
+ * Weg nicht mehr aus dem Vault heraus.
+ */
+async function assertInsideVault(vaultRoot: string, dest: string): Promise<void> {
+  const vaultReal = await realpath(vaultRoot);
+  const destReal = await realpathOfNearestExisting(dest);
+  if (destReal !== vaultReal && !destReal.startsWith(vaultReal + sep)) {
+    throw new Error(
+      `refusing to restore outside the vault: ${dest} resolves to ${destReal}, ` +
+        `which is not inside ${vaultReal}.`,
+    );
+  }
+}
+
+async function realpathOfNearestExisting(p: string): Promise<string> {
+  const tail: string[] = [];
+  let probe = resolve(p);
+  for (;;) {
+    let real: string | undefined;
+    try {
+      real = await realpath(probe);
+    } catch {
+      real = undefined;
+    }
+    if (real !== undefined) return tail.length === 0 ? real : join(real, ...tail);
+    const parent = dirname(probe);
+    // Bei der Wurzel angekommen, ohne dass irgendetwas existierte.
+    if (parent === probe) return resolve(p);
+    tail.unshift(basename(probe));
+    probe = parent;
+  }
+}
+
 
 function cloneFrontmatter(fm: unknown): Record<string, unknown> {
   return JSON.parse(JSON.stringify(fm)) as Record<string, unknown>;
