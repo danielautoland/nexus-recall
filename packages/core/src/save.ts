@@ -18,7 +18,14 @@ import type {
   SaveMemoryCommitOptions,
 } from "./save-schema.js";
 import { extractWikilinks, todayISO, dedupe } from "./save-text.js";
-import { fileExists, readTarget, acquireCommitClaim, writeConflict } from "./save-commit.js";
+import {
+  fileExists,
+  readTarget,
+  acquireCommitClaim,
+  commitLockPathFor,
+  writeConflict,
+} from "./save-commit.js";
+import { sameFile } from "./file-identity.js";
 import { resolveMemoryTarget } from "./save-target.js";
 import { readOccupant, scanVaultForId, vaultRelative } from "./memory-locator.js";
 
@@ -46,6 +53,16 @@ export async function saveMemory(
   // irgendeine Datei zu ersetzen.
   if (exists) {
     const occupant = readOccupant(filePath);
+    // Unlesbar ist nicht frei: Wer die Datei nicht lesen kann, kann auch nicht
+    // behaupten, sie gehöre ihm. Ohne diesen Zweig war eine gewöhnliche Notiz
+    // mit Dateimodus 000 ungeschützt — die Prüfung sah `absent`.
+    if (occupant.kind === "unreadable") {
+      throw new Error(
+        `refusing to overwrite ${vaultRelative(vaultRoot, filePath)}: the file exists but ` +
+          `cannot be read (${occupant.reason}), so it cannot be shown to be memory '${id}'. ` +
+          `Fix its permissions, or move it out of the way.`,
+      );
+    }
     if (occupant.kind === "foreign") {
       throw new Error(
         `refusing to overwrite ${vaultRelative(vaultRoot, filePath)}: it is not a memory ` +
@@ -60,33 +77,62 @@ export async function saveMemory(
     }
   }
 
-  // Ein `ambiguous` ist ein Vault-Defekt (#240/A2.3), keine Wahlmöglichkeit:
-  // Der Index nimmt still eine der Dateien, und ein Save, der die andere
-  // trifft, lässt die Kopie unverändert stehen. Lieber laut abbrechen.
-  const elsewhere = locator.locate(id);
-  if (elsewhere.kind === "ambiguous") {
-    throw new Error(
-      `memory '${id}' exists in more than one file: ` +
-        `${elsewhere.filePaths.map((p) => vaultRelative(vaultRoot, p)).join(", ")}. ` +
-        `Remove or rename all but one before saving — the index silently loads only one of them.`,
-    );
-  }
-  // Dieselbe id an einem ANDEREN Ort ist eine Kollision, kein freier Platz.
-  // Ohne diese Prüfung legten zwei Saves derselben id in zwei `folder`-Regalen
-  // beide erfolgreich eine Datei an, und nach dem nächsten Neustart lud der
-  // Vault nur die alphabetisch erste.
-  //
-  // Mit `overwrite` ist es dagegen ein bewusstes Re-Filing (#64): Der Caller
-  // benennt DIESES Memory und einen neuen Ort dafür. Das Aufräumen der alten
-  // Datei liegt bei ihm — `tool-handlers.ts` trasht sie, sobald der Pfad sich
-  // geändert hat, und warnt, wenn das misslingt.
-  if (!input.overwrite && elsewhere.kind === "unique" && elsewhere.filePath !== filePath) {
-    throw new Error(
-      `memory already exists: ${id} (at ${vaultRelative(vaultRoot, elsewhere.filePath)}). ` +
-        `Saving it to ${vaultRelative(vaultRoot, filePath)} would create a second file with the ` +
-        `same id — pass the existing folder, or pick a different id.`,
-    );
-  }
+  /**
+   * Wohnt diese id bereits woanders im Vault?
+   *
+   * Bewusst als Funktion, weil die Antwort ZWEIMAL gebraucht wird: einmal
+   * hier, damit ein aussichtsloser Save früh und billig scheitert, und einmal
+   * unter dem Commit-Claim, wo sie erst verbindlich ist. Der id-Lock allein
+   * genügt nämlich nicht: Er serialisiert zwei gleichzeitige Saves derselben
+   * id, aber der Verlierer hat seine Vorabprüfung gemacht, ALS das Regal des
+   * Gewinners noch leer war. Ohne die zweite Prüfung schreibt er trotzdem —
+   * und der Vault hätte am Ende genau die zwei Dateien mit einer id, gegen
+   * die der Lock gebaut wurde.
+   */
+  const assertIdIsNotClaimedElsewhere = (): void => {
+    // Ein `ambiguous` ist ein Vault-Defekt (#240/A2.3), keine Wahlmöglichkeit:
+    // Der Index nimmt still eine der Dateien, und ein Save, der die andere
+    // trifft, lässt die Kopie unverändert stehen. Lieber laut abbrechen.
+    const elsewhere = locator.locate(id);
+    // Ein Scan mit blindem Fleck darf nicht als „die id ist frei" durchgehen:
+    // Hinter dem Ordner, den er nicht öffnen konnte, kann dasselbe Memory
+    // liegen, und der Save legte daneben ein zweites File mit derselben id an —
+    // genau der stille Defekt aus #240/A2.3, nur ohne dass ihn jemand sieht.
+    if (elsewhere.kind === "incomplete") {
+      throw new Error(
+        `cannot verify where memory '${id}' lives: the vault scan could not read ` +
+          `${elsewhere.unreadable.map((p) => vaultRelative(vaultRoot, p)).join(", ")}. ` +
+          `Fix the permissions before saving — writing now could create a second file with the same id.`,
+      );
+    }
+    if (elsewhere.kind === "ambiguous") {
+      throw new Error(
+        `memory '${id}' exists in more than one file: ` +
+          `${elsewhere.filePaths.map((p) => vaultRelative(vaultRoot, p)).join(", ")}. ` +
+          `Remove or rename all but one before saving — the index silently loads only one of them.`,
+      );
+    }
+    // Dieselbe id an einem ANDEREN Ort ist eine Kollision, kein freier Platz.
+    // Ohne diese Prüfung legten zwei Saves derselben id in zwei `folder`-Regalen
+    // beide erfolgreich eine Datei an, und nach dem nächsten Neustart lud der
+    // Vault nur die alphabetisch erste.
+    //
+    // Mit `overwrite` ist es dagegen ein bewusstes Re-Filing (#64): Der Caller
+    // benennt DIESES Memory und einen neuen Ort dafür. Das Aufräumen der alten
+    // Datei liegt bei ihm — `tool-handlers.ts` trasht sie, sobald der Pfad sich
+    // geändert hat, und warnt, wenn das misslingt.
+    //
+    // `sameFile` statt Stringvergleich: Auf einem case-insensitiven Dateisystem
+    // ist der Fund unter anderer Schreibweise DIESELBE Datei, keine Kollision.
+    if (!input.overwrite && elsewhere.kind === "unique" && !sameFile(elsewhere.filePath, filePath)) {
+      throw new Error(
+        `memory already exists: ${id} (at ${vaultRelative(vaultRoot, elsewhere.filePath)}). ` +
+          `Saving it to ${vaultRelative(vaultRoot, filePath)} would create a second file with the ` +
+          `same id — pass the existing folder, or pick a different id.`,
+      );
+    }
+  };
+  assertIdIsNotClaimedElsewhere();
   if (
     commit.expectedTarget !== undefined &&
     commit.expectedTarget !== observedTarget
@@ -298,12 +344,26 @@ export async function saveMemory(
   // überlappenden Schreibern desselben Prozesses (#240/B3) und veröffentlicht
   // per rename das Mischprodukt.
   const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-  const commitLock = `${filePath}.bastra-write.lock`;
+  // Der Claim gehört der ID, nicht dem Zielpfad. Auf `<zielpfad>.lock` nahmen
+  // zwei gleichzeitige Saves DERSELBEN id in verschiedene `folder`-Regale zwei
+  // verschiedene Locks und gelangen beide — danach trugen zwei Dateien eine id,
+  // und der Vault lud beim nächsten Start still nur eine davon. Genau der Fall,
+  // den der Claim verhindern sollte; der Kommentar sprach schon von der id, die
+  // Umsetzung tat es nicht. Wo der Lock liegt und warum die id gehasht wird,
+  // steht bei `commitLockPathFor`.
+  const commitLock = commitLockPathFor(vaultRoot, id);
+  await mkdir(dirname(commitLock), { recursive: true });
   await writeFile(tmp, content, "utf8");
   let lockAcquired = false;
   try {
     await acquireCommitClaim(commitLock, id, filePath);
     lockAcquired = true;
+
+    // Jetzt erst verbindlich: Die Vorabprüfung lief, bevor irgendein Lock
+    // gehalten wurde — ein gleichzeitiger Save derselben id kann seither sein
+    // Regal gefüllt haben. Ohne diese zweite Frage serialisiert der Lock die
+    // beiden Schreibvorgänge nur, statt einen von ihnen abzulehnen.
+    assertIdIsNotClaimedElsewhere();
 
     // #285: compare the exact bytes seen before the candidate was built with
     // the bytes at commit time. The O_EXCL lock serializes every saveMemory

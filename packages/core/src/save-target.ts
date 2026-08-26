@@ -9,7 +9,8 @@
  * this land" without a write.
  */
 import { readdirSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
+import { assertInsideVault } from "./file-identity.js";
 import { readOccupant, vaultRelative, type MemoryLocator } from "./memory-locator.js";
 import type { SaveMemoryInput } from "./save-schema.js";
 import { canonicalMemoryId } from "./save-text.js";
@@ -106,6 +107,10 @@ function resolveAgainstExisting(
   // Dateinamen, der von seiner id abweicht.
   for (const candidateId of rawId === canonicalId ? [canonicalId] : [rawId, canonicalId]) {
     const located = locator?.locate(candidateId);
+    // `ambiguous` und `incomplete` bleiben hier unbeantwortet und fallen auf
+    // das kanonische Ziel zurück. Das ist kein Durchwinken: `saveMemory` hält
+    // beide Fälle an, bevor es schreibt, und nennt dabei den Defekt. Ein
+    // Routing-Primitiv soll den Ort nennen, nicht die Schreiberlaubnis.
     if (located?.kind !== "unique") continue;
     const relPath = vaultRelative(vaultRoot, located.filePath);
     // Ein EXPLIZITER `folder` ist eine Anweisung, kein Vorschlag: Wer ihn
@@ -180,8 +185,12 @@ export function resolveMemoryTarget(
   const canonicalRelPath = `${canonicalSubdir}/${canonicalId}.md`;
   const scope = relPath === canonicalRelPath ? normalizeScopeKey(input.scope) : input.scope;
   const filePath = join(vaultRoot, ...relPath.split("/"));
-  if (!resolve(filePath).startsWith(resolve(vaultRoot) + sep)) {
-    throw new Error(`refusing to write outside the vault: ${filePath}`);
-  }
+  // Über das Dateisystem, nicht über den String: Die alte lexikalische Prüfung
+  // (`resolve(filePath).startsWith(resolve(vaultRoot) + sep)`) sah Symlinks
+  // nicht. Ein `memories/linked -> /outside` plus `folder: memories/linked`
+  // erzeugte damit erfolgreich `/outside/escaped.md` — der Pfad-String beginnt
+  // brav mit dem Vault-Pfad, das Dateisystem geht trotzdem woanders hin.
+  // Dieselbe Prüfung, die `auditedRestore` seit Codex-Befund 6a benutzt.
+  assertInsideVault(vaultRoot, filePath);
   return { id, filePath, scope };
 }

@@ -26,7 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import matter from "gray-matter";
-import { readOccupant } from "./memory-locator.js";
+import { occupantOfRaw } from "./memory-locator.js";
 
 export type MutateOutcome =
   /** Geschrieben. */
@@ -56,8 +56,25 @@ export async function mutateMemoryFile(
   expectedId: string | null,
   mutation: MemoryMutation,
 ): Promise<MutateOutcome> {
+  // EIN Read für alles: Identität, Transform und der Vergleich vor dem Commit
+  // müssen auf denselben Bytes beruhen. Vorher las die Identitätsprüfung die
+  // Datei separat (`readOccupant`) und der Transform ein zweites Mal — zwischen
+  // beiden Reads liegt ein await, und wer dort die Datei durch ein anderes
+  // Memory ersetzt, bekommt die Prüfung der einen Fassung und den Stempel auf
+  // der anderen.
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch (err) {
+    // Ohne Identitätsanspruch (Trash-Stempel) ist ein Lesefehler ein echter
+    // Fehler; mit Anspruch ist er schlicht der Beweis, dass das erwartete
+    // Memory hier nicht liegt.
+    if (expectedId === null) throw err;
+    return { kind: "identity-mismatch", found: null };
+  }
+
   if (expectedId !== null) {
-    const occupant = readOccupant(filePath);
+    const occupant = occupantOfRaw(raw, filePath);
     if (occupant.kind !== "memory" || occupant.id !== expectedId) {
       return {
         kind: "identity-mismatch",
@@ -66,7 +83,6 @@ export async function mutateMemoryFile(
     }
   }
 
-  const raw = await readFile(filePath, "utf8");
   const parsed = matter(raw);
   // Copy statt in-place: gray-matter cached `matter(content)` per Input-String,
   // eine Mutation von `parsed.data` vergiftet den Cache-Eintrag für jeden

@@ -10,10 +10,10 @@ import {
   latestTrashPathFor,
 } from "./audit-log.js";
 import type { Vault } from "./vault.js";
+import { assertInsideVault, sameFile } from "./file-identity.js";
 import type { Located, MemoryLocator } from "./memory-locator.js";
-import { access, readFile, realpath, rename, stat } from "node:fs/promises";
+import { access, readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { readOccupant } from "./memory-locator.js";
 
@@ -81,7 +81,7 @@ export async function auditedSave(args: {
   // und ließ die alte liegen — danach trugen zwei Dateien dieselbe id, und der
   // Vault lud beim nächsten Start still nur eine. `tool-handlers.ts` räumt an
   // seiner Stelle längst auf; hier fehlte es.
-  if (previousPath !== null && !(await sameFilePath(previousPath, result.file_path))) {
+  if (previousPath !== null && !(sameFile(previousPath, result.file_path))) {
     try {
       await moveToTrash(vaultRoot, previousPath, result.id);
       vault.forgetFile(previousPath);
@@ -224,7 +224,7 @@ export async function auditedRestore(args: {
   // über realpath, nicht über den Textpfad: Cloud-Mounts liegen im Vault
   // regelmäßig als Symlink, und `~/vault/elsewhere/x.md` kann irgendwo hin
   // zeigen, während der String brav mit dem Vault-Pfad beginnt.
-  await assertInsideVault(vaultRoot, dest);
+  assertInsideVault(vaultRoot, dest, "restore");
 
   // Codex-Gegenreview: Geprüft wurde nur der ZIELPFAD. Existiert dieselbe id
   // inzwischen in einem anderen Regal — weil das Memory nach dem Löschen neu
@@ -234,7 +234,7 @@ export async function auditedRestore(args: {
   const live = vault?.pathsFor(memoryID) ?? [];
   const stillElsewhere: string[] = [];
   for (const p of live) {
-    if (!(await sameFilePath(p, dest))) stillElsewhere.push(p);
+    if (!(sameFile(p, dest))) stillElsewhere.push(p);
   }
   if (stillElsewhere.length > 0) {
     throw new Error(
@@ -278,41 +278,6 @@ export async function auditedRestore(args: {
 
 // ─── helpers ────────────────────────────────────────────────────
 
-/**
- * Der Zielpfad muss REAL im Vault liegen. Der Pfad selbst existiert beim
- * Restore noch nicht, also wird der tiefste bereits existierende Vorfahre
- * aufgelöst und der Rest wieder angehängt — so hilft ein Symlink auf halbem
- * Weg nicht mehr aus dem Vault heraus.
- */
-async function assertInsideVault(vaultRoot: string, dest: string): Promise<void> {
-  const vaultReal = await realpath(vaultRoot);
-  const destReal = await realpathOfNearestExisting(dest);
-  if (destReal !== vaultReal && !destReal.startsWith(vaultReal + sep)) {
-    throw new Error(
-      `refusing to restore outside the vault: ${dest} resolves to ${destReal}, ` +
-        `which is not inside ${vaultReal}.`,
-    );
-  }
-}
-
-async function realpathOfNearestExisting(p: string): Promise<string> {
-  const tail: string[] = [];
-  let probe = resolve(p);
-  for (;;) {
-    let real: string | undefined;
-    try {
-      real = await realpath(probe);
-    } catch {
-      real = undefined;
-    }
-    if (real !== undefined) return tail.length === 0 ? real : join(real, ...tail);
-    const parent = dirname(probe);
-    // Bei der Wurzel angekommen, ohne dass irgendetwas existierte.
-    if (parent === probe) return resolve(p);
-    tail.unshift(basename(probe));
-    probe = parent;
-  }
-}
 
 
 function cloneFrontmatter(fm: unknown): Record<string, unknown> {
@@ -354,20 +319,3 @@ function vaultAsLocator(vault: Vault): MemoryLocator {
   };
 }
 
-/**
- * Sind das dieselben Bytes auf der Platte? Ein Stringvergleich reicht dafür
- * nicht: Auf einem case-insensitiven Dateisystem sind
- * `memories/People/x.md` und `memories/people/x.md` DIESELBE Datei, und wer
- * sie für verschieden hält, verschiebt beim "Aufräumen" das einzige Exemplar
- * in den Trash (Codex-Gegenreview). Verglichen wird über Gerät und Inode;
- * fehlt eine der beiden Dateien, sind sie es nicht.
- */
-async function sameFilePath(a: string, b: string): Promise<boolean> {
-  if (a === b) return true;
-  try {
-    const [sa, sb] = await Promise.all([stat(a), stat(b)]);
-    return sa.dev === sb.dev && sa.ino === sb.ino;
-  } catch {
-    return false;
-  }
-}

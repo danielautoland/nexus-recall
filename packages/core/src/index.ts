@@ -88,8 +88,9 @@ export type { ToolIntent, TopicResult, DetectedProject } from "./topics.js";
 export { isMarkdownFile } from "./markdown-file.js";
 export { mutateMemoryFile } from "./memory-mutate.js";
 export type { MutateOutcome, MemoryMutation } from "./memory-mutate.js";
-export { readOccupant, scanVaultForId, snapshotLocator, vaultRelative } from "./memory-locator.js";
+export { readOccupant, occupantOfRaw, scanVaultForId, snapshotLocator, vaultRelative } from "./memory-locator.js";
 export type { Occupant, Located, MemoryLocator } from "./memory-locator.js";
+export { sameFile, assertInsideVault, realpathOfNearestExisting } from "./file-identity.js";
 export { normalizeScopeKey, scopeEquals, isScopeCompatible, GLOBAL_SCOPES } from "./scope.js";
 
 export {

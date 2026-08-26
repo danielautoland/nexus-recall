@@ -17,6 +17,7 @@ import {
   mutateMemoryFile,
   resolveMemoryTarget,
   moveToTrash,
+  sameFile,
   SaveMemoryInput,
   stripAutoRelatedSection,
 } from "@bastra-recall/core";
@@ -449,7 +450,14 @@ async function saveMemoryInner(
 
   const result = await saveMemory(deps.vaultPath, input, { locator: vaultLocator(deps.vault) });
   let refileWarning: string | undefined;
-  if (previous && previous.filePath !== result.file_path) {
+  // Identität über das Dateisystem, nicht über den Pfad-String: Auf APFS
+  // (case-insensitiv) trifft ein Save mit `folder: memories/people` die
+  // bestehende Datei `memories/People/case-id.md` und meldet die andere
+  // Schreibweise zurück. Der Stringvergleich hielt die beiden für zwei Dateien
+  // und trashte den „alten" Pfad — dieselbe Datei, die gerade geschrieben
+  // worden war. Ergebnis: „Save complete", und danach existiert keiner der
+  // beiden gemeldeten Pfade mehr.
+  if (previous && !sameFile(previous.filePath, result.file_path)) {
     try {
       await moveToTrash(deps.vaultPath, previous.filePath, finalId);
       deps.vault.forgetFile(previous.filePath);

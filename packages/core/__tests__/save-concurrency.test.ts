@@ -17,6 +17,7 @@ import {
   writeFile,
   utimes,
 } from "node:fs/promises";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import * as os from "node:os";
@@ -24,6 +25,8 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
 import { saveMemory } from "../src/save.js";
+import { commitLockPathFor } from "../src/save-commit.js";
+import { scanVaultForId } from "../src/memory-locator.js";
 import { MEMORY_WRITE_CONFLICT, MemoryWriteConflictError } from "../src/save-schema.js";
 import type { SaveMemoryInput } from "../src/save-schema.js";
 
@@ -55,14 +58,26 @@ async function harness(t: { after: (fn: () => unknown) => void }): Promise<strin
   return vault;
 }
 
-async function artifacts(file: string): Promise<string[]> {
-  try {
-    return (await readdir(path.dirname(file))).filter(
-      (name) => name.endsWith(".tmp") || name.endsWith(".bastra-write.lock"),
-    );
-  } catch {
-    return [];
+/**
+ * Was ein sauberer Save NICHT hinterlässt: Zwischendateien neben dem Memory
+ * und Commit-Claims. Der Claim liegt seit dem Umzug auf den ID-Lock nicht mehr
+ * neben der Datei, sondern unter `.bastra/locks/` — ohne diesen zweiten Ort
+ * würden die Lock-Leichen-Assertions unten still nichts mehr prüfen.
+ */
+async function artifacts(vault: string, file: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const dir of [path.dirname(file), path.join(vault, ".bastra", "locks")]) {
+    try {
+      found.push(
+        ...(await readdir(dir)).filter(
+          (name) => name.endsWith(".tmp") || name.endsWith(".bastra-write.lock"),
+        ),
+      );
+    } catch {
+      // Ordner gibt es nicht → nichts hinterlassen.
+    }
   }
+  return found;
 }
 
 async function runWorker(
@@ -117,7 +132,7 @@ test("concurrent creates: exactly one wins and the loser reports a stable confli
 
   const raw = await readFile(file, "utf8");
   assert.ok(raw.includes("writer A") || raw.includes("writer B"));
-  assert.deepEqual(await artifacts(file), []);
+  assert.deepEqual(await artifacts(vault, file), []);
 });
 
 test("concurrent overwrites from one preimage: exactly one patch wins", async (t) => {
@@ -138,7 +153,7 @@ test("concurrent overwrites from one preimage: exactly one patch wins", async (t
   const raw = await readFile(first.file_path, "utf8");
   assert.ok(raw.includes("writer A") || raw.includes("writer B"));
   assert.equal(matter(raw).data.sensitivity, "private", "the winning overwrite remains a patch");
-  assert.deepEqual(await artifacts(first.file_path), []);
+  assert.deepEqual(await artifacts(vault, first.file_path), []);
 });
 
 test("overlapping ordinary overwrites are serialized even without a caller precondition", async (t) => {
@@ -156,7 +171,7 @@ test("overlapping ordinary overwrites are serialized even without a caller preco
   assertConflict(loser.reason);
   const raw = await readFile(first.file_path, "utf8");
   assert.ok(raw.includes("writer A") || raw.includes("writer B"));
-  assert.deepEqual(await artifacts(first.file_path), []);
+  assert.deepEqual(await artifacts(vault, first.file_path), []);
 });
 
 test("an expected-free save refuses a target that appeared before entry", async (t) => {
@@ -172,7 +187,7 @@ test("an expected-free save refuses a target that appeared before entry", async 
     },
   );
   assert.equal(await readFile(landed.file_path, "utf8"), before);
-  assert.deepEqual(await artifacts(landed.file_path), []);
+  assert.deepEqual(await artifacts(vault, landed.file_path), []);
 });
 
 test("an expected preimage refuses a byte change and preserves the newcomer", async (t) => {
@@ -187,14 +202,15 @@ test("an expected preimage refuses a byte change and preserves the newcomer", as
     MemoryWriteConflictError,
   );
   assert.equal(await readFile(seeded.file_path, "utf8"), newcomer);
-  assert.deepEqual(await artifacts(seeded.file_path), []);
+  assert.deepEqual(await artifacts(vault, seeded.file_path), []);
 });
 
 test("a held commit claim fails visibly without touching the target or claim", async (t) => {
   const vault = await harness(t);
   const seeded = await saveMemory(vault, input("original"));
   const expected = await readFile(seeded.file_path, "utf8");
-  const lock = `${seeded.file_path}.bastra-write.lock`;
+  const lock = commitLockPathFor(vault, ID);
+  await mkdir(path.dirname(lock), { recursive: true });
   await writeFile(lock, "other writer", "utf8");
 
   await assert.rejects(
@@ -208,7 +224,7 @@ test("a held commit claim fails visibly without touching the target or claim", a
   assert.equal(await readFile(seeded.file_path, "utf8"), expected);
   assert.equal(await readFile(lock, "utf8"), "other writer");
   assert.deepEqual(
-    (await artifacts(seeded.file_path)).filter((name) => name.endsWith(".tmp")),
+    (await artifacts(vault, seeded.file_path)).filter((name) => name.endsWith(".tmp")),
     [],
   );
 });
@@ -223,7 +239,7 @@ test("ordinary sequential overwrites stay compatible and both succeed", async (t
   assert.equal(second.created, false);
   assert.equal(third.created, false);
   assert.match(await readFile(created.file_path, "utf8"), /v3/);
-  assert.deepEqual(await artifacts(created.file_path), []);
+  assert.deepEqual(await artifacts(vault, created.file_path), []);
 });
 
 test("unrelated ids do not share a commit claim", async (t) => {
@@ -237,9 +253,21 @@ test("unrelated ids do not share a commit claim", async (t) => {
   assert.equal(b.created, true);
 });
 
-test("the same id in distinct folders commits independently", async (t) => {
+/**
+ * Dieser Test stand vorher auf dem Kopf: Er hieß „the same id in distinct
+ * folders commits independently" und verlangte, dass BEIDE Saves gelingen.
+ * Genau das war der Defekt — der Commit-Claim lag auf dem Zielpfad, also
+ * nahmen zwei gleichzeitige Saves derselben id in verschiedenen Regalen zwei
+ * verschiedene Locks, und danach trugen zwei Dateien eine id. Der Vault lädt
+ * beim nächsten Start still nur eine davon; das Memory verliert die Hälfte
+ * seiner Geschichte, ohne dass irgendwo ein Fehler auftaucht.
+ *
+ * Ein Save je id — die zwei Regale sind kein zweiter Platz, sondern zwei
+ * Anwärter auf denselben.
+ */
+test("zwei gleichzeitige Saves derselben id: genau einer gewinnt", async (t) => {
   const vault = await harness(t);
-  const [a, b] = await Promise.all([
+  const outcomes = await Promise.allSettled([
     saveMemory(vault, input("A", { folder: "memories/projects/a" }), {
       expectedTarget: null,
     }),
@@ -248,9 +276,76 @@ test("the same id in distinct folders commits independently", async (t) => {
     }),
   ]);
 
-  assert.notEqual(a.file_path, b.file_path);
-  assert.equal(a.created, true);
-  assert.equal(b.created, true);
+  const won = outcomes.filter((o) => o.status === "fulfilled");
+  assert.equal(won.length, 1, `genau ein Save darf gelingen, es gelangen ${won.length}`);
+
+  // Und auf der Platte liegt auch wirklich nur eine Datei mit dieser id — der
+  // Verlierer darf sein Regal nicht doch noch gefüllt haben.
+  const onDisk = [
+    path.join(vault, "memories/projects/a", `${ID}.md`),
+    path.join(vault, "memories/projects/b", `${ID}.md`),
+  ].filter((p) => existsSync(p));
+  assert.deepEqual(onDisk, [(won[0] as PromiseFulfilledResult<{ file_path: string }>).value.file_path]);
+  assert.deepEqual(await artifacts(vault, onDisk[0]), []);
+});
+
+/**
+ * Der Lock serialisiert, er entscheidet nicht. Wer ihn erst bekommt, NACHDEM
+ * der andere ihn losgelassen hat, hat seine Vorabprüfung gemacht, als das
+ * Regal des Gewinners noch leer war — für ihn ist die id immer noch frei. Ohne
+ * eine zweite Frage unter dem Lock schreibt er sein File trotzdem, und der
+ * Vault hat wieder zwei Dateien mit einer id.
+ *
+ * Der Locator ist hier der Zeitpunkt-Seam: Er antwortet mit dem Stand VON VOR
+ * dem fremden Write und legt das fremde File danach an. Die Vorabprüfung sieht
+ * also „frei", jede spätere Frage sieht die Kollision.
+ */
+test("ein Konkurrent, der zwischen Vorabprüfung und Commit landet, wird erkannt", async (t) => {
+  const vault = await harness(t);
+  const rivalDir = path.join(vault, "memories/projects/rival");
+  const rival = path.join(rivalDir, `${ID}.md`);
+  let calls = 0;
+
+  const locator = {
+    locate(wanted: string) {
+      calls++;
+      // Die Antwort stammt vom Stand VOR dem Pflanzen — die Vorabprüfung sieht
+      // also „frei". Gepflanzt wird nach ihr (Aufruf 2: einmal fragt das
+      // Routing, einmal die Vorabprüfung), sodass erst die Frage unter dem
+      // Commit-Claim den Konkurrenten sehen kann.
+      const answer = scanVaultForId(vault, wanted);
+      if (calls === 2) {
+        mkdirSync(rivalDir, { recursive: true });
+        writeFileSync(rival, matter.stringify("\nrival\n", {
+          id: ID,
+          title: "Shared Memory",
+          type: "lesson",
+          summary: "rival",
+          topic_path: ["concurrency"],
+          tags: ["save"],
+          scope: "race",
+          recall_when: ["rival"],
+          created: "2026-08-26",
+          updated: "2026-08-26",
+        }), "utf8");
+      }
+      return answer;
+    },
+  };
+
+  await assert.rejects(
+    saveMemory(vault, input("mine", { folder: "memories/projects/mine", overwrite: false }), {
+      locator,
+    }),
+    /would create a second file with the same id/,
+  );
+  assert.ok(calls >= 3, `der Commit muss noch einmal fragen — gefragt wurde ${calls}x`);
+  assert.equal(
+    existsSync(path.join(vault, "memories/projects/mine", `${ID}.md`)),
+    false,
+    "kein zweites File neben dem Konkurrenten",
+  );
+  assert.deepEqual(await artifacts(vault, rival), []);
 });
 
 test("non-ENOENT inspection failures fail closed before temp or lock creation", async (t) => {
@@ -262,7 +357,7 @@ test("non-ENOENT inspection failures fail closed before temp or lock creation", 
     assert.equal((err as NodeJS.ErrnoException).code, "EISDIR");
     return true;
   });
-  assert.deepEqual(await artifacts(file), []);
+  assert.deepEqual(await artifacts(vault, file), []);
 });
 
 test("the same preimage is claimed exactly once across Node processes", async (t) => {
@@ -288,7 +383,7 @@ test("the same preimage is claimed exactly once across Node processes", async (t
   assert.equal(report.name, "MemoryWriteConflictError");
   const raw = await readFile(seeded.file_path, "utf8");
   assert.ok(raw.includes("process A") || raw.includes("process B"));
-  assert.deepEqual(await artifacts(seeded.file_path), []);
+  assert.deepEqual(await artifacts(vault, seeded.file_path), []);
 });
 
 // ── reclaiming a claim whose owner died ──────────────────────────────
@@ -300,7 +395,8 @@ test("the same preimage is claimed exactly once across Node processes", async (t
 test("a claim from a dead process on this host is reclaimed", async (t) => {
   const vault = await harness(t);
   const seeded = await saveMemory(vault, input("original"));
-  const lock = `${seeded.file_path}.bastra-write.lock`;
+  const lock = commitLockPathFor(vault, ID);
+  await mkdir(path.dirname(lock), { recursive: true });
   // A pid this process can prove is gone: spawn a child, wait for its exit.
   const dead = await new Promise<number>((resolve) => {
     const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
@@ -316,13 +412,14 @@ test("a claim from a dead process on this host is reclaimed", async (t) => {
 
   assert.equal(result.created, false);
   assert.match(await readFile(seeded.file_path, "utf8"), /after reclaim/);
-  assert.deepEqual(await artifacts(seeded.file_path), []);
+  assert.deepEqual(await artifacts(vault, seeded.file_path), []);
 });
 
 test("a claim older than the stale window is reclaimed whatever it says", async (t) => {
   const vault = await harness(t);
   const seeded = await saveMemory(vault, input("original"));
-  const lock = `${seeded.file_path}.bastra-write.lock`;
+  const lock = commitLockPathFor(vault, ID);
+  await mkdir(path.dirname(lock), { recursive: true });
   await writeFile(lock, "not json, from another machine", "utf8");
   // Age it past the window without waiting for it.
   const old = new Date(Date.now() - 60_000);
@@ -331,14 +428,15 @@ test("a claim older than the stale window is reclaimed whatever it says", async 
   const result = await saveMemory(vault, input("after reclaim"));
 
   assert.match(await readFile(seeded.file_path, "utf8"), /after reclaim/);
-  assert.deepEqual(await artifacts(seeded.file_path), []);
+  assert.deepEqual(await artifacts(vault, seeded.file_path), []);
 });
 
 test("a fresh claim from an unknown host is left alone", async (t) => {
   const vault = await harness(t);
   const seeded = await saveMemory(vault, input("original"));
   const expected = await readFile(seeded.file_path, "utf8");
-  const lock = `${seeded.file_path}.bastra-write.lock`;
+  const lock = commitLockPathFor(vault, ID);
+  await mkdir(path.dirname(lock), { recursive: true });
   const claim = JSON.stringify({
     pid: process.pid,
     host: "some-other-machine",
