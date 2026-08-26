@@ -8,21 +8,29 @@
  * Speicher: Der Index ist nach effektiver id aufgebaut, also derselben
  * Identität, die der Locator meint.
  *
- * `ambiguous` kann diese Fassung nicht melden — der Index hält je id genau
- * einen Eintrag, das ist seine Natur. Genau deshalb ist die Doppel-Datei ein
- * stiller Defekt (#240/A2.3): Zwei Dateien mit derselben id lassen ihn eine
- * davon wählen. Der Save erkennt den Fall trotzdem, weil er den Pfad des
- * Kandidaten gegen sein Ziel hält.
+ * `ambiguous` beantwortet `Vault.pathsFor()`: Der Index hält je id genau einen
+ * Eintrag, kennt aber die Dateien, die er wegen derselben id quarantäniert hat
+ * (#240/A2.3). Ohne diese zweite Quelle konnte der Locator nie `ambiguous`
+ * melden — ein Save lief durch und ließ das Duplikat bestehen, obwohl jede
+ * Schreibentscheidung dort geraten wäre: Welche der beiden Dateien ist
+ * gemeint?
  */
 import type { Located, MemoryLocator } from "@bastra-recall/core";
 
 export function vaultLocator(vault: {
   get(id: string): { filePath: string } | undefined;
+  pathsFor?(id: string): string[];
 }): MemoryLocator {
   return {
     locate(id: string): Located {
-      const hit = vault.get(id);
-      return hit === undefined ? { kind: "none" } : { kind: "unique", filePath: hit.filePath };
+      // `pathsFor` kennt auch die quarantänisierten Dateien — `get()` allein
+      // verschwieg, dass es eine zweite gibt, und der Locator konnte
+      // `ambiguous` nie melden. Ein Save lief dann durch und ließ das Duplikat
+      // bestehen (Codex-Gegenreview).
+      const paths = vault.pathsFor?.(id) ?? (vault.get(id) ? [vault.get(id)!.filePath] : []);
+      if (paths.length === 0) return { kind: "none" };
+      if (paths.length === 1) return { kind: "unique", filePath: paths[0] };
+      return { kind: "ambiguous", filePaths: paths };
     },
   };
 }

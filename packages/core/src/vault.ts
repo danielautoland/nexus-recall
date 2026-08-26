@@ -52,6 +52,19 @@ export class Vault {
    *  the tree — a leftover copy must be free to claim the id if the winner
    *  is gone. */
   private duplicateSkipLogged = new Set<string>();
+  /**
+   * id → Pfade, die diese id ebenfalls tragen, aber NICHT im Index stehen
+   * (#240/A2.3-Quarantäne). Der Vault erkannte sie längst und meldete sie
+   * beim Start — er behielt die Information nur nicht abfragbar, und
+   * `get(id)` gab weiter den Gewinner zurück, als wäre er der einzige.
+   *
+   * Genau daran hing ein Loch im Save-Pfad (Codex-Gegenreview): Der
+   * `vaultLocator` konnte `ambiguous` nie melden, weil er nur `get()` fragte
+   * — ein Save lief durch und ließ das Duplikat bestehen. Zwei Dateien mit
+   * einer id sind aber kein Randfall, sondern ein Zustand, in dem jede
+   * Schreibentscheidung geraten wäre: Welche der beiden ist gemeint?
+   */
+  private duplicatePaths = new Map<string, Set<string>>();
 
   constructor(public readonly root: string) {}
 
@@ -106,6 +119,7 @@ export class Vault {
           path: r.file,
           err: duplicateIdSkipMessage(r.memory.fm.id, claimed.filePath),
         });
+        this.rememberDuplicate(r.memory.fm.id, r.file);
         continue;
       }
       this.memorys.set(r.memory.fm.id, r.memory);
@@ -259,6 +273,38 @@ export class Vault {
     return this.memorys.get(id);
   }
 
+  /**
+   * Alle Pfade, die diese id tragen — der indexierte zuerst, dann die
+   * quarantänisierten. Leer, wenn die id unbekannt ist.
+   *
+   * Wer schreiben will, muss das fragen können: `get()` allein verschweigt,
+   * dass es eine zweite Datei gibt, und ein Save auf die eine lässt die
+   * andere unverändert stehen (#240/A2.3).
+   */
+  pathsFor(id: string): string[] {
+    const out: string[] = [];
+    const indexed = this.memorys.get(id);
+    if (indexed) out.push(indexed.filePath);
+    for (const p of this.duplicatePaths.get(id) ?? []) {
+      if (!out.includes(p)) out.push(p);
+    }
+    return out;
+  }
+
+  private rememberDuplicate(id: string, filePath: string): void {
+    const set = this.duplicatePaths.get(id);
+    if (set) set.add(filePath);
+    else this.duplicatePaths.set(id, new Set([filePath]));
+  }
+
+  private forgetDuplicate(filePath: string): void {
+    for (const [id, set] of this.duplicatePaths) {
+      if (!set.delete(filePath)) continue;
+      if (set.size === 0) this.duplicatePaths.delete(id);
+      return;
+    }
+  }
+
   size(): number {
     return this.memorys.size;
   }
@@ -338,6 +384,7 @@ export class Vault {
         // already knows whether this path owns it and emits the remove);
         // for a path that was never indexed this is a no-op.
         this.handleRemove(filePath);
+        this.rememberDuplicate(m.fm.id, filePath);
         if (!this.duplicateSkipLogged.has(filePath)) {
           this.duplicateSkipLogged.add(filePath);
           console.warn(
@@ -410,6 +457,10 @@ export class Vault {
   private handleRemove(filePath: string): void {
     this.fileStats.delete(filePath);
     this.duplicateSkipLogged.delete(filePath);
+    // Eine gelöschte Datei ist kein Duplikat mehr — sonst meldete der Locator
+    // `ambiguous` für einen Zustand, den es nicht mehr gibt, und blockierte
+    // jeden Save auf diese id.
+    this.forgetDuplicate(filePath);
     const id = this.filePathToId.get(filePath);
     if (!id) return;
     this.filePathToId.delete(filePath);

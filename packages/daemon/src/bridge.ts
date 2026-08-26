@@ -390,6 +390,7 @@ async function main(): Promise<void> {
               : undefined;
           auditedRestore({
             auditLog,
+            vault,
             vaultRoot: VAULT_PATH!,
             memoryID: targetId,
             destFilePath: destOverride,

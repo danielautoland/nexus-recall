@@ -10,7 +10,9 @@ import {
   latestTrashPathFor,
 } from "./audit-log.js";
 import type { Vault } from "./vault.js";
-import { access, readFile, realpath, rename } from "node:fs/promises";
+import type { Located, MemoryLocator } from "./memory-locator.js";
+import { access, readFile, realpath, rename, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import { readOccupant } from "./memory-locator.js";
@@ -63,11 +65,39 @@ export async function auditedSave(args: {
   // und nicht gefunden, also jeder Overwrite darauf als `create` mit
   // `diff_before: null` auditiert. `resolveMemoryTarget` kennt den
   // Bestandsschutz und nennt genau die id, die gleich geschrieben wird.
-  const candidateID = resolveMemoryTarget(vaultRoot, input).id;
+  // Den Locator des Vaults mitgeben, sonst scannt `saveMemory` das
+  // Dateisystem, obwohl der Index in der Hand liegt — und sieht `ambiguous`
+  // nicht, das nur der Vault kennt.
+  const locator = vaultAsLocator(vault);
+  const candidateID = resolveMemoryTarget(vaultRoot, input, locator).id;
   const existing = vault.get(candidateID);
   const diffBefore = existing ? cloneFrontmatter(existing.fm) : null;
+  const previousPath = existing?.filePath ?? null;
 
-  const result = await saveMemory(vaultRoot, input);
+  const result = await saveMemory(vaultRoot, input, { locator });
+
+  // Codex-Gegenreview: Dieser Pfad (Bridge, Import) kannte das Re-Filing aus
+  // #64 nicht. Ein `overwrite` mit geändertem `folder` schrieb die neue Datei
+  // und ließ die alte liegen — danach trugen zwei Dateien dieselbe id, und der
+  // Vault lud beim nächsten Start still nur eine. `tool-handlers.ts` räumt an
+  // seiner Stelle längst auf; hier fehlte es.
+  if (previousPath !== null && !(await sameFilePath(previousPath, result.file_path))) {
+    try {
+      await moveToTrash(vaultRoot, previousPath, result.id);
+      vault.forgetFile(previousPath);
+    } catch (err) {
+      // Steht die alte Datei noch, tragen zwei Dateien dieselbe id — das darf
+      // der Aufrufer nicht nur im Log finden.
+      if (existsSync(previousPath)) {
+        throw new Error(
+          `re-file incomplete: ${previousPath} could not be trashed and now shares id ` +
+            `'${result.id}' with ${result.file_path} (${(err as Error).message}). ` +
+            `Remove or fix one of them — two files with the same id make the memory ` +
+            `disappear from the index on the next reconcile.`,
+        );
+      }
+    }
+  }
 
   // diff_after: aus dem result-Pfad lesen — Vault-Watcher hatte vielleicht
   // noch keine Zeit zum Re-Indexen.
@@ -160,9 +190,13 @@ export async function auditedRestore(args: {
   memoryID: string;
   /** Optional: bestimmten Original-Pfad erzwingen (Power-User). */
   destFilePath?: string;
+  /** Optional, aber dringend empfohlen: Ohne den Index kann der Restore nicht
+   *  sehen, ob dieselbe id inzwischen woanders LEBT — und legt dann eine
+   *  zweite aktive Datei mit derselben id an. */
+  vault?: Vault;
   context: AuditContext;
 }): Promise<{ id: string; restoredTo: string; audit: AuditEntry }> {
-  const { auditLog, vaultRoot, memoryID, destFilePath, context } = args;
+  const { auditLog, vaultRoot, memoryID, destFilePath, vault, context } = args;
 
   const lastDelete = await auditLog.lastDeleteFor(memoryID);
   if (!lastDelete) {
@@ -191,6 +225,24 @@ export async function auditedRestore(args: {
   // regelmäßig als Symlink, und `~/vault/elsewhere/x.md` kann irgendwo hin
   // zeigen, während der String brav mit dem Vault-Pfad beginnt.
   await assertInsideVault(vaultRoot, dest);
+
+  // Codex-Gegenreview: Geprüft wurde nur der ZIELPFAD. Existiert dieselbe id
+  // inzwischen in einem anderen Regal — weil das Memory nach dem Löschen neu
+  // angelegt oder re-filed wurde —, landete die alte Version daneben, und
+  // danach waren ZWEI aktive Dateien mit einer id im Vault. Der Vault lädt
+  // beim nächsten Start still nur eine davon.
+  const live = vault?.pathsFor(memoryID) ?? [];
+  const stillElsewhere: string[] = [];
+  for (const p of live) {
+    if (!(await sameFilePath(p, dest))) stillElsewhere.push(p);
+  }
+  if (stillElsewhere.length > 0) {
+    throw new Error(
+      `cannot restore "${memoryID}": it is already live at ${stillElsewhere.join(", ")}. ` +
+        `Restoring would put a second file with the same id into the vault — archive or move ` +
+        `the existing one first, or restore to that exact path to replace it.`,
+    );
+  }
 
   await restoreFromTrash(vaultRoot, trashFile, dest);
 
@@ -283,6 +335,38 @@ async function fileExists(p: string): Promise<boolean> {
   try {
     await access(p);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Der Vault als {@link MemoryLocator} — inklusive der Dateien, die er wegen
+ *  derselben id quarantäniert hat. `get()` allein verschweigt sie, und ein
+ *  Save auf die eine ließe die andere unverändert stehen (#240/A2.3). */
+function vaultAsLocator(vault: Vault): MemoryLocator {
+  return {
+    locate(id: string): Located {
+      const paths = vault.pathsFor(id);
+      if (paths.length === 0) return { kind: "none" };
+      if (paths.length === 1) return { kind: "unique", filePath: paths[0] };
+      return { kind: "ambiguous", filePaths: paths };
+    },
+  };
+}
+
+/**
+ * Sind das dieselben Bytes auf der Platte? Ein Stringvergleich reicht dafür
+ * nicht: Auf einem case-insensitiven Dateisystem sind
+ * `memories/People/x.md` und `memories/people/x.md` DIESELBE Datei, und wer
+ * sie für verschieden hält, verschiebt beim "Aufräumen" das einzige Exemplar
+ * in den Trash (Codex-Gegenreview). Verglichen wird über Gerät und Inode;
+ * fehlt eine der beiden Dateien, sind sie es nicht.
+ */
+async function sameFilePath(a: string, b: string): Promise<boolean> {
+  if (a === b) return true;
+  try {
+    const [sa, sb] = await Promise.all([stat(a), stat(b)]);
+    return sa.dev === sb.dev && sa.ino === sb.ino;
   } catch {
     return false;
   }

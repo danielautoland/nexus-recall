@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { Vault, AuditLog, auditedSoftDelete, auditedRestore } from "../src/index.js";
+import { Vault, AuditLog, auditedSoftDelete, auditedRestore, auditedSave, saveMemory } from "../src/index.js";
 
 function memoryMarkdown(id: string): string {
   const now = new Date().toISOString();
@@ -153,5 +153,112 @@ test("auditedRestore rejects a trash file that is not the requested memory", asy
   } finally {
     await vault.stop();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+/**
+ * Codex-Gegenreview: Der Restore prüfte nur seinen ZIELPFAD. Existiert
+ * dieselbe id inzwischen in einem anderen Regal — weil das Memory nach dem
+ * Löschen neu angelegt oder re-filed wurde —, landete die alte Version
+ * daneben, und danach waren ZWEI aktive Dateien mit einer id im Vault.
+ */
+test("restore verweigert, wenn die id inzwischen woanders lebt", async () => {
+  const { root: vaultRoot, vault, auditLog } = await makeVault("bastra-restore-live-");
+  try {
+    await saveMemory(vaultRoot, {
+      id: "wiederkehrer",
+      title: "T",
+      type: "reference",
+      summary: "s",
+      body: "ERSTE FASSUNG",
+      topic_path: ["t"],
+      tags: ["t"],
+      scope: "proj",
+      recall_when: ["t"],
+    });
+    await vault.reconcile?.();
+    await auditedSoftDelete({
+      vault,
+      auditLog,
+      vaultRoot,
+      memoryID: "wiederkehrer",
+      context: { actor: "user", actor_detail: "test" },
+    });
+
+    // Dasselbe Memory kommt zurück — aber in einem anderen Regal.
+    await saveMemory(vaultRoot, {
+      id: "wiederkehrer",
+      title: "T",
+      type: "reference",
+      summary: "s",
+      body: "ZWEITE FASSUNG",
+      topic_path: ["t"],
+      tags: ["t"],
+      scope: "proj",
+      recall_when: ["t"],
+      folder: "memories/people",
+    });
+    await vault.reconcile?.();
+
+    await assert.rejects(
+      auditedRestore({
+        auditLog,
+        vault,
+        vaultRoot,
+        memoryID: "wiederkehrer",
+        context: { actor: "user", actor_detail: "test" },
+      }),
+      /already live at/,
+    );
+    assert.equal(vault.pathsFor("wiederkehrer").length, 1, "es bleibt bei einer aktiven Datei");
+  } finally {
+    await vault.stop?.();
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Codex-Gegenreview: `auditedSave` — der Bridge- und Import-Pfad — kannte das
+ * Re-Filing aus #64 nicht. Ein `overwrite` mit geändertem `folder` schrieb die
+ * neue Datei und ließ die alte liegen; danach trugen zwei Dateien dieselbe id.
+ * `tool-handlers.ts` räumt an seiner Stelle längst auf, hier fehlte es.
+ */
+test("auditedSave räumt beim Re-Filing die alte Datei weg", async () => {
+  const { root, vault, auditLog } = await makeVault("bastra-refile-");
+  try {
+    const input = {
+      id: "wanderer",
+      title: "T",
+      type: "reference" as const,
+      summary: "s",
+      body: "ALT",
+      topic_path: ["t"],
+      tags: ["t"],
+      scope: "proj",
+      recall_when: ["t"],
+    };
+    await saveMemory(root, input);
+    await vault.reconcile?.();
+    const before = vault.pathsFor("wanderer");
+    assert.equal(before.length, 1);
+
+    const { result } = await auditedSave({
+      vault,
+      auditLog,
+      vaultRoot: root,
+      input: { ...input, body: "NEU", folder: "memories/people", overwrite: true },
+      context: { actor: "user", actor_detail: "test", reason: "re-file" },
+    });
+
+    assert.notEqual(result.file_path, before[0], "die Datei ist umgezogen");
+    await vault.reconcile?.();
+    assert.deepEqual(
+      vault.pathsFor("wanderer"),
+      [result.file_path],
+      "nur noch eine Datei trägt die id",
+    );
+  } finally {
+    await vault.stop?.();
+    await rm(root, { recursive: true, force: true });
   }
 });
