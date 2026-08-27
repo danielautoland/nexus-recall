@@ -4,7 +4,132 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.2] — 2026-08-27
+
+### Added
+
+- **`bastra autostart on|off|status` — the daemon can now be kept running, and
+  the LaunchAgent finally has an owner in the code.** A user reported that after
+  a plain `brew upgrade` neither the plist was updated nor the daemon restarted.
+  The investigation found an uncomfortable reason: nothing in this repository
+  ever *wrote* a LaunchAgent plist. There were only places that read one,
+  kickstarted it, or removed it on uninstall — `daemon-start.ts` says so
+  verbatim: "no install path registers one". Whoever had one had written it by
+  hand, and what was never written cannot be maintained by an update.
+
+  The default does not change: without this command the daemon still starts on
+  demand through the MCP forwarder and shuts down after 30 minutes idle, which
+  is all Claude Code, Claude Desktop and Cursor need. Turning autostart on
+  disables the idle shutdown.
+
+  The real gain is ownership. `bastra update` now repoints its *own* autostart
+  at the new installation after an upgrade — Homebrew puts every version in its
+  own directory, and a plist holds an absolute path. `bastra doctor` reports one
+  that points at nothing, or one that is installed but not loaded. Both were
+  previously impossible.
+
+  A hand-written plist is never touched. It usually points somewhere on purpose
+  (a source checkout, a custom model setup), so `on` refuses and names `--force`.
+  Ownership is recognised by a marker inside the plist, and the file is read
+  through `plutil` rather than a homegrown XML parser — otherwise exactly the
+  cases that matter (binary or unusually formatted files) would have been
+  misread. Unreadable counts as foreign.
+
+  No `service do` block in the Homebrew formula: Homebrew forces the label
+  `homebrew.mxcl.bastra-recall` while the code checks `ai.n0mad.bastra-recall`,
+  which would mean two autostart worlds competing for a port that exists once.
+  The caveats now say what a plain `brew upgrade` does not do.
+
+### Fixed
+
+- **One id, one file, one transactional writer.** The vault had an id-based
+  commit lock, but only `saveMemory` used it — `saveDocument`, `auditedRestore`,
+  `mutateMemoryFile` and the area writers wrote past it. Reproduced: two parallel
+  `saveDocument` calls for `a+b.pdf` and `a-b.pdf` both produced a sidecar with
+  the derived id `doc-a-b-pdf`, and the vault silently loaded only one of them on
+  the next start.
+
+  The lock alone was not enough either. Under it the same index was asked again
+  that the pre-check had already answered from; if that index came from another
+  process and was stale, the second question also said `none`. Every
+  ownership-changing writer now runs through `withIdClaim()`, and the answer
+  under the lock is an authoritative disk scan, not an index. The scan is the
+  price of this invariant, so it is measured rather than estimated — `onIdScan`
+  reports directory count, file count, bytes and duration per operation.
+
+- **Area operations serialise against saves and against each other.** A
+  tombstone under `.bastra/areas/` answers the historical name question — "this
+  shelf name moved away" — but it is not mutual exclusion. Between the tombstone
+  check and the actual publish lie a target read, parsing, frontmatter assembly,
+  a temp file and a rename; a rename running through that window left the save
+  publishing into the old shelf, and both existed afterwards. Twelve parallel
+  attempts at `carnexus → target-a` versus `carnexus → target-b` produced, in
+  twelve of twelve runs, a tombstone pointing at the *loser's* target — an old
+  client would have been redirected somewhere that does not exist.
+
+  There is now a reader-writer lock beside the tombstone: saves take a shared
+  claim (they do not exclude each other), while create, rename and delete take an
+  exclusive one, for both source and target name, acquired in sorted order. The
+  lock order across the whole vault is area claim before id claim. The key comes
+  from the *resolved path*, not from the frontmatter scope, because an explicit
+  `folder` can point at an entirely different shelf.
+
+- **Rollbacks no longer delete someone else's version.** In the document hub the
+  overwrite rollback removed the current original blindly and restored the backup
+  blindly, swallowing every error. Reproduced: bastra replaces V1 with V2, an
+  external writer then writes V3, the sidecar compare-and-swap correctly fails —
+  and the rollback deleted V3 and restored V1. The sidecar protection had merely
+  moved the data loss onto the original. The move rollback had the same shape and
+  additionally reported success after a failure it had swallowed.
+
+  Both now compare file identity against the state captured right after
+  publishing, claim their target paths atomically (`link` instead of
+  `exists` + `rename`) and report per file what stayed behind. `true` only when
+  original *and* sidecar are verifiably back where they were.
+
+- **An id claim now proves which file it belongs to.** `moveToTrashUnderClaim`
+  took the caller's path on trust: with a genuine claim for A and the path of B,
+  A stayed active, B disappeared from the vault, and the trash held B's content
+  under A's name. The primitive now reads the raw bytes once and requires the
+  file to hold the claim's memory — and the same read produces the audit
+  evidence, so the version that moved and the version that was logged can no
+  longer differ.
+
+- **Audit records describe what actually happened.** Conflict marking took its
+  "before" image from the vault cache while the disk held something else;
+  restore logged the state from *before* the delete as `diff_after`, so a trash
+  file edited in between was recorded as something that was never restored. Both
+  now come from the mutation itself. And a failed audit append no longer turns an
+  already committed mutation into an error — it returns `audit_warning` telling
+  the caller not to retry, because the write has already happened.
+
+- **`overwrite` is a patch, not a rebuild** — and a re-file keeps its metadata.
+  A save sends only the fields it wants to change; everything else has to survive
+  the refresh. When re-filing into another shelf the target did not exist yet, so
+  the template was empty and the move silently dropped `created`, `related`,
+  `sensitivity`, `source` and a lowered `confidence`. The template is now the
+  source, read under the same transaction.
+
+- **The file system answers questions about the file system.** Three places
+  answered them from a path string instead: an unreadable file counted as absent
+  and was replaced, a different spelling counted as a different file (on APFS the
+  re-file trashed the very file it had just written), and "the string starts with
+  the vault path" counted as "inside the vault", so a symlink in `folder` wrote
+  outside successfully.
+
+- **One score space per answer.** A recall that mixed arms reported numbers from
+  different spaces as if they were comparable, and a mid-call degradation was not
+  visible at all. Every hit now carries the arm set it was scored in — on the MCP
+  path and on the hook path alike — and commons is a third arm rather than a
+  second score space.
+
+### Changed
+
+- The publish workflow runs on Node 24, which bundles npm 11.19.0. OIDC trusted
+  publishing needs npm >= 11.5.1, and the global `npm install -g npm@…` that
+  provided it could not be pinned by hash — Scorecard flagged it. The step is
+  gone; the npm that publishes is the one the pinned Node release brought.
+
 
 ### Fixed
 

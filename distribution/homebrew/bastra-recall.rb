@@ -1,10 +1,15 @@
 # bastra-recall — Homebrew formula
 #
-# THIS FILE IS THE SOURCE OF TRUTH. The live copy lives in
-# https://github.com/n0mad-ai/homebrew-tap as Formula/bastra-recall.rb —
-# copy this file there on every release and set `url` / `sha256` to the new
-# tag's tarball. The two drifted apart once (the tap sat on v0.7.6 and was
-# missing six of the seven hook shims); keep them in lockstep.
+# THIS FILE IS THE SOURCE OF TRUTH for everything EXCEPT `url` and `sha256`.
+# The live copy lives in https://github.com/n0mad-ai/homebrew-tap as
+# Formula/bastra-recall.rb.
+#
+# `url` / `sha256` down there are bumped automatically by the tap's own
+# .github/workflows/update-formula.yml on every stable release — never copy
+# the two lines from here, this file's version deliberately lags behind.
+# Everything else (build steps, bin shims, caveats) is authored HERE and has to
+# be copied over by hand. The two drifted apart once (the tap sat on v0.7.6 and
+# was missing six of the seven hook shims); keep them in lockstep.
 #
 # Install via:
 #   brew tap n0mad-ai/tap
