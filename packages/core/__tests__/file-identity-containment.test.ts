@@ -138,10 +138,30 @@ test("Befund 4: sameFile erkennt dieselbe Datei unter zwei Namen", async () => {
   }
 });
 
-test("Befund 4: Re-Filing nur der Schreibweise nach trasht nichts", async () => {
+/**
+ * Ob `memories/People` und `memories/people` DASSELBE Regal sind, entscheidet
+ * das Dateisystem — und nur das. Deshalb wird hier gemessen statt angenommen.
+ *
+ * CI-Befund (27.08.2026): Der Test darunter verlangte pauschal
+ * `sameFile === true`, sobald der Save einen anders geschriebenen Pfad
+ * zurückgab. Auf APFS (case-insensitiv, Daniels Maschine) war das richtig; auf
+ * dem case-SENSITIVEN Linux der CI ist es prinzipiell unerfüllbar — dort sind es
+ * zwei verschiedene Dateien, und ein Re-File zwischen ihnen ist ein ganz
+ * gewöhnliches Re-File. Der Test war plattformabhängig falsch, nicht der
+ * Schreibpfad: auf einem case-sensitiven Volume nachgemessen liegt die Quelle
+ * hinterher im Trash, die neue Datei am Ziel, und es gibt kein Duplikat.
+ */
+async function isCaseInsensitive(dir: string): Promise<boolean> {
+  const probe = join(dir, "CaseProbe.md");
+  await writeFile(probe, "x");
+  return existsSync(join(dir, "caseprobe.md"));
+}
+
+test("Befund 4: Re-Filing nur der Schreibweise nach trasht die geschriebene Datei nicht", async () => {
   const v = await vault();
   try {
     await mkdir(join(v, "memories", "People"), { recursive: true });
+    const insensitive = await isCaseInsensitive(v);
     const existing = join(v, "memories", "People", "case-id.md");
     await writeFile(existing, memory("case-id"));
 
@@ -152,14 +172,32 @@ test("Befund 4: Re-Filing nur der Schreibweise nach trasht nichts", async () => 
       overwrite: true,
     });
 
-    // Auf einem case-INSENSITIVEN Dateisystem meldet der Save den anders
-    // geschriebenen Pfad zurück und hat trotzdem dieselbe Datei getroffen.
-    // Genau dieser Fall darf `previous` nicht als „andere Datei" gelten.
-    if (result.file_path !== existing) {
+    // Beide Ausgänge sind richtig — aber je nach Dateisystem ein anderer, und
+    // die Verwechslung ist genau der Defekt, den Befund 4 meint.
+    if (insensitive) {
+      // DASSELBE Regal, nur anders geschrieben: Der Save darf die Datei, die
+      // er gerade geschrieben hat, nicht als „die alte" in den Trash schieben.
+      if (result.file_path !== existing) {
+        assert.equal(
+          sameFile(existing, result.file_path),
+          true,
+          "case-insensitiv: beide Pfade sind dieselbe Datei, der Stringvergleich log",
+        );
+      }
       assert.equal(
-        sameFile(existing, result.file_path),
+        existsSync(join(v, ".bastra", "trash", "case-id.md")),
+        false,
+        "hier wurde nichts verschoben, also darf auch nichts im Trash liegen",
+      );
+    } else {
+      // ZWEI Regale: ein gewöhnliches Re-File. Die Quelle gehört in den Trash,
+      // und danach darf es genau eine aktive Datei mit dieser id geben.
+      assert.equal(sameFile(existing, result.file_path), false);
+      assert.equal(existsSync(existing), false, "die Quelle ist umgezogen");
+      assert.equal(
+        existsSync(join(v, ".bastra", "trash", "case-id.md")),
         true,
-        "case-insensitiv: beide Pfade sind dieselbe Datei, der Stringvergleich log",
+        "und liegt wiederherstellbar im Trash",
       );
     }
     assert.ok(existsSync(result.file_path), "die geschriebene Datei existiert");
