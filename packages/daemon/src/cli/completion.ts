@@ -14,6 +14,7 @@ export const COMMANDS = [
   "install",
   "uninstall",
   "doctor",
+  "autostart",
   "status",
   "logs",
   "update",

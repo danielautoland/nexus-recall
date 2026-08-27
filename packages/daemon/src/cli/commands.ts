@@ -24,6 +24,7 @@ import { confirm, isInteractive } from "./prompt.js";
 import { getEmbeddingProvider } from "../settings.js";
 import { showHelp } from "./help-text.js";
 import { describeStale } from "../code-staleness.js";
+import { autostartWarning } from "./autostart.js";
 import type { InstallOpts, ParsedArgs } from "./types.js";
 
 export function showVersion(): void {
@@ -379,8 +380,28 @@ export async function cmdDoctor(args: ParsedArgs): Promise<number> {
   // broken, so it never flips doctor's exit code (#79).
   await printEmbeddingDoctorNote();
   await printVersionPairNote();
+  await printAutostartNote();
 
   return hadBroken ? 1 : 0;
+}
+
+/**
+ * Der Autostart — dritter globaler Check, und der einzige, der einen Zustand
+ * AUSSERHALB der Installation beschreibt.
+ *
+ * Ein LaunchAgent zeigt auf einen absoluten Pfad. Nach einem Update, das die
+ * Installation verschiebt (Homebrew legt jede Version in ein eigenes
+ * Verzeichnis), zeigt er ins Leere — und niemand sagt es, weil launchd einen
+ * Agenten, der nicht startet, still liegen lässt. Wie die beiden Notes darüber:
+ * niemals ein Fehlschlag, nur ein Hinweis mit einer Handlung dran.
+ */
+async function printAutostartNote(): Promise<void> {
+  try {
+    const warning = await autostartWarning();
+    if (warning) process.stdout.write(`→ autostart\n  ⚠ ${warning}\n\n`);
+  } catch {
+    /* a diagnostics NOTE must never break doctor */
+  }
 }
 
 /**

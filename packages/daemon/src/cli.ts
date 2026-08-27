@@ -36,6 +36,7 @@ import { cmdCompletion } from "./cli/completion.js";
 import { cmdRules } from "./cli/rules-cmd.js";
 import { cmdPatches } from "./cli/patches-cmd.js";
 import { cmdPanel } from "./cli/panel.js";
+import { cmdAutostart } from "./cli/autostart.js";
 import { maybeEmitUpdateHint } from "./cli/update-hint.js";
 
 async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
@@ -54,6 +55,7 @@ async function dispatch(args: ReturnType<typeof parseArgs>): Promise<number> {
     case "uninstall": return cmdUninstall(args);
     case "doctor": return cmdDoctor(args);
     case "update": return cmdUpdate(args);
+    case "autostart": return cmdAutostart(args);
 
     case "status": {
       const rc = await cmdStatus({ json: args.json, quiet: args.quiet });

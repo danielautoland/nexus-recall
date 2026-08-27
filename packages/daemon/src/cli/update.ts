@@ -11,6 +11,8 @@ import { isEphemeralInstallPath } from "./stable-runtime.js";
 import { clearBlockedUpdate, recordBlockedUpdate } from "../update-blocked.js";
 import type { ParsedArgs } from "./types.js";
 
+import { refreshManagedAutostart } from "./autostart.js";
+
 const LAUNCH_AGENT_LABEL = "ai.n0mad.bastra-recall";
 
 export type InstallSource = "brew" | "npm-global" | "source" | "unknown";
@@ -462,6 +464,13 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     process.stdout.write("    · now — run 'bastra update' without --staged (kickstarts a LaunchAgent daemon), or restart your AI clients\n");
     return 0;
   }
+
+  // Der Schritt, der bisher fehlte: Ein Update verschiebt die Installation
+  // (Homebrew legt jede Version in ein eigenes Verzeichnis), und ein
+  // LaunchAgent zeigt auf einen ABSOLUTEN Pfad. Zeigt er noch auf die alte,
+  // startet er danach entweder nichts mehr oder weiter den alten Code — genau
+  // der gemeldete Fall. Fremde plists bleiben unangetastet.
+  await refreshManagedAutostart((s) => process.stdout.write(s));
 
   process.stdout.write("→ restarting daemon\n");
   const uid = String(process.getuid?.() ?? 0);
