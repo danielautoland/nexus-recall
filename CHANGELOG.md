@@ -40,6 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   which would mean two autostart worlds competing for a port that exists once.
   The caveats now say what a plain `brew upgrade` does not do.
 
+### Performance
+
+- **Recall got roughly twice as fast, with an identical ranking.** MiniSearch
+  searched every *occurrence* of a term separately — a trie walk plus prefix and
+  fuzzy expansion, per occurrence. A long prompt repeats half its words (1186
+  emitted against 649 unique in the median), so half the work was repetition.
+  Each unique term is now searched once and weighted by how often it was asked
+  (`boostTerm`), which is only free if the counting happens AFTER folding:
+  grouped before folding gives 0/30 identical rankings, grouped after gives
+  30/30, with a score delta of 1.77e-8 — float rounding from the changed
+  addition order.
+
+  Measured through the production path over 30 real prompts against 991
+  memories: lexical arm p50 **1137 → 461 ms**, total recall p50
+  **1327 → 689 ms**. Live against the running daemon on a real 7962-character
+  prompt: 651 ms total, where the same shape used to sit near 1800 ms.
+
+  No flag, no opt-in — this is on for everyone.
+
 ### Fixed
 
 - **One id, one file, one transactional writer.** The vault had an id-based
