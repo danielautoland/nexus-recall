@@ -105,6 +105,7 @@ export async function handleSessionContextPost(
       learnedBridges: toolDeps.learnedBridges,
       sharedRecallLang: toolDeps.sharedRecallLang,
       embeddingDegraded: toolDeps.embeddingDegraded,
+      evidenceGateEnabled: toolDeps.evidenceGateEnabled,
     },
     cross_project: b.cross_project === true,
     caps: {

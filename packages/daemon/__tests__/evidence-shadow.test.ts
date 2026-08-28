@@ -216,3 +216,104 @@ test("das Event markiert den unvollständigen Retrievalpfad", async (t) => {
   // liest (C-047/C-052).
   assert.equal(typeof e.degraded, "boolean");
 });
+
+// ── Teilpaket 3: Flag, Fallback, fail-open ──────────────────────
+
+/**
+ * Der Gate wird über `runHookRecall` direkt geprüft statt über die Route: Das
+ * Flag ist eine Deps-Frage, und die Route reicht es nur durch. So lässt sich
+ * derselbe Aufruf einmal mit und einmal ohne Flag fahren — der Vergleich IST
+ * die Aussage.
+ */
+import { runHookRecall } from "../src/http-hook-routes.js";
+import type { RecallDecisionHit } from "@bastra-recall/core";
+
+async function vaultFixture(t: { after: (fn: () => unknown) => void }) {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-gate-"));
+  await writeFile(join(dir, "a.md"), memo("a", "Deployment-Strategie", "wenn wir deployen", "Text über deployen."), "utf8");
+  await writeFile(join(dir, "b.md"), memo("b", "Kochbuch", "wenn wir kochen", "Text über deployen und kochen."), "utf8");
+  const vault = new Vault(dir);
+  await vault.init();
+  const search = new SearchIndex(vault);
+  search.start();
+  const telemetry = new Telemetry();
+  t.after(async () => {
+    search.stop();
+    await vault.stop?.();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  return { vault, search, telemetry };
+}
+
+const ids = (payload: Record<string, unknown>): string[] =>
+  (payload.hits as { id: string }[]).map((h) => h.id);
+
+test("Flag aus: die Antwort ist die heutige — der Entscheid wirkt auf nichts", async (t) => {
+  const f = await vaultFixture(t);
+  const aus = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), f);
+  // Alles, was der Recall findet, steht in der Antwort.
+  assert.ok(ids(aus).length >= 2, "beide Memories treffen auf `deployen`");
+});
+
+test("Flag an: ein `no_answer` wird respektiert — der Treffer verschwindet", async (t) => {
+  const f = await vaultFixture(t);
+  const aus = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), f);
+  const an = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), {
+    ...f,
+    evidenceGateEnabled: () => true,
+    // Ein Entscheid, der genau einen Treffer als no_answer führt.
+    decideFn: ((hits: { id: string }[]) =>
+      hits.map((h, i) => ({
+        id: h.id,
+        decision: i === 0 ? "no_answer" : "optional",
+        evidence: {
+          exact_identifier: false,
+          recall_when_coverage: 0,
+          arm_agreement: false,
+          scope_match: false,
+          temporal_status: "unknown",
+        },
+      })) as unknown as RecallDecisionHit[]) as never,
+  });
+  assert.equal(ids(an).length, ids(aus).length - 1, "genau der eine fehlt");
+  assert.ok(!ids(an).includes(ids(aus)[0]), "und zwar der als no_answer entschiedene");
+});
+
+test("Flag an, aber der Entscheid ist defekt: die Antwort bleibt vollständig", async (t) => {
+  const f = await vaultFixture(t);
+  const aus = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), f);
+  const kaputt = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), {
+    ...f,
+    evidenceGateEnabled: () => true,
+    decideFn: (() => {
+      throw new Error("Controller-Defekt");
+    }) as never,
+  });
+  // fail-open wie überall auf dem Hook-Pfad: Ein Defekt im Entscheid darf die
+  // Antwort nicht kosten (C-047 — er geht in keine Statistik und in keine
+  // Unterdrückung).
+  assert.deepEqual(ids(kaputt), ids(aus), "kein Treffer verloren");
+});
+
+test("Flag an, alle no_answer: die Antwort ist leer — und das ist die Aussage, nicht ein Fehler", async (t) => {
+  const f = await vaultFixture(t);
+  const an = await runHookRecall({ query: "deployen", k: 5 }, "deployen", Date.now(), {
+    ...f,
+    evidenceGateEnabled: () => true,
+    decideFn: ((hits: { id: string }[]) =>
+      hits.map((h) => ({
+        id: h.id,
+        decision: "no_answer",
+        abstain_reason: "no_evidence",
+        evidence: {
+          exact_identifier: false,
+          recall_when_coverage: 0,
+          arm_agreement: false,
+          scope_match: false,
+          temporal_status: "unknown",
+        },
+      })) as unknown as RecallDecisionHit[]) as never,
+  });
+  assert.deepEqual(ids(an), [], "§10.3: reicht die Evidenz für keine Ausspielung, wird nichts ausgespielt");
+  assert.equal(typeof an.vault_size, "number", "die Antwort bleibt wohlgeformt");
+});

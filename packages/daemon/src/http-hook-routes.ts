@@ -21,7 +21,7 @@ import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shado
 import { toLeanHit, truncateSummary } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
-import { isWeakResult, isNoHome, decideHits } from "@bastra-recall/core";
+import { isWeakResult, isNoHome, decideHits, type RecallDecisionHit } from "@bastra-recall/core";
 import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
 import {
@@ -161,6 +161,7 @@ export function handleHookRecall(
   learnedBridges?: BridgePool | null,
   sharedRecallLang?: SupportedLanguage | null,
   embeddingDegraded?: () => boolean,
+  evidenceGateEnabled?: () => boolean,
 ): void {
   // SSE-Branch (#38): wenn der Caller `Accept: text/event-stream`
   // sendet, streamen wir Stages live. Default-JSON-Response bleibt
@@ -191,7 +192,7 @@ export function handleHookRecall(
         body,
         query,
         t0,
-        { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded },
+        { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded, evidenceGateEnabled },
         wantsSse
           ? (s: RecallStage) => {
               // Nur Stop- + cache.hit + done-Events streamen (Start-Events
@@ -244,6 +245,16 @@ export interface HookRecallDeps {
   learnedBridges?: BridgePool | null;
   sharedRecallLang?: SupportedLanguage | null;
   embeddingDegraded?: () => boolean;
+  /**
+   * #264: Ist der Evidenzentscheid scharf? Fehlt der Getter, ist er AUS — und
+   * aus heißt: Der Entscheid läuft und wird geloggt, wirkt aber auf nichts.
+   * Beim Boot aufgelöst, wie `embeddingDegraded`.
+   */
+  evidenceGateEnabled?: () => boolean;
+  /** Der Entscheid selbst, injizierbar. Default ist `decideHits` aus core;
+   *  die Naht existiert, weil sich der fail-open-Pfad sonst nicht prüfen lässt
+   *  — ein Defekt, der nur in echt auftritt, ist kein geprüfter Defekt. */
+  decideFn?: typeof decideHits;
 }
 
 /**
@@ -552,31 +563,29 @@ export async function runHookRecall(
       // beiden gleich fusionierten Recalls oder allein aus dem Prompt-Recall —
       // in beiden Fällen beschreibt `promptFused` die servierten Zahlen.
       const hybridActiveAtRecall = promptFused;
-      const weakResult = isWeakResult(hits, hybridActiveAtRecall);
-      const noHome = isNoHome(hits, hybridActiveAtRecall);
-
-      // #264: Der Evidenzentscheid, im SCHATTEN. Hier und nicht später, weil
-      // die Treffer an dieser Stelle noch ihre Hop-Herkunft tragen — die
-      // Projektion unten wirft sie weg, und C-046 verlangt sie am
-      // Entscheidungspunkt. Er wirkt auf nichts: `payload` unten liest keine
-      // Zeile davon, und die Antwort ist dieselbe, ob dieser Block läuft oder
-      // nicht.
+      const gateEnabled = deps.evidenceGateEnabled?.() === true;
+      // #264: Der Evidenzentscheid. Hier und nicht später, weil die Treffer an
+      // dieser Stelle noch ihre Hop-Herkunft tragen — die Projektion unten
+      // wirft sie weg, und C-046 verlangt sie am Entscheidungspunkt.
       //
       // Die Merkmale werden gegen die URSPRÜNGLICHE Anfrage erhoben, nicht
       // gegen die brückenerweiterte: Beurteilt wird, was der Nutzer gefragt
       // hat, nicht was die Suche daraus gemacht hat.
+      let decisions: RecallDecisionHit[] | null = null;
       try {
-        const decisions = decideHits(hits, {
+        decisions = (deps.decideFn ?? decideHits)(hits, {
           queryTerms: tokenizeWithIdentifiers(query),
           scope: scope ?? null,
           memoryOf: (id) => vault.get(id),
         });
         const counts = { required: 0, optional: 0, no_answer: 0 };
         for (const d of decisions) counts[d.decision]++;
+        const hopOf = new Map(hits.map((h) => [h.id, h.hop]));
         fireAndForget(
           telemetry.logEvidenceDecision({
             recall_id: recallId,
-            shadow: true,
+            // Solange das Flag aus ist, ist die Entscheidung reine Beobachtung.
+            shadow: !gateEnabled,
             // C-047/C-052: Ein Budget-Abbruch ist keine Abstention. Wer die
             // Quote rechnet, muss diese Läufe ausschließen können.
             degraded: degradedReason !== undefined,
@@ -585,9 +594,7 @@ export async function runHookRecall(
               decision: d.decision,
               ...(d.abstain_reason ? { abstain_reason: d.abstain_reason } : {}),
               evidence: d.evidence,
-              ...(hits.find((h) => h.id === d.id)?.hop
-                ? { hop: hits.find((h) => h.id === d.id)!.hop }
-                : {}),
+              ...(hopOf.get(d.id) ? { hop: hopOf.get(d.id) } : {}),
             })),
             counts,
             ...(hookSessionId ? { session_id: hookSessionId } : {}),
@@ -599,12 +606,14 @@ export async function runHookRecall(
         // Ein Defekt im Entscheid geht in KEINE der beiden Statistiken
         // (C-047/C-052) — leere Entscheidungen, Zähler auf null. Sichtbar
         // bleibt er trotzdem, sonst wäre er von einem Aufruf ohne Treffer nicht
-        // zu unterscheiden.
+        // zu unterscheiden. `decisions` bleibt null, und damit filtert der Gate
+        // unten nichts: fail-open, wie überall auf dem Hook-Pfad.
+        decisions = null;
         console.error(`[bastra.evidence] decision failed: ${(err as Error).message}`);
         fireAndForget(
           telemetry.logEvidenceDecision({
             recall_id: recallId,
-            shadow: true,
+            shadow: !gateEnabled,
             degraded: degradedReason !== undefined,
             failed: true,
             decisions: [],
@@ -615,6 +624,20 @@ export async function runHookRecall(
           }),
         );
       }
+
+      // Scharf geschaltet heißt: `no_answer` wird respektiert — die vorhandene
+      // Evidenz reichte für keine Ausspielung (§10.3), also wird nichts
+      // ausgespielt. Ausgeschaltet ändert diese Zeile nichts, und das ist der
+      // Auslieferungszustand (§21.1: erst shadow, dann aktiv).
+      if (gateEnabled && decisions) {
+        const suppressed = new Set(
+          decisions.filter((d) => d.decision === "no_answer").map((d) => d.id),
+        );
+        if (suppressed.size > 0) hits = hits.filter((h) => !suppressed.has(h.id));
+      }
+
+      const weakResult = isWeakResult(hits, hybridActiveAtRecall);
+      const noHome = isNoHome(hits, hybridActiveAtRecall);
 
       fireAndForget(
         telemetry.logHookRecall({

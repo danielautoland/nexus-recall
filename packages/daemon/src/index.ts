@@ -41,7 +41,7 @@ import { loadCuratorState } from "./curator.js";
 import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
+import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel, getEvidenceGateEnabled } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
@@ -190,6 +190,17 @@ async function main(): Promise<void> {
   // that widens recall queries. Same discipline as Commons — never written, only
   // loaded when opted in. Off = pool stays null and nothing is constructed or
   // contacted (local-first). The optional language override skips per-query detection.
+  // #264: einmal gelesen, nicht je Recall — der Hook-Pfad ist der
+  // frequentierteste und verträgt keinen Datei-Zugriff pro Aufruf. Ein
+  // Umschalten wirkt nach einem Daemon-Neustart; der Rückfall bei einem DEFEKT
+  // ist davon unabhängig und sofort (fail-open in runHookRecall).
+  const evidenceGateOn = await getEvidenceGateEnabled();
+  if (evidenceGateOn) {
+    console.error(
+      "[bastra-recall] evidence gate: ACTIVE — no_answer suppresses hits (#264)",
+    );
+  }
+
   let learnedBridges: BridgePool | null = null;
   let sharedRecallLang: SupportedLanguage | null = null;
   if (await getSharedRecallEnabled()) {
@@ -396,6 +407,10 @@ async function main(): Promise<void> {
     embeddingDegraded: embeddingBreaker
       ? () => embeddingBreaker.state(Date.now()) === "open"
       : undefined,
+    // #264: Der Evidenzentscheid, scharf oder nicht. Beim Boot aufgelöst wie
+    // die übrigen Schalter; Default aus. Aus heißt NICHT „läuft nicht" — er
+    // läuft und wird geloggt, er wirkt nur auf nichts (§21.1: erst shadow).
+    evidenceGateEnabled: () => evidenceGateOn,
     // #361: the prompt lane fires this at turn start (fire-and-forget).
     prewarmEmbedding,
   };

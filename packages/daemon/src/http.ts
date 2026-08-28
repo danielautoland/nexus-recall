@@ -298,7 +298,7 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     }
 
     if (method === "POST" && url === "/hook/recall") {
-      handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang, toolDeps.embeddingDegraded);
+      handleHookRecall(req, res, t0, vault, search, telemetry, toolDeps.learnedBridges, toolDeps.sharedRecallLang, toolDeps.embeddingDegraded, toolDeps.evidenceGateEnabled);
       return;
     }
 
