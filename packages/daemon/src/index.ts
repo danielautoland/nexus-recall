@@ -34,12 +34,14 @@ import {
   type StageListener,
   onIdScan,
   onMutationIncident,
+  reportMutationIncident,
 } from "@bastra-recall/core";
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
+import { reportOpenRecoveryEntries, describeOpenEntry } from "./recovery-journal.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
@@ -254,6 +256,24 @@ async function main(): Promise<void> {
       detail: i.detail ?? null,
     });
   });
+
+  // #378: Offene Recovery-Journal-Einträge. Ein Dokument sind zwei Dateien;
+  // der verifizierte Rollback zwischen ihnen läuft nur, solange der Prozess
+  // lebt. Was hier auftaucht, ist eine Operation, die angefangen und nie
+  // quittiert wurde — also ein möglicher Halbzustand. Benannt, NICHT repariert:
+  // Die Pfade gehen auf stderr (lokal), ins Telemetrie-Event nur op und id.
+  try {
+    await reportOpenRecoveryEntries(VAULT_PATH!, (incident, entry) => {
+      console.error(`[bastra-recall] recovery journal: ${describeOpenEntry(entry)}`);
+      // Über denselben Kanal wie jeder andere Incident (#377) — die Abbildung
+      // auf das Telemetrie-Event steht dort oben genau einmal.
+      reportMutationIncident(incident);
+    });
+  } catch (err) {
+    console.error(
+      `[bastra-recall] recovery journal: could not be read (${(err as Error).message})`,
+    );
+  }
 
   // Curator-Demotions (#155) überleben Daemon-Restarts: Score-Set aus dem
   // State-File beim Boot in den Index laden. Best-effort.

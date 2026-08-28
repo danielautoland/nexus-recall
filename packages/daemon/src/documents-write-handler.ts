@@ -45,6 +45,10 @@ import {
 } from "@bastra-recall/core";
 import { truncateSummaryTo, SUMMARY_MAX } from "@bastra-recall/core";
 import { scopeEquals } from "@bastra-recall/core/scope";
+import {
+  openRecoveryJournal,
+  type RecoveryJournalHandle,
+} from "./recovery-journal.js";
 
 // ─── Argument schemas ───────────────────────────────────────────
 
@@ -852,6 +856,9 @@ async function commitDocument(
   // pfadgenauen Text, der dem Aufrufer sagt, was liegen blieb.
   let rollbackOriginal: (() => Promise<string | null>) | undefined;
   let commitOriginal: (() => Promise<void>) | undefined;
+  // #378: siehe moveDocumentFiles — der Rollback unten deckt jeden Fehler ab,
+  // den dieser Prozess noch erlebt, ein Absturz dazwischen aber nicht.
+  let journal: RecoveryJournalHandle | undefined;
   if (!args.linked_file) {
     // #240/A5.1: Same-File-Erkennung. Liegt die Quelle bereits exakt am Ziel
     // (der Normalfall bei einem Metadaten-Refresh — buildFrontmatter schreibt
@@ -869,6 +876,14 @@ async function commitDocument(
       const tmpDest = `${originalDest}.tmp-${randomUUID()}`;
       const backupDest = `${originalDest}.bak-${randomUUID()}`;
       const hadOriginal = await pathExists(originalDest);
+      journal = await openRecoveryJournal(root, {
+        op: "save_document",
+        id: docID,
+        steps: [
+          ...(hadOriginal ? [{ from: originalDest, to: backupDest }] : []),
+          { from: args.original_path, to: originalDest },
+        ],
+      });
       try {
         await copyFile(args.original_path, tmpDest);
         // Die alte Fassung nicht überschreiben, sondern zur Seite legen —
@@ -878,6 +893,10 @@ async function commitDocument(
       } catch (err) {
         await unlink(tmpDest).catch(() => {});
         if (hadOriginal) await rename(backupDest, originalDest).catch(() => {});
+        // #378: Nur quittieren, wenn am Zielpfad wieder der Ausgangszustand
+        // steht. Der verschluckte Fehler eine Zeile höher hinterließe sonst
+        // genau den Halbzustand, den das Journal benennen soll.
+        if ((await pathExists(originalDest)) === hadOriginal) await journal.acknowledge();
         throw err;
       }
       // Codex-Gegenreview Runde 10 (P0-3): Der Rollback entfernte das aktuelle
@@ -1015,13 +1034,17 @@ async function commitDocument(
     // geschrieben" zu behaupten.
     const stuck = (await rollbackOriginal?.()) ?? null;
     if (stuck !== null) {
+      // Halber Zustand — der Eintrag bleibt offen, damit der nächste Start ihn
+      // benennt (#378).
       throw new Error(`${(err as Error).message} — AND the original could not be rolled back: ${stuck}`);
     }
+    await journal?.acknowledge();
     throw err;
   }
   // Ab hier ist der Vorgang unumkehrbar geglückt: das Backup der alten
   // Originaldatei wird nicht mehr gebraucht.
   await commitOriginal?.();
+  await journal?.acknowledge();
 
   // Cloud-Watcher-Mitigation: synchroner reindex statt auf chokidar warten.
   await vault.reindexFile(sidecarPath);
@@ -1122,6 +1145,8 @@ async function commitRecategorize(
 
   if (args.folder_path !== undefined && args.folder_path !== folderPath) {
     moved = await moveDocumentFiles(vault, {
+      op: "recategorize_document",
+      id: m.fm.id,
       sidecarPath,
       originalPath,
       currentFolderPath: folderPath,
@@ -1179,6 +1204,9 @@ async function commitRecategorize(
     if (moved) await abortMove(vault, moved, oldSidecarPath, raw?.raw, err);
     throw err;
   }
+  // #378: Beide Dateien liegen am Ziel und das Sidecar ist veröffentlicht — der
+  // letzte Schritt ist durch, der Eintrag quittiert.
+  await moved?.journal?.acknowledge();
 
   // #240/A3: the OLD sidecar path must leave the index before the new one
   // enters it. Without this both paths point at the same id; the next
@@ -1283,6 +1311,8 @@ async function commitMoveDocument(
   }
 
   const moved = await moveDocumentFiles(vault, {
+    op: "move_document",
+    id: m.fm.id,
     sidecarPath: located.filePath,
     originalPath: fm.original_path ?? located.filePath.replace(/\.md$/, ""),
     currentFolderPath: fm.folder_path ?? "",
@@ -1333,6 +1363,8 @@ async function commitMoveDocument(
   } catch (err) {
     await abortMove(vault, moved, located.filePath, raw?.raw, err);
   }
+  // #378: Der letzte Schritt ist durch — Eintrag quittiert.
+  await moved.journal?.acknowledge();
 
   // #240/A3: drop the old path from the index before the new one is read —
   // otherwise both paths carry the same id and the next reconcile deletes
@@ -1385,6 +1417,12 @@ interface MovedDocumentFiles {
    * wo liegt.
    */
   rollback(expectedSidecar?: string | null): Promise<MoveRollbackResult>;
+  /**
+   * #378: Der Journal-Eintrag dieses Moves. Fehlt, wenn gar nichts zu bewegen
+   * war (linked_file im selben Ordner) — dann gibt es auch keinen halben
+   * Zustand, der einen Absturz überleben könnte.
+   */
+  journal?: RecoveryJournalHandle;
 }
 
 export interface MoveRollbackResult {
@@ -1437,6 +1475,9 @@ function sameFileStat(a: Stats | null, b: Stats | null): boolean {
 async function moveDocumentFiles(
   vault: Vault,
   args: {
+    /** #378: für den Journal-Eintrag — welcher Writer, welches Dokument. */
+    op: string;
+    id: string;
     sidecarPath: string;
     originalPath: string;
     currentFolderPath: string;
@@ -1472,7 +1513,32 @@ async function moveDocumentFiles(
     throw new Error(`target sidecar already exists: ${newSidecarPath}`);
   }
 
-  if (movesOriginal) await moveExclusive(args.originalPath, newOriginalPath);
+  // #378: VOR dem ersten Move steht auf der Platte, was gleich passiert. Der
+  // Rollback unten deckt jeden Fehler ab, den dieser Prozess noch erlebt — ein
+  // Absturz dazwischen aber nicht, und danach schaut nichts mehr hin. Nur wenn
+  // wirklich etwas bewegt wird: sonst gibt es keinen halben Zustand.
+  const journal =
+    movesOriginal || movesSidecar
+      ? await openRecoveryJournal(root, {
+          op: args.op,
+          id: args.id,
+          steps: [
+            ...(movesOriginal ? [{ from: args.originalPath, to: newOriginalPath }] : []),
+            ...(movesSidecar ? [{ from: args.sidecarPath, to: newSidecarPath }] : []),
+          ],
+        })
+      : undefined;
+
+  if (movesOriginal) {
+    try {
+      await moveExclusive(args.originalPath, newOriginalPath);
+    } catch (err) {
+      // `moveExclusive` räumt seinen eigenen Halbzustand auf — es ist nichts
+      // bewegt worden, also gibt es auch nichts zu berichten.
+      await journal?.acknowledge();
+      throw err;
+    }
+  }
   if (movesSidecar) {
     try {
       await moveExclusive(args.sidecarPath, newSidecarPath);
@@ -1485,6 +1551,8 @@ async function moveDocumentFiles(
         try {
           await moveExclusive(newOriginalPath, args.originalPath);
         } catch (undoErr) {
+          // Halber Zustand, und er bleibt es: der Journal-Eintrag wird NICHT
+          // quittiert, damit der nächste Start ihn benennt.
           throw new Error(
             `${(err as Error).message} — AND the original could not be moved back: ` +
               `it is at ${newOriginalPath} instead of ${args.originalPath} ` +
@@ -1492,6 +1560,7 @@ async function moveDocumentFiles(
           );
         }
       }
+      await journal?.acknowledge();
       throw err;
     }
   }
@@ -1525,6 +1594,8 @@ async function moveDocumentFiles(
           undo.push(`${newOriginalPath} (should be ${args.originalPath}): ${(e as Error).message}`);
         }
       }
+      // Nur der vollständig zurückgenommene Move ist quittierbar.
+      if (undo.length === 0) await journal?.acknowledge();
       throw new Error(
         `the moved sidecar could not be read back (${(err as Error).message})` +
           (undo.length > 0
@@ -1575,10 +1646,15 @@ async function moveDocumentFiles(
         }
       }
     }
-    return problems.length > 0 ? { ok: false, detail: problems.join("; ") } : { ok: true };
+    if (problems.length > 0) return { ok: false, detail: problems.join("; ") };
+    // #378: Der Zustand von vor dem Move steht wieder — also ist die Operation
+    // zu Ende und der Eintrag quittierbar. Genau der andere Ausgang ist der,
+    // um den es geht: Blieb etwas liegen, bleibt der Eintrag offen.
+    await journal?.acknowledge();
+    return { ok: true };
   };
 
-  return { newSidecarPath, newOriginalPath, rollback };
+  return { newSidecarPath, newOriginalPath, rollback, journal };
 }
 
 // ─── Conflict-Detection (Phase 3.2 — basic mtime-Check) ─────────
