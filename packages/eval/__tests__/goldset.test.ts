@@ -191,6 +191,51 @@ test("merging joins the two steps and the coverage names what is still missing",
   assert.equal(cov.by_kind.descriptive, 1);
   assert.equal(cov.by_kind.associative, 1);
   assert.equal(cov.non_application, 0, "C-036 cases are still missing, and the count says so");
+  assert.equal(cov.probes, 0, "nothing here is a probe");
+  assert.equal(cov.total_with_probes, 2, "and so the two totals agree");
+});
+
+test("a probe is counted beside the set, never inside it", () => {
+  const real = staged("wie war die regel für force pushes");
+  const noise = staged("zebra quantum marmalade orchestra");
+  const diag = staged("body-loss diagnostic interleave churn four connection state");
+  const cases = mergeCases(
+    [real, noise, diag],
+    [
+      label(real.id),
+      label(noise.id, {
+        no_answer: true, expected_ids: [], rationale: "none of the tokens occurs in the vault",
+        probe_group: "gibberish-probe",
+      }),
+      label(diag.id, { probe_group: "body-loss" }),
+    ],
+  );
+
+  const cov = coverage(cases as GoldCase[]);
+  assert.equal(cov.total, 1, "the main denominator is the one query somebody actually asked");
+  assert.equal(cov.total_with_probes, 3, "while the file still holds three cases");
+  assert.equal(cov.probes, 2);
+  assert.deepEqual(cov.by_probe_group, { "gibberish-probe": 1, "body-loss": 1 });
+  assert.equal(
+    cov.no_answer, 0,
+    "a nonsense string must not make the set's no-answer share look healthier than it is",
+  );
+  assert.equal(cov.by_kind.descriptive, 1, "and probes do not pad the kind counts either");
+});
+
+test("probe_group is optional, but a typo in it is not silently accepted", () => {
+  const s = staged("wie war die regel für force pushes");
+  assert.deepEqual(checkLabels([label(s.id)], [s]), [], "absent is the normal case");
+  assert.deepEqual(
+    checkLabels([label(s.id, { probe_group: "body-loss" })], [s]), [],
+    "a known group passes",
+  );
+  assert.match(
+    checkLabels([label(s.id, { probe_group: "bodyloss" as GoldLabel["probe_group"] })], [s])
+      .map((i) => i.problem).join(" | "),
+    /unknown probe_group/,
+    "a typo would silently move the case out of the main denominator",
+  );
 });
 
 test("the no-answer aid is derived from the engine's verdict and stays OUT of step 1", () => {

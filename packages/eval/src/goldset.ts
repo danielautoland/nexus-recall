@@ -40,6 +40,26 @@ export const CASE_KINDS = ["descriptive", "associative"] as const;
 export type CaseKind = (typeof CASE_KINDS)[number];
 
 /**
+ * Real recall traffic that is not a retrieval question.
+ *
+ * Diagnostic and noise-test runs leave events in the telemetry like any other
+ * recall, so they get harvested like any other recall. They are worth keeping —
+ * a nonsense string the engine must abstain on is a real test — but they must
+ * not share a denominator with questions someone actually asked:
+ *
+ *   - `body-loss`      one investigation, several runs, one target memory. Four
+ *                      ids would weight that memory four times.
+ *   - `unique-n`       generator strings with a run counter (`… unique7`).
+ *   - `gibberish-probe` keyboard mash and invented words, used to check that
+ *                      retrieval abstains instead of reaching.
+ *
+ * A case carries a group or it does not; the field is optional, so every file
+ * written before it existed stays valid and counts as a normal case.
+ */
+export const PROBE_GROUPS = ["body-loss", "unique-n", "gibberish-probe"] as const;
+export type ProbeGroup = (typeof PROBE_GROUPS)[number];
+
+/**
  * Step 1 — a query with its provenance and NO gold label.
  *
  * This is everything that may exist before a memory is opened.
@@ -92,6 +112,11 @@ export interface GoldLabel {
   kind: CaseKind;
   /** C-036: the answer is to NOT apply an existing memory. */
   correct_answer_is_non_application?: boolean;
+  /**
+   * Set when the query is a diagnostic or noise probe rather than a question
+   * anyone asked. Absent on ordinary cases — see {@link PROBE_GROUPS}.
+   */
+  probe_group?: ProbeGroup;
   labelled_at: string;
   labelled_by: string;
 }
@@ -183,6 +208,11 @@ export function checkLabels(labels: GoldLabel[], staged: StagedQuery[]): GoldIss
     }
     if (!ZONES.includes(l.expected_zone)) issues.push({ where, problem: `unknown zone \`${l.expected_zone}\`` });
     if (!CASE_KINDS.includes(l.kind)) issues.push({ where, problem: `unknown kind \`${l.kind}\`` });
+    // Absent is the normal case. Present but unknown is a typo, and a typo here
+    // silently moves a case out of the main denominator.
+    if (l.probe_group !== undefined && !PROBE_GROUPS.includes(l.probe_group)) {
+      issues.push({ where, problem: `unknown probe_group \`${l.probe_group}\` — expected one of ${PROBE_GROUPS.join(", ")}` });
+    }
     if (!Number.isInteger(l.allowed_retrieval_depth) || l.allowed_retrieval_depth < 1) {
       issues.push({ where, problem: "allowed_retrieval_depth must be a positive integer (§19)" });
     }
@@ -194,7 +224,16 @@ export function checkLabels(labels: GoldLabel[], staged: StagedQuery[]): GoldIss
   return issues;
 }
 
-/** Coverage §19 demands the set report, so a gap is visible before the run. */
+/**
+ * Coverage §19 demands the set report, so a gap is visible before the run.
+ *
+ * Every field below counts the MAIN denominator — cases without a
+ * `probe_group`. Probes are reported beside it in `probes`/`by_probe_group`,
+ * never inside it: a nonsense string does not make the set's no-answer share
+ * look healthier, and four runs of one diagnostic do not make it look bigger.
+ * On a file written before probe groups existed nothing carries one, so
+ * `total` equals `total_with_probes` and every number is what it always was.
+ */
 export interface GoldCoverage {
   total: number;
   by_origin: Record<string, number>;
@@ -204,16 +243,28 @@ export interface GoldCoverage {
   no_answer: number;
   non_application: number;
   cross_scope: number;
+  /** Cases carrying a `probe_group`, excluded from every field above. */
+  probes: number;
+  by_probe_group: Record<string, number>;
+  /** `total + probes` — the raw case count, for reconciling against a file. */
+  total_with_probes: number;
 }
 
 export function coverage(cases: GoldCase[]): GoldCoverage {
   const bump = (r: Record<string, number>, k: string): void => { r[k] = (r[k] ?? 0) + 1; };
   const out: GoldCoverage = {
-    total: cases.length,
+    total: 0,
     by_origin: {}, by_lang: {}, by_kind: {},
     with_identifier: 0, no_answer: 0, non_application: 0, cross_scope: 0,
+    probes: 0, by_probe_group: {}, total_with_probes: cases.length,
   };
   for (const c of cases) {
+    if (c.probe_group) {
+      out.probes++;
+      bump(out.by_probe_group, c.probe_group);
+      continue;
+    }
+    out.total++;
     bump(out.by_origin, c.origin_type);
     bump(out.by_lang, c.lang);
     bump(out.by_kind, c.kind);
