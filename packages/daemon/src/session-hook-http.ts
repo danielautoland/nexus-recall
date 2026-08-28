@@ -50,6 +50,83 @@ export interface RecallRequestBody {
   source: string | null;
 }
 
+/**
+ * Die Antwort des projektbewussten Session-Assemblers (#265).
+ *
+ * Nur die Felder, die die Lane liest. `context` und `vault_size` ignoriert sie
+ * bewusst — sie rendert ihr Dokument selbst, mit Banding und eigenen Mengen.
+ */
+export interface SessionContextResponse {
+  data?: {
+    recalls?: Array<{ scope: string; resp: RecallResponse | null }>;
+    floors?: PinnedFloorLean[];
+    conventions?: ConventionLean[];
+    care?: { open: number; queued: number };
+    imports?: { open: number; queued: number };
+    onboarding?: boolean;
+  };
+}
+
+/**
+ * EIN Aufruf statt sechs (#265, §26.1).
+ *
+ * Die Lane holte Recalls, Floors, Taxonomie, Care, Import und Onboarding in
+ * sechs einzelnen Loopback-Requests. Der Assembler erhebt dasselbe serverseitig
+ * und nebenläufig; hier bleibt der Transport. Gleiche Disziplin wie
+ * `postRecall`: harter Timeout, Fehler nach oben, der Aufrufer entscheidet.
+ */
+export function postSessionContext(
+  baseUrl: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<SessionContextResponse> {
+  return new Promise((resolve, reject) => {
+    let url: URL;
+    try {
+      url = new URL("/hook/session-context", baseUrl);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+    const req = request(
+      {
+        method: "POST",
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Length": payload.byteLength.toString(),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          if ((res.statusCode ?? 500) >= 400) {
+            reject(new Error(`HTTP ${res.statusCode}: ${raw.slice(0, 200)}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(raw) as SessionContextResponse);
+          } catch {
+            reject(new Error("invalid JSON response from daemon"));
+          }
+        });
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error("timeout"));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 export function postRecall(
   baseUrl: string,
   body: RecallRequestBody,

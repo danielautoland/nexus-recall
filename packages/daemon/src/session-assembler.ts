@@ -38,7 +38,10 @@ import { join } from "node:path";
 import type { Vault } from "@bastra-recall/core";
 import { abandonAfter } from "@bastra-recall/core";
 import { recallHandler, type ToolDeps } from "./tool-handlers.js";
+import { runHookRecall, type HookRecallDeps } from "./http-hook-routes.js";
 import { listFloors } from "./floors.js";
+import type { PinnedFloorLean } from "./pinned-block.js";
+import type { ConventionLean } from "./taxonomy.js";
 import { listConventions } from "./taxonomy.js";
 import { parseCareFile, CARE_FILE } from "./webui.js";
 import { countOpenImports, IMPORT_FILE } from "./import-review.js";
@@ -64,6 +67,7 @@ const DEFAULT_BUDGET_TOKENS = 0;
 export type SectionKind =
   | "pinned"
   | "project"
+  | "cross_project"
   | "hints"
   | "conventions"
   | "care"
@@ -78,6 +82,7 @@ export type SectionKind =
 const RENDER_ORDER: SectionKind[] = [
   "pinned",
   "project",
+  "cross_project",
   "hints",
   "conventions",
   "care",
@@ -96,11 +101,12 @@ const RENDER_ORDER: SectionKind[] = [
 const PRIORITY: Record<SectionKind, number> = {
   pinned: 1,
   project: 2,
-  hints: 3,
-  conventions: 4,
-  care: 5,
-  import: 6,
-  onboarding: 7,
+  cross_project: 3,
+  hints: 4,
+  conventions: 5,
+  care: 6,
+  import: 7,
+  onboarding: 8,
 };
 
 export interface SessionSection {
@@ -154,6 +160,36 @@ export interface AssembleOptions {
    * mehr bekommen, weil hier ein Default umgezogen ist.
    */
   expand_hops?: 0 | 1;
+  /**
+   * #265: Die Cross-Project-Regeln (`scope: "all-projects"`) mit erheben.
+   *
+   * Nur die SessionStart-Lane fragt sie; der Forwarder-Weg kennt sie nicht und
+   * bekommt sie auch nicht, sonst wüchse sein Block. Default aus.
+   */
+  cross_project?: boolean;
+  /**
+   * Wieviel je Abschnitt. Die Vorgaben sind die des Endpunkts; die Lane setzt
+   * ihre eigenen, weil ihr Dokument seit jeher andere Mengen zeigt
+   * (6 Konventionen, ungekappte Floors, 7 gemergte Hinweise). Ohne diese
+   * Optionen wäre der Umzug der Lane eine stille Produktänderung.
+   */
+  caps?: { pinned?: number; hints?: number; conventions?: number; project?: number };
+  /**
+   * WELCHE Recall-Pipeline (#265).
+   *
+   * Fehlt das Feld, läuft `recallHandler` — der MCP-Weg, und das ist der
+   * GET-Vertrag. Ist es gesetzt, läuft `runHookRecall`: dieselbe Pipeline, die
+   * `/hook/recall` fährt, inklusive Scope-Filter (#110/#148), Reflex-Hits und
+   * Router-Schatten (#362).
+   *
+   * Der Schalter steht hier ausdrücklich und nicht als globale Umstellung: Die
+   * beiden Wege liefern NACHWEISLICH verschiedene Trefferauswahlen, und der
+   * Forwarder auf die Hook-Pipeline zu heben wäre eine stille Produktänderung
+   * für hooklose Clients — am selben Tag, an dem der GET-Vertrag byte-gleich
+   * festgeschrieben wurde. Die Vereinheitlichung ist eine eigene, bewusste
+   * Entscheidung (offener Punkt zu #265, vermutlich mit #264).
+   */
+  hookRecall?: HookRecallDeps;
   /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
    *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
    *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
@@ -176,8 +212,29 @@ export interface SessionContextDeps {
  */
 export type RetrievalMarker = "lexical_only" | "hybrid" | "degraded";
 
+/**
+ * Das Rohmaterial hinter den Abschnitten (#265).
+ *
+ * Die SessionStart-Lane rendert ihr Dokument selbst — mit Banding, Headline und
+ * eigenen Mengen. Sie braucht deshalb die Daten, nicht die fertigen Zeilen. Die
+ * Felder sind additiv: Wer nur `sections` liest, merkt nichts davon.
+ */
+export interface SessionRawData {
+  /** Pro Recall die Antwort der Pipeline, in Abfragereihenfolge — dieselbe
+   *  Form, die `/hook/recall` liefert, damit die Lane sie wie bisher liest
+   *  (`isUnfused`, `mergeSessionHits`). `null`, wo der Recall scheiterte. */
+  recalls: Array<{ scope: string; resp: unknown | null }>;
+  floors: PinnedFloorLean[];
+  conventions: ConventionLean[];
+  care: { open: number; queued: number };
+  imports: { open: number; queued: number };
+  onboarding: boolean;
+}
+
 export interface AssembledSession {
   sections: SessionSection[];
+  /** #265: das Rohmaterial, für Aufrufer die selbst rendern. */
+  data: SessionRawData;
   reports: SectionReport[];
   /**
    * Wie der Retrievalpfad wirklich gelaufen ist.
@@ -250,17 +307,48 @@ export async function assembleSessionSections(
   // C-046: Die Baseline gilt, solange der Aufrufer nichts anderes sagt.
   const expandHops = opts.expand_hops ?? 1;
 
-  const runRecall = async (query: string, scope: string, k: number): Promise<string[]> => {
-    const result = (await recallFn(
-      toolDeps,
-      { query, scope, k, expand_hops: expandHops },
-      {
-        // #263: Dieser Endpunkt ist eine eigene Oberfläche.
-        client: opts.client,
-        hook_source: "session-context",
-        session_id: opts.session_id ?? undefined,
-      },
-    )) as RecallShape;
+  // #265: Die Rohantworten, in Abfragereihenfolge — die Lane liest sie wie die
+  // Antworten ihrer früheren Einzelaufrufe.
+  // Die Erheber laufen nebenläufig, die Antworten kämen also in
+  // Abschlussreihenfolge an — für einen Aufrufer, der die Reihenfolge als
+  // Priorität liest, wäre das von Lauf zu Lauf verschieden. Deshalb trägt jeder
+  // Recall seinen Platz mit und wird am Ende danach sortiert.
+  const recalls: Array<{ scope: string; resp: unknown | null; order: number }> = [];
+  let rawFloors: PinnedFloorLean[] = [];
+  let rawConventions: ConventionLean[] = [];
+  let rawCare = { open: 0, queued: 0 };
+  let rawImports = { open: 0, queued: 0 };
+  let rawOnboarding = false;
+
+  const runRecall = async (
+    query: string,
+    scope: string,
+    k: number,
+    order: number,
+  ): Promise<string[]> => {
+    let result: RecallShape;
+    if (opts.hookRecall) {
+      // Die Pipeline, die auch `/hook/recall` fährt: Scope-Filter, Reflex-Hits,
+      // Router-Schatten. `t0` ist der Startpunkt dieser Erhebung.
+      result = (await runHookRecall(
+        { query, scope, k, expand_hops: expandHops, session_id: opts.session_id ?? undefined },
+        query,
+        startedAt,
+        opts.hookRecall,
+      )) as RecallShape;
+    } else {
+      result = (await recallFn(
+        toolDeps,
+        { query, scope, k, expand_hops: expandHops },
+        {
+          // #263: Dieser Endpunkt ist eine eigene Oberfläche.
+          client: opts.client,
+          hook_source: "session-context",
+          session_id: opts.session_id ?? undefined,
+        },
+      )) as RecallShape;
+    }
+    recalls.push({ scope, resp: result, order });
     sawRecall = true;
     if (result.degraded) sawDegraded = true;
     if (result.unfused) sawUnfused = true;
@@ -279,7 +367,14 @@ export async function assembleSessionSections(
         // Ohne erkanntes Projekt nur globale Floors — fremd-gescopte Einträge
         // wären in einer projektlosen Session Rauschen.
         const all = await listFloorsFn(project ?? undefined);
-        const floors = (project ? all : all.filter((e) => !e.scope)).slice(0, MAX_PINNED);
+        // `0` heißt ungekappt — die Lane zeigt seit jeher alle Floors, und
+        // `Infinity` überlebt kein JSON.
+        const capped = opts.caps?.pinned ?? MAX_PINNED;
+        const floors = (project ? all : all.filter((e) => !e.scope)).slice(
+          0,
+          capped > 0 ? capped : undefined,
+        );
+        rawFloors = floors;
         return floors.map(
           (f) =>
             `- [pinned] ${f.memory_id}` +
@@ -296,19 +391,34 @@ export async function assembleSessionSections(
           ? runRecall(
               `${project} active context project-facts decisions`,
               project,
-              MAX_PROJECT_HINTS,
+              opts.caps?.project ?? MAX_PROJECT_HINTS,
+              0,
             )
           : [],
     },
     {
+      kind: "cross_project",
+      run: async () =>
+        opts.cross_project ? runRecall("cross-project working rules", "all-projects", 2, 1) : [],
+    },
+    {
       kind: "hints",
       run: () =>
-        runRecall("session-start preferences active context", "user-preference", MAX_HINTS),
+        runRecall(
+          "session-start preferences active context",
+          "user-preference",
+          opts.caps?.hints ?? MAX_HINTS,
+          2,
+        ),
     },
     {
       kind: "conventions",
       run: async () => {
-        const conventions = listConventionsFn(vault).slice(0, MAX_CONVENTIONS);
+        const conventions = listConventionsFn(vault).slice(
+          0,
+          opts.caps?.conventions ?? MAX_CONVENTIONS,
+        );
+        rawConventions = conventions;
         return conventions.length > 0
           ? [
               `- Conventions (BINDING when saving in these clusters — load_memory(id) for the rule): ` +
@@ -322,6 +432,7 @@ export async function assembleSessionSections(
       run: async () => {
         const content = await readFile(join(toolDeps.vaultPath, CARE_FILE), "utf8");
         const openCare = parseCareFile(content).filter((e) => !e.done).length;
+        rawCare = { open: openCare, queued: 0 };
         return openCare > 0
           ? [
               `- Vault care: ${openCare} open flag(s) in ${CARE_FILE} — when the user asks to groom the vault, work the "- [ ]" entries through WITH them.`,
@@ -334,12 +445,14 @@ export async function assembleSessionSections(
       run: async () => {
         const lines: string[] = [];
         const openImports = await countOpenImports(toolDeps.vaultPath);
+        rawImports = { open: openImports, queued: 0 };
         if (openImports > 0) {
           lines.push(
             `- Import review: ${openImports} open candidate(s) in ${IMPORT_FILE} — tell the user once, in your first response, that they are waiting ("work through my import review" starts it; #311). Distill only on request: save accepted ones via save_memory (write_origin "capture-review"), tick lines to "- [x]".`,
           );
         }
         const queue = await queueStatus();
+        rawImports = { open: openImports, queued: queue.remaining };
         if (queue.remaining > 0) {
           lines.push(
             `- Chat-history mining: ${queue.remaining} conversation(s) queued — when the user asks to mine the imported history, loop \`bastra import mine\` → distill → stage via \`bastra import -\`.`,
@@ -351,7 +464,7 @@ export async function assembleSessionSections(
     {
       kind: "onboarding",
       run: async () =>
-        (await isOnboardingNeeded(toolDeps.vaultPath, vault.size()))
+        (rawOnboarding = await isOnboardingNeeded(toolDeps.vaultPath, vault.size()))
           ? [
               `- Onboarding: this vault is fresh — offer ONCE a ~5-minute interview (persona, address/tone, hard rules, persona follow-ups), save each answer via save_memory with write_origin "user-directed"; finish with \`bastra onboard done\`, decline with \`bastra onboard skip\`.`,
             ]
@@ -427,7 +540,23 @@ export async function assembleSessionSections(
         ? "lexical_only"
         : "hybrid";
 
-  return { sections, reports, marker, aborted, elapsed_ms: Date.now() - startedAt };
+  return {
+    sections,
+    reports,
+    marker,
+    aborted,
+    elapsed_ms: Date.now() - startedAt,
+    data: {
+      recalls: [...recalls]
+        .sort((a, b) => a.order - b.order)
+        .map(({ scope, resp }) => ({ scope, resp })),
+      floors: rawFloors,
+      conventions: rawConventions,
+      care: rawCare,
+      imports: rawImports,
+      onboarding: rawOnboarding,
+    },
+  };
 }
 
 /**

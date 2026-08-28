@@ -51,8 +51,8 @@ import { consumePendingSuggestions } from "./pending-suggestions.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
 import {
-  fetchFloors, fetchOnboardingNeeded, fetchOpenCounts, fetchTaxonomy, postRecall, probeHealth,
-  type ConventionLean, type OpenCounts, type RecallHit, type RecallResponse,
+  postSessionContext, probeHealth,
+  type ConventionLean, type RecallHit, type RecallResponse, type SessionContextResponse,
 } from "./session-hook-http.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
@@ -97,60 +97,65 @@ export async function runSessionLane(
   let status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error" = "ok";
   let errMsg: string | null = null;
   const responses: Array<{ scope: string; resp: RecallResponse | null }> = [];
+  const recallByScope = new Map<string, RecallResponse | null>();
 
-  // #265: Die zwei bis drei Recalls sind voneinander unabhängig — sie laufen
-  // nebeneinander statt hintereinander. Ihre Reihenfolge in `responses` bleibt
-  // die der `queries`, weil `mergeSessionHits` sie als Priorität liest;
-  // `Promise.all` erhält die Reihenfolge, unabhängig davon, wer zuerst
-  // antwortet.
+  // #265/§26.1: EIN Aufruf gegen den projektbewussten Assembler statt sechs
+  // einzelner Loopback-Requests. Der Assembler erhebt Recalls, Floors,
+  // Taxonomie, Care, Import und Onboarding serverseitig und nebenläufig — und
+  // fährt dabei DIESELBE Recall-Pipeline wie `/hook/recall` (Scope-Filter
+  // #110/#148, Reflex-Hits, Router-Schatten #362), weshalb die Trefferauswahl
+  // dieselbe bleibt.
   //
-  // Der frühere `break` bei einem unerreichbaren Daemon entfällt damit: Alle
-  // Anfragen sind bereits unterwegs, wenn die erste ECONNREFUSED meldet. Das
-  // kostet zwei zusätzliche Verbindungsversuche gegen einen lokalen Port, der
-  // sofort ablehnt — und spart im Normalfall zwei volle Round Trips.
-  const settled = await Promise.all(
-    queries.map(async (q) => {
-      const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-      try {
-        return {
-          scope: q.scope,
-          resp: await postRecall(
-            url,
-            { query: q.query, scope: q.scope, k: q.k, project, source: payload.source ?? null },
-            remainingMs,
-          ),
-          err: null as NodeJS.ErrnoException | null,
-        };
-      } catch (err) {
-        return { scope: q.scope, resp: null, err: err as NodeJS.ErrnoException };
+  // Was der Assembler nicht abdeckt, bleibt hier: der Health-Probe für den
+  // Update-Block, Doku, Pending, Patch — und das gesamte Rendern. Die Lane
+  // bandet und formuliert selbst; sie holt Daten, keine fertigen Zeilen.
+  let sideData: SessionContextResponse["data"] = undefined;
+  // Der Health-Probe gehört zum Update-Block, den der Assembler nicht abdeckt —
+  // er hängt aber an keiner seiner Ausgaben. Also läuft er NEBEN dem
+  // Assembler-Aufruf und nicht danach; sonst hätte der Umbau die Nebenläufigkeit
+  // aus Teilpaket 1 gegen einen zweiten Round Trip eingetauscht.
+  const probeBudget = Math.min(200, Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt)));
+  const healthPromise = probeHealth(url, probeBudget).catch(() => null);
+  {
+    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+    try {
+      const resp = await postSessionContext(
+        url,
+        {
+          project,
+          source: payload.source ?? null,
+          session_id: payload.session_id ?? null,
+          client: "claude-code",
+          // Nur die Lane fragt die Cross-Project-Regeln.
+          cross_project: true,
+          // Die Mengen dieses Dokuments, ausdrücklich gesetzt: Der Endpunkt hat
+          // eigene Vorgaben (4 Konventionen, 5 Floors), und ein Umzug ohne
+          // diese Zeilen wäre eine stille Produktänderung. `0` = ungekappt.
+          caps: { conventions: 6, pinned: 0 },
+          budget: { time_ms: remainingMs },
+        },
+        remainingMs,
+      );
+      sideData = resp.data;
+      for (const r of resp.data?.recalls ?? []) {
+        recallByScope.set(r.scope, r.resp ?? null);
       }
-    }),
-  );
-  for (const r of settled) responses.push({ scope: r.scope, resp: r.resp });
-
-  // Der Status folgt jetzt einer festen Rangfolge statt „wer zuletzt
-  // fehlschlug". Sequenziell war das egal; nebenläufig wäre es sonst vom
-  // Antwortzeitpunkt abhängig und damit von Lauf zu Lauf verschieden.
-  // Unerreichbar schlägt Timeout schlägt Fehler: Der erste Fall beschreibt den
-  // Daemon, die anderen beiden nur einen Aufruf.
-  const errors = settled.map((r) => r.err).filter((e): e is NodeJS.ErrnoException => e !== null);
-  const unreachable = errors.find(
-    (e) => e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH",
-  );
-  const timedOut = errors.find((e) => e.message === "timeout");
-  const other = errors.find(
-    (e) =>
-      e.message !== "timeout" &&
-      e.code !== "ECONNREFUSED" &&
-      e.code !== "ENOTFOUND" &&
-      e.code !== "EHOSTUNREACH",
-  );
-  if (unreachable) status = "daemon-unreachable";
-  else if (timedOut) status = "timeout";
-  else if (other) {
-    status = "error";
-    errMsg = other.message ?? String(other);
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH") {
+        status = "daemon-unreachable";
+      } else if (e.message === "timeout") {
+        status = "timeout";
+      } else {
+        status = "error";
+        errMsg = e.message ?? String(err);
+      }
+    }
   }
+  // Die Reihenfolge ist Priorität für `mergeSessionHits` — sie kommt aus
+  // `queries` und nicht aus der Antwort, deren Reihenfolge den Assembler
+  // beschreibt, nicht diese Lane.
+  for (const q of queries) responses.push({ scope: q.scope, resp: recallByScope.get(q.scope) ?? null });
 
   // P0: Der Score-Modus gilt für den GANZEN Block, und zwar fail-closed —
   // sobald EINE der (bis zu drei) Antworten unfusioniert ist, sind die Zahlen
@@ -168,30 +173,16 @@ export async function runSessionLane(
   // try/catch: Ein fehlgeschlagener Taxonomie-Abruf darf den Floors-Block nicht
   // mitreißen. Dieselbe fail-open-Disziplin wie vorher, nur pro Teil statt pro
   // Kette.
+  // #265: Floors, Taxonomie, Care, Import und Onboarding kamen mit derselben
+  // Antwort — kein eigener Abruf mehr. Der Health-Probe bleibt: Er gehört zum
+  // Update-Block, den der Assembler nicht abdeckt.
   const reachable = responses.some((r) => r.resp !== null);
-  const sideBudget = (): number =>
-    Math.min(150, Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt)));
-  const probeBudget = Math.min(200, Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt)));
-  const orElse = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-  const noCounts: OpenCounts = { open: 0, queued: 0 };
-  const [floorsFetched, conventionsFetched, careCounts, importCounts, onboardingNeeded, health] =
-    reachable
-      ? await Promise.all([
-          orElse(fetchFloors(url, project, sideBudget()), [] as PinnedFloorLean[]),
-          orElse(fetchTaxonomy(url, sideBudget()), [] as ConventionLean[]),
-          orElse(fetchOpenCounts(url, sideBudget()), noCounts),
-          orElse(fetchOpenCounts(url, sideBudget(), "/hook/import"), noCounts),
-          orElse(fetchOnboardingNeeded(url, sideBudget()), false),
-          orElse(probeHealth(url, probeBudget), null),
-        ])
-      : [
-          [] as PinnedFloorLean[],
-          [] as ConventionLean[],
-          noCounts,
-          noCounts,
-          false,
-          null,
-        ];
+  const floorsFetched = sideData?.floors ?? [];
+  const conventionsFetched = sideData?.conventions ?? [];
+  const careCounts = sideData?.care ?? { open: 0, queued: 0 };
+  const importCounts = sideData?.imports ?? { open: 0, queued: 0 };
+  const onboardingNeeded = sideData?.onboarding ?? false;
+  const health = reachable ? await healthPromise : null;
 
   // Floor-Registry (#141/#142): gepinnte Memories — push-by-state, bewusst
   // NICHT score-gated (gleiches Muster wie der Taxonomie-Block: dedizierter

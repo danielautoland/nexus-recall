@@ -87,11 +87,32 @@ export async function handleSessionContextPost(
         ? detectProject(b.cwd)
         : null;
   const budget = (b.budget ?? {}) as Record<string, unknown>;
+  const caps = (b.caps ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
   const assembled = await assembleSessionSections(toolDeps, vault, {
     project,
     source: typeof b.source === "string" ? b.source : null,
     session_id: typeof b.session_id === "string" ? b.session_id : null,
     client: b.client,
+    // #265: Nur der POST-Weg fährt die Hook-Pipeline (Scope-Filter,
+    // Reflex-Hits, Router-Schatten). GET bleibt auf `recallHandler` — der
+    // Wechsel wäre eine stille Produktänderung für hooklose Clients und ist
+    // eine eigene Entscheidung.
+    hookRecall: {
+      vault,
+      search: toolDeps.search,
+      telemetry: toolDeps.telemetry,
+      learnedBridges: toolDeps.learnedBridges,
+      sharedRecallLang: toolDeps.sharedRecallLang,
+      embeddingDegraded: toolDeps.embeddingDegraded,
+    },
+    cross_project: b.cross_project === true,
+    caps: {
+      ...(num(caps.pinned) !== undefined ? { pinned: num(caps.pinned) } : {}),
+      ...(num(caps.hints) !== undefined ? { hints: num(caps.hints) } : {}),
+      ...(num(caps.conventions) !== undefined ? { conventions: num(caps.conventions) } : {}),
+      ...(num(caps.project) !== undefined ? { project: num(caps.project) } : {}),
+    },
     budget: {
       ...(typeof budget.time_ms === "number" ? { time_ms: budget.time_ms } : {}),
       ...(typeof budget.tokens === "number" ? { tokens: budget.tokens } : {}),
@@ -113,5 +134,9 @@ export async function handleSessionContextPost(
     // Deadline-Abbruch ist eine Teilabdeckung und wird als solche berichtet —
     // niemals als `no_answer` (C-052, C-061).
     aborted: assembled.aborted,
+    // #265: das Rohmaterial für Aufrufer, die selbst rendern (die
+    // SessionStart-Lane mit ihrem Banding). Additiv — wer nur `context` und
+    // `vault_size` liest, merkt nichts davon.
+    data: assembled.data,
   });
 }
