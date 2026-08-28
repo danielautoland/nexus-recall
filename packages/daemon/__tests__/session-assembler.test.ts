@@ -78,6 +78,43 @@ function recallStub(
 const noFloors: SessionContextDeps["listFloorsFn"] = (async () => []) as never;
 const noConventions: SessionContextDeps["listConventionsFn"] = (() => []) as never;
 
+/**
+ * Ein Erheber, der nicht antwortet — bis der Test ihn freigibt.
+ *
+ * Eine nackte `new Promise(() => {})` wäre einfacher und war es auch. Node 22
+ * brach die Datei damit ab (`cancelledByParent`, „Promise resolution is still
+ * pending but the event loop has already resolved") und riss alle Folge-Tests
+ * mit; Node 24 tolerierte es.
+ *
+ * Der Grund ist nicht die Promise selbst, sondern die LEERE Event-Loop: Eine
+ * Promise hält sie nicht offen, und der Timer in `abandonAfter` ist mit gutem
+ * Grund `unref`'d — ein Hook-Prozess, der fertig ist, soll nicht auf eine
+ * Deadline warten müssen. Wartet der Test also auf eine Deadline und sonst auf
+ * nichts, hat Node nichts mehr zu tun und räumt ab, bevor die Deadline fällt.
+ *
+ * Deshalb ein ECHTER Timer: Er hält die Loop offen, solange gemessen wird. Am
+ * Testende wird er gelöscht UND die Promise aufgelöst — das eine gegen den
+ * hängenden Prozess, das andere gegen die hängende Promise.
+ */
+function hangingRecall(): { fn: SessionContextDeps["recallFn"]; release: () => void } {
+  const timers: NodeJS.Timeout[] = [];
+  const resolvers: Array<() => void> = [];
+  const fn = (async () =>
+    new Promise((resolve) => {
+      resolvers.push(() => resolve({ hits: [] }));
+      // Deutlich länger als jede Deadline in dieser Datei: Der Timer soll die
+      // Loop offenhalten, nicht das Ergebnis liefern.
+      timers.push(setTimeout(() => resolve({ hits: [] }), 5_000));
+    })) as unknown as SessionContextDeps["recallFn"];
+  return {
+    fn,
+    release: () => {
+      for (const t of timers.splice(0)) clearTimeout(t);
+      for (const r of resolvers.splice(0)) r();
+    },
+  };
+}
+
 // ── 1. Der GET-Vertrag ──────────────────────────────────────────
 
 test("der projektlose Block ist Wort für Wort der bisherige", async () => {
@@ -256,23 +293,27 @@ test("die Prioritäten stehen in der Antwort — Reihenfolge ist nicht Prioritä
 
 test("ein hängender Teil reißt die Deadline und wird als solcher benannt — die Antwort kommt", async () => {
   await withDeps(async (toolDeps, vault) => {
-    const haenger = (async () => new Promise(() => {})) as unknown as SessionContextDeps["recallFn"];
-    const a = await assembleSessionSections(
-      toolDeps,
-      vault,
-      { budget: { time_ms: 40 } },
-      {
-        recallFn: haenger,
-        listFloorsFn: (async () => [{ memory_id: "m1", scope: undefined }]) as never,
-        listConventionsFn: noConventions,
-      },
-    );
-    assert.ok(a.aborted.includes("hints"), "der hängende Recall ist als Abbruch vermerkt");
-    const hints = a.reports.find((r) => r.kind === "hints")!;
-    assert.equal(hints.included, false);
-    assert.equal(hints.omitted, "deadline", "Teilabdeckung, kein `no_answer`");
-    // Der Rest steht trotzdem: ein Abbruch kostet seinen Teil, nicht die Antwort.
-    assert.equal(a.reports.find((r) => r.kind === "pinned")!.included, true);
+    const haenger = hangingRecall();
+    try {
+      const a = await assembleSessionSections(
+        toolDeps,
+        vault,
+        { budget: { time_ms: 40 } },
+        {
+          recallFn: haenger.fn,
+          listFloorsFn: (async () => [{ memory_id: "m1", scope: undefined }]) as never,
+          listConventionsFn: noConventions,
+        },
+      );
+      assert.ok(a.aborted.includes("hints"), "der hängende Recall ist als Abbruch vermerkt");
+      const hints = a.reports.find((r) => r.kind === "hints")!;
+      assert.equal(hints.included, false);
+      assert.equal(hints.omitted, "deadline", "Teilabdeckung, kein `no_answer`");
+      // Der Rest steht trotzdem: ein Abbruch kostet seinen Teil, nicht die Antwort.
+      assert.equal(a.reports.find((r) => r.kind === "pinned")!.included, true);
+    } finally {
+      haenger.release();
+    }
   });
 });
 
@@ -330,14 +371,18 @@ test("degraded schlägt lexical_only — der ausgefallene Arm ist die stärkere 
 
 test("ohne Recall gibt es keinen Marker — null heißt nicht `vollständig`", async () => {
   await withDeps(async (toolDeps, vault) => {
-    const haenger = (async () => new Promise(() => {})) as unknown as SessionContextDeps["recallFn"];
-    const a = await assembleSessionSections(
-      toolDeps,
-      vault,
-      { budget: { time_ms: 20 } },
-      { recallFn: haenger, listFloorsFn: noFloors, listConventionsFn: noConventions },
-    );
-    assert.equal(a.marker, null);
+    const haenger = hangingRecall();
+    try {
+      const a = await assembleSessionSections(
+        toolDeps,
+        vault,
+        { budget: { time_ms: 20 } },
+        { recallFn: haenger.fn, listFloorsFn: noFloors, listConventionsFn: noConventions },
+      );
+      assert.equal(a.marker, null);
+    } finally {
+      haenger.release();
+    }
   });
 });
 
@@ -443,4 +488,68 @@ test("GET und POST leben beide auf /hook/session-context", async () => {
     await handle.close();
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
+});
+
+// ── Teilpaket 3: die Hop-Garantien, ausdrücklich ────────────────
+
+/**
+ * §13.1/§22, C-046: Der `related_via`-Hop ist der einzige live erprobte
+ * semantische Blick des Hook-Pfades und der Kontrollarm, den jede neue Sicht
+ * schlagen muss. Er kam bisher zustande, weil der `/hook/recall`-Endpunkt ihn
+ * setzt, wenn niemand widerspricht — kein Hook fragt ihn an. Absorbiert der
+ * Assembler diese Recalls, verschwände die Baseline stillschweigend.
+ */
+test("der Assembler nimmt den Hop mit, ohne dass jemand danach fragt", async () => {
+  await withDeps(async (toolDeps, vault) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const fn = (async (_d: unknown, args: unknown) => {
+      seen.push(args as Record<string, unknown>);
+      return { hits: [] };
+    }) as unknown as SessionContextDeps["recallFn"];
+    await assembleSessionSections(
+      toolDeps,
+      vault,
+      {},
+      { recallFn: fn, listFloorsFn: noFloors, listConventionsFn: noConventions },
+    );
+    assert.ok(seen.length > 0);
+    for (const args of seen) {
+      assert.equal(args.expand_hops, 1, "die Baseline gilt als Default, nicht als Auslassung");
+    }
+  });
+});
+
+test("der GET-Weg bleibt hoplos — und zwar ausdrücklich", async () => {
+  await withDeps(async (toolDeps, vault) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const fn = (async (_d: unknown, args: unknown) => {
+      seen.push(args as Record<string, unknown>);
+      return { hits: [] };
+    }) as unknown as SessionContextDeps["recallFn"];
+    await buildSessionContext(toolDeps, vault, {
+      recallFn: fn,
+      listFloorsFn: noFloors,
+      listConventionsFn: noConventions,
+    });
+    for (const args of seen) {
+      assert.equal(args.expand_hops, 0, "der Forwarder-Vertrag kennt keine Hops");
+    }
+  });
+});
+
+test("ein Aufrufer kann die Baseline überschreiben, aber nur ausdrücklich", async () => {
+  await withDeps(async (toolDeps, vault) => {
+    const seen: Array<Record<string, unknown>> = [];
+    const fn = (async (_d: unknown, args: unknown) => {
+      seen.push(args as Record<string, unknown>);
+      return { hits: [] };
+    }) as unknown as SessionContextDeps["recallFn"];
+    await assembleSessionSections(
+      toolDeps,
+      vault,
+      { expand_hops: 0 },
+      { recallFn: fn, listFloorsFn: noFloors, listConventionsFn: noConventions },
+    );
+    assert.equal(seen[0].expand_hops, 0);
+  });
 });
