@@ -282,14 +282,22 @@ test("the M1 tolerances are versioned, derived, and above their own noise band",
   assert.ok(String(tol.derived_from.git).length >= 40);
 
   const rl = tol.relevant_loss as Record<string, unknown>;
-  const measured = rl.measured as { value: number; wilson_95_ci: [number, number] };
+  type Measurement = { value: number; wilson_95_ci: [number, number] };
+  const measured = rl.measured as Measurement;
+  const confirming = (rl.confirmed_by ?? []) as Measurement[];
+
   // The whole point of the derivation: a tolerance inside the confidence
-  // interval fires on a clean re-run that changed nothing.
-  assert.ok(
-    (rl.tolerance as number) > measured.wilson_95_ci[1],
-    "the tolerance must sit above the upper bound of the measured interval",
-  );
-  assert.ok(measured.value > measured.wilson_95_ci[0] && measured.value < measured.wilson_95_ci[1]);
+  // interval fires on a clean re-run that changed nothing. That has to hold
+  // against EVERY run on record, not only the one it was first derived from —
+  // v3 exists because a later run moved the bound past the old tolerance.
+  for (const m of [measured, ...confirming]) {
+    assert.ok(
+      (rl.tolerance as number) > m.wilson_95_ci[1],
+      `tolerance ${String(rl.tolerance)} must sit above the upper bound ${m.wilson_95_ci[1]} of every recorded run`,
+    );
+    assert.ok(m.value > m.wilson_95_ci[0] && m.value < m.wilson_95_ci[1], "each point estimate lies inside its own interval");
+  }
+  assert.ok(confirming.length >= 1, "a raised tolerance names the runs that forced the raise");
   assert.deepEqual(rl.report_separately, ["origin_type"]);
 
   // False abstention is registered on weak_result, not on the score floor — the

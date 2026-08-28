@@ -1,9 +1,10 @@
 {
   "$comment": "The numeric M1 tolerances (§18.1, §18.2, §26.1). §18.1 puts them AFTER the M0 baseline run — an effect size or a tolerance picked before the baseline shows the spread of the metric is a guess with a number attached. §26.1 makes them a V1.0 release condition: 'die numerischen M1-Toleranzen nach dem M0-Baseline-Run versioniert festgeschrieben sind'. Changing a value here means bumping registration_version and saying which version a report belongs to.",
   "schema_version": 1,
-  "registration_version": 2,
+  "registration_version": 3,
   "registered_at": "2026-08-28",
-  "$comment_version_2": "v2 (2026-08-28): false_abstention moves from not-registrable to a registered tolerance on weak_result, after faa7050 moved that predicate into core and a second run measured it. relevant_loss is unchanged.",
+  "$comment_version_2": "v2 (2026-08-28): false_abstention moves from not-registrable to a registered tolerance on weak_result, after faa7050 moved that predicate into core and a second run measured it. relevant_loss unchanged at that point.",
+  "$comment_version_3": "v3 (2026-08-28): relevant_loss raised 0.23 -> 0.24. Two confirming runs pushed the upper bound of the measured interval to 23.10%, just above the old tolerance, so a clean re-run could have breached a gate nothing had regressed against. See relevant_loss.$comment_v3_raise. false_abstention unchanged.",
   "registered_by": "Daniel Nevoigt",
 
   "derived_from": {
@@ -15,13 +16,32 @@
   },
 
   "relevant_loss": {
-    "tolerance": 0.23,
+    "tolerance": 0.24,
     "comparator": "<=",
     "unit": "share of answerable cases whose expected_ids never appear in the production pool (k=10)",
     "denominator": "answerable cases in the main denominator, probes excluded",
-    "measured": { "value": 0.1855, "count": "69/372", "wilson_95_ci": [0.149, 0.228] },
-    "$comment_derivation": "Measured 18.5%. The upper bound of the Wilson 95% interval is 22.8%, so any tolerance below that would fire on measurement noise alone — a clean re-run with no code change would breach it often enough to make the gate untrustworthy. 0.23 is the next round figure above the interval and marks exactly the line 'outside the noise band of the baseline'.",
-    "$comment_stricter": "0.20 sits INSIDE the confidence interval and would fail runs that changed nothing.",
+    "measured": { "value": 0.1855, "count": "69/372", "wilson_95_ci": [0.1493, 0.2281] },
+    "confirmed_by": [
+      {
+        "run_artifact": "~/.bastra/eval-runs/2026-08-28-d907fa554780",
+        "git": "320e19b-dirty",
+        "value": 0.1882,
+        "count": "70/372",
+        "wilson_95_ci": [0.1517, 0.231],
+        "vault_size": 1033
+      },
+      {
+        "run_artifact": "~/.bastra/eval-runs/2026-08-28-1157aadc8342",
+        "git": "faa7050-dirty",
+        "value": 0.1882,
+        "count": "70/372",
+        "wilson_95_ci": [0.1517, 0.231],
+        "vault_size": 1033
+      }
+    ],
+    "$comment_derivation": "Measured 18.55% on the baseline (69/372, vault 1028). Two later runs on a slightly grown vault (1033) both measured 18.82% (70/372) — the same figure twice, so the shift is the corpus and not noise. The tolerance is set above the HIGHEST upper bound across all three runs, 23.10%, because a gate that a clean re-run can breach is a gate nobody trusts. 0.24 clears it by 0.90pp.",
+    "$comment_v3_raise": "v3 (2026-08-28) raised the tolerance from 0.23 to 0.24. 0.23 was derived from the baseline alone, where the upper bound was 22.81%. The two confirming runs moved that bound to 23.10% — 0.10pp ABOVE the old tolerance — so a re-run that changed nothing could have failed the gate. Both point estimates (18.55%, 18.82%) stay far below either figure, so the gate's meaning is unchanged; only its noise margin was restored.",
+    "$comment_stricter": "0.23 is now INSIDE the interval of the two later runs — that is exactly why it was raised. Anything below that fails runs that changed nothing.",
     "$comment_looser": "0.30 would let a real regression of more than 10pp pass — more than the entire distance between the hybrid arm and BM25-only on this set (3.2pp at Recall@3).",
     "report_separately": ["origin_type"],
     "$comment_report_separately": "BINDING, and the reason the aggregate alone is not enough. Relevant loss is wildly uneven across origins: second_person (the independently working second person of §19) 37/67 = 55.2%, user_query 9/45 = 20.0%, session_transcript 23/260 = 8.8%. The aggregate of 18.5% is dominated by hook telemetry, which makes up 260 of 372 cases. A future set with a different origin mix would move the aggregate without anything in retrieval changing, and a degradation confined to the blind batch could hide entirely under the tolerance. The per-origin figures are reported next to the aggregate, never folded into it.",
