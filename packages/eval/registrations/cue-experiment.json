@@ -58,7 +58,41 @@
         ],
         "$comment_stratify": "BINDING, and the most important condition on the split. Recall@3 per gold file in the M0 baseline: blind 31.3%, tel-1 84.9%, tel-2 67.6%, tel-3 72.7%, tel-4 82.7% — a standard deviation of 21.6pp between files, driven by origin. A plain random split can put the blind batch lopsidedly on one side and shift the comparison baseline by more than any effect this experiment looks for. Without stratification the seed is not a safeguard, it is a lottery.",
         "$comment_seed": "The value itself is arbitrary; what matters is that it was fixed BEFORE the run and not chosen after seeing a split. 20260828 is the run date as an integer — auditable and obviously not picked for a favourable division. Changing it after a run has started invalidates that run.",
-        "split_is_frozen_before_run": true
+        "split_is_frozen_before_run": true,
+        "$comment_split_rule_amendments": "AMENDMENTS to the split rule, appended and dated — never folded back into the fields above. `stratify_by` above says WHAT the split balances on; an amendment says how the implementation resolves a case the bare field list does not decide. Each entry names when it was added, why, and what it demonstrably changed, so a reader can tell a rule that was registered up front from one that was added after a defect was found.",
+        "split_rule_amendments": [
+          {
+            "amended_at": "2026-08-28",
+            "amends": "stratify_by",
+            "issue": "#444",
+            "$comment": "Added AFTER the original registration, and marked as such. The split rejected only an empty stratify_by list, which left two ways to defeat the balance it promises: a named field that turns out constant over the eligible pool passes the check and leaves a seeded but unstratified draw, and round(n × selection_share) puts a stratum of one entirely on one side, so that factor level is absent from selection or from holdout. The gold set has exactly such a stratum, so this is a real configuration and not a hypothetical one.",
+            "rule": {
+              "field_must_vary": "Every field named in stratify_by must take at least two distinct values over the ELIGIBLE pool — the pool after probes and no_answer cases are removed. A field that does not vary there names a factor that is not present and balances nothing; the split is refused rather than run.",
+              "coalescing": "A stratum too small to reach both halves (round(n × selection_share) is 0 or n) is merged into the LARGEST stratum sharing its key minus the trailing field. Ties break by key, so the result does not depend on iteration order.",
+              "leading_field_is_never_backed_off": "Coalescing may drop trailing fields only. Merging across the levels of the leading field — origin_type in this registration — would fuse the very factor the split exists to balance, which is the unstratified draw arrived at politely.",
+              "otherwise_refused": "A stratum that still cannot reach both halves after coalescing aborts the split. At that point the pool is too small for the configured share, and a seed does not fix that."
+            },
+            "known_effect_on_this_registration": {
+              "$comment": "Measured on the gold set as it stands on 2026-08-28 (477 cases, 393 eligible), at selection_share 0.30 and split_seed 20260828. Reported for the descriptive pool because that is the pool the v2 share comment was derived on; the associative pool the v3 configuration needs does not exist yet (#418), so the effect there cannot be stated.",
+              "coalesced": [
+                {
+                  "from": "user_query|en",
+                  "into": "user_query|neutral",
+                  "n": 1,
+                  "$comment": "The single English user_query case. Before the amendment round(1 × 0.30) = 0 placed it deterministically in the holdout; now it is drawn inside a stratum of 41."
+                }
+              ],
+              "descriptive_pool": {
+                "n_eligible": 365,
+                "selection": 109,
+                "holdout": 256,
+                "$comment": "Unchanged by the amendment — the same 109/256 the split produced before it. Only WHICH cases fall into the coalesced stratum moves. Note that these are the per-stratum sums; $comment_shares above quotes 110/255, which is round(365 × 0.30) computed on the aggregate. The per-stratum figure is the one the split actually produces, and it predates this amendment."
+              }
+            },
+            "implemented_in": "packages/eval/src/goldset-split.ts",
+            "tested_in": "packages/eval/__tests__/goldset-split.test.ts"
+          }
+        ]
       },
       "min_n_per_condition": null,
       "$comment_min_n_per_condition": "RESET TO OPEN in v3, and this is the substantive consequence of the reconfiguration. The previous value of 255 was derived from a paired discordance of 10.8% measured on the M0 baseline — and 98.1% of the cases that discordance came from were descriptive (365 of 372). The two axes do not share a base rate: descriptive sits at 70.1% Recall@3, associative at 0.0% on the seven cases that exist. A discordance measured at a 70% base rate says nothing about one near 0%, where two arms can barely disagree because neither finds anything. Re-derive on the associative pool once #418 has authored it.",
