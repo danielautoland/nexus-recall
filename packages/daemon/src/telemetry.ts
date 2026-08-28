@@ -35,6 +35,7 @@ import type {
   HookReflexEvent,
   HookActEvent,
   RecallEpisodeEvent,
+  MutationIncidentEvent,
   OllamaLifecycleEvent,
   RecallBand,
   TurnSource,
@@ -527,6 +528,28 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "hook_act",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  /**
+   * Ein Mutations-Incident (#377). Kommt über `onMutationIncident` aus core —
+   * core kennt den Daemon nicht, dieselbe Bauform wie `logIdScan`.
+   *
+   * Trägt die Boot-id als `session_id`: Eine Mutation kann aus jedem Pfad
+   * kommen (MCP, REST, Bridge, CLI), und eine Claude-Session gibt es dabei nur
+   * manchmal. Die Boot-id sagt wenigstens, WELCHER Daemon-Lauf es war — anders
+   * als bei `ollama_lifecycle` ist das hier keine Behauptung über eine Session,
+   * weil der Incident selbst über `operation_id` gruppiert wird.
+   */
+  async logMutationIncident(
+    payload: Omit<MutationIncidentEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "mutation_incident",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

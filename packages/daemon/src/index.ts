@@ -33,6 +33,7 @@ import {
   type RecallStage,
   type StageListener,
   onIdScan,
+  onMutationIncident,
 } from "@bastra-recall/core";
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
@@ -236,6 +237,21 @@ async function main(): Promise<void> {
       dirs: o.dirs,
       blind_spots: o.blindSpots,
       cloud_mount: vaultIsCloudMount,
+    });
+  });
+
+  // #377: Mutations-Incidents aus core. Dieselbe Bauform wie `onIdScan` oben —
+  // core meldet, der Daemon entscheidet allein, ob geschrieben wird. Ein Vault
+  // ohne Daemon (CLI, Tests) meldet ins Leere, und das kostet nichts.
+  onMutationIncident((i) => {
+    void telemetry.logMutationIncident({
+      operation_id: i.operation_id,
+      op: i.op,
+      status: i.status,
+      phase: i.phase,
+      memory_id: i.memory_id ?? null,
+      rollback: i.rollback ?? null,
+      detail: i.detail ?? null,
     });
   });
 

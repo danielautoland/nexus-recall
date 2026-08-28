@@ -26,6 +26,7 @@ import { normalizeScopeKey } from "./scope.js";
 import { resolveMemoryTarget } from "./save-target.js";
 import { moveToTrashUnderClaim } from "./audit-log.js";
 import { areaKeyForPath, assertAreaWritable, withAreaShared } from "./area-claim.js";
+import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
@@ -551,6 +552,19 @@ async function commitMemory(
       // gerade erst angelegt haben, wird entfernt; ein überschriebenes bekommt
       // seine Vorbilder-Bytes zurück.
       const undone = await rollbackPublish(filePath, observedTarget);
+      // #377: Genau hier entsteht der einzige Zustand dieser Funktion, den ein
+      // Mensch anfassen muss — zwei aktive Dateien mit einer id. Der Aufrufer
+      // erfährt ihn als Fehlermeldung, aber niemand sonst; ohne Incident ist
+      // er nach dem nächsten Terminalfenster verschwunden.
+      reportMutationIncident({
+        operation_id: newOperationId(),
+        op: "save_memory_refile",
+        status: undone ? "rolled_back" : "partial",
+        phase: "refile-trash",
+        memory_id: id,
+        rollback: undone ? "complete" : "none",
+        detail: err instanceof MemoryWriteConflictError ? "source changed" : "trash failed",
+      });
       // Der Grund zählt für den Aufrufer: „jemand hat die Quelle geändert" ist
       // wiederholbar, „der Trash ist kaputt" nicht. Ein Konflikt bleibt
       // deshalb ein Konflikt (`MEMORY_WRITE_CONFLICT`) — aber nur, wenn das

@@ -15,6 +15,7 @@ import { access, readFile, rename } from "node:fs/promises";
 import matter from "gray-matter";
 import { occupantOfRaw, readOccupant } from "./memory-locator.js";
 import { withIdClaim, type IdClaim } from "./id-transaction.js";
+import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 
 /**
  * Audit-Kontext, den jeder Caller (bridge.ts, index.ts) mitgibt — beschreibt
@@ -380,6 +381,19 @@ async function recordOrWarn(
   try {
     return { audit: await auditLog.record(entry) };
   } catch (err) {
+    // #377: Der Fall, den vorher NIEMAND sah. `audit_warning` erreicht nur den
+    // Aufrufer — und auf dem MCP- und REST-Pfad nicht einmal den (#380). Ein
+    // Incident macht daraus eine Spur, die zwei Wochen später noch da ist.
+    // Die Fehlermeldung selbst geht NICHT ins Event: sie trägt regelmäßig den
+    // Pfad des Ledgers.
+    reportMutationIncident({
+      operation_id: newOperationId(),
+      op: `audit_${entry.operation}`,
+      status: "audit_failed",
+      phase: "audit",
+      memory_id: entry.memory_id,
+      detail: (err as NodeJS.ErrnoException)?.code ?? "append failed",
+    });
     return {
       audit: null,
       audit_warning:

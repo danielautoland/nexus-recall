@@ -22,6 +22,7 @@ export type TelemetryEvent =
   | HookActEvent
   | RecallEpisodeEvent
   | IdScanEvent
+  | MutationIncidentEvent
   | OllamaLifecycleEvent;
 
 /**
@@ -268,6 +269,40 @@ export interface IdScanEvent extends BaseEvent {
    *  andere Größenordnung, und beide Verteilungen in einen Topf zu werfen
    *  verwischt genau den Unterschied, um den es geht. */
   cloud_mount: boolean;
+}
+
+/**
+ * Was bei einer Mutation schiefging (#377).
+ *
+ * Der Grund, warum es diesen Event gibt: Ein Rollback, der nicht vollständig
+ * durchkam, ein Audit-Append nach dem Commit, ein Area-Konflikt — nichts davon
+ * hinterließ eine strukturierte Spur. Der Halbzustand einer Dokument-Operation
+ * stand nur im TEXT einer Fehlermeldung, und die ist nach dem nächsten
+ * Terminalfenster weg.
+ *
+ * KEINE Memory-Inhalte, keine Frontmatter-Werte, keine absoluten Pfade. Die id
+ * ist der Schlüssel, an dem man im Audit-Log weitersucht; `detail` ist ein
+ * kurzer, kontrollierter Grund und ausdrücklich keine durchgereichte
+ * Fehlermeldung (die trägt regelmäßig Pfade).
+ */
+export interface MutationIncidentEvent extends BaseEvent {
+  kind: "mutation_incident";
+  /** Hält eine Mutation über ihre Phasen zusammen. */
+  operation_id: string;
+  /** Welcher Writer: `save_memory_refile`, `audit_delete`, `area_exclusive`, … */
+  op: string;
+  /** `committed` | `rolled_back` | `partial` | `conflict` | `audit_failed`.
+   *  Die fünf verlangen verschiedene Reaktionen: `conflict` ist wiederholbar,
+   *  `audit_failed` bedeutet „steht schon, NICHT wiederholen", und `partial`
+   *  ist der einzige, der einen Menschen braucht. */
+  status: string;
+  /** Wo in der Operation: `publish`, `refile-trash`, `audit`, `rollback`,
+   *  `area-claim`, `area-claim-readers`. */
+  phase: string;
+  memory_id: string | null;
+  /** Wie weit ein Rollback kam — `null`, wo keiner nötig war. */
+  rollback: string | null;
+  detail: string | null;
 }
 
 export interface HookActEvent extends BaseEvent {

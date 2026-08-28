@@ -90,6 +90,8 @@ export { mutateMemoryFile } from "./memory-mutate.js";
 export type { MutateOutcome, MemoryMutation } from "./memory-mutate.js";
 export { readOccupant, occupantOfRaw, scanVaultForId, scanVaultForIdAsync, snapshotLocator, vaultRelative } from "./memory-locator.js";
 export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
+export { onMutationIncident, newOperationId, reportMutationIncident } from "./mutation-incident.js";
+export type { MutationIncident, MutationStatus } from "./mutation-incident.js";
 export {
   areaKeyForPath,
   assertAreaWritable,

@@ -36,6 +36,7 @@ import { hostname } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
 import { acquireCommitClaim, claimIsAbandoned, releaseCommitClaim } from "./save-commit.js";
+import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 import { normalizeScopeKey } from "./scope.js";
 
 const AUDIT_DIR = ".bastra";
@@ -393,6 +394,7 @@ export async function withAreaExclusive<T>(
 ): Promise<T> {
   const wanted = [...new Set(names.map((n) => normalizeScopeKey(n)))].sort();
   const held: { lock: string; token: string }[] = [];
+  const opId = newOperationId();
   try {
     for (const name of wanted) {
       const { lock, readers } = areaLockPaths(vaultRoot, name);
@@ -414,6 +416,16 @@ export async function withAreaExclusive<T>(
       try {
         token = await acquireCommitClaim(lock, `area:${name}`, lock);
       } catch (err) {
+        // #377: Area-Konflikte wurden bisher nirgends protokolliert. Ein
+        // einzelner ist der Normalfall einer funktionierenden Sperre — häufen
+        // sie sich, ist das ein Befund, und ohne Ereignis sieht ihn niemand.
+        reportMutationIncident({
+          operation_id: opId,
+          op: "area_exclusive",
+          status: "conflict",
+          phase: "area-claim",
+          detail: "held by another operation",
+        });
         throw new Error(
           `another area operation is running on '${name}' — nothing was changed. ` +
             `Retry in a moment. (${(err as Error).message})`,
@@ -423,6 +435,13 @@ export async function withAreaExclusive<T>(
       // ERST der Lock, DANN die Reader — spiegelbildlich zu `withAreaShared`.
       const readersLive = await liveReaders(readers);
       if (readersLive.length > 0) {
+        reportMutationIncident({
+          operation_id: opId,
+          op: "area_exclusive",
+          status: "conflict",
+          phase: "area-claim-readers",
+          detail: `${readersLive.length} save(s) in flight`,
+        });
         throw new Error(
           `${readersLive.length} save(s) are writing into '${name}' right now — ` +
             `nothing was changed. Retry in a moment.`,
