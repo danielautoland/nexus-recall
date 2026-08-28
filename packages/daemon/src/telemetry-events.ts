@@ -24,6 +24,7 @@ export type TelemetryEvent =
   | RecallEpisodeEvent
   | IdScanEvent
   | MutationIncidentEvent
+  | EvidenceDecisionEvent
   | OllamaLifecycleEvent;
 
 /**
@@ -325,6 +326,76 @@ export interface MutationIncidentEvent extends BaseEvent {
   /** Wie weit ein Rollback kam — `null`, wo keiner nötig war. */
   rollback: string | null;
   detail: string | null;
+}
+
+/**
+ * Der Evidenzentscheid je Treffer, im SCHATTEN (#264, §10.1/§10.3, §10.4 Stufe 2).
+ *
+ * Der Entscheid läuft serverseitig, bevor die Antwort projiziert wird — dort
+ * trägt ein Treffer noch seine Hop-Herkunft (C-046) —, und er wirkt in dieser
+ * Stufe auf NICHTS: Die Antwort ist dieselbe, ob dieses Event geschrieben wird
+ * oder nicht. Was hier steht, ist die Beobachtung, aus der später eine
+ * Freigabe wird (§18.2: 14 Tage oder 500 geloggte Hook-Entscheidungen).
+ *
+ * DIE TRENNUNG, die dieses Event trägt (C-052/C-056/C-061): Das `no_answer`
+ * hier ist das aus §10.3 — „die vorhandene Evidenz reicht für keine
+ * Ausspielung". Es ist NICHT das `no_answer` des Deep-Recall-Ergebnisvertrags
+ * (§8.5), das eine deterministisch erschöpfte Suche behauptet. Die beiden
+ * werden nie ineinander übersetzt und nie gegeneinander verrechnet. Deshalb
+ * eine eigene Ereignisklasse mit eigenem Namen: Ein gemeinsames Feld wäre die
+ * Einladung, sie zu addieren.
+ *
+ * WAS NIE HINEINGEHÖRT (#377-Muster): keine Memory-Inhalte, keine
+ * Frontmatter-Werte, keine Pfade, keine Query-Rohtexte. Die `memory_id` ist der
+ * Schlüssel für die Weitersuche; die Evidenzmerkmale sind Zahlen, Wahrheitswerte
+ * und ein kurzer Statuswert.
+ */
+export interface EvidenceDecisionEvent extends BaseEvent, DimensionedEvent {
+  kind: "evidence_decision";
+  /** Join-Schlüssel zum `hook_recall`-Event desselben Aufrufs. */
+  recall_id: string;
+  /** Immer `true`, solange der Entscheid im Schatten läuft. Ein Leser muss
+   *  Schatten- von Wirkbetrieb trennen können, ohne das Datum zu kennen. */
+  shadow: boolean;
+  /**
+   * Der Retrievalpfad war unvollständig (Deadline, ausgefallener Arm).
+   *
+   * Trägt die Auflage aus C-047/C-052: Ein Budget-Abbruch ist KEINE Abstention.
+   * Wer die Abstentionsquote rechnet, muss die Läufe ausschließen können, in
+   * denen weniger Evidenz vorlag, WEIL abgebrochen wurde — sonst zählt er den
+   * Abbruch als Urteil.
+   */
+  degraded: boolean;
+  /**
+   * Der Entscheid selbst ist gescheitert (Defekt, keine Aussage).
+   *
+   * Dann ist `decisions` leer und `counts` sind null: Ein Controller-Defekt
+   * geht weder in die Abstentions- noch in die Erfolgsstatistik ein
+   * (C-047/C-052). Sichtbar bleibt er trotzdem — sonst wäre ein kaputter
+   * Entscheid von einem Aufruf ohne Treffer nicht zu unterscheiden.
+   */
+  failed?: boolean;
+  decisions: Array<{
+    memory_id: string;
+    /** `required` | `optional` | `no_answer` (§10.3). */
+    decision: string;
+    abstain_reason?: string;
+    evidence: {
+      exact_identifier: boolean;
+      recall_when_coverage: number;
+      lexical_rank?: number;
+      lexical_score?: number;
+      vector_rank?: number;
+      arm_agreement: boolean;
+      scope_match: boolean;
+      temporal_status: string;
+    };
+    /** #263/§18.2: die Hop-Herkunft am Entscheid, damit der Report zeigen kann,
+     *  worüber die `required`-Hits erreicht wurden (C-046). */
+    hop?: string;
+  }>;
+  /** Die Zählung dieses Aufrufs — Grundlage der Shadow-Acceptance. */
+  counts: { required: number; optional: number; no_answer: number };
 }
 
 export interface HookActEvent extends BaseEvent, DimensionedEvent {

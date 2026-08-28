@@ -40,6 +40,7 @@ import type {
   HookReflexEvent,
   HookActEvent,
   RecallEpisodeEvent,
+  EvidenceDecisionEvent,
   MutationIncidentEvent,
   OllamaLifecycleEvent,
   RecallBand,
@@ -550,6 +551,33 @@ export class Telemetry {
     const { client, hook_source, ...rest } = payload;
     await this.write({
       kind: "hook_recall",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...rest,
+      dimensions: this.dimensionsFor({ client, hook_source, session_id: payload.session_id }),
+    });
+  }
+
+  /**
+   * Der Evidenzentscheid eines Aufrufs (#264) — im Schatten.
+   *
+   * Eigene Methode und eigene Ereignisklasse, nicht ein Feld am
+   * `hook_recall`-Event: Der Entscheid hat einen anderen Lebenszyklus (er wird
+   * scharf geschaltet, während der Recall bleibt) und eine andere
+   * Vertragsklasse (§10.3 gegen §8.5). Zwei Dinge, die man nie addieren darf,
+   * gehören nicht in dasselbe Objekt.
+   */
+  async logEvidenceDecision(
+    payload: Omit<EvidenceDecisionEvent, "kind" | "ts" | "session_id" | "dimensions"> & {
+      session_id?: string;
+      client?: unknown;
+      hook_source?: unknown;
+    },
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const { client, hook_source, ...rest } = payload;
+    await this.write({
+      kind: "evidence_decision",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...rest,

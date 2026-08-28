@@ -21,7 +21,8 @@ import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shado
 import { toLeanHit, truncateSummary } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
-import { isWeakResult, isNoHome } from "@bastra-recall/core";
+import { isWeakResult, isNoHome, decideHits } from "@bastra-recall/core";
+import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
 import {
   MAX_BODY_BYTES,
@@ -553,6 +554,67 @@ export async function runHookRecall(
       const hybridActiveAtRecall = promptFused;
       const weakResult = isWeakResult(hits, hybridActiveAtRecall);
       const noHome = isNoHome(hits, hybridActiveAtRecall);
+
+      // #264: Der Evidenzentscheid, im SCHATTEN. Hier und nicht später, weil
+      // die Treffer an dieser Stelle noch ihre Hop-Herkunft tragen — die
+      // Projektion unten wirft sie weg, und C-046 verlangt sie am
+      // Entscheidungspunkt. Er wirkt auf nichts: `payload` unten liest keine
+      // Zeile davon, und die Antwort ist dieselbe, ob dieser Block läuft oder
+      // nicht.
+      //
+      // Die Merkmale werden gegen die URSPRÜNGLICHE Anfrage erhoben, nicht
+      // gegen die brückenerweiterte: Beurteilt wird, was der Nutzer gefragt
+      // hat, nicht was die Suche daraus gemacht hat.
+      try {
+        const decisions = decideHits(hits, {
+          queryTerms: tokenizeWithIdentifiers(query),
+          scope: scope ?? null,
+          memoryOf: (id) => vault.get(id),
+        });
+        const counts = { required: 0, optional: 0, no_answer: 0 };
+        for (const d of decisions) counts[d.decision]++;
+        fireAndForget(
+          telemetry.logEvidenceDecision({
+            recall_id: recallId,
+            shadow: true,
+            // C-047/C-052: Ein Budget-Abbruch ist keine Abstention. Wer die
+            // Quote rechnet, muss diese Läufe ausschließen können.
+            degraded: degradedReason !== undefined,
+            decisions: decisions.map((d) => ({
+              memory_id: d.id,
+              decision: d.decision,
+              ...(d.abstain_reason ? { abstain_reason: d.abstain_reason } : {}),
+              evidence: d.evidence,
+              ...(hits.find((h) => h.id === d.id)?.hop
+                ? { hop: hits.find((h) => h.id === d.id)!.hop }
+                : {}),
+            })),
+            counts,
+            ...(hookSessionId ? { session_id: hookSessionId } : {}),
+            client: body.client,
+            hook_source: body.hook_source,
+          }),
+        );
+      } catch (err) {
+        // Ein Defekt im Entscheid geht in KEINE der beiden Statistiken
+        // (C-047/C-052) — leere Entscheidungen, Zähler auf null. Sichtbar
+        // bleibt er trotzdem, sonst wäre er von einem Aufruf ohne Treffer nicht
+        // zu unterscheiden.
+        console.error(`[bastra.evidence] decision failed: ${(err as Error).message}`);
+        fireAndForget(
+          telemetry.logEvidenceDecision({
+            recall_id: recallId,
+            shadow: true,
+            degraded: degradedReason !== undefined,
+            failed: true,
+            decisions: [],
+            counts: { required: 0, optional: 0, no_answer: 0 },
+            ...(hookSessionId ? { session_id: hookSessionId } : {}),
+            client: body.client,
+            hook_source: body.hook_source,
+          }),
+        );
+      }
 
       fireAndForget(
         telemetry.logHookRecall({
