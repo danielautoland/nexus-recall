@@ -202,6 +202,21 @@ export function checkCueRegistration(
   }
 
   if (stage === "numbers_registered") {
+    // Numbers alone do not make a run possible. A registration can be fully
+    // filled in and still describe an experiment neither condition exists for —
+    // which is exactly the state design A was in when the descriptive family
+    // turned out to move nothing. Unsatisfied preconditions block the stage, so
+    // the gap is refused here rather than discovered at the start of a run.
+    const pre = at("preconditions") as { items?: { id?: string; satisfied?: boolean }[] } | undefined;
+    for (const item of pre?.items ?? []) {
+      if (item.satisfied !== true) {
+        issues.push({
+          where: `precondition ${String(item.id)}`,
+          problem: "unsatisfied — the run is not buildable yet, so the numbers cannot clear it (§18.3)",
+        });
+      }
+    }
+
     const power = at("power_assumption") as Record<string, Record<string, unknown>> | undefined;
     for (const arm of ["main_effects", "interaction"] as const) {
       if (power?.[arm]?.min_n == null) {

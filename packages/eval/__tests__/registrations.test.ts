@@ -86,47 +86,90 @@ test("the real registry is mostly unrankable, and that is the finding", () => {
   assert.ok(blocked / pairs > 0.9, `expected nearly every pair blocked, got ${blocked}/${pairs}`);
 });
 
-test("the committed cue registration carries the numbers and clears an M2 run", () => {
+test("the committed cue registration is on the associative axis and does NOT clear an M2 run", () => {
   const reg = loadCueRegistration();
-  // Design A on descriptive/item with a selection/holdout split — the
-  // product-owner decisions of 2026-07-26. The numbers followed on 2026-08-28,
-  // once the M0 baseline had shown the spread of the metric (§18.1).
-  assert.equal(reg.status, "numbers_registered");
+  // v3: the held-fixed configuration moved to associative/item after the OB
+  // pre-question found the descriptive family moves nothing, and the status
+  // dropped back with it — the numbers were derived on a 98%-descriptive pool.
+  assert.equal(reg.status, "structure_registered");
   assert.equal(reg.design, "A");
 
   const a = (reg.admissible_designs as Record<string, Record<string, unknown>>).A;
-  assert.deepEqual(a.fixed_cue_configuration, { descriptive_associative: "descriptive", item_scene: "item" });
+  assert.deepEqual(a.fixed_cue_configuration, {
+    descriptive_associative: "associative",
+    item_scene: "item",
+    cue_family: "associative_bridge",
+  });
   const guard = a.contamination_guard as Record<string, unknown>;
   assert.equal(guard.mode, "selection_holdout_split");
   assert.equal((guard.selection_share as number) + (guard.holdout_share as number), 1);
   assert.deepEqual(guard.stratify_by, ["origin_type", "lang"]);
-
-  // Both gates pass now: the structure for M0, the numbers for M2.
-  assert.deepEqual(checkCueRegistration("structure_registered", reg), []);
-  assert.deepEqual(checkCueRegistration("numbers_registered", reg), []);
-
-  // Design A is sized per condition and paired, so the holdout is the case
-  // count for BOTH conditions rather than twice that.
-  assert.equal(a.min_n_per_condition, 255);
   assert.equal(a.interaction_evaluated, false);
 
-  // Every number has to be traceable to the run it came from — a registration
-  // whose figures cannot be tied to an artifact cannot be checked later.
-  const from = reg.numbers_derived_from as Record<string, unknown>;
-  assert.match(String(from.run_artifact), /eval-runs/);
-  assert.ok(String(from.git).length >= 40, "the measured commit is part of the record");
+  // M0's gate still passes — the structure is registered and unchanged.
+  assert.deepEqual(checkCueRegistration("structure_registered", reg), []);
+  // M2's does not, and that is the point of v3 rather than an oversight.
+  assert.ok(checkCueRegistration("numbers_registered", reg).length > 0);
+  assert.equal(a.min_n_per_condition, null, "sizing waits for a pool that exists");
 
-  // The parts that never depended on the baseline stay as they were.
+  // The reconfiguration names the run that forced it. A configuration change
+  // without its evidence is a preference, not a finding.
+  const from = reg.reconfigured_from as Record<string, unknown>;
+  assert.deepEqual(from.previous_configuration, { descriptive_associative: "descriptive", item_scene: "item" });
+  assert.match(String(from.evidence_run), /eval-runs/);
+
+  // The superseded numbers stay on the record so the re-derivation has
+  // something to compare against.
+  const sup = (reg.power_assumption as Record<string, Record<string, unknown>>).superseded_v2_values;
+  assert.equal(sup.main_effects_min_n, 213);
+
+  // The parts that never depended on any baseline stay as they were.
   const fallback = reg.underpowered_fallback as Record<string, string>;
   assert.match(fallback.main_effect_missed, /not evaluable/);
   assert.match(fallback.interaction_missed, /explorative/);
 
-  // The associative axis is the open blocker, and the file says so rather than
-  // claiming the gold set is ready.
   const gold = reg.gold_set_requirement as Record<string, unknown>;
   assert.equal(gold.satisfied, false);
   const targets = gold.authoring_targets as Record<string, Record<string, number>>;
   assert.equal(targets.associative.minimum, 150);
+});
+
+test("unsatisfied preconditions block the numbers stage, however complete the numbers are", () => {
+  const reg = loadCueRegistration();
+  const pre = reg.preconditions as { items: { id: string; satisfied: boolean }[] };
+  assert.equal(pre.items.length, 3, "gold cases, an associative generator, and the agent path");
+  for (const item of pre.items) assert.equal(item.satisfied, false, `${item.id} is open`);
+
+  // Even a registration with every number filled in stays blocked while a
+  // precondition is open — numbers do not make an experiment buildable.
+  const filled = {
+    status: "numbers_registered",
+    design: "A",
+    preconditions: { items: [{ id: "associative_gold_cases", satisfied: false }] },
+    admissible_designs: {
+      A: {
+        condition_count: 2,
+        interaction_evaluated: false,
+        fixed_cue_configuration: { descriptive_associative: "associative", item_scene: "item" },
+        min_n_per_condition: 255,
+        contamination_guard: {
+          mode: "selection_holdout_split",
+          selection_share: 0.3, holdout_share: 0.7, split_seed: 20260828,
+          stratify_by: ["origin_type", "lang"],
+        },
+      },
+    },
+    power_assumption: { main_effects: { min_n: 213 }, interaction: { min_n: 852 } },
+    evaluation_rule: "paired McNemar on the holdout",
+  };
+  assert.match(
+    checkCueRegistration("numbers_registered", filled).map((i) => i.problem).join(" | "),
+    /not buildable yet/,
+  );
+
+  // Satisfy it and the same registration clears.
+  filled.preconditions.items[0].satisfied = true;
+  assert.deepEqual(checkCueRegistration("numbers_registered", filled), []);
 });
 
 test("a design that contradicts §18.3 is rejected even when fully filled in", () => {
