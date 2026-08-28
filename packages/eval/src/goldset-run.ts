@@ -41,6 +41,7 @@ import {
   isWeakResult,
   hitTitleMatches,
   type RecallHit,
+  type StageListener,
 } from "@bastra-recall/core";
 import { checkGoldCases, type GoldCase } from "./goldset.js";
 
@@ -51,7 +52,12 @@ const SCORE_FLOOR = 30;
 /** Bound on a cold-store backfill; a stuck provider must fail, not hang. */
 const BACKFILL_TIMEOUT_MS = 15 * 60 * 1000;
 
-type Recaller = (query: string) => Promise<RecallHit[]>;
+/**
+ * The case id travels with the query because the control arm needs it: its
+ * draw must depend on WHICH case it is, never on where the case sat in the
+ * concatenated input (#426). The real arms ignore it.
+ */
+type Recaller = (query: string, caseId: string) => Promise<RecallHit[]>;
 
 /**
  * What the best-anchored served hit anchors ON.
@@ -140,6 +146,18 @@ export interface CaseResult {
    * only the recorded mode can prove otherwise.
    */
   top_mode: string;
+  /**
+   * The served pool as an ordered id/score list — the very list the ranks above
+   * are derived from (#417).
+   *
+   * Without it the artifact stored only the runner's own derivation: an
+   * independent checker could recompute every aggregate from the ranks, but a
+   * systematic error IN the rank determination — an off-by-one in the hit test
+   * at positions 2-10, say — stayed invisible, because `top_id` cross-checks
+   * position 1 and nothing else. Ids and scores only: no query text and no
+   * bodies, so the artifact's privacy posture is unchanged.
+   */
+  top_k: { id: string; score: number }[];
 }
 
 const hit = (r: CaseResult, k: number, any = false): boolean => {
@@ -258,11 +276,18 @@ function seededRandom(seed: number): () => number {
  * it a Recall@3 has no scale — nobody can say whether it is retrieval or the
  * shape of the gold set.
  */
-function controlRecaller(ids: string[], seed: number): Recaller {
-  let n = 0;
-  return async (_q) => {
-    const rnd = seededRandom(seed + n++);
-    const pool = [...ids];
+export function controlRecaller(ids: string[], seed: number): Recaller {
+  // The id pool is sorted, not taken in vault-listing order: the null baseline
+  // must be a property of the run seed and the data, never of how the vault
+  // happened to enumerate itself.
+  const sorted = [...ids].sort();
+  return async (_q, caseId) => {
+    // Seeded from the run seed and the case's own identity (#426). Seeding from
+    // a running counter instead made the draw depend on the case's POSITION in
+    // the concatenated input, so reordering the gold files moved the control
+    // value on unchanged data — against the documented determinism invariant.
+    const rnd = seededRandom(seed ^ stringSeed(caseId));
+    const pool = [...sorted];
     for (let i = pool.length - 1; i > 0; i--) {
       const j = Math.floor(rnd() * (i + 1));
       [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -271,7 +296,51 @@ function controlRecaller(ids: string[], seed: number): Recaller {
   };
 }
 
-async function scoreCases(
+/** Stable 32-bit hash of a case id — the same construction the split uses. */
+function stringSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+/**
+ * The per-query degradation gate the M0 arm claim needs (#428).
+ *
+ * The initial `--hybrid` setup probes the provider and waits for a full vector
+ * store, but provider health can change over hundreds of cases: `recallHybrid`
+ * then answers from BM25 alone and says so ONLY through the `done` stage's
+ * `degraded` meta. The runner installed no `onStage` callback, so those rows
+ * stayed inside an artifact labelled hybrid, carrying raw BM25 scores in a
+ * column of RRF ones.
+ *
+ * `top_mode` cannot stand in for this: a healthy fused result legitimately
+ * labels its top hit `bm25` or `vector` when the hit appeared in one arm only.
+ * Only the emitted reason distinguishes "fused, one arm carried the top hit"
+ * from "the vector arm was not there".
+ */
+export function gatedHybridRecaller(
+  search: (query: string, opts: { k: number; onStage: StageListener }) => Promise<RecallHit[]>,
+): Recaller {
+  return async (query, caseId) => {
+    let degraded: string | undefined;
+    const hits = await search(query, {
+      k: PRODUCTION_K,
+      onStage: (s) => {
+        const reason = s.name === "done" ? s.meta?.degraded : undefined;
+        if (typeof reason === "string") degraded = reason;
+      },
+    });
+    if (degraded !== undefined) {
+      throw new Error(
+        `case ${caseId}: the vector arm fell back to BM25 (${degraded}) — `
+          + "a run labelled hybrid cannot hold a BM25 row.",
+      );
+    }
+    return hits;
+  };
+}
+
+export async function scoreCases(
   cases: GoldCase[],
   recall: Recaller,
   knownIds: Set<string>,
@@ -283,7 +352,7 @@ async function scoreCases(
   const rows: CaseResult[] = [];
   for (const c of cases) {
     const unknown = [...c.expected_ids, ...c.acceptable_alternatives].filter((i) => !knownIds.has(i));
-    const hits = await recall(c.query);
+    const hits = await recall(c.query, c.id);
     const above = hits.filter((h) => h.score >= SCORE_FLOOR);
     const exp = new Set(c.expected_ids);
     const any = new Set([...c.expected_ids, ...c.acceptable_alternatives]);
@@ -311,6 +380,9 @@ async function scoreCases(
       anchor: anchorOf(above),
       unknown_ids: unknown,
       top_mode: above[0]?.mode ?? "(none)",
+      // The same `above` the ranks were read off, so a checker re-deriving them
+      // is checking the runner rather than a second recording of it.
+      top_k: above.map((h) => ({ id: h.id, score: h.score })),
     });
   }
   return rows;
@@ -496,9 +568,10 @@ async function main(): Promise<void> {
   }
 
   // Never report BM25 under a hybrid label: the hybrid path is taken only when
-  // the vector arm is actually attached, and --hybrid aborts above if it is not.
+  // the vector arm is actually attached, --hybrid aborts above if it is not,
+  // and `gatedHybridRecaller` stops the run if the arm goes away mid-set.
   const recaller: Recaller = search.hasEmbeddings()
-    ? (q) => search.recallHybrid(q, { k: PRODUCTION_K })
+    ? gatedHybridRecaller((q, o) => search.recallHybrid(q, o))
     : async (q) => search.recall(q, { k: PRODUCTION_K });
 
   const hybridActive = search.hasEmbeddings();
@@ -516,7 +589,10 @@ async function main(): Promise<void> {
   const ctrlAnswerable = control.filter((r) => !r.probe_group && !r.no_answer);
 
   const results = {
-    schema_version: 1,
+    // 2: every row carries `top_k`, so the rank determination itself is
+    // re-checkable and not only its result (#417). Version 1 artifacts stay
+    // valid — they are the ones without the field.
+    schema_version: 2,
     run_date: new Date().toISOString(),
     arm: armLabel,
     vectors,

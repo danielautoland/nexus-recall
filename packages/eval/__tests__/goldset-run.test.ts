@@ -4,12 +4,16 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  controlRecaller,
   datasetHash,
+  gatedHybridRecaller,
   loadGoldFiles,
   metricsFor,
+  scoreCases,
   unknownGoldIds,
   type CaseResult,
 } from "../src/goldset-run.js";
+import type { RecallHit, StageListener } from "@bastra-recall/core";
 import { originRefHash, stagedId, type GoldCase } from "../src/goldset.js";
 
 const row = (over: Partial<CaseResult> = {}): CaseResult => ({
@@ -181,4 +185,84 @@ test("unknown gold ids are collected before scoring, deduplicated and sorted (#4
   const known = new Set(["m1"]);
   assert.deepEqual(unknownGoldIds(cases, known), ["gone-a", "gone-b"]);
   assert.deepEqual(unknownGoldIds(cases, new Set(["m1", "gone-a", "gone-b"])), []);
+});
+
+const VAULT_IDS = Array.from({ length: 40 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+
+test("the control draw follows the case, not its position in the input (#426)", async () => {
+  const seed = 20260828;
+  const drawFor = async (ids: string[], caseIds: string[]): Promise<Record<string, string[]>> => {
+    const r = controlRecaller(ids, seed);
+    const out: Record<string, string[]> = {};
+    for (const id of caseIds) out[id] = (await r("q", id)).map((h) => h.id);
+    return out;
+  };
+
+  const forward = await drawFor(VAULT_IDS, ["c1", "c2", "c3"]);
+  const reordered = await drawFor(VAULT_IDS, ["c3", "c1", "c2"]);
+  // The bug: seeding from a running counter tied case n's ranking to n, so
+  // concatenating the gold files differently moved the null baseline.
+  assert.deepEqual(reordered.c1, forward.c1, "the same case must draw the same ranking");
+  assert.deepEqual(reordered.c3, forward.c3);
+  assert.notDeepEqual(forward.c1, forward.c2, "different cases still draw differently");
+
+  // Nor may the vault's enumeration order move it.
+  const shuffledPool = await drawFor([...VAULT_IDS].reverse(), ["c1"]);
+  assert.deepEqual(shuffledPool.c1, forward.c1, "the id pool is sorted before the draw");
+
+  // The seed is still what makes the control arm reproducible.
+  const other = controlRecaller(VAULT_IDS, 1);
+  assert.notDeepEqual((await other("q", "c1")).map((h) => h.id), forward.c1);
+});
+
+/** A `recallHybrid` stand-in that emits the stages the real one emits. */
+const fakeHybrid = (hits: RecallHit[], degraded?: string) =>
+  async (_q: string, o: { k: number; onStage: StageListener }): Promise<RecallHit[]> => {
+    o.onStage({ name: "bm25.search", startedAtMs: 0, meta: { raw_hit_count: hits.length } });
+    o.onStage({
+      name: "done",
+      startedAtMs: 0,
+      meta: { hit_count: hits.length, ...(degraded ? { degraded } : {}) },
+    });
+    return hits;
+  };
+
+const hit = (id: string, score: number, mode = "hybrid"): RecallHit =>
+  ({ id, score, mode } as RecallHit);
+
+test("a per-query fallback to BM25 stops the run instead of entering a hybrid artifact (#428)", async () => {
+  const healthy = gatedHybridRecaller(fakeHybrid([hit("m01", 120)]));
+  assert.deepEqual((await healthy("q", "c1")).map((h) => h.id), ["m01"]);
+
+  // A fused hit that only one arm carried is NOT a degradation — `top_mode`
+  // alone could never tell the two apart.
+  const oneArmTop = gatedHybridRecaller(fakeHybrid([hit("m01", 120, "bm25")]));
+  assert.equal((await oneArmTop("q", "c1")).length, 1);
+
+  for (const reason of ["vector-arm-timeout", "vector-arm-error", "vector-arm-empty"]) {
+    const fallen = gatedHybridRecaller(fakeHybrid([hit("m01", 1997.3, "bm25")], reason));
+    await assert.rejects(() => fallen("q", "c7"), new RegExp(`case c7:.*${reason}`));
+  }
+});
+
+test("the row carries the served top-k, so the ranks can be re-derived (#417)", async () => {
+  const served = [hit("m01", 120), hit("m02", 90), hit("m03", 40), hit("m04", 12)];
+  const cases = [gold("eine frage", { expected_ids: ["m03"], acceptable_alternatives: ["m02"] })];
+  const rows = await scoreCases(cases, async () => served, new Set(VAULT_IDS), true);
+
+  // Only what cleared the floor is served, and that is what the ranks are read
+  // off — m04 at score 12 is below SCORE_FLOOR and appears nowhere.
+  assert.deepEqual(rows[0].top_k, [
+    { id: "m01", score: 120 },
+    { id: "m02", score: 90 },
+    { id: "m03", score: 40 },
+  ]);
+
+  // The point of the field: an independent checker re-derives the runner's own
+  // ranks instead of having to trust them at every position but the first.
+  const expected = new Set(cases[0].expected_ids);
+  const any = new Set([...cases[0].expected_ids, ...cases[0].acceptable_alternatives]);
+  assert.equal(rows[0].top_k.findIndex((h) => expected.has(h.id)) + 1, rows[0].rank_expected);
+  assert.equal(rows[0].top_k.findIndex((h) => any.has(h.id)) + 1, rows[0].rank_any);
+  assert.equal(rows[0].rank_expected, 3, "and the rank sits where only top_k can show it");
 });
