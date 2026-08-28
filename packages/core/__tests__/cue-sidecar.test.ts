@@ -69,6 +69,8 @@ function record(m: Memory, over: Record<string, unknown> = {}): string {
     cue: "Versicherungsunterlagen",
     origin: "batch",
     generator_version: "cue-gen@1",
+    model: "embeddinggemma",
+    prompt_version: "descriptive-entity@1",
     derived_at: "2026-08-28T10:00:00.000Z",
     confidence: 0.8,
     evidence: { source_fingerprint: cueSourceFingerprint(m) },
@@ -103,6 +105,10 @@ for (const field of [
   "cue",
   "origin",
   "generator_version",
+  // Die Reproduzierbarkeits-Auflage aus §31 Entscheidung 1: Ohne Modell und
+  // Prompt-Fassung ließe sich ein späterer Befund keiner Erzeugung zuordnen.
+  "model",
+  "prompt_version",
   "derived_at",
   "confidence",
   "evidence",

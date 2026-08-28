@@ -101,6 +101,17 @@ export {
   loadCueProjection,
   describeCueProjection,
 } from "./cue-sidecar.js";
+export {
+  buildCuePrompt,
+  parseCueCandidates,
+  confidenceFromRank,
+  generateCuesFor,
+  generateCueBatch,
+  cueToJsonl,
+  CUE_PROMPT_VERSION,
+  CUE_GENERATOR_VERSION,
+} from "./cue-generate.js";
+export type { CueBatchOptions, CueBatchReport, CueSelfTest } from "./cue-generate.js";
 export type {
   CueFamily,
   DerivedCue,

@@ -72,7 +72,20 @@ export interface DerivedCue {
   /** Herkunft des Erzeugungswegs. Die beiden Bedingungen von Anlage A (§18.3,
    *  §31 Entscheidung 1); welcher Weg gewinnt, ist offen und wird gemessen. */
   origin: "batch" | "agent";
+  /**
+   * Die drei Felder, die einen Lauf nachvollziehbar machen. §31 Entscheidung 1
+   * verlangt einen „reproduzierbaren Offline-Batch", und reproduzierbar heißt
+   * bei einem LLM nicht deterministisch: Dieselbe Eingabe kann eine andere
+   * Formulierung ergeben. Nachvollziehbar ist der ANSPRUCH — wer mit welchem
+   * Modell und welcher Prompt-Fassung diesen Cue erhoben hat. Ohne das ließe
+   * sich ein späterer Befund keiner Erzeugung zuordnen, und der Vergleich der
+   * beiden Wege aus Anlage A wäre nicht auswertbar.
+   */
   generator_version: string;
+  /** Der Modellname, wie er beim Lauf angesprochen wurde. */
+  model: string;
+  /** Fassung des Prompts — ein umformulierter Prompt ist ein anderer Erzeuger. */
+  prompt_version: string;
   /** ISO-8601. */
   derived_at: string;
   /** 0..1. */
@@ -207,6 +220,8 @@ export function parseCueRecord(value: unknown): DerivedCue | null {
   if (typeof r.family !== "string" || !FAMILIES.includes(r.family)) return null;
   if (r.origin !== "batch" && r.origin !== "agent") return null;
   if (!isNonEmptyString(r.generator_version)) return null;
+  if (!isNonEmptyString(r.model)) return null;
+  if (!isNonEmptyString(r.prompt_version)) return null;
   if (!isNonEmptyString(r.derived_at)) return null;
   if (typeof r.confidence !== "number" || !Number.isFinite(r.confidence)) return null;
   if (r.confidence < 0 || r.confidence > 1) return null;
@@ -219,6 +234,8 @@ export function parseCueRecord(value: unknown): DerivedCue | null {
     cue: r.cue,
     origin: r.origin,
     generator_version: r.generator_version,
+    model: r.model,
+    prompt_version: r.prompt_version,
     derived_at: r.derived_at,
     confidence: r.confidence,
     evidence: { source_fingerprint: evidence.source_fingerprint },
