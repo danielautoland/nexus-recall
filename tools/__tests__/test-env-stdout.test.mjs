@@ -112,16 +112,26 @@ test("capping stdout does not cost the failure its name and diff", async (t) => 
     run.out.includes("this failure must stay legible"),
     `the failing test must be named:\n${run.out}`,
   );
-  assert.match(run.out, /AssertionError|strictEqual/, "and its assertion must survive");
+  assert.match(run.out, /1 !== 2/, "and its assertion must survive");
 });
 
 test("the shim leaves the parent's own reporter output alone", async (t) => {
   const dir = await fixtures(t);
   // The parent writes its human-readable summary as strings. It is only capped
   // in a test child (NODE_TEST_CONTEXT), and this is what proves the guard:
-  // without it, the lines below would be gone too.
+  // without it, the output below would be blank.
   const run = await runNested(["noisy.test.mjs", "failing.test.mjs"], dir);
-  assert.match(run.out, /tests 3/);
-  assert.match(run.out, /fail 1/);
-  assert.match(run.out, /failing tests:/);
+
+  // Asserted on what the REPORT says, never on how a reporter formats it: the
+  // default differs by Node version (TAP on 22, spec on 24), and `failing
+  // tests:` — a spec-only heading — is what turned this test red on CI. Counts
+  // and names survive both ("# fail 1" vs "ℹ fail 1"), because they come from
+  // the test run and not from the layout.
+  assert.ok(run.out.trim().length > 0, "the parent must still report at all");
+  assert.match(run.out, /tests 3/, "all three tests counted");
+  assert.match(run.out, /fail 1/, "the failure counted");
+  assert.ok(
+    run.out.includes("this failure must stay legible"),
+    `the failure must be named in the parent's report:\n${run.out}`,
+  );
 });
