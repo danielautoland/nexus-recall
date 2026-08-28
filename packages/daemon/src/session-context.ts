@@ -33,7 +33,16 @@ export async function buildSessionContext(
   vault: Vault,
   deps: SessionContextDeps = {},
 ): Promise<string> {
-  const assembled = await assembleSessionSections(toolDeps, vault, { project: null }, deps);
+  // `expand_hops: 0` steht hier ausdrücklich: Der Forwarder-Vertrag kennt keine
+  // Hops (mcp-forwarder.ts fragt sie ebenfalls nicht an), und der Default des
+  // Assemblers ist die HOOK-Baseline `1`. Ohne diese Zeile bekäme eine hooklose
+  // Oberfläche plötzlich mehr, weil anderswo ein Default umgezogen ist.
+  const assembled = await assembleSessionSections(
+    toolDeps,
+    vault,
+    { project: null, expand_hops: 0 },
+    deps,
+  );
   return renderSessionContext(assembled.sections, vault.size());
 }
 

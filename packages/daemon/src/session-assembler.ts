@@ -137,6 +137,23 @@ export interface AssembleOptions {
   source?: string | null;
   session_id?: string | null;
   budget?: SessionBudget;
+  /**
+   * #265/C-046: Die Hop-Baseline. `1` heißt: ein `related_via`-Hop wird
+   * mitgenommen — der einzige live erprobte semantische Blick des Hook-Pfades
+   * und der Kontrollarm, den jede neue Sicht schlagen muss (§13.1, §22).
+   *
+   * Der Default ist deshalb `1` und nicht das Weglassen: Bisher kam der Hop
+   * dadurch zustande, dass der `/hook/recall`-Endpunkt ihn setzt, wenn der
+   * Aufrufer nichts sagt — kein Hook fragt ihn an. Absorbiert der Assembler
+   * diese Recalls, verschwände die Baseline stillschweigend, sobald niemand sie
+   * ausdrücklich anfordert. Genau das verbietet die Auflage.
+   *
+   * Der GET-Weg setzt ausdrücklich `0` und behält damit sein heutiges
+   * Verhalten: Der MCP-Forwarder fragt Hops ebenfalls nicht an (`expand_hops`
+   * 0 in mcp-forwarder.ts), und eine hooklose Oberfläche soll nicht plötzlich
+   * mehr bekommen, weil hier ein Default umgezogen ist.
+   */
+  expand_hops?: 0 | 1;
   /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
    *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
    *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
@@ -230,10 +247,13 @@ export async function assembleSessionSections(
   let sawUnfused = false;
   let sawRecall = false;
 
+  // C-046: Die Baseline gilt, solange der Aufrufer nichts anderes sagt.
+  const expandHops = opts.expand_hops ?? 1;
+
   const runRecall = async (query: string, scope: string, k: number): Promise<string[]> => {
     const result = (await recallFn(
       toolDeps,
-      { query, scope, k },
+      { query, scope, k, expand_hops: expandHops },
       {
         // #263: Dieser Endpunkt ist eine eigene Oberfläche.
         client: opts.client,

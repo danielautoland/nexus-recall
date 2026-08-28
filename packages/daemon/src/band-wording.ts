@@ -94,15 +94,34 @@ export interface BandedHits<H> {
   unbanded: H[];
 }
 
-export function bandHits<H extends { score: number }>(
+/**
+ * #265/C-046: Ein Treffer, der NUR über einen Graph-Hop erreicht wurde, wird
+ * nie `required`.
+ *
+ * Die Regel steht hier ausdrücklich, statt aus der Score-Skalierung zu folgen.
+ * Bisher hielt sie durch zwei Zufälle: Auf dem Hybridpfad deckelt die skalierte
+ * Rang-Summe einen Nachbarn bei rund 82, also unter dem Cut von 100; auf dem
+ * BM25-Fallback sind die Werte unbegrenzt, aber dort bandet `unfused` ohnehin
+ * gar nichts. Beide Zufälle können sich ändern — ein anderer Cut, eine andere
+ * Skalierung —, und dann wäre die Auflage still weg. Ein Nachbar muss die
+ * Evidenz auf eigener Stärke bestehen; dass ihn ein `related_via` erreichbar
+ * gemacht hat, ist keine.
+ *
+ * Greift nur, wo der Aufrufer den Hop überhaupt kennt: Die schlanke
+ * Hook-Projektion trägt ihn bewusst nicht (§13.1), also bandet die Lane wie
+ * bisher. Serverseitig — vor der Projektion, wo die Auflage laut C-046 gelten
+ * muss — liegt er an, und dort wirkt die Regel.
+ */
+export function bandHits<H extends { score: number; hop?: "direct" | "1-hop" }>(
   hits: H[],
   cut: number,
   unfused: boolean,
 ): BandedHits<H> {
   if (unfused) return { required: [], optional: [], unbanded: hits };
+  const isRequired = (h: H): boolean => h.score >= cut && h.hop !== "1-hop";
   return {
-    required: hits.filter((h) => h.score >= cut),
-    optional: hits.filter((h) => h.score < cut),
+    required: hits.filter(isRequired),
+    optional: hits.filter((h) => !isRequired(h)),
     unbanded: [],
   };
 }
