@@ -93,6 +93,9 @@ export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
 export { onMutationIncident, newOperationId, reportMutationIncident } from "./mutation-incident.js";
 export type { MutationIncident, MutationStatus } from "./mutation-incident.js";
 export { isWeakResult, isNoHome, hitTitleMatches } from "./weak-result.js";
+// #265: der Session-Assembler braucht dieselbe Abbruch-Semantik wie die Arme
+// des Recalls — abandon, nicht cancel (siehe deadline.ts).
+export { abandonAfter } from "./deadline.js";
 export {
   cueSidecarPath,
   cueSourceFingerprint,

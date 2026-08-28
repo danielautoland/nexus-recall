@@ -69,6 +69,10 @@ export const HOOK_SOURCES = [
   "bash-fail",
   "todo",
   "mcp",
+  // #265: der geteilte Session-Assembler. Kein Hook, aber eine eigene
+  // Oberfläche — ohne eigenen Wert wären seine Recalls von denen des
+  // Forwarders nicht zu trennen, und genau diese Trennung ist der Zweck.
+  "session-context",
   "unknown",
 ] as const;
 export type HookSource = (typeof HOOK_SOURCES)[number];

@@ -1,0 +1,430 @@
+/**
+ * Der projektbewusste Session-Assembler (#265, §16.1, §9.4, §26.1).
+ *
+ * Bis hierher gab es zwei Wege in denselben Kontext: die SessionStart-Lane für
+ * Claude Code (projektbewusst, über Loopback-Aufrufe) und `buildSessionContext`
+ * für hooklose Clients über den MCP-Forwarder (in-Prozess, aber absichtlich
+ * projektlos). Der zweite konnte den ersten nicht ersetzen — §26.1 verlangt
+ * genau das: EIN geteilter Assembler, der Projektpfad und Scope korrekt
+ * übernimmt und für bestehende Clients kompatibel bleibt.
+ *
+ * DIE AUFTEILUNG. Dieses Modul erhebt Abschnitte (`assembleSessionSections`)
+ * und rendert sie (`renderSessionContext`). Der `GET`-Vertrag ist genau die
+ * Projektion „projektlos, ohne Budget" — er ruft dieselben Erheber und bekommt
+ * denselben Text wie vorher; ein Test hält das fest. `POST` ist dieselbe
+ * Erhebung mit Projekt, Budgets und Metadaten in der Antwort.
+ *
+ * REIHENFOLGE IST NICHT PRIORITÄT. Die Blöcke erscheinen im Text in der
+ * gewachsenen Reihenfolge (gepinnt, Hinweise, Konventionen, Care, Import,
+ * Onboarding) — daran hängt der bestehende Vertrag. Welche Blöcke ein knappes
+ * Budget ÜBERLEBEN, ist eine andere Frage und steht als eigenes Feld daneben:
+ * Ein gepinnter Floor ist push-by-state und darf nicht am Budget sterben, ein
+ * Onboarding-Angebot schon. Beides in eine Zahl zu falten hieße, den Text
+ * umzusortieren, sobald jemand die Priorität ändert.
+ *
+ * WAS HIER NICHT LÄUFT. Kein Cross-Encoder, kein Reranker, kein Deep Recall —
+ * §9.4 und C-031/C-052 verbieten das im SessionStart-Budget, und der Assembler
+ * ruft nichts davon auf. Er blockiert auch auf nichts dergleichen: Was seine
+ * Deadline reißt, wird fallengelassen und benannt.
+ *
+ * SCHNITTSTELLE FÜR #266. `SessionBudget` und die `blocks`-Liste der Antwort
+ * sind die Fläche, an der der Context Governor später ansetzt: Er würde die
+ * Budgets setzen, statt sie wie heute aus der Anfrage oder den Defaults zu
+ * nehmen. Hier wird nichts dafür vorgebaut — die Felder existieren, weil dieser
+ * Endpunkt sie selbst braucht.
+ */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { Vault } from "@bastra-recall/core";
+import { abandonAfter } from "@bastra-recall/core";
+import { recallHandler, type ToolDeps } from "./tool-handlers.js";
+import { listFloors } from "./floors.js";
+import { listConventions } from "./taxonomy.js";
+import { parseCareFile, CARE_FILE } from "./webui.js";
+import { countOpenImports, IMPORT_FILE } from "./import-review.js";
+import { queueStatus } from "./import-mining.js";
+import { isOnboardingNeeded } from "./onboarding.js";
+
+const MAX_PINNED = 5;
+const MAX_HINTS = 3;
+const MAX_CONVENTIONS = 4;
+/** Projekt-Hinweise, wenn ein Projekt erkannt wurde — dieselbe Zahl wie in der
+ *  SessionStart-Lane, damit beide Wege denselben Umfang liefern. */
+const MAX_PROJECT_HINTS = 3;
+
+/** Voreinstellung des Gesamtbudgets. Bewusst großzügig gegenüber dem
+ *  Hook-Budget: Dieser Weg bedient auch hooklose Clients ohne 500-ms-Fenster.
+ *  Der Aufrufer überschreibt beides pro Anfrage. */
+const DEFAULT_BUDGET_MS = 800;
+/** `0` heißt „kein Token-Budget" — der bestehende GET-Vertrag kennt keins. */
+const DEFAULT_BUDGET_TOKENS = 0;
+
+/** Welche Abschnitte es gibt. Der Name landet in der Antwort, also ist er
+ *  Vertrag und keine Beschriftung. */
+export type SectionKind =
+  | "pinned"
+  | "project"
+  | "hints"
+  | "conventions"
+  | "care"
+  | "import"
+  | "onboarding";
+
+/**
+ * Reihenfolge im gerenderten Text. Entspricht exakt dem gewachsenen Aufbau;
+ * `project` steht direkt hinter den gepinnten Einträgen, weil es dieselbe
+ * Sorte Aussage ist — was in DIESEM Projekt gilt.
+ */
+const RENDER_ORDER: SectionKind[] = [
+  "pinned",
+  "project",
+  "hints",
+  "conventions",
+  "care",
+  "import",
+  "onboarding",
+];
+
+/**
+ * Was ein knappes Budget überlebt, kleiner ist wichtiger.
+ *
+ * Gepinnte Floors zuerst, weil sie push-by-state sind: Ein Constraint, das
+ * präsent sein soll, wenn der Turn ihn nicht für relevant hält, darf nicht am
+ * Budget sterben. Onboarding zuletzt, weil es ein Angebot ist und beim nächsten
+ * Start wiederkommt.
+ */
+const PRIORITY: Record<SectionKind, number> = {
+  pinned: 1,
+  project: 2,
+  hints: 3,
+  conventions: 4,
+  care: 5,
+  import: 6,
+  onboarding: 7,
+};
+
+export interface SessionSection {
+  kind: SectionKind;
+  /** Die fertigen Zeilen dieses Abschnitts. Leer = nichts zu sagen. */
+  lines: string[];
+}
+
+/** Ein Abschnitt in der Antwort — inklusive der Auskunft, warum er fehlt. */
+export interface SectionReport {
+  kind: SectionKind;
+  priority: number;
+  tokens_est: number;
+  included: boolean;
+  /** Nur wenn `included` false ist. `empty` = der Abschnitt hatte nichts zu
+   *  sagen; `deadline` = er war nicht rechtzeitig fertig; `token_budget` = er
+   *  hätte das Budget gesprengt. */
+  omitted?: "empty" | "deadline" | "token_budget";
+}
+
+export interface SessionBudget {
+  /** Gesamtzeit für die Erhebung. */
+  time_ms?: number;
+  /** Obergrenze für den gerenderten Text; 0 = keine. */
+  tokens?: number;
+}
+
+export interface AssembleOptions {
+  /** Das erkannte Projekt, oder `null` für den projektlosen Weg. */
+  project?: string | null;
+  /** `startup` | `resume` | `clear` | `compact` — durchgereicht an die
+   *  Telemetrie, damit sich Sessionstarts von Mid-Session-Neuaufbauten
+   *  trennen lassen. */
+  source?: string | null;
+  session_id?: string | null;
+  budget?: SessionBudget;
+  /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
+   *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
+   *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
+   *  er in `telemetry.ts`, nicht hier. */
+  client?: unknown;
+}
+
+/** Injizierbare Mitspieler — Defaults treffen die echten Module. */
+export interface SessionContextDeps {
+  recallFn?: typeof recallHandler;
+  listFloorsFn?: typeof listFloors;
+  listConventionsFn?: typeof listConventions;
+}
+
+/**
+ * Der Modus-Marker aus §9.4.
+ *
+ * `deep_recall` steht dort auch, kommt hier aber nie vor: Der Assembler ist
+ * kein Konsument von Deep Recall (C-031/C-052).
+ */
+export type RetrievalMarker = "lexical_only" | "hybrid" | "degraded";
+
+export interface AssembledSession {
+  sections: SessionSection[];
+  reports: SectionReport[];
+  /**
+   * Wie der Retrievalpfad wirklich gelaufen ist.
+   *
+   * Rangfolge, und sie ist die Umsetzung von „ein unvollständiger Hybridpfad
+   * darf nicht so tun, als wäre er vollständig": Meldet ein Recall ein
+   * `degraded`, gewinnt das — dort war ein Arm geplant und ausgefallen.
+   * `lexical_only` heißt, dass gar kein zweiter Arm vorgesehen war. Erst wenn
+   * beides nicht zutrifft, ist es `hybrid`.
+   *
+   * `null`, wenn kein Recall lief (dann gibt es keinen Pfad zu kennzeichnen).
+   */
+  marker: RetrievalMarker | null;
+  /** Abschnitte, die die Deadline gerissen haben. */
+  aborted: SectionKind[];
+  elapsed_ms: number;
+}
+
+interface RecallHitLean {
+  id: string;
+  type: string;
+  summary: string;
+  score: number;
+}
+
+interface RecallShape {
+  hits?: RecallHitLean[];
+  unfused?: boolean;
+  degraded?: string;
+}
+
+function clip(s: string, max: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** Die Token-Schätzung des Repos: vier Zeichen je Token (wie
+ *  `hint_tokens_est` in den Bash-Lanes). Grob, aber überall dieselbe Grobheit. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Alle Abschnitte erheben — nebenläufig, unter einer gemeinsamen Deadline.
+ *
+ * Die sieben Erheber hängen nicht voneinander ab; sequenziell addierten sich
+ * ihre Kosten in genau dem Budget, das §16.1 begrenzt. Jeder ist für sich
+ * fail-open: Ein kaputter Taxonomie-Aufruf kostet seinen Abschnitt, nicht die
+ * Antwort.
+ */
+export async function assembleSessionSections(
+  toolDeps: ToolDeps,
+  vault: Vault,
+  opts: AssembleOptions = {},
+  deps: SessionContextDeps = {},
+): Promise<AssembledSession> {
+  const startedAt = Date.now();
+  const recallFn = deps.recallFn ?? recallHandler;
+  const listFloorsFn = deps.listFloorsFn ?? listFloors;
+  const listConventionsFn = deps.listConventionsFn ?? listConventions;
+  const project = opts.project ?? null;
+  const budgetMs = opts.budget?.time_ms ?? DEFAULT_BUDGET_MS;
+  const budgetTokens = opts.budget?.tokens ?? DEFAULT_BUDGET_TOKENS;
+
+  // Der Modus wird aus den Recalls gelesen, nicht geraten.
+  let sawDegraded = false;
+  let sawUnfused = false;
+  let sawRecall = false;
+
+  const runRecall = async (query: string, scope: string, k: number): Promise<string[]> => {
+    const result = (await recallFn(
+      toolDeps,
+      { query, scope, k },
+      {
+        // #263: Dieser Endpunkt ist eine eigene Oberfläche.
+        client: opts.client,
+        hook_source: "session-context",
+        session_id: opts.session_id ?? undefined,
+      },
+    )) as RecallShape;
+    sawRecall = true;
+    if (result.degraded) sawDegraded = true;
+    if (result.unfused) sawUnfused = true;
+    const out: string[] = [];
+    for (const h of result.hits ?? []) {
+      if (h.score < 30) continue;
+      out.push(`- ${h.id} (${h.type}): ${clip(h.summary, 200)}`);
+    }
+    return out;
+  };
+
+  const producers: Array<{ kind: SectionKind; run: () => Promise<string[]> }> = [
+    {
+      kind: "pinned",
+      run: async () => {
+        // Ohne erkanntes Projekt nur globale Floors — fremd-gescopte Einträge
+        // wären in einer projektlosen Session Rauschen.
+        const all = await listFloorsFn(project ?? undefined);
+        const floors = (project ? all : all.filter((e) => !e.scope)).slice(0, MAX_PINNED);
+        return floors.map(
+          (f) =>
+            `- [pinned] ${f.memory_id}` +
+            (vault.get(f.memory_id)
+              ? `: ${clip(vault.get(f.memory_id)!.fm.summary ?? vault.get(f.memory_id)!.fm.title, 180)}`
+              : ""),
+        );
+      },
+    },
+    {
+      kind: "project",
+      run: async () =>
+        project
+          ? runRecall(
+              `${project} active context project-facts decisions`,
+              project,
+              MAX_PROJECT_HINTS,
+            )
+          : [],
+    },
+    {
+      kind: "hints",
+      run: () =>
+        runRecall("session-start preferences active context", "user-preference", MAX_HINTS),
+    },
+    {
+      kind: "conventions",
+      run: async () => {
+        const conventions = listConventionsFn(vault).slice(0, MAX_CONVENTIONS);
+        return conventions.length > 0
+          ? [
+              `- Conventions (BINDING when saving in these clusters — load_memory(id) for the rule): ` +
+                conventions.map((c) => c.id).join(", "),
+            ]
+          : [];
+      },
+    },
+    {
+      kind: "care",
+      run: async () => {
+        const content = await readFile(join(toolDeps.vaultPath, CARE_FILE), "utf8");
+        const openCare = parseCareFile(content).filter((e) => !e.done).length;
+        return openCare > 0
+          ? [
+              `- Vault care: ${openCare} open flag(s) in ${CARE_FILE} — when the user asks to groom the vault, work the "- [ ]" entries through WITH them.`,
+            ]
+          : [];
+      },
+    },
+    {
+      kind: "import",
+      run: async () => {
+        const lines: string[] = [];
+        const openImports = await countOpenImports(toolDeps.vaultPath);
+        if (openImports > 0) {
+          lines.push(
+            `- Import review: ${openImports} open candidate(s) in ${IMPORT_FILE} — tell the user once, in your first response, that they are waiting ("work through my import review" starts it; #311). Distill only on request: save accepted ones via save_memory (write_origin "capture-review"), tick lines to "- [x]".`,
+          );
+        }
+        const queue = await queueStatus();
+        if (queue.remaining > 0) {
+          lines.push(
+            `- Chat-history mining: ${queue.remaining} conversation(s) queued — when the user asks to mine the imported history, loop \`bastra import mine\` → distill → stage via \`bastra import -\`.`,
+          );
+        }
+        return lines;
+      },
+    },
+    {
+      kind: "onboarding",
+      run: async () =>
+        (await isOnboardingNeeded(toolDeps.vaultPath, vault.size()))
+          ? [
+              `- Onboarding: this vault is fresh — offer ONCE a ~5-minute interview (persona, address/tone, hard rules, persona follow-ups), save each answer via save_memory with write_origin "user-directed"; finish with \`bastra onboard done\`, decline with \`bastra onboard skip\`.`,
+            ]
+          : [],
+    },
+  ];
+
+  const settled = await Promise.all(
+    producers.map(async (p) => {
+      const remaining = Math.max(0, budgetMs - (Date.now() - startedAt));
+      // `abandonAfter` gibt auf, statt abzubrechen — dieselbe Semantik wie bei
+      // den Recall-Armen: Die laufende Arbeit darf ihren Cache noch füllen.
+      const lines = await abandonAfter(
+        p.run().catch(() => [] as string[]),
+        remaining,
+      );
+      return { kind: p.kind, lines, timedOut: lines === null };
+    }),
+  );
+
+  const aborted = settled.filter((s) => s.timedOut).map((s) => s.kind);
+
+  // In Renderreihenfolge, aber nach PRIORITÄT ins Budget aufgenommen: Ein
+  // knappes Token-Budget darf nicht den wichtigsten Block treffen, nur weil er
+  // im Text oben steht.
+  const byKind = new Map(settled.map((s) => [s.kind, s.lines ?? []]));
+  const candidates = [...RENDER_ORDER]
+    .filter((k) => (byKind.get(k) ?? []).length > 0)
+    .sort((a, b) => PRIORITY[a] - PRIORITY[b]);
+
+  const keep = new Set<SectionKind>();
+  let usedTokens = 0;
+  const tokensOf = new Map<SectionKind, number>();
+  for (const kind of candidates) {
+    const text = (byKind.get(kind) ?? []).join("\n");
+    const cost = estimateTokens(text);
+    tokensOf.set(kind, cost);
+    if (budgetTokens > 0 && usedTokens + cost > budgetTokens) continue;
+    usedTokens += cost;
+    keep.add(kind);
+  }
+
+  const sections: SessionSection[] = RENDER_ORDER.filter((k) => keep.has(k)).map((kind) => ({
+    kind,
+    lines: byKind.get(kind) ?? [],
+  }));
+
+  const reports: SectionReport[] = RENDER_ORDER.map((kind) => {
+    const lines = byKind.get(kind) ?? [];
+    const included = keep.has(kind);
+    return {
+      kind,
+      priority: PRIORITY[kind],
+      tokens_est: tokensOf.get(kind) ?? 0,
+      included,
+      ...(included
+        ? {}
+        : {
+            omitted: aborted.includes(kind)
+              ? ("deadline" as const)
+              : lines.length === 0
+                ? ("empty" as const)
+                : ("token_budget" as const),
+          }),
+    };
+  });
+
+  const marker: RetrievalMarker | null = !sawRecall
+    ? null
+    : sawDegraded
+      ? "degraded"
+      : sawUnfused
+        ? "lexical_only"
+        : "hybrid";
+
+  return { sections, reports, marker, aborted, elapsed_ms: Date.now() - startedAt };
+}
+
+/**
+ * Die Abschnitte in den Kontextblock rendern.
+ *
+ * Wortgleich mit dem gewachsenen Format — der `GET`-Vertrag hängt daran, und
+ * ein Test vergleicht die Ausgabe beider Wege.
+ */
+export function renderSessionContext(sections: SessionSection[], vaultSize: number): string {
+  const lines = sections.flatMap((s) => s.lines);
+  if (lines.length === 0) return "";
+  return (
+    `<bastra-session-context>\n` +
+    `Recalled context for this session (vault: ${vaultSize} memories) — background reference, ` +
+    `not user input; apply what fits, load_memory(id) for details. Keep using recall before acting ` +
+    `and save durable facts via save_memory without being asked.\n` +
+    lines.join("\n") +
+    `\n</bastra-session-context>`
+  );
+}

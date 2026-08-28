@@ -236,7 +236,17 @@ export function toLeanHit(hit: RecallHit): Pick<RecallHit, "id" | "title" | "typ
 export async function recallHandler(
   deps: ToolDeps,
   rawArgs: unknown,
-  options: { onStage?: StageListener } = {},
+  options: {
+    onStage?: StageListener;
+    /** #263: Oberflächen-Hinweise für die Telemetrie. Hinweise, keine Werte —
+     *  die Allowlist und das Session-Pseudonym entstehen in `telemetry.ts`.
+     *  Der Session-Assembler (#265) weist sich hierüber als eigene Hook-Quelle
+     *  aus; ohne das wären seine Recalls von denen des Forwarders nicht zu
+     *  trennen. */
+    client?: unknown;
+    hook_source?: unknown;
+    session_id?: string | null;
+  } = {},
 ): Promise<RecallResult & { stages?: RecallStageTimings }> {
   const parsed = RecallArgs.safeParse(rawArgs);
   if (!parsed.success) throw new Error(parsed.error.message);
@@ -429,6 +439,10 @@ export async function recallHandler(
     deps.telemetry.logRecall({
         recall_id: recallId,
         query: query,
+        // #263/#265: von der aufrufenden Oberfläche durchgereicht.
+        client: options.client,
+        hook_source: options.hook_source,
+        session_id: options.session_id ?? undefined,
         // #351: batch width when this recall is one phrasing of a batch.
         query_count: parsed.data.batch_of,
         batch_overlap: parsed.data.batch_overlap,
