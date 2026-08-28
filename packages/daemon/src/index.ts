@@ -32,16 +32,13 @@ import {
   type EmbeddingProvider,
   type RecallStage,
   type StageListener,
-  onIdScan,
-  onMutationIncident,
-  reportMutationIncident,
 } from "@bastra-recall/core";
 import * as path from "node:path";
 import { Telemetry, logDirFor } from "./telemetry.js";
 import { startHttpServer } from "./http.js";
 import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
-import { reportOpenRecoveryEntries, describeOpenEntry } from "./recovery-journal.js";
+import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
 import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel } from "./settings.js";
@@ -222,58 +219,10 @@ async function main(): Promise<void> {
     },
   });
 
-  // Der Preis der ID-Transaktion, dauerhaft gemessen (Codex-Gegenreview): Jeder
-  // besitzverändernde Writer scannt den Vault. Lokal ist das zweistellig in
-  // Millisekunden, auf einem Cloud-Mount eine offene Frage — und der Preis
-  // hängt an der Gesamtzahl ALLER Markdown-Dateien, nicht an der Zahl der
-  // indexierten Memories. Ohne Messung fällt eine Regression erst auf, wenn
-  // ein Save Sekunden dauert.
-  const vaultIsCloudMount = /(CloudStorage|Dropbox|iCloud)/i.test(VAULT_PATH!);
-  onIdScan((o) => {
-    void telemetry.logIdScan({
-      id: o.id,
-      op: o.op,
-      ms: o.ms,
-      files: o.files,
-      bytes: o.bytes,
-      dirs: o.dirs,
-      blind_spots: o.blindSpots,
-      cloud_mount: vaultIsCloudMount,
-    });
-  });
-
-  // #377: Mutations-Incidents aus core. Dieselbe Bauform wie `onIdScan` oben —
-  // core meldet, der Daemon entscheidet allein, ob geschrieben wird. Ein Vault
-  // ohne Daemon (CLI, Tests) meldet ins Leere, und das kostet nichts.
-  onMutationIncident((i) => {
-    void telemetry.logMutationIncident({
-      operation_id: i.operation_id,
-      op: i.op,
-      status: i.status,
-      phase: i.phase,
-      memory_id: i.memory_id ?? null,
-      rollback: i.rollback ?? null,
-      detail: i.detail ?? null,
-    });
-  });
-
-  // #378: Offene Recovery-Journal-Einträge. Ein Dokument sind zwei Dateien;
-  // der verifizierte Rollback zwischen ihnen läuft nur, solange der Prozess
-  // lebt. Was hier auftaucht, ist eine Operation, die angefangen und nie
-  // quittiert wurde — also ein möglicher Halbzustand. Benannt, NICHT repariert:
-  // Die Pfade gehen auf stderr (lokal), ins Telemetrie-Event nur op und id.
-  try {
-    await reportOpenRecoveryEntries(VAULT_PATH!, (incident, entry) => {
-      console.error(`[bastra-recall] recovery journal: ${describeOpenEntry(entry)}`);
-      // Über denselben Kanal wie jeder andere Incident (#377) — die Abbildung
-      // auf das Telemetrie-Event steht dort oben genau einmal.
-      reportMutationIncident(incident);
-    });
-  } catch (err) {
-    console.error(
-      `[bastra-recall] recovery journal: could not be read (${(err as Error).message})`,
-    );
-  }
+  // Die Meldekanäle aus core (ID-Scan-Kosten, Mutations-Incidents) und die
+  // Start-Detection des Recovery-Journals — wer zuhört, steht in
+  // boot-observers.ts.
+  await wireBootObservers({ telemetry, vaultPath: VAULT_PATH! });
 
   // Curator-Demotions (#155) überleben Daemon-Restarts: Score-Set aus dem
   // State-File beim Boot in den Index laden. Best-effort.
