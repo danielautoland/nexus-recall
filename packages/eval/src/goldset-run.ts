@@ -39,6 +39,7 @@ import {
   SearchIndex,
   Vault,
   isWeakResult,
+  hitTitleMatches,
   type RecallHit,
 } from "@bastra-recall/core";
 import type { GoldCase } from "./goldset.js";
@@ -51,6 +52,41 @@ const SCORE_FLOOR = 30;
 const BACKFILL_TIMEOUT_MS = 15 * 60 * 1000;
 
 type Recaller = (query: string) => Promise<RecallHit[]>;
+
+/**
+ * What the best-anchored served hit anchors ON.
+ *
+ * `weak_result` reports THAT nothing anchored; this reports WHAT anchored, and
+ * the two are the same measurement from opposite ends: on the hybrid path with
+ * a non-empty pool, `anchor === "none"` is exactly `weak_result === true`. The
+ * baseline run measured 0/372 weak results on answerable cases and could not
+ * say why — nothing recorded which of the two anchors was carrying them.
+ */
+export type AnchorSource = "recall_when" | "title" | "both" | "none";
+
+/**
+ * Walk the served list from the top and report the anchors of the FIRST hit
+ * that anchors at all — the best-anchored hit, since the list is ranked.
+ *
+ * Uses `hitTitleMatches` from core, the same building block `isWeakResult` uses;
+ * a second title-matching rule here would drift from the one that ships and the
+ * two answers would stop being about the same predicate.
+ *
+ * An empty pool yields `"none"` while `isWeakResult` yields false — it reports
+ * "answered with noise", and nothing served is not that. The distinction is
+ * academic on this set (0 of 432 cases abstained) but the field must not claim
+ * otherwise.
+ */
+function anchorOf(hits: RecallHit[]): AnchorSource {
+  for (const h of hits) {
+    const byRecallWhen = h.matched_recall_when === true;
+    const byTitle = hitTitleMatches(h);
+    if (byRecallWhen && byTitle) return "both";
+    if (byRecallWhen) return "recall_when";
+    if (byTitle) return "title";
+  }
+  return "none";
+}
 
 export interface CaseResult {
   id: string;
@@ -84,6 +120,13 @@ export interface CaseResult {
    * second implementation here would be the drift its docstring warns about.
    */
   weak_result: boolean;
+  /**
+   * Which anchor carried the best-anchored served hit. Turns "weak_result never
+   * fires on answerable cases" from an interpretation into a measurement: the
+   * distribution over `recall_when` / `title` / `both` says what is holding the
+   * anchor, and `none` is the weak result itself.
+   */
+  anchor: AnchorSource;
   /** Gold ids the vault no longer holds. A gate failure, never a miss. */
   unknown_ids: string[];
   /**
@@ -260,6 +303,7 @@ async function scoreCases(
       // On the SERVED pool, like the daemon: `above` is what clears the floor,
       // and `abstained` is measured on the same list two lines up.
       weak_result: isWeakResult(above, hybridActive),
+      anchor: anchorOf(above),
       unknown_ids: unknown,
       top_mode: above[0]?.mode ?? "(none)",
     });
