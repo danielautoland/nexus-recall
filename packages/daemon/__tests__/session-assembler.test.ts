@@ -407,6 +407,87 @@ test("der Assembler meldet sich als eigene hook_source, und die steht auf der Al
   });
 });
 
+/**
+ * #429: Dieselbe Zusage auf der ANDEREN Pipeline.
+ *
+ * Der Test oben prüft den GET-Zweig (`recallHandler`), der die Dimensionen als
+ * Optionen bekommt. Die produktive SessionStart-Lane fährt seit #265 den
+ * POST-Weg über `runHookRecall`, und der liest `client`/`hook_source` aus dem
+ * BODY — stand dort nichts, landete jedes Ereignis dieser Lane als
+ * `unknown/unknown`, ausgerechnet die Oberfläche, für die #263 die Splits
+ * gebaut hat. Geprüft wird an der Telemetrie und nicht am Aufruf: die Body-
+ * Felder sind nur der Weg, die Ereignisspalten sind die Zusage.
+ */
+test("auch über die Hook-Pipeline tragen Recall UND Entscheid ihre Dimensionen", async () => {
+  const { Vault, SearchIndex } = await import("@bastra-recall/core");
+  const { writeFile } = await import("node:fs/promises");
+
+  const dir = await mkdtemp(join(tmpdir(), "bastra-sc-dims-"));
+  await writeFile(
+    join(dir, "a.md"),
+    [
+      "---", "id: a", "title: session fact", "type: reference", "summary: session fact",
+      "topic_path:", "  - test", "tags:", "  - test", "scope: user-preference",
+      "recall_when:", "  - session-start preferences active context",
+      "created: 2026-01-01", "updated: 2026-01-01", "---", "", "Body.", "",
+    ].join("\n"),
+    "utf8",
+  );
+  const vault = new Vault(dir);
+  await vault.init();
+  const search = new SearchIndex(vault);
+  search.start();
+
+  // Nur die Ereignisse zählen, also reicht ein Telemetrie-Doppel, das sie
+  // mitschreibt — ein echter Sink würde hier nur Dateien anlegen.
+  const recallEvents: Array<Record<string, unknown>> = [];
+  const decisionEvents: Array<Record<string, unknown>> = [];
+  let n = 0;
+  const telemetry = {
+    rotateTurn: () => {},
+    newRecallId: () => `r-${++n}`,
+    recordHookHints: () => {},
+    matchLoadedMemories: () => [],
+    logRecallEpisode: async () => {},
+    logHookRecall: async (e: Record<string, unknown>) => {
+      recallEvents.push(e);
+    },
+    logEvidenceDecision: async (e: Record<string, unknown>) => {
+      decisionEvents.push(e);
+    },
+  } as never;
+
+  try {
+    await assembleSessionSections(
+      { vault, search, telemetry, vaultPath: dir } as unknown as ToolDeps,
+      vault as never,
+      {
+        client: "claude-code",
+        session_id: "s-429",
+        hookRecall: { vault, search, telemetry },
+      } as never,
+      { listFloorsFn: noFloors, listConventionsFn: noConventions },
+    );
+    // `fireAndForget` heißt: das Ereignis geht nach dem Recall raus, nicht in ihm.
+    await new Promise((r) => setTimeout(r, 50));
+
+    assert.ok(recallEvents.length > 0, "die Lane hat überhaupt Recalls gefahren");
+    for (const e of recallEvents) {
+      assert.equal(e.hook_source, "session-context");
+      assert.equal(e.client, "claude-code");
+    }
+    assert.ok(decisionEvents.length > 0, "und der Entscheid lief mit");
+    for (const e of decisionEvents) {
+      assert.equal(e.hook_source, "session-context");
+      assert.equal(e.client, "claude-code");
+    }
+  } finally {
+    search.stop();
+    await vault.stop?.();
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
 // ── Die Route: GET bleibt, POST kommt dazu ──────────────────────
 
 /**

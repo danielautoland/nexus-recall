@@ -330,7 +330,21 @@ export async function assembleSessionSections(
       // Die Pipeline, die auch `/hook/recall` fährt: Scope-Filter, Reflex-Hits,
       // Router-Schatten. `t0` ist der Startpunkt dieser Erhebung.
       result = (await runHookRecall(
-        { query, scope, k, expand_hops: expandHops, session_id: opts.session_id ?? undefined },
+        {
+          query,
+          scope,
+          k,
+          expand_hops: expandHops,
+          session_id: opts.session_id ?? undefined,
+          // #429: Die Dimensionen gehören AUCH auf diesen Weg. `runHookRecall`
+          // liest `client` und `hook_source` aus dem Body und schreibt sie an
+          // `hook_recall` UND `evidence_decision`; fehlen sie, landet die
+          // produktive POST-Lane als `unknown/unknown` und die Splits aus #263
+          // trennen ausgerechnet sie nicht. Gleiche Werte wie im GET-Zweig
+          // unten — es ist dieselbe Oberfläche, nur die andere Pipeline.
+          client: opts.client,
+          hook_source: "session-context",
+        },
         query,
         startedAt,
         opts.hookRecall,
