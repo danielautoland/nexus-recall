@@ -52,7 +52,7 @@ import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from ".
 import { reportHinted } from "./hook-hinted.js";
 import {
   fetchFloors, fetchOnboardingNeeded, fetchOpenCounts, fetchTaxonomy, postRecall, probeHealth,
-  type ConventionLean, type RecallHit, type RecallResponse,
+  type ConventionLean, type OpenCounts, type RecallHit, type RecallResponse,
 } from "./session-hook-http.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
@@ -98,30 +98,58 @@ export async function runSessionLane(
   let errMsg: string | null = null;
   const responses: Array<{ scope: string; resp: RecallResponse | null }> = [];
 
-  for (const q of queries) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    try {
-      const resp = await postRecall(
-        url,
-        { query: q.query, scope: q.scope, k: q.k, project, source: payload.source ?? null },
-        remainingMs,
-      );
-      responses.push({ scope: q.scope, resp });
-    } catch (err) {
-      const e = err as NodeJS.ErrnoException;
-      if (e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH") {
-        status = "daemon-unreachable";
-        responses.push({ scope: q.scope, resp: null });
-        break; // no point hammering
+  // #265: Die zwei bis drei Recalls sind voneinander unabhängig — sie laufen
+  // nebeneinander statt hintereinander. Ihre Reihenfolge in `responses` bleibt
+  // die der `queries`, weil `mergeSessionHits` sie als Priorität liest;
+  // `Promise.all` erhält die Reihenfolge, unabhängig davon, wer zuerst
+  // antwortet.
+  //
+  // Der frühere `break` bei einem unerreichbaren Daemon entfällt damit: Alle
+  // Anfragen sind bereits unterwegs, wenn die erste ECONNREFUSED meldet. Das
+  // kostet zwei zusätzliche Verbindungsversuche gegen einen lokalen Port, der
+  // sofort ablehnt — und spart im Normalfall zwei volle Round Trips.
+  const settled = await Promise.all(
+    queries.map(async (q) => {
+      const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
+      try {
+        return {
+          scope: q.scope,
+          resp: await postRecall(
+            url,
+            { query: q.query, scope: q.scope, k: q.k, project, source: payload.source ?? null },
+            remainingMs,
+          ),
+          err: null as NodeJS.ErrnoException | null,
+        };
+      } catch (err) {
+        return { scope: q.scope, resp: null, err: err as NodeJS.ErrnoException };
       }
-      if (e.message === "timeout") {
-        status = "timeout";
-      } else {
-        status = "error";
-        errMsg = e.message ?? String(err);
-      }
-      responses.push({ scope: q.scope, resp: null });
-    }
+    }),
+  );
+  for (const r of settled) responses.push({ scope: r.scope, resp: r.resp });
+
+  // Der Status folgt jetzt einer festen Rangfolge statt „wer zuletzt
+  // fehlschlug". Sequenziell war das egal; nebenläufig wäre es sonst vom
+  // Antwortzeitpunkt abhängig und damit von Lauf zu Lauf verschieden.
+  // Unerreichbar schlägt Timeout schlägt Fehler: Der erste Fall beschreibt den
+  // Daemon, die anderen beiden nur einen Aufruf.
+  const errors = settled.map((r) => r.err).filter((e): e is NodeJS.ErrnoException => e !== null);
+  const unreachable = errors.find(
+    (e) => e.code === "ECONNREFUSED" || e.code === "ENOTFOUND" || e.code === "EHOSTUNREACH",
+  );
+  const timedOut = errors.find((e) => e.message === "timeout");
+  const other = errors.find(
+    (e) =>
+      e.message !== "timeout" &&
+      e.code !== "ECONNREFUSED" &&
+      e.code !== "ENOTFOUND" &&
+      e.code !== "EHOSTUNREACH",
+  );
+  if (unreachable) status = "daemon-unreachable";
+  else if (timedOut) status = "timeout";
+  else if (other) {
+    status = "error";
+    errMsg = other.message ?? String(other);
   }
 
   // P0: Der Score-Modus gilt für den GANZEN Block, und zwar fail-closed —
@@ -131,6 +159,39 @@ export async function runSessionLane(
   // score ≥100", obwohl genau ein Pfad lief.
   const unfused = responses.some((r) => r.resp !== null && isUnfused(r.resp));
   const merged = mergeSessionHits(responses, unfused, SCORE_FLOOR);
+
+  // #265: Die sechs Seitenabrufe hängen an keiner Recall-AUSGABE — nur daran,
+  // DASS der Daemon antwortet. Sequenziell summierten sich ihre Budgets auf bis
+  // zu 150+150+150+150+150+200 ms; nebeneinander zählt der langsamste.
+  //
+  // Jeder Abruf bekommt seinen eigenen Fallback statt eines gemeinsamen
+  // try/catch: Ein fehlgeschlagener Taxonomie-Abruf darf den Floors-Block nicht
+  // mitreißen. Dieselbe fail-open-Disziplin wie vorher, nur pro Teil statt pro
+  // Kette.
+  const reachable = responses.some((r) => r.resp !== null);
+  const sideBudget = (): number =>
+    Math.min(150, Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt)));
+  const probeBudget = Math.min(200, Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt)));
+  const orElse = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
+  const noCounts: OpenCounts = { open: 0, queued: 0 };
+  const [floorsFetched, conventionsFetched, careCounts, importCounts, onboardingNeeded, health] =
+    reachable
+      ? await Promise.all([
+          orElse(fetchFloors(url, project, sideBudget()), [] as PinnedFloorLean[]),
+          orElse(fetchTaxonomy(url, sideBudget()), [] as ConventionLean[]),
+          orElse(fetchOpenCounts(url, sideBudget()), noCounts),
+          orElse(fetchOpenCounts(url, sideBudget(), "/hook/import"), noCounts),
+          orElse(fetchOnboardingNeeded(url, sideBudget()), false),
+          orElse(probeHealth(url, probeBudget), null),
+        ])
+      : [
+          [] as PinnedFloorLean[],
+          [] as ConventionLean[],
+          noCounts,
+          noCounts,
+          false,
+          null,
+        ];
 
   // Floor-Registry (#141/#142): gepinnte Memories — push-by-state, bewusst
   // NICHT score-gated (gleiches Muster wie der Taxonomie-Block: dedizierter
@@ -142,34 +203,25 @@ export async function runSessionLane(
   // werden. Der einzige Dedup läuft in die GEGENrichtung: dropPinnedFromRanked
   // entfernt ranked-Duplikate, damit die Hint-Liste kein Budget doppelt auf
   // bereits garantierte Einträge ausgibt.
-  let pinned: PinnedFloorLean[] = [];
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    pinned = await fetchFloors(url, project, Math.min(150, remainingMs));
-    // Ohne erkanntes Projekt injizieren nur globale (unscoped) Floors —
-    // fremd-gescopte Einträge wären in einer projektlosen Session Rauschen.
-    if (!project) pinned = pinned.filter((e) => !e.scope);
-  }
+  let pinned: PinnedFloorLean[] = floorsFetched;
+  // Ohne erkanntes Projekt injizieren nur globale (unscoped) Floors —
+  // fremd-gescopte Einträge wären in einer projektlosen Session Rauschen.
+  if (!project) pinned = pinned.filter((e) => !e.scope);
   const pinnedBlock = formatPinnedBlock(pinned);
   const top = dropPinnedFromRanked(merged, pinned).slice(0, TOTAL_HINTS_CAP);
 
   // Taxonomie-Konventionen (#66): bindende, selbst-gelernte Struktur-Regeln
   // des Vaults. Dedizierter Listen-Endpoint statt Recall-Suche — Konventionen
   // konkurrieren nicht über Scores und dürfen nicht am Floor sterben.
-  let conventions: ConventionLean[] = [];
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    conventions = await fetchTaxonomy(url, Math.min(150, remainingMs));
-  }
+  const conventions: ConventionLean[] = conventionsFetched;
   const taxonomyBlock = formatTaxonomyBlock(conventions);
 
   // Vault-care (#207): open flags from the vault map. Injected as a standing
   // instruction so no user ever has to EXPLAIN the workflow to their agent —
   // the system carries it.
   let careBlock = "";
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    const openCare = (await fetchOpenCounts(url, Math.min(150, remainingMs))).open;
+  {
+    const openCare = careCounts.open;
     if (openCare > 0) {
       careBlock =
         `\n<vault-care>\n` +
@@ -189,9 +241,8 @@ export async function runSessionLane(
   // mining. Standing instruction — the user never has to explain either
   // workflow to their agent.
   let importBlock = "";
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    const imports = await fetchOpenCounts(url, Math.min(150, remainingMs), "/hook/import");
+  {
+    const imports = importCounts;
     const parts: string[] = [];
     if (imports.open > 0) {
       parts.push(
@@ -233,9 +284,8 @@ export async function runSessionLane(
   // standing offer to seed itself — the session model interviews adaptively,
   // which no form can. Offered, never pushed.
   let onboardingBlock = "";
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(60, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    if (await fetchOnboardingNeeded(url, Math.min(150, remainingMs))) {
+  {
+    if (onboardingNeeded) {
       onboardingBlock =
         `\n<vault-onboarding>\n` +
         `This vault is fresh and the onboarding interview hasn't run. Offer it ONCE at a natural ` +
@@ -279,11 +329,8 @@ export async function runSessionLane(
   // never happened. A refusal is therefore recorded on disk and read back here
   // BEFORE anything is announced or spawned again.
   let updateBlock = "";
-  if (responses.some((r) => r.resp !== null)) {
-    const remainingMs = Math.max(80, HOOK_TIMEOUT_MS - (Date.now() - startedAt));
-    const probeBudget = Math.min(200, remainingMs);
+  {
     try {
-      const health = await probeHealth(url, probeBudget);
       if (health?.update_available) {
         const u = health.update_available;
         const mode = await effectiveUpdateMode();
