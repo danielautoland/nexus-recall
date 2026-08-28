@@ -9,6 +9,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   checkCueRegistration,
   checkForeignFigures,
@@ -84,28 +86,47 @@ test("the real registry is mostly unrankable, and that is the finding", () => {
   assert.ok(blocked / pairs > 0.9, `expected nearly every pair blocked, got ${blocked}/${pairs}`);
 });
 
-test("the committed cue registration satisfies the M0 gate and is honest about its stage", () => {
+test("the committed cue registration carries the numbers and clears an M2 run", () => {
   const reg = loadCueRegistration();
   // Design A on descriptive/item with a selection/holdout split — the
-  // product-owner decisions of 2026-07-26. The numbers still wait on the M0
-  // baseline (§18.1), which is what the stage says.
-  assert.equal(reg.status, "structure_registered");
+  // product-owner decisions of 2026-07-26. The numbers followed on 2026-08-28,
+  // once the M0 baseline had shown the spread of the metric (§18.1).
+  assert.equal(reg.status, "numbers_registered");
   assert.equal(reg.design, "A");
 
   const a = (reg.admissible_designs as Record<string, Record<string, unknown>>).A;
   assert.deepEqual(a.fixed_cue_configuration, { descriptive_associative: "descriptive", item_scene: "item" });
-  assert.equal((a.contamination_guard as Record<string, unknown>).mode, "selection_holdout_split");
+  const guard = a.contamination_guard as Record<string, unknown>;
+  assert.equal(guard.mode, "selection_holdout_split");
+  assert.equal((guard.selection_share as number) + (guard.holdout_share as number), 1);
+  assert.deepEqual(guard.stratify_by, ["origin_type", "lang"]);
 
-  // M0's gate condition is met at this stage.
+  // Both gates pass now: the structure for M0, the numbers for M2.
   assert.deepEqual(checkCueRegistration("structure_registered", reg), []);
-  // An M2 run is not — the numbers and the split shares are still missing.
-  assert.ok(checkCueRegistration("numbers_registered", reg).length > 0);
+  assert.deepEqual(checkCueRegistration("numbers_registered", reg), []);
 
-  // The parts that do NOT depend on the baseline are registered now, because
-  // the point of pre-registration is that they are not chosen after the data.
+  // Design A is sized per condition and paired, so the holdout is the case
+  // count for BOTH conditions rather than twice that.
+  assert.equal(a.min_n_per_condition, 255);
+  assert.equal(a.interaction_evaluated, false);
+
+  // Every number has to be traceable to the run it came from — a registration
+  // whose figures cannot be tied to an artifact cannot be checked later.
+  const from = reg.numbers_derived_from as Record<string, unknown>;
+  assert.match(String(from.run_artifact), /eval-runs/);
+  assert.ok(String(from.git).length >= 40, "the measured commit is part of the record");
+
+  // The parts that never depended on the baseline stay as they were.
   const fallback = reg.underpowered_fallback as Record<string, string>;
   assert.match(fallback.main_effect_missed, /not evaluable/);
   assert.match(fallback.interaction_missed, /explorative/);
+
+  // The associative axis is the open blocker, and the file says so rather than
+  // claiming the gold set is ready.
+  const gold = reg.gold_set_requirement as Record<string, unknown>;
+  assert.equal(gold.satisfied, false);
+  const targets = gold.authoring_targets as Record<string, Record<string, number>>;
+  assert.equal(targets.associative.minimum, 150);
 });
 
 test("a design that contradicts §18.3 is rejected even when fully filled in", () => {
@@ -173,7 +194,8 @@ test("a named split is not a registered split until it is quantified", () => {
         condition_count: 2,
         interaction_evaluated: false,
         fixed_cue_configuration: { descriptive_associative: "descriptive", item_scene: "item" },
-        contamination_guard: { mode: "selection_holdout_split", ...guard },
+        min_n_per_condition: 255,
+        contamination_guard: { mode: "selection_holdout_split", stratify_by: ["origin_type"], ...guard },
       },
     },
     power_assumption: { main_effects: { min_n: 120 }, interaction: { min_n: 480 } },
@@ -199,4 +221,81 @@ test("a named split is not a registered split until it is quantified", () => {
     checkCueRegistration("numbers_registered", withSplit({ selection_share: 0.3, holdout_share: 0.7, split_seed: 20260726 })),
     [],
   );
+
+  // A seed alone only makes an unbalanced split reproducible. Recall@3 per gold
+  // file ranged 31.3%–84.9% in the M0 baseline, so an unstratified draw can move
+  // the comparison baseline further than the effect under test.
+  const unstratified = checkCueRegistration(
+    "numbers_registered",
+    withSplit({ selection_share: 0.3, holdout_share: 0.7, split_seed: 20260726, stratify_by: [] }),
+  ).map((i) => i.problem).join(" | ");
+  assert.match(unstratified, /what it stratifies by/);
+});
+
+test("the chosen design carries its own N — the power assumption is a different experiment", () => {
+  // §18.1 asks for the per-condition/per-cell N in addition to the cue-axis
+  // power assumption. Without this a registration reaches `numbers_registered`
+  // while the one number the run is actually sized on is still open.
+  const withoutPerCondition = {
+    status: "numbers_registered",
+    design: "A",
+    admissible_designs: {
+      A: {
+        condition_count: 2,
+        interaction_evaluated: false,
+        fixed_cue_configuration: { descriptive_associative: "descriptive", item_scene: "item" },
+        contamination_guard: {
+          mode: "selection_holdout_split",
+          selection_share: 0.3,
+          holdout_share: 0.7,
+          split_seed: 20260828,
+          stratify_by: ["origin_type", "lang"],
+        },
+      },
+    },
+    power_assumption: { main_effects: { min_n: 213 }, interaction: { min_n: 852 } },
+    evaluation_rule: "paired McNemar on the holdout",
+  };
+  assert.match(
+    checkCueRegistration("numbers_registered", withoutPerCondition).map((i) => i.problem).join(" | "),
+    /min_n_per_condition is required/,
+    "a full power assumption does not size design A",
+  );
+
+  // Design B is sized per cell instead, and only its own field is demanded.
+  const designB = {
+    ...withoutPerCondition,
+    design: "B",
+    admissible_designs: { B: { cell_count: 8, min_n_per_cell: 852 } },
+  };
+  assert.deepEqual(checkCueRegistration("numbers_registered", designB), []);
+});
+
+test("the M1 tolerances are versioned, derived, and above their own noise band", () => {
+  const tol = JSON.parse(
+    readFileSync(join(import.meta.dirname, "..", "registrations", "m1-tolerances.json"), "utf8"),
+  ) as Record<string, Record<string, unknown>>;
+
+  // §26.1 makes the numeric M1 tolerances a release condition, and §18.1 puts
+  // them after the baseline. A tolerance without a traceable run is a guess.
+  assert.match(String(tol.derived_from.run_artifact), /eval-runs/);
+  assert.ok(String(tol.derived_from.git).length >= 40);
+
+  const rl = tol.relevant_loss as Record<string, unknown>;
+  const measured = rl.measured as { value: number; wilson_95_ci: [number, number] };
+  // The whole point of the derivation: a tolerance inside the confidence
+  // interval fires on a clean re-run that changed nothing.
+  assert.ok(
+    (rl.tolerance as number) > measured.wilson_95_ci[1],
+    "the tolerance must sit above the upper bound of the measured interval",
+  );
+  assert.ok(measured.value > measured.wilson_95_ci[0] && measured.value < measured.wilson_95_ci[1]);
+  assert.deepEqual(rl.report_separately, ["origin_type"]);
+
+  // False abstention carries NO number on purpose — the score floor cannot fire
+  // on the hybrid path, so any tolerance would pass unconditionally.
+  const fa = tol.false_abstention as Record<string, unknown>;
+  assert.equal(fa.tolerance, null);
+  assert.equal(fa.status, "not_registrable_on_the_current_mechanism");
+  assert.match(String((fa.registered_follow_up as Record<string, string>).mechanism), /weak_result/);
 });

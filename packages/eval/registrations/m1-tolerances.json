@@ -1,0 +1,50 @@
+{
+  "$comment": "The numeric M1 tolerances (§18.1, §18.2, §26.1). §18.1 puts them AFTER the M0 baseline run — an effect size or a tolerance picked before the baseline shows the spread of the metric is a guess with a number attached. §26.1 makes them a V1.0 release condition: 'die numerischen M1-Toleranzen nach dem M0-Baseline-Run versioniert festgeschrieben sind'. Changing a value here means bumping registration_version and saying which version a report belongs to.",
+  "schema_version": 1,
+  "registration_version": 1,
+  "registered_at": "2026-08-28",
+  "registered_by": "Daniel Nevoigt",
+
+  "derived_from": {
+    "run_artifact": "~/.bastra/eval-runs/2026-08-28-5653e6987eac",
+    "arm": "Hybrid (BM25 + Vector RRF) · ollama-embeddinggemma",
+    "git": "53b42a344ff65f7fe0cdb0c8e00d765059d7ee3d",
+    "denominator": "the 432-case main denominator of the §19 gold set — 372 answerable, 60 no-answer; the 16 probe cases are excluded (probe_group)",
+    "$comment": "One run, one arm. A tolerance derived here does not transfer to a different vault, a different embedding model or the BM25-only arm without being re-derived."
+  },
+
+  "relevant_loss": {
+    "tolerance": 0.23,
+    "comparator": "<=",
+    "unit": "share of answerable cases whose expected_ids never appear in the production pool (k=10)",
+    "denominator": "answerable cases in the main denominator, probes excluded",
+    "measured": { "value": 0.1855, "count": "69/372", "wilson_95_ci": [0.149, 0.228] },
+    "$comment_derivation": "Measured 18.5%. The upper bound of the Wilson 95% interval is 22.8%, so any tolerance below that would fire on measurement noise alone — a clean re-run with no code change would breach it often enough to make the gate untrustworthy. 0.23 is the next round figure above the interval and marks exactly the line 'outside the noise band of the baseline'.",
+    "$comment_stricter": "0.20 sits INSIDE the confidence interval and would fail runs that changed nothing.",
+    "$comment_looser": "0.30 would let a real regression of more than 10pp pass — more than the entire distance between the hybrid arm and BM25-only on this set (3.2pp at Recall@3).",
+    "report_separately": ["origin_type"],
+    "$comment_report_separately": "BINDING, and the reason the aggregate alone is not enough. Relevant loss is wildly uneven across origins: second_person (the independently working second person of §19) 37/67 = 55.2%, user_query 9/45 = 20.0%, session_transcript 23/260 = 8.8%. The aggregate of 18.5% is dominated by hook telemetry, which makes up 260 of 372 cases. A future set with a different origin mix would move the aggregate without anything in retrieval changing, and a degradation confined to the blind batch could hide entirely under the tolerance. The per-origin figures are reported next to the aggregate, never folded into it.",
+    "measured_by_origin": {
+      "second_person": { "value": 0.5522, "count": "37/67" },
+      "user_query": { "value": 0.2, "count": "9/45" },
+      "session_transcript": { "value": 0.0885, "count": "23/260" }
+    }
+  },
+
+  "false_abstention": {
+    "tolerance": null,
+    "status": "not_registrable_on_the_current_mechanism",
+    "$comment_why": "Abstention today is a score floor, and on the hybrid path that floor cannot fire. The lowest possible score of a rank-1 hit is RRF_SCALE/(RRF_K+1) = 81.967 while the documented floor is 30 — unreachable by construction. The baseline measured 0 of 372 false abstentions AND 0 of 60 correct abstentions: the metric is pinned at zero and would pass any tolerance, including 0%. Registering a number here would register a gate that cannot test anything.",
+    "$comment_why_not_a_threshold": "A score threshold does not rescue it. The best achievable cut was measured on both arms (Youden J over every observed score): hybrid at 139.3 keeps 64.8% of answerable cases while still letting 23.3% of no-answer cases through (J=0.415); BM25-only at 2104.3 keeps only 54.0% to block 91.7% (J=0.457). Even at the optimum a third to a half of all correct answers would be suppressed. The score does not separate the two groups — median top score 152.2 answerable against 116.1 no-answer, with an identical p90 of 163.9.",
+    "registered_follow_up": {
+      "mechanism": "weak_result",
+      "source": "packages/daemon/src/weak-result.ts",
+      "definition": "fires when NO hit in the pool anchors lexically — neither matched_recall_when nor a title match. A lexical-anchor predicate, not a threshold; its own docstring describes exactly this failure ('a nonsense query still produces a top hit at 130+ … the flag says the high score is rank-1-of-nothing').",
+      "blocked_by": "weak-result.ts lives in packages/daemon and packages/eval does not depend on it, so the gold-set runner cannot call it. A second implementation in the harness is the drift the module's own docstring warns against.",
+      "enabling_step": "move weak-result.ts to packages/core, then one measurement run recording per case whether any hit anchors",
+      "then": "false_abstention = share of answerable cases with weak_result=true; the tolerance is set from that measured value the same way relevant_loss was set from its own"
+    }
+  },
+
+  "$comment_not_registered": "Only the two tolerances named in the M0 checklist are settled here. Anything else M1 may need (§18.2) waits for its own measurement — an unmeasured tolerance is a guess whether or not it sits in a versioned file."
+}

@@ -215,6 +215,21 @@ export function checkCueRegistration(
       issues.push({ where: "evaluation_rule", problem: "fixed before the run, so the analysis is not chosen after seeing the data (§18.3)" });
     }
 
+    // §18.1: "In beiden Fällen werden Bedingungs- beziehungsweise Zellstruktur,
+    // Mindest-N je Bedingung oder Zelle und Auswertungsregel vorab festgelegt."
+    // The power assumption above governs the 2x2 cue-AXIS experiment; the
+    // generation-path experiment carries its own N, and without it the
+    // registration would reach `numbers_registered` while the one number the
+    // chosen design actually runs on is still open.
+    const chosenNow = (at("admissible_designs") as Record<string, Record<string, unknown>> | undefined)?.[String(design)];
+    const perUnit = design === "A" ? "min_n_per_condition" : "min_n_per_cell";
+    if (chosenNow && typeof chosenNow[perUnit] !== "number") {
+      issues.push({
+        where: `design ${String(design)}`,
+        problem: `${perUnit} is required before the run — the power assumption covers the cue-axis experiment, not this design (§18.1)`,
+      });
+    }
+
     // §18.3: "Die Aufteilung beziehungsweise das Verschachtelungsschema ist
     // Teil der Registrierung." A split named but not quantified is not a
     // registered split — it leaves the one number that decides how much of the
@@ -232,6 +247,17 @@ export function checkCueRegistration(
       }
       if (guard.split_seed == null) {
         issues.push({ where: "contamination_guard", problem: "the split needs a seed, or it is not the same split on the next run" });
+      }
+      // A seed alone only makes an UNBALANCED split reproducible. The M0
+      // baseline measured Recall@3 per gold file between 31.3% and 84.9% — a
+      // standard deviation of 21.6pp, driven by origin. A plain random split
+      // can therefore move the comparison baseline by more than the effect the
+      // experiment looks for, and reproducibly so.
+      if (!Array.isArray(guard.stratify_by) || guard.stratify_by.length === 0) {
+        issues.push({
+          where: "contamination_guard",
+          problem: "the split must name what it stratifies by — a seed makes an unbalanced split reproducible, not balanced",
+        });
       }
     }
   }
