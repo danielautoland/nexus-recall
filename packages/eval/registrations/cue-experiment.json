@@ -131,7 +131,7 @@
       "unit": null,
       "min_n": null
     },
-    "derived_from": "OPEN — to be re-derived on the associative pool after #418",
+    "derived_from": "Re-derived on the associative pool 2026-08-28 — see numbers_amendments[0]. The derivation was carried out and its result is that min_n is NOT derivable at the v2 smallest effect of interest: at the measured discordance of 0.0352 a difference of 6pp is arithmetically impossible. The fields above therefore stay null for a measured reason, not for lack of data.",
     "$comment_numbers_amendments": "AMENDMENTS to the power assumption, appended and dated — never folded back into the fields above, and never into `superseded_v2_values`, which stays as it is. Each entry records a derivation that was actually carried out: its inputs, the method it followed, its result, and what the result means for the pool. An amendment may report that a number is NOT derivable; that is a result, not a gap.",
     "numbers_amendments": [
       {
