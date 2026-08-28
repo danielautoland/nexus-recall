@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   EmbeddingIndex,
   OllamaEmbeddingProvider,
@@ -42,7 +42,7 @@ import {
   hitTitleMatches,
   type RecallHit,
 } from "@bastra-recall/core";
-import type { GoldCase } from "./goldset.js";
+import { checkGoldCases, type GoldCase } from "./goldset.js";
 
 /** The k the product serves. Ranks are measured here and nowhere else. */
 const PRODUCTION_K = 10;
@@ -127,7 +127,12 @@ export interface CaseResult {
    * anchor, and `none` is the weak result itself.
    */
   anchor: AnchorSource;
-  /** Gold ids the vault no longer holds. A gate failure, never a miss. */
+  /**
+   * Gold ids the vault no longer holds. A gate failure, never a miss — and
+   * since #432 the gate actually fires: {@link unknownGoldIds} stops the run
+   * before anything is scored, so on a completed run this list is empty. It
+   * stays in the row because that is where the evidence belongs.
+   */
   unknown_ids: string[];
   /**
    * Which arm produced the top hit. The M0 gate is "no silent arm fallback":
@@ -313,6 +318,108 @@ async function scoreCases(
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
+/** The gold schema this runner grades. Another version is a different dataset. */
+export const GOLD_SCHEMA_VERSION = 1;
+
+/**
+ * Read the gold files and refuse anything the measurement cannot stand on.
+ *
+ * The runner used to cast the parsed JSON straight to `GoldCase[]` and check
+ * duplicate ids and nothing else (#434). But a run grades the FILE, not its
+ * creation history: a case edited after the authoring pipeline signed it off,
+ * a truthy typo in `probe_group` — which silently drops the case out of the
+ * main denominator — or a file from another schema would all have been measured
+ * as if they had passed §19. `checkGoldCases` is the authoring pipeline's own
+ * rule set, applied here on purpose so the two cannot drift.
+ */
+export function loadGoldFiles(paths: string[]): { cases: GoldCase[]; sources: Record<string, number> } {
+  const cases: GoldCase[] = [];
+  const sources: Record<string, number> = {};
+  for (const p of paths) {
+    const parsed = JSON.parse(readFileSync(p, "utf8")) as { schema_version?: number; cases?: GoldCase[] };
+    if (parsed.schema_version !== GOLD_SCHEMA_VERSION) {
+      throw new Error(
+        `${p}: gold schema_version ${JSON.stringify(parsed.schema_version)} — this runner grades version ${GOLD_SCHEMA_VERSION}`,
+      );
+    }
+    if (!Array.isArray(parsed.cases) || parsed.cases.length === 0) throw new Error(`${p}: holds no cases`);
+    // The source map keys by file name and two directories can hold the same
+    // one; overwriting an entry would understate the dataset in the artifact.
+    const name = basename(p);
+    if (name in sources) {
+      throw new Error(`two gold files are named \`${name}\` — the source map cannot tell them apart`);
+    }
+    sources[name] = parsed.cases.length;
+    cases.push(...parsed.cases);
+  }
+  const issues = checkGoldCases(cases);
+  if (issues.length) {
+    for (const i of issues) console.error(`[goldset-run] gold ${i.where}: ${i.problem}`);
+    throw new Error(
+      `${issues.length} gold case(s) violate §19 — a run grades the file, not its history`
+        + ` (first: ${issues[0].where}: ${issues[0].problem})`,
+    );
+  }
+  return { cases, sources };
+}
+
+/**
+ * Gold ids the vault no longer holds, deduplicated and sorted (#432).
+ *
+ * `CaseResult.unknown_ids` always called a missing gold id a gate failure and
+ * never a miss, but the runner scored the case anyway: the expected id got rank
+ * 0, the row entered every aggregate, and the command exited successfully with
+ * depressed recall. Collected before anything is scored, so the caller can stop
+ * instead of publishing a stale label as a retrieval result.
+ */
+export function unknownGoldIds(cases: GoldCase[], knownIds: ReadonlySet<string>): string[] {
+  const missing = new Set<string>();
+  for (const c of cases) {
+    for (const id of [...c.expected_ids, ...c.acceptable_alternatives]) {
+      if (!knownIds.has(id)) missing.add(id);
+    }
+  }
+  return [...missing].sort();
+}
+
+/**
+ * The dataset identity a run is cited by (#430).
+ *
+ * Hashing the source map and the sorted case ids let two materially different
+ * evaluations share one identity: rewriting a query or relabelling a case while
+ * keeping its id produced the same hash. So the hash covers everything that
+ * decides WHAT is measured — the query, both id lists, the no-answer and probe
+ * classification, the allowed depth and every reporting axis — and nothing that
+ * only records who wrote the label down. Sorted by id, so file order cannot
+ * move it.
+ */
+export function datasetHash(sources: Record<string, number>, cases: GoldCase[]): string {
+  const names = Object.keys(sources).sort().map((n) => `${n}:${sources[n]}`).join(",");
+  const canonical = [...cases]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    // JSON, not a joined string: a query may carry the separator itself, and
+    // two different datasets must not be able to collide by punctuation.
+    .map((c) => JSON.stringify([
+      c.id,
+      c.query,
+      [...c.expected_ids].sort().join(","),
+      [...c.acceptable_alternatives].sort().join(","),
+      String(c.no_answer),
+      c.probe_group ?? "",
+      String(c.allowed_retrieval_depth),
+      c.kind,
+      c.expected_zone,
+      c.origin_type,
+      c.lang,
+      String(c.has_identifier),
+      c.scope ?? "",
+      c.time_view ?? "",
+      String(c.correct_answer_is_non_application ?? false),
+    ]))
+    .join("\n");
+  return sha256(`${names}\n${canonical}`);
+}
+
 /**
  * §18.1 wants every run citable: code, git, vault, model, config and dataset
  * hash, next to the raw output and the command line. A run whose artifact
@@ -356,16 +463,7 @@ async function main(): Promise<void> {
   const vaultPath = process.env.BASTRA_VAULT_PATH;
   if (!vaultPath) throw new Error("BASTRA_VAULT_PATH is required");
 
-  const cases: GoldCase[] = [];
-  const sources: Record<string, number> = {};
-  for (const g of args.gold) {
-    const parsed = JSON.parse(readFileSync(g, "utf8")) as { cases?: GoldCase[] };
-    const cs = parsed.cases ?? [];
-    sources[g.split("/").pop() ?? g] = cs.length;
-    cases.push(...cs);
-  }
-  const dupes = cases.length - new Set(cases.map((c) => c.id)).size;
-  if (dupes) throw new Error(`${dupes} duplicate case ids across the gold files`);
+  const { cases, sources } = loadGoldFiles(args.gold);
 
   const vault = new Vault(vaultPath);
   await vault.init();
@@ -379,6 +477,15 @@ async function main(): Promise<void> {
     throw new Error(`lexical index holds ${search.size()} of ${vault.size()} memories — the BM25 arm would be blind.`);
   }
   const knownIds = new Set(vault.list().map((m) => String(m.fm.id)));
+  // A gold id the vault no longer holds is a stale label, and scoring it would
+  // report the staleness as a retrieval miss (#432). Stop before the measurement
+  // rather than publish a depressed number under a successful exit code.
+  const unknown = unknownGoldIds(cases, knownIds);
+  if (unknown.length) {
+    throw new Error(
+      `${unknown.length} gold id(s) are not in the vault — a gate failure, never a miss: ${unknown.join(", ")}`,
+    );
+  }
 
   let armLabel = "BM25 only";
   let cleanup: (() => Promise<void>) | null = null;
@@ -466,7 +573,7 @@ async function main(): Promise<void> {
       vault: sha256(vault.list().map((m) => `${String(m.fm.id)} ${String(m.fm.updated ?? "")}`).sort().join("\n")),
       model: sha256(armLabel),
       config: sha256(JSON.stringify({ k: PRODUCTION_K, floor: SCORE_FLOOR, hybrid: args.hybrid })),
-      dataset: sha256(JSON.stringify(sources) + cases.map((c) => c.id).sort().join(",")),
+      dataset: datasetHash(sources, cases),
     },
   };
   const day = manifest.run_date.slice(0, 10);

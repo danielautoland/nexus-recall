@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { metricsFor, type CaseResult } from "../src/goldset-run.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  datasetHash,
+  loadGoldFiles,
+  metricsFor,
+  unknownGoldIds,
+  type CaseResult,
+} from "../src/goldset-run.js";
+import { originRefHash, stagedId, type GoldCase } from "../src/goldset.js";
 
 const row = (over: Partial<CaseResult> = {}): CaseResult => ({
   id: "c1",
@@ -49,4 +59,126 @@ test("MRR is the mean reciprocal rank over the slice", () => {
   const m = metricsFor([row({ rank_expected: 1 }), row({ rank_expected: 4 }), row({ rank_expected: 0 })]);
   assert.equal(m.mrr, Number(((1 + 0.25 + 0) / 3).toFixed(4)));
   assert.equal(m.n, 3);
+});
+
+const gold = (q: string, over: Partial<GoldCase> = {}): GoldCase => ({
+  id: stagedId(q),
+  query: q,
+  origin_type: "user_query",
+  authoring_mode: "verbatim from a real recall",
+  origin_ref_hash: originRefHash("ref"),
+  lang: "de",
+  has_identifier: false,
+  expected_ids: ["m1"],
+  acceptable_alternatives: [],
+  expected_zone: "orbit",
+  no_answer: false,
+  scope: null,
+  time_view: null,
+  allowed_retrieval_depth: 3,
+  rationale: "m1 is the only memory stating this rule",
+  kind: "descriptive",
+  labelled_at: "2026-08-28",
+  labelled_by: "Daniel",
+  ...over,
+});
+
+const goldFile = (name: string, cases: GoldCase[], over: Record<string, unknown> = {}): string => {
+  const dir = mkdtempSync(join(tmpdir(), "bastra-goldset-run-"));
+  const path = join(dir, name);
+  writeFileSync(path, JSON.stringify({ schema_version: 1, cases, ...over }));
+  return path;
+};
+
+test("the runner validates the gold file itself, not its creation history (#434)", () => {
+  const clean = goldFile("gold.json", [gold("wie war die regel für force pushes")]);
+  assert.equal(loadGoldFiles([clean]).cases.length, 1);
+
+  // A truthy typo in probe_group used to pass straight through and silently
+  // remove the case from the main denominator.
+  const typo = goldFile("gold.json", [
+    gold("wie war die regel für force pushes", {
+      probe_group: "gibbersih-probe" as unknown as GoldCase["probe_group"],
+    }),
+  ]);
+  assert.throws(() => loadGoldFiles([typo]), /violate §19/);
+
+  // The same for the other rules the authoring pipeline enforces.
+  const rewritten = goldFile("gold.json", [gold("q", { query: "someone edited this by hand" })]);
+  assert.throws(() => loadGoldFiles([rewritten]), /violate §19/);
+  const graded = goldFile("gold.json", [gold("nach was fragt das hier", { expected_ids: [] })]);
+  assert.throws(() => loadGoldFiles([graded]), /violate §19/);
+  const shallow = goldFile("gold.json", [gold("wie tief darf das gehen", { allowed_retrieval_depth: 0 })]);
+  assert.throws(() => loadGoldFiles([shallow]), /violate §19/);
+});
+
+test("a foreign schema version and an empty file are refused (#434)", () => {
+  const other = goldFile("gold.json", [gold("eine frage")], { schema_version: 2 });
+  assert.throws(() => loadGoldFiles([other]), /schema_version/);
+  const empty = goldFile("gold.json", []);
+  assert.throws(() => loadGoldFiles([empty]), /no cases/);
+});
+
+test("two gold files of the same name cannot overwrite each other in the source map (#430)", () => {
+  const a = goldFile("gold-tel-1.json", [gold("erste frage")]);
+  const b = goldFile("gold-tel-1.json", [gold("zweite frage"), gold("dritte frage")]);
+  assert.throws(() => loadGoldFiles([a, b]), /are named/);
+
+  // Different names still add up, and both counts survive.
+  const c = goldFile("gold-tel-2.json", [gold("zweite frage"), gold("dritte frage")]);
+  const loaded = loadGoldFiles([a, c]);
+  assert.equal(loaded.cases.length, 3);
+  assert.deepEqual(loaded.sources, { "gold-tel-1.json": 1, "gold-tel-2.json": 2 });
+});
+
+test("duplicate case ids across files are still refused (#434)", () => {
+  const a = goldFile("gold-a.json", [gold("dieselbe frage")]);
+  const b = goldFile("gold-b.json", [gold("dieselbe frage")]);
+  assert.throws(() => loadGoldFiles([a, b]), /duplicate/);
+});
+
+test("the dataset hash moves with query and labels, not only with the ids (#430)", () => {
+  const base = [gold("wie war die regel für force pushes"), gold("wo liegt der installer")];
+  const sources = { "gold.json": 2 };
+  const h = datasetHash(sources, base);
+
+  // Same ids, rewritten query — two materially different evaluations that used
+  // to share one citation identity.
+  const rewritten = base.map((c, i) => (i === 0 ? { ...c, query: "etwas ganz anderes" } : c));
+  assert.notEqual(datasetHash(sources, rewritten), h, "a rewritten query is a different dataset");
+
+  for (const over of [
+    { expected_ids: ["m2"] },
+    { acceptable_alternatives: ["m9"] },
+    { no_answer: true },
+    { probe_group: "gibberish-probe" as const },
+    { allowed_retrieval_depth: 10 },
+    { kind: "associative" as const },
+    { expected_zone: "core" as const },
+    { origin_type: "second_person" as const },
+    { lang: "en" as const },
+  ]) {
+    const relabelled = base.map((c, i) => (i === 0 ? { ...c, ...over } : c));
+    assert.notEqual(
+      datasetHash(sources, relabelled),
+      h,
+      `relabelling ${Object.keys(over)[0]} must change the dataset identity`,
+    );
+  }
+
+  // What only records who wrote the label down does not move it, and neither
+  // does the order the files were concatenated in.
+  const reprosed = base.map((c) => ({ ...c, rationale: "same label, better prose", labelled_by: "Sali" }));
+  assert.equal(datasetHash(sources, reprosed), h, "prose about the label is not the label");
+  assert.equal(datasetHash(sources, [...base].reverse()), h, "file order is not part of the dataset");
+});
+
+test("unknown gold ids are collected before scoring, deduplicated and sorted (#432)", () => {
+  const cases = [
+    gold("erste frage", { expected_ids: ["m1", "gone-b"] }),
+    gold("zweite frage", { expected_ids: ["gone-b"], acceptable_alternatives: ["gone-a"] }),
+  ];
+  const known = new Set(["m1"]);
+  assert.deepEqual(unknownGoldIds(cases, known), ["gone-a", "gone-b"]);
+  assert.deepEqual(unknownGoldIds(cases, new Set(["m1", "gone-a", "gone-b"])), []);
 });

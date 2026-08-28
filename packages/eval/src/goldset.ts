@@ -225,6 +225,20 @@ export function checkLabels(labels: GoldLabel[], staged: StagedQuery[]): GoldIss
 }
 
 /**
+ * The same two check sets, applied to a FINISHED gold file (#434).
+ *
+ * A `GoldCase` is a staged query plus its label, so both existing checks apply
+ * unchanged — that is the point. The measurement entry point must grade the
+ * file rather than trust its creation history (a case can be hand-edited after
+ * the authoring pipeline signed it off), and a second rule set written for the
+ * runner would drift from the one the authoring step enforces.
+ */
+export function checkGoldCases(cases: GoldCase[]): GoldIssue[] {
+  const labels = cases.map((c) => ({ ...c, staged_id: c.id }));
+  return [...checkStaged(cases), ...checkLabels(labels, cases)];
+}
+
+/**
  * Coverage §19 demands the set report, so a gap is visible before the run.
  *
  * Every field below counts the MAIN denominator — cases without a
