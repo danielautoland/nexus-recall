@@ -181,6 +181,99 @@ export function handleHookRecall(
         }
         return;
       }
+      if (wantsSse) {
+        openSseHeaders(res);
+      }
+      // #265: Die Pipeline steht jetzt als Funktion daneben; hier bleibt, was
+      // HTTP ist — Body lesen, Eingabe prüfen, Stages streamen, antworten.
+      const payload = await runHookRecall(
+        body,
+        query,
+        t0,
+        { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded },
+        wantsSse
+          ? (s: RecallStage) => {
+              // Nur Stop- + cache.hit + done-Events streamen (Start-Events
+              // wären für UI redundant). `done`-Event kommt unten als
+              // separater finaler SSE-Event mit den hits[] — wir
+              // unterdrücken den Stage-`done`, damit der finale Frame
+              // nicht doppelt rendert.
+              if (s.name === "done") return;
+              if (s.durationMs === undefined && s.name !== "cache.hit") return;
+              writeSseEvent(res, "stage", {
+                name: s.name,
+                durationMs: s.durationMs,
+                meta: s.meta,
+              });
+            }
+          : undefined,
+      );
+      if (wantsSse) {
+        writeSseEvent(res, "done", payload);
+        res.end();
+      } else {
+        sendJson(res, 200, payload);
+      }
+    })
+    .catch((err: Error) => {
+      if (wantsSse && !res.headersSent) {
+        openSseHeaders(res);
+      }
+      if (wantsSse) {
+        writeSseEvent(res, "error", { error: err.message });
+        res.end();
+      } else {
+        sendJson(res, 400, { error: err.message });
+      }
+    });
+}
+
+
+/**
+ * Die Deps, die die Hook-Recall-Pipeline braucht (#265).
+ *
+ * Dieselben Werte, die die Route bisher als Einzelparameter durchreichte —
+ * gebündelt, damit ein zweiter Aufrufer sie weitergeben kann, ohne die
+ * Reihenfolge von sechs Positionsargumenten zu treffen.
+ */
+export interface HookRecallDeps {
+  vault: Vault;
+  search: SearchIndex;
+  telemetry: Telemetry;
+  learnedBridges?: BridgePool | null;
+  sharedRecallLang?: SupportedLanguage | null;
+  embeddingDegraded?: () => boolean;
+}
+
+/**
+ * Die Hook-Recall-Pipeline, aufrufbar (#265, §26.1).
+ *
+ * WARUM SIE HERAUSGELÖST IST. `/hook/recall` und der MCP-`recallHandler` sind
+ * zwei verschiedene Pipelines, nicht zwei Aufrufe derselben: Nur dieser Weg
+ * kennt den Scope-Filter (#110 Fremd-Scope-Hardfilter plus #148 Bypass für
+ * absichtliche Cross-Scope-Treffer), die Reflex-Hits aus dem tieferen
+ * Kandidatenpool und den Retrieval-Router-Schatten (#362). Solange die Pipeline
+ * nur hinter der Route erreichbar war, konnte ein serverseitiger Aufrufer sie
+ * nur über einen Loopback-Request bekommen — oder er nahm die andere Pipeline
+ * und zeigte dem Nutzer stillschweigend eine andere Trefferauswahl.
+ *
+ * Der Rumpf ist wortgleich aus dem Routen-Handler übernommen; verändert wurden
+ * genau die beiden Ränder, an denen er die HTTP-Antwort berührte: Der
+ * SSE-Kopf bleibt in der Route, und die Stage-Events gehen über `emitStage`
+ * nach draußen statt direkt auf den Response-Stream. Das Sammeln der Timings
+ * bleibt drin, weil die Telemetrie am Ende der Pipeline sie liest.
+ *
+ * Wirft bei einem leeren `query` NICHT — die Route prüft das vorher, weil es
+ * eine Eingabeprüfung ist und keine Retrieval-Entscheidung.
+ */
+export async function runHookRecall(
+  body: Record<string, unknown>,
+  query: string,
+  t0: number,
+  deps: HookRecallDeps,
+  emitStage?: (s: RecallStage) => void,
+): Promise<Record<string, unknown>> {
+  const { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded } = deps;
       const k = clampInt(body.k, 1, 10, 3);
       const hookSessionId = typeof body.session_id === "string" ? body.session_id : null;
       const hookToolName = typeof body.tool_name === "string" ? body.tool_name : null;
@@ -237,26 +330,13 @@ export function handleHookRecall(
         }
       };
 
-      if (wantsSse) {
-        openSseHeaders(res);
-      }
-
+      // #265: Das Sammeln der Stage-Timings gehört zur Pipeline (die Telemetrie
+      // unten liest sie); das WEITERREICHEN nach draußen ist Sache des
+      // Aufrufers. Die Route hängt hier ihren SSE-Strom ein, der Assembler
+      // nichts.
       const onStage: StageListener = (s: RecallStage) => {
         collectStage(s);
-        if (wantsSse) {
-          // Nur Stop- + cache.hit + done-Events streamen (Start-Events
-          // wären für UI redundant). `done`-Event kommt unten als
-          // separater finaler SSE-Event mit den hits[] — wir
-          // unterdrücken den Stage-`done`, damit der finale Frame
-          // nicht doppelt rendert.
-          if (s.name === "done") return;
-          if (s.durationMs === undefined && s.name !== "cache.hit") return;
-          writeSseEvent(res, "stage", {
-            name: s.name,
-            durationMs: s.durationMs,
-            meta: s.meta,
-          });
-        }
+        emitStage?.(s);
       };
 
       // Shared learned-recall (#120): widen the hook query with language-matched
@@ -676,22 +756,5 @@ export function handleHookRecall(
         // alone, without correlating against the telemetry log.
         ...(degradedReason ? { degraded: degradedReason } : {}),
       };
-      if (wantsSse) {
-        writeSseEvent(res, "done", payload);
-        res.end();
-      } else {
-        sendJson(res, 200, payload);
-      }
-    })
-    .catch((err: Error) => {
-      if (wantsSse && !res.headersSent) {
-        openSseHeaders(res);
-      }
-      if (wantsSse) {
-        writeSseEvent(res, "error", { error: err.message });
-        res.end();
-      } else {
-        sendJson(res, 400, { error: err.message });
-      }
-    });
+      return payload;
 }
