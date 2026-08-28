@@ -163,6 +163,9 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
           tool_input_excerpt: command.slice(0, 4096),
           scope: "all-projects",
           k: 3,
+          // #263: siehe bash-fail-lane — die Lane weist sich aus.
+          client: "claude-code",
+          hook_source: "bash-pre",
         },
         remainingMs,
       ),

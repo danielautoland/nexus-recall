@@ -6,6 +6,7 @@
  */
 import type { SalienceShadow } from "./salience-shadow.js";
 import type { TrustShadow } from "./trust-shadow.js";
+import type { TelemetryDimensions } from "./telemetry-dimensions.js";
 
 // Nur die Events, die DIESE Klasse via write() schreibt. Die Hook-CLIs
 // (hook_call, session_hook_call, prompt_hook_call, bash_hook_call,
@@ -62,6 +63,20 @@ export interface BaseEvent {
   session_id: string;
 }
 
+/**
+ * Die Auswertungsdimensionen an einem Ereignis (#263, §17.4/§17.5).
+ *
+ * Optional im TYP, nicht in der Absicht: Jedes Ereignis, das ein Produzent ab
+ * jetzt schreibt, trägt sie (`telemetry.ts` füllt sie zentral). Optional ist
+ * das Feld, weil die JSONL-Dateien mit den Ereignissen VOR dieser Änderung
+ * weiterlebt werden — ein Leser muss „Spalte fehlt" von „Spalte sagt unknown"
+ * unterscheiden können. Das eine heißt „vor #263 geschrieben", das andere
+ * „Oberfläche hat sich nicht ausgewiesen".
+ */
+export interface DimensionedEvent {
+  dimensions?: TelemetryDimensions;
+}
+
 /** Shared learned-recall (#120): the bridge expansion applied to a recall query.
  *  Absent when the layer is off or no bridge matched — so its presence and the
  *  `added` count are the metric for how often and how much bridges fired. */
@@ -70,7 +85,7 @@ export interface BridgeExpansion {
   added: string[];
 }
 
-export interface RecallEvent extends BaseEvent {
+export interface RecallEvent extends BaseEvent, DimensionedEvent {
   kind: "recall";
   recall_id: string;
   query: string;
@@ -88,7 +103,14 @@ export interface RecallEvent extends BaseEvent {
   vault_size: number;
   hit_count: number;
   top_score: number | null;
-  hits: { id: string; score: number; type: string }[];
+  /** #263: `hop` trägt die Herkunft des Treffers — `direct` oder `1-hop`.
+   *  §18.2 braucht sie für das M1-Umschaltgate („der Report zeigt die
+   *  Hop-Herkunft der required-Hits"), und der Evidenzentscheid aus #264 darf
+   *  einen nur über einen Graph-Hop erreichten Treffer nicht allein als
+   *  `required` führen. Optional, weil der reine BM25-Pfad ohne Hop-Expansion
+   *  nichts zu melden hat. Die schlanke Hook-Projektion bleibt unberührt —
+   *  das hier ist Telemetrie, kein Teil des öffentlichen Vertrags (C-046). */
+  hits: { id: string; score: number; type: string; hop?: "direct" | "1-hop" }[];
   latency_ms: number;
   /**
    * Pro-Stage-Timings (#38). Optional — alte Events ohne Stage-Emitter
@@ -305,7 +327,7 @@ export interface MutationIncidentEvent extends BaseEvent {
   detail: string | null;
 }
 
-export interface HookActEvent extends BaseEvent {
+export interface HookActEvent extends BaseEvent, DimensionedEvent {
   kind: "hook_act";
   tool_name: string | null;
   excerpt_chars: number;
@@ -315,7 +337,7 @@ export interface HookActEvent extends BaseEvent {
 }
 
 /** Recall served from the HTTP /hook/recall endpoint (server-side view). */
-export interface HookRecallEvent extends BaseEvent {
+export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   kind: "hook_recall";
   recall_id: string;
   query: string;
@@ -330,7 +352,14 @@ export interface HookRecallEvent extends BaseEvent {
   vault_size: number;
   hit_count: number;
   top_score: number | null;
-  hits: { id: string; score: number; type: string }[];
+  /** #263: `hop` trägt die Herkunft des Treffers — `direct` oder `1-hop`.
+   *  §18.2 braucht sie für das M1-Umschaltgate („der Report zeigt die
+   *  Hop-Herkunft der required-Hits"), und der Evidenzentscheid aus #264 darf
+   *  einen nur über einen Graph-Hop erreichten Treffer nicht allein als
+   *  `required` führen. Optional, weil der reine BM25-Pfad ohne Hop-Expansion
+   *  nichts zu melden hat. Die schlanke Hook-Projektion bleibt unberührt —
+   *  das hier ist Telemetrie, kein Teil des öffentlichen Vertrags (C-046). */
+  hits: { id: string; score: number; type: string; hop?: "direct" | "1-hop" }[];
   latency_ms_recall: number;
   latency_ms_total: number;
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-

@@ -130,7 +130,17 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
       await postLane(
         selfBaseUrl,
         "/hook/recall",
-        { query, topics: ["bash", "failure"], project: null, tool_name: "Bash", k: 3 },
+        {
+          query,
+          topics: ["bash", "failure"],
+          project: null,
+          tool_name: "Bash",
+          k: 3,
+          // #263: die Lane weist sich aus, sonst ist ihr Ereignis von dem des
+          // MCP-Forwarders nicht zu unterscheiden — beide gehen hier durch.
+          client: "claude-code",
+          hook_source: "bash-fail",
+        },
         remainingMs,
       ),
     ) as RecallResponse;

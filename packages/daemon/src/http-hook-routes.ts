@@ -68,6 +68,10 @@ export function handleHookAct(req: IncomingMessage, res: ServerResponse, telemet
           // Claude-Session-id ins Event — ohne sie stempelt der Sink seine
           // Boot-UUID und der Transcript-Join ist unmöglich (Audit 2026-07-10).
           ...(sessionId ? { session_id: sessionId } : {}),
+          // #263: Hinweise auf die Oberfläche. Ungeprüft weitergereicht — die
+          // Allowlist und das Session-Pseudonym entstehen in der Telemetrie.
+          client: body.client,
+          hook_source: body.hook_source,
         }),
       );
       sendJson(res, 200, { matched: episodes.length });
@@ -481,6 +485,11 @@ export function handleHookRecall(
           // matchLoadedMemories genutzt), nur nicht am Event. Gleiche Form wie
           // logHookAct/logHookReflex: fehlt sie, bleibt die Boot-UUID.
           ...(hookSessionId ? { session_id: hookSessionId } : {}),
+          // #263: Oberflächen-Hinweise. `hook_source` trennt die Lanes
+          // voneinander UND vom MCP-Forwarder, der `recall` über denselben
+          // Endpunkt proxyt — ohne die Spalte wären beide dasselbe Ereignis.
+          client: body.client,
+          hook_source: body.hook_source,
           // #351: batch width when this recall is one phrasing of a batch.
           query_count: typeof body.batch_of === "number" ? body.batch_of : undefined,
           topics: Array.isArray(body.topics)
@@ -494,7 +503,13 @@ export function handleHookRecall(
           vault_size: vault.size(),
           hit_count: hits.length,
           top_score: hits[0]?.score ?? null,
-          hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
+          hits: hits.map((h) => ({
+            id: h.id,
+            score: h.score,
+            type: h.type,
+            // #263: die Hop-Herkunft, die §18.2 fürs M1-Gate braucht.
+            ...(h.hop ? { hop: h.hop } : {}),
+          })),
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,

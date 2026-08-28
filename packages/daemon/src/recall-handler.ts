@@ -439,7 +439,13 @@ export async function recallHandler(
         vault_size: deps.vault.size(),
         hit_count: hits.length,
         top_score: hits[0]?.score ?? null,
-        hits: hits.map((h) => ({ id: h.id, score: h.score, type: h.type })),
+        hits: hits.map((h) => ({
+            id: h.id,
+            score: h.score,
+            type: h.type,
+            // #263: die Hop-Herkunft, die §18.2 fürs M1-Gate braucht.
+            ...(h.hop ? { hop: h.hop } : {}),
+          })),
         latency_ms: latencyMs,
         recall_stages: collector.timings,
         dropped_below_floor: droppedBelowFloor,
