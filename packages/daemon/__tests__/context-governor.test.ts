@@ -154,3 +154,60 @@ test("die Token-Schätzung ist die des Repos — vier Zeichen je Token", () => {
   assert.equal(estimateTokens(""), 0);
   assert.equal(estimateTokens("abc"), 1, "aufgerundet");
 });
+
+// ── Äquivalenz zur abgelösten Lane-Mechanik (#266 Teilpaket 3) ───
+
+/**
+ * Die beiden Hint-Lanes filterten ihre Treffer bis e7bc670 selbst:
+ *
+ *     for (const h of hits) {
+ *       if (shouldDropHit(state.shown[h.id], loadedMtime)) continue;
+ *       kept.push(h);
+ *     }
+ *
+ * Jetzt tun sie es über `governContext(items, {})` — ohne Budget, weil sie
+ * heute keines haben. Die Auflage war Mechanik ohne Verschärfung, also muss der
+ * Governor in genau diesem Aufruf dasselbe tun wie die abgelöste Schleife: die
+ * bereits gezeigten streichen, sonst nichts, in derselben Reihenfolge.
+ *
+ * Statt eines Einzelfalls eine Eigenschaft über zufällige Eingaben — ein
+ * Einzelfall trifft die Kante nicht, an der sich zwei Implementierungen
+ * unterscheiden.
+ */
+test("ohne Budget streicht der Governor genau die bereits gezeigten — wie die alte Schleife", () => {
+  let seed = 20260828;
+  const rnd = (): number => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let run = 0; run < 200; run++) {
+    const items = Array.from({ length: Math.floor(rnd() * 8) }, (_, i) => ({
+      id: `m${i}`,
+      priority: i,
+      text: "x".repeat(Math.floor(rnd() * 400)),
+      alreadyShown: rnd() < 0.4,
+    }));
+    // Die abgelöste Schleife, wörtlich.
+    const reference = items.filter((it) => !it.alreadyShown).map((it) => it.id);
+    const governed = governContext(items, {}).kept.map((it) => it.id);
+    assert.deepEqual(governed, reference, `Lauf ${run}: Ergebnis weicht ab`);
+  }
+});
+
+test("und die Streichgründe machen sichtbar, was die Schleife nur mitzählte", () => {
+  // Die Bash-Lane zählte `droppedDedupCount` hoch und verlor dabei, WELCHE
+  // Treffer es traf. Der Governor nennt sie.
+  const d = governContext(
+    [
+      { id: "a", priority: 0, text: "x", alreadyShown: true },
+      { id: "b", priority: 1, text: "x" },
+      { id: "c", priority: 2, text: "x", alreadyShown: true },
+    ],
+    {},
+  );
+  assert.deepEqual(d.kept.map((i) => i.id), ["b"]);
+  assert.deepEqual(d.dropped, [
+    { id: "a", reason: "already_shown" },
+    { id: "c", reason: "already_shown" },
+  ]);
+});

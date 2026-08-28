@@ -23,6 +23,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
+import { governContext } from "./context-governor.js";
 import { postLane } from "./thin-client.js";
 import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
 import { unfusedHeadline } from "./band-wording.js";
@@ -202,12 +203,34 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
   let emitted: RecallHit[] = hits;
   if (sessionId && hits.length > 0) {
     const state = await loadSessionState(sessionId);
-    const kept: RecallHit[] = [];
-    for (const h of hits) {
-      const loadedMtime = await getLoadedMarkerMtime(h.id);
-      if (shouldDropHit(state.shown[h.id], loadedMtime)) droppedDedupCount += 1;
-      else kept.push(h);
-    }
+    // #266: Die Entscheidung fällt der Context Governor — die Frage „darf ein
+    // bereits gezeigtes Memory erneut erwähnt werden?" ist seine (§16.3). Was
+    // „bereits gezeigt" HEISST, bleibt hier: `shouldDropHit` kennt das
+    // 4h-Fenster, MAX_SHOW und den Load-Marker, der den Zähler zurücksetzt.
+    // Der Governor bekommt das Ergebnis, nicht die Regel.
+    //
+    // Ohne Budget aufgerufen — das ist der heutige effektive Wert dieser Lane:
+    // Es gibt keine Token- und keine Stückgrenze, nur `k` auf der Recall-Seite.
+    // Ein Budget hier zu setzen wäre eine Verschärfung und keine
+    // Vereinheitlichung; sie gehört in eine Konfigurationsentscheidung mit
+    // gemessenen Zahlen (#354), nicht in diesen Umbau.
+    const governed = governContext(
+      await Promise.all(
+        hits.map(async (h, i) => ({
+          id: h.id,
+          // Die Recall-Liste ist bereits gerankt: Position = Priorität.
+          priority: i,
+          // Was der Hint kosten würde. Bei fehlendem Budget folgenlos, aber
+          // nicht erfunden — die Summary ist der Löwenanteil der Zeile.
+          text: h.summary ?? "",
+          alreadyShown: shouldDropHit(state.shown[h.id], await getLoadedMarkerMtime(h.id)),
+        })),
+      ),
+      {},
+    );
+    droppedDedupCount = governed.dropped.filter((d) => d.reason === "already_shown").length;
+    const keptIds = new Set(governed.kept.map((g) => g.id));
+    const kept = hits.filter((h) => keptIds.has(h.id));
     emitted = kept;
     if (kept.length > 0) {
       const now = Date.now();

@@ -41,6 +41,7 @@ import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
+import { governContext } from "./context-governor.js";
 import type { Prewarmer, PrewarmOutcome } from "./embedding-prewarm.js";
 import {
   bumpShown,
@@ -503,12 +504,23 @@ export async function runPromptLane(
   // Danach id-Dedup gegen die Recall-Liste — Reflex ist das vom User
   // verdrahtete, stärkere Signal und behält den Hit.
   const rawReflexHits: PromptReflexHit[] = Array.isArray(reflexResp?.hits) ? reflexResp.hits : [];
-  const reflexKept: PromptReflexHit[] = [];
-  for (const h of rawReflexHits) {
-    const loadedMtime = await getLoadedMarkerMtime(h.id);
-    if (shouldDropHit(state.shown[h.id], loadedMtime)) continue;
-    reflexKept.push(h);
-  }
+  // #266: dieselbe Entscheidung wie in der Bash-Lane, über denselben Governor.
+  // Was „bereits gezeigt" heißt, bleibt bei `shouldDropHit` (4h-Fenster,
+  // MAX_SHOW, Load-Marker); ohne Budget aufgerufen, weil diese Lane heute
+  // keines hat — Mechanik vereinheitlichen, nicht verschärfen.
+  const reflexGoverned = governContext(
+    await Promise.all(
+      rawReflexHits.map(async (h, i) => ({
+        id: h.id,
+        priority: i,
+        text: h.summary ?? "",
+        alreadyShown: shouldDropHit(state.shown[h.id], await getLoadedMarkerMtime(h.id)),
+      })),
+    ),
+    {},
+  );
+  const reflexKeptIds = new Set(reflexGoverned.kept.map((g) => g.id));
+  const reflexKept: PromptReflexHit[] = rawReflexHits.filter((h) => reflexKeptIds.has(h.id));
   const reflexIds = new Set(reflexKept.map((h) => h.id));
   let recallHits = filtered.filter((h) => !reflexIds.has(h.id));
   // Semantic-reflex hits share the reflex lane's per-memory session dedup
@@ -517,13 +529,19 @@ export async function runPromptLane(
   // 1× per 4h window, and an already-loaded memory never re-injects. The
   // ordinary hint modes stay backoff-governed as before.
   if (detectedMode === "none") {
-    const kept: RecallHit[] = [];
-    for (const h of recallHits) {
-      const loadedMtime = await getLoadedMarkerMtime(h.id);
-      if (shouldDropHit(state.shown[h.id], loadedMtime)) continue;
-      kept.push(h);
-    }
-    recallHits = kept;
+    const governed = governContext(
+      await Promise.all(
+        recallHits.map(async (h, i) => ({
+          id: h.id,
+          priority: i,
+          text: h.summary ?? "",
+          alreadyShown: shouldDropHit(state.shown[h.id], await getLoadedMarkerMtime(h.id)),
+        })),
+      ),
+      {},
+    );
+    const keptIds = new Set(governed.kept.map((g) => g.id));
+    recallHits = recallHits.filter((h) => keptIds.has(h.id));
   }
 
   // §20.5: Diese Lane filterte nie nach Projekt-Scope — fremde Treffer kamen
