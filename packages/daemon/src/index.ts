@@ -41,7 +41,7 @@ import { loadCuratorState } from "./curator.js";
 import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
 import { embeddingStatusLine, type EmbeddingStatus, type EmbeddingSource } from "./embedding-status.js";
-import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel, getEvidenceGateEnabled } from "./settings.js";
+import { resolveEmbeddingChoice, getCommonsEnabled, getSharedRecallEnabled, getSharedRecallLanguage, getPrimaryLanguage, resolveGenerationModel, getEvidenceGateEnabled, getExperimentConfig } from "./settings.js";
 import { commonsPath, loadVerificationCounts } from "./cli/commons.js";
 import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
@@ -229,6 +229,18 @@ async function main(): Promise<void> {
       void recordUsage(VAULT_PATH!, events);
     },
   });
+
+  // #267: Die Armzuweisung der §17.4-Experimente. Ohne registrierte
+  // Konfiguration bleibt jedes Ereignis `unassigned` — die Spalte existiert
+  // seit #263, behauptet aber kein laufendes Experiment. Erst diese Zeile macht
+  // die Naht echt statt tot.
+  const experimentConfig = await getExperimentConfig();
+  telemetry.setExperiment(experimentConfig);
+  if (experimentConfig) {
+    console.error(
+      `[bastra-recall] experiment ACTIVE: ${experimentConfig.experiment} — arms ${experimentConfig.arms.join(", ")} (#267)`,
+    );
+  }
 
   // Die Meldekanäle aus core (ID-Scan-Kosten, Mutations-Incidents) und die
   // Start-Detection des Recovery-Journals — wer zuhört, steht in

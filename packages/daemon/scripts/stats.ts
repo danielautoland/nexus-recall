@@ -302,7 +302,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
   // Query-Klasse". Die Episode selbst trägt keine Dimensionen — sie hängt über
   // `recall_id` an dem hook_recall, der sie ausgelöst hat, und DER trägt sie.
   // Derselbe Join, den `recallTool` oben schon benutzt.
-  for (const dim of ["client", "hook_source"] as const) {
+  for (const dim of ["client", "hook_source", "arm"] as const) {
     printDimensionSplit(dim, hookRecalls, surfacedEpisodes);
   }
 }
@@ -312,7 +312,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
  *  deshalb auch anders benannt — sonst liest man Altbestand als Messwert. */
 const PRE_DIMENSIONS = "(pre-#263)";
 
-function dimensionValue(event: AnyEvent | undefined, field: "client" | "hook_source"): string {
+function dimensionValue(event: AnyEvent | undefined, field: "client" | "hook_source" | "arm"): string {
   if (!event) return PRE_DIMENSIONS;
   const dims = event.dimensions as Record<string, unknown> | undefined;
   if (!dims) return PRE_DIMENSIONS;
@@ -328,7 +328,7 @@ function dimensionValue(event: AnyEvent | undefined, field: "client" | "hook_sou
  * Population, sonst teilte man Zähler und Nenner aus zwei verschiedenen Welten.
  */
 function printDimensionSplit(
-  field: "client" | "hook_source",
+  field: "client" | "hook_source" | "arm",
   hookRecalls: AnyEvent[],
   surfacedEpisodes: AnyEvent[],
 ): void {
@@ -354,6 +354,12 @@ function printDimensionSplit(
   const keys = [...new Set([...surfaced.keys(), ...loaded.keys()])].sort();
   if (keys.length === 0) return;
   console.log(`  by ${field}:`);
+  if (field === "arm" && keys.every((k) => k === "unassigned" || k === PRE_DIMENSIONS)) {
+    // §17.4/#267: `unassigned` ist kein Arm, sondern die Abwesenheit eines
+    // Experiments. Ohne diesen Satz liest jemand die Zeile als Armvergleich mit
+    // einem Arm — und das wäre eine Aussage, die niemand gemacht hat.
+    console.log(`    (no experiment configured — \`unassigned\` is the absence of an arm, not an arm)`);
+  }
   for (const key of keys) {
     const s = surfaced.get(key) ?? 0;
     const l = loaded.get(key) ?? 0;
@@ -446,7 +452,7 @@ function summarizeContextROI(events: AnyEvent[]): void {
   const hookRecalls = events.filter((e) => e.kind === "hook_recall");
   const byRecallId = new Map<string, AnyEvent>();
   for (const r of hookRecalls) byRecallId.set(String(r.recall_id), r);
-  for (const field of ["client", "hook_source"] as const) {
+  for (const field of ["client", "hook_source", "arm"] as const) {
     const actedBy = new Map<string, number>();
     for (const e of actedSurfaced) {
       const key = dimensionValue(byRecallId.get(String(e.recall_id)), field);

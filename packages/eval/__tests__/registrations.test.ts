@@ -19,6 +19,8 @@ import {
   rankingBlocker,
   EVIDENCE_CLASSES,
   type ForeignFigure,
+  checkPresentationRegistration,
+  loadPresentationRegistration,
 } from "../src/registrations.js";
 
 const base: ForeignFigure = {
@@ -365,4 +367,107 @@ test("the M1 tolerances are versioned, derived, and above their own noise band",
   const sup = fa.supersedes as Record<string, string>;
   assert.equal(sup.previous_status, "not_registrable_on_the_current_mechanism");
   assert.match(sup.why_abandoned, /81\.967/, "the arithmetic that killed the floor is part of the record");
+});
+
+// ── Das §17.4-Präsentationsexperiment (#267) ────────────────────
+
+/**
+ * Diese Registrierung ist der ungewöhnliche Fall: Sie hält fest, dass ein
+ * Experiment auf der heutigen Population NICHT auswertbar ist. Genau deshalb
+ * muss der Validator strenger sein als sonst — eine fehlende Zahl ohne die
+ * Messung, die sie erklärt, liest sich später als Versäumnis und nicht als
+ * Befund.
+ */
+test("die Präsentations-Registrierung ist strukturell registriert und in sich schlüssig", () => {
+  const issues = checkPresentationRegistration("structure_registered");
+  assert.deepEqual(issues, [], JSON.stringify(issues, null, 2));
+});
+
+test("beide Armpaare sind benannt — auch die blockierten", () => {
+  const reg = loadPresentationRegistration();
+  const arms = reg.arms as Record<string, Record<string, unknown>>;
+  assert.ok(arms.A_wording, "Wortlaut");
+  assert.ok(arms.B_gate, "Gate");
+  // Ein Arm, der in der Registrierung fehlt, wäre später ein nachträglich
+  // hinzugefügter — genau die Konfundierung, die §18.3 verbietet.
+  assert.equal(arms.A_wording.status, "blocked_on_open_text_decision");
+  assert.equal(arms.B_gate.status, "blocked_on_422");
+});
+
+test("ein fehlendes Armpaar wird bemängelt", () => {
+  const reg = { ...loadPresentationRegistration(), arms: { A_wording: (loadPresentationRegistration().arms as Record<string, unknown>).A_wording } };
+  const issues = checkPresentationRegistration("structure_registered", reg);
+  assert.ok(issues.some((i) => i.where === "arms.B_gate"));
+});
+
+test("die Zuweisungsfunktion gehört versioniert in die Registrierung", () => {
+  const reg = loadPresentationRegistration();
+  const fn = (reg.unit_of_randomisation as Record<string, unknown>).assignment_function as Record<string, unknown>;
+  assert.equal(fn.name, "assignArm");
+  assert.match(String(fn.source), /telemetry-dimensions/);
+  assert.ok(fn.registered_at_commit, "§17.4: Zuweisungsfunktion und Konfiguration versioniert abgelegt");
+
+  const ohne = { ...reg, unit_of_randomisation: { unit: "pseudonymous_session" } };
+  assert.ok(
+    checkPresentationRegistration("structure_registered", ohne).some((i) => i.where === "assignment_function"),
+  );
+});
+
+test("die Session ist die Versuchseinheit — nicht das Ereignis", () => {
+  const falsch = { ...loadPresentationRegistration(), unit_of_randomisation: { unit: "event", assignment_function: { name: "x", source: "y", registered_at_commit: "z" } } };
+  const issues = checkPresentationRegistration("structure_registered", falsch);
+  assert.ok(issues.some((i) => i.where === "unit_of_randomisation"));
+});
+
+test("ohne Mindest-N verlangt der Validator die Messung, die das begründet", () => {
+  const ohne = { ...loadPresentationRegistration(), underpowered_fallback: undefined };
+  const issues = checkPresentationRegistration("structure_registered", ohne);
+  assert.ok(
+    issues.some((i) => i.where === "min_n_per_arm"),
+    "eine fehlende Zahl ohne Begründung ist eine Lücke, kein Befund",
+  );
+});
+
+test("und die Berichtsregel aus §18.1 muss darin stehen", () => {
+  const reg = loadPresentationRegistration();
+  const fb = reg.underpowered_fallback as Record<string, unknown>;
+  const conclusion = fb.conclusion as Record<string, unknown>;
+  assert.match(String(conclusion.reporting_rule), /NICHT AUSWERTBAR|not evaluable/i);
+  // Der Unterschied, um den es geht: „nicht auswertbar" ist keine Aussage über
+  // die Wirkung, „kein Unterschied gefunden" wäre eine.
+  assert.match(String(conclusion.reporting_rule), /niemals als Nullbefund|never as a null/i);
+
+  const ohneRegel = { ...reg, underpowered_fallback: { ...fb, conclusion: { verdict: "x" } } };
+  assert.ok(
+    checkPresentationRegistration("structure_registered", ohneRegel).some((i) => i.where === "underpowered_fallback"),
+  );
+});
+
+test("die gemessenen Zahlen tragen ihre Quelle", () => {
+  const fb = loadPresentationRegistration().underpowered_fallback as Record<string, unknown>;
+  const from = fb.measured_from as Record<string, unknown>;
+  assert.match(String(from.source), /events-\*\.jsonl/);
+  assert.match(String(from.window), /14 Tage/);
+  const m = fb.measured as Record<string, Record<string, unknown>>;
+  assert.equal(m.distinct_sessions_on_hook_recall.total_window, 80);
+  assert.equal(m.sessions_with_at_least_one_loaded, 16);
+});
+
+test("wer die Zahlenstufe verlangt, bekommt gesagt, dass die Registrierung sie nicht hat", () => {
+  // Die Datei steht auf `structure_registered`. Ein Aufrufer, der einen Lauf
+  // starten will, erfährt hier, dass die Stufe fehlt — nicht erst beim Lauf.
+  const issues = checkPresentationRegistration("numbers_registered");
+  assert.ok(issues.some((i) => i.where === "status"));
+});
+
+test("und eine Registrierung, die die Zahlenstufe BEHAUPTET, scheitert an den offenen Voraussetzungen", () => {
+  // Die Voraussetzungen sperren den ANSPRUCH auf die Stufe, nicht die Anfrage
+  // danach — dieselbe Trennung wie bei der Cue-Registrierung. Vier sind offen:
+  // Zweitwortlaut, Gate je Session, erreichbares Mindest-N, Query-Klasse.
+  const behauptet = { ...loadPresentationRegistration(), status: "numbers_registered" };
+  const issues = checkPresentationRegistration("numbers_registered", behauptet);
+  const offen = issues.filter((i) => i.where.startsWith("precondition"));
+  assert.equal(offen.length, 4, JSON.stringify(issues, null, 2));
+  assert.ok(offen.some((i) => i.where.includes("min_n_reachable")));
+  assert.ok(offen.some((i) => i.where.includes("arm_b_per_session_gate")));
 });
