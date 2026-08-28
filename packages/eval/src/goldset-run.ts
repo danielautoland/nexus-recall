@@ -38,6 +38,7 @@ import {
   OllamaEmbeddingProvider,
   SearchIndex,
   Vault,
+  isWeakResult,
   type RecallHit,
 } from "@bastra-recall/core";
 import type { GoldCase } from "./goldset.js";
@@ -71,6 +72,18 @@ export interface CaseResult {
   gold_score: number;
   /** Nothing cleared the floor — the engine effectively abstained. */
   abstained: boolean;
+  /**
+   * No served hit anchors lexically — neither `matched_recall_when` nor a title
+   * match. The registered follow-up for the M1 `false_abstention` tolerance
+   * (registrations/m1-tolerances.json): the score floor cannot fire on the
+   * hybrid path, so the abstention metric is pinned at zero, and this predicate
+   * is what a future gate would be built on. Recorded, never scored — this run
+   * is a measurement, not a gate.
+   *
+   * The same `isWeakResult` the daemon serves with, imported from core. A
+   * second implementation here would be the drift its docstring warns about.
+   */
+  weak_result: boolean;
   /** Gold ids the vault no longer holds. A gate failure, never a miss. */
   unknown_ids: string[];
   /**
@@ -210,7 +223,15 @@ function controlRecaller(ids: string[], seed: number): Recaller {
   };
 }
 
-async function scoreCases(cases: GoldCase[], recall: Recaller, knownIds: Set<string>): Promise<CaseResult[]> {
+async function scoreCases(
+  cases: GoldCase[],
+  recall: Recaller,
+  knownIds: Set<string>,
+  /** Whether THIS recaller is the full hybrid path — `isWeakResult` is defined
+   *  only there (in BM25-only mode the score is a real BM25 quantity and the
+   *  floor already does the job). False for the random control. */
+  hybridActive: boolean,
+): Promise<CaseResult[]> {
   const rows: CaseResult[] = [];
   for (const c of cases) {
     const unknown = [...c.expected_ids, ...c.acceptable_alternatives].filter((i) => !knownIds.has(i));
@@ -236,6 +257,9 @@ async function scoreCases(cases: GoldCase[], recall: Recaller, knownIds: Set<str
       top_score: above[0]?.score ?? 0,
       gold_score: rExp === -1 ? 0 : above[rExp].score,
       abstained: above.length === 0,
+      // On the SERVED pool, like the daemon: `above` is what clears the floor,
+      // and `abstained` is measured on the same list two lines up.
+      weak_result: isWeakResult(above, hybridActive),
       unknown_ids: unknown,
       top_mode: above[0]?.mode ?? "(none)",
     });
@@ -326,10 +350,11 @@ async function main(): Promise<void> {
     ? (q) => search.recallHybrid(q, { k: PRODUCTION_K })
     : async (q) => search.recall(q, { k: PRODUCTION_K });
 
+  const hybridActive = search.hasEmbeddings();
   const started = Date.now();
-  const main = await scoreCases(cases, recaller, knownIds);
+  const main = await scoreCases(cases, recaller, knownIds, hybridActive);
   const mainMs = Date.now() - started;
-  const control = await scoreCases(cases, controlRecaller([...knownIds], args.seed), knownIds);
+  const control = await scoreCases(cases, controlRecaller([...knownIds], args.seed), knownIds, false);
   await cleanup?.();
 
   // Split the set the way §19 asks for it. Probes never enter the denominator.

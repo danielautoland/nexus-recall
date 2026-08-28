@@ -92,6 +92,7 @@ export { readOccupant, occupantOfRaw, scanVaultForId, scanVaultForIdAsync, snaps
 export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
 export { onMutationIncident, newOperationId, reportMutationIncident } from "./mutation-incident.js";
 export type { MutationIncident, MutationStatus } from "./mutation-incident.js";
+export { isWeakResult, isNoHome, hitTitleMatches } from "./weak-result.js";
 export {
   areaKeyForPath,
   assertAreaWritable,

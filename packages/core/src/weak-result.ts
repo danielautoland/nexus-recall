@@ -16,8 +16,15 @@
  * Extracted here so both paths compute the same thing from the same code. A
  * second implementation would have drifted, and the two paths disagreeing about
  * what "weak" means is worse than neither having it.
+ *
+ * It sat in `packages/daemon` until the M1 tolerances (#262, §18.1) needed it:
+ * `false_abstention` is to be measured as the share of answerable cases with
+ * `weak_result`, and the gold-set runner in `packages/eval` cannot depend on
+ * the daemon. core is the one workspace every path already depends on, so the
+ * predicate moved here rather than being copied a third time — which is the
+ * drift this docstring has been warning about since #249.
  */
-import type { RecallHit } from "@bastra-recall/core";
+import type { RecallHit } from "./search.js";
 
 /**
  * Did a lexical BM25 match (`matched_terms`) land in the hit's TITLE?

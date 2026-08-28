@@ -6,8 +6,13 @@
  * sides would be internally consistent.
  *
  * So compare the two texts. Not the behaviour — the SOURCE. If
- * `daemon/src/weak-result.ts` changes its predicate bodies, this fails and the
+ * `core/src/weak-result.ts` changes its predicate bodies, this fails and the
  * harness gets updated with it.
+ *
+ * The predicate moved from `daemon/src` to `core/src` with the M1 measurement
+ * (#262): the gold-set runner calls it directly now. This harness still carries
+ * its own copy, so the guard stays — but the copy is no longer NECESSARY, and
+ * replacing it with the core import is the cleanup that retires this file.
  *
  * Runner: node --import tsx --test packages/eval/__tests__/absence-honesty-parity.test.ts
  */
@@ -19,8 +24,8 @@ import * as path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const harness = readFileSync(path.join(here, "..", "src", "absence-honesty.ts"), "utf8");
-const daemon = readFileSync(
-  path.join(here, "..", "..", "daemon", "src", "weak-result.ts"),
+const shipped = readFileSync(
+  path.join(here, "..", "..", "core", "src", "weak-result.ts"),
   "utf8",
 );
 
@@ -54,9 +59,9 @@ for (const fn of ["hitTitleMatches", "isWeakResult", "isNoHome"]) {
   test(`${fn}: the eval copy still matches the daemon`, () => {
     assert.equal(
       bodyOf(harness, fn),
-      bodyOf(daemon, fn),
+      bodyOf(shipped, fn),
       `${fn} drifted — packages/eval/src/absence-honesty.ts must be updated to match ` +
-        "packages/daemon/src/weak-result.ts, or the harness is measuring a predicate that no longer ships",
+        "packages/core/src/weak-result.ts, or the harness is measuring a predicate that no longer ships",
     );
   });
 }

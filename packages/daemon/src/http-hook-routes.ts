@@ -21,7 +21,7 @@ import { computeTrustShadow, trustRankMode, usageForShadow } from "./trust-shado
 import { toLeanHit, truncateSummary } from "./tool-handlers.js";
 import { expandQuery, type BridgePool } from "./learned-recall/bridges.js";
 import { type SupportedLanguage } from "./learned-recall/language.js";
-import { isWeakResult, isNoHome } from "./weak-result.js";
+import { isWeakResult, isNoHome } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
 import {
   MAX_BODY_BYTES,

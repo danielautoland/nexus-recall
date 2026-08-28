@@ -9,7 +9,7 @@ import { truncateSummaryTo, hasUnresolvedConflict, type StageListener, type Reca
 import { envInt } from "./env.js";
 import { fireAndForget } from "./telemetry.js";
 import type { RecallStageBuckets } from "./telemetry-events.js";
-import { isWeakResult, isNoHome } from "./weak-result.js";
+import { isWeakResult, isNoHome } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
 
 export { armsOf, SCORE_VERSION } from "./score-space.js";
