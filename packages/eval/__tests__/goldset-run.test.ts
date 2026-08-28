@@ -5,14 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   controlRecaller,
-  datasetHash,
   gatedHybridRecaller,
-  loadGoldFiles,
   metricsFor,
   scoreCases,
-  unknownGoldIds,
   type CaseResult,
 } from "../src/goldset-run.js";
+import { datasetHash, loadGoldFiles, unknownGoldIds } from "../src/goldset-dataset.js";
 import type { RecallHit, StageListener } from "@bastra-recall/core";
 import { originRefHash, stagedId, type GoldCase } from "../src/goldset.js";
 
