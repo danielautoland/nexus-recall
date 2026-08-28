@@ -38,6 +38,7 @@ import { join } from "node:path";
 import type { Vault } from "@bastra-recall/core";
 import { abandonAfter } from "@bastra-recall/core";
 import { recallHandler, type ToolDeps } from "./tool-handlers.js";
+import { governContext, estimateTokens } from "./context-governor.js";
 import { runHookRecall, type HookRecallDeps } from "./http-hook-routes.js";
 import { listFloors } from "./floors.js";
 import type { PinnedFloorLean } from "./pinned-block.js";
@@ -271,11 +272,9 @@ function clip(s: string, max: number): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
-/** Die Token-Schätzung des Repos: vier Zeichen je Token (wie
- *  `hint_tokens_est` in den Bash-Lanes). Grob, aber überall dieselbe Grobheit. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+/** #266: Die Token-Schätzung kommt aus dem Governor — eine Formel, nicht zwei.
+ *  Re-exportiert, damit die bestehenden Aufrufer ihren Importpfad behalten. */
+export { estimateTokens } from "./context-governor.js";
 
 /**
  * Alle Abschnitte erheben — nebenläufig, unter einer gemeinsamen Deadline.
@@ -487,25 +486,27 @@ export async function assembleSessionSections(
 
   const aborted = settled.filter((s) => s.timedOut).map((s) => s.kind);
 
-  // In Renderreihenfolge, aber nach PRIORITÄT ins Budget aufgenommen: Ein
-  // knappes Token-Budget darf nicht den wichtigsten Block treffen, nur weil er
-  // im Text oben steht.
+  // #266: Das Budget entscheidet jetzt der Context Governor, nicht dieser
+  // Block. Ersatz, kein Zusatz — die Regel ist dieselbe (nach PRIORITÄT
+  // aufnehmen, in RENDERREIHENFOLGE ausgeben), sie steht nur nicht mehr zum
+  // zweiten Mal hier. §16.3 verlangt EINEN Entscheider; zwei Stellen mit
+  // derselben Regel sind zwei Stellen, an denen sie auseinanderlaufen kann.
+  //
+  // Leere Abschnitte gehen gar nicht erst hinein: Der Governor kennt „nichts zu
+  // sagen" nicht, und ein leerer Eintrag käme mit 0 Token durch und stünde
+  // danach als „aufgenommen" da. Das ist die Semantik dieses Aufrufers, nicht
+  // die des Budgets.
   const byKind = new Map(settled.map((s) => [s.kind, s.lines ?? []]));
-  const candidates = [...RENDER_ORDER]
-    .filter((k) => (byKind.get(k) ?? []).length > 0)
-    .sort((a, b) => PRIORITY[a] - PRIORITY[b]);
-
-  const keep = new Set<SectionKind>();
-  let usedTokens = 0;
-  const tokensOf = new Map<SectionKind, number>();
-  for (const kind of candidates) {
-    const text = (byKind.get(kind) ?? []).join("\n");
-    const cost = estimateTokens(text);
-    tokensOf.set(kind, cost);
-    if (budgetTokens > 0 && usedTokens + cost > budgetTokens) continue;
-    usedTokens += cost;
-    keep.add(kind);
-  }
+  const governed = governContext(
+    RENDER_ORDER.filter((k) => (byKind.get(k) ?? []).length > 0).map((kind) => ({
+      id: kind,
+      priority: PRIORITY[kind],
+      text: (byKind.get(kind) ?? []).join("\n"),
+    })),
+    { tokens: budgetTokens },
+  );
+  const keep = new Set<SectionKind>(governed.kept.map((g) => g.id as SectionKind));
+  const droppedBy = new Map(governed.dropped.map((d) => [d.id as SectionKind, d.reason]));
 
   const sections: SessionSection[] = RENDER_ORDER.filter((k) => keep.has(k)).map((kind) => ({
     kind,
@@ -518,16 +519,18 @@ export async function assembleSessionSections(
     return {
       kind,
       priority: PRIORITY[kind],
-      tokens_est: tokensOf.get(kind) ?? 0,
+      tokens_est: estimateTokens(lines.join("\n")),
       included,
       ...(included
         ? {}
         : {
+            // Die Deadline schlägt den Budgetgrund: Ein Abschnitt, der gar
+            // nicht fertig wurde, ist nicht am Budget gescheitert.
             omitted: aborted.includes(kind)
               ? ("deadline" as const)
               : lines.length === 0
                 ? ("empty" as const)
-                : ("token_budget" as const),
+                : ((droppedBy.get(kind) ?? "token_budget") as "token_budget"),
           }),
     };
   });
