@@ -9,7 +9,7 @@ export { Vault } from "./vault.js";
 export type { VaultEvent, VaultListener } from "./vault.js";
 
 export { SearchIndex, salienceRankCap } from "./search.js";
-export type { RecallHit, RecallOptions } from "./search.js";
+export type { RecallHit, RecallOptions, CueIndexOptions } from "./search.js";
 
 export {
   normalizeQuery,
@@ -93,6 +93,23 @@ export { withIdClaim, diskAuthority, onIdScan } from "./id-transaction.js";
 export { onMutationIncident, newOperationId, reportMutationIncident } from "./mutation-incident.js";
 export type { MutationIncident, MutationStatus } from "./mutation-incident.js";
 export { isWeakResult, isNoHome, hitTitleMatches } from "./weak-result.js";
+export {
+  cueSidecarPath,
+  cueSourceFingerprint,
+  parseCueRecord,
+  projectCues,
+  loadCueProjection,
+  describeCueProjection,
+} from "./cue-sidecar.js";
+export type {
+  CueFamily,
+  DerivedCue,
+  CueProjection,
+  CueRejection,
+  CueRejectionReason,
+  CueStale,
+  CueTargetSource,
+} from "./cue-sidecar.js";
 export {
   areaKeyForPath,
   assertAreaWritable,

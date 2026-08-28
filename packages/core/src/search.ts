@@ -11,6 +11,7 @@ import { groupQueryTerms, groupedTokenize } from "./bm25-grouping.js";
 import { capBm25Query } from "./bm25-query-cap.js";
 import { abandonAfter } from "./deadline.js";
 import { scopeEquals } from "./scope.js";
+import type { CueProjection } from "./cue-sidecar.js";
 
 export interface RecallHit {
   id: string;
@@ -424,6 +425,14 @@ interface IndexDoc {
   recall_when_expanded_flat: string;
   topic_path_flat: string;
   body: string;
+  /**
+   * §11.4: die abgeleiteten Cues als ACHTES Feld, nie in `recall_when_flat`
+   * hineingeschrieben — „handgeschriebenes `recall_when` und abgeleiteter Cue
+   * haben verschiedene Vertrauensklassen und werden nie zu einem Feld
+   * verschmolzen". Optional, weil es ohne geladene Projektion gar nicht erst
+   * entsteht (siehe Konstruktor).
+   */
+  cues_flat?: string;
   // not searched, just stored
   type: string;
   scope: string;
@@ -431,6 +440,21 @@ interface IndexDoc {
   obsolete: boolean;
   confidence: number;
   sensitivity: string;
+}
+
+/**
+ * Womit die Cue-Schicht (§11.4) am Index angemeldet wird.
+ *
+ * Beides sind FREIE Parameter im Sinne von §18.3: Sie werden auf dem
+ * Auswahlteil der registrierten Aufteilung bestimmt und nicht hier gesetzt.
+ * Ohne dieses Argument — dem Produktionszustand — verhält sich der Index
+ * exakt wie vor der Cue-Schicht.
+ */
+export interface CueIndexOptions {
+  /** Die geladene Projektion (`cue-sidecar.ts`). */
+  projection: CueProjection;
+  /** Feldgewicht des Cue-Felds. Default 0 = aus, Feld wird nicht angelegt. */
+  boost?: number;
 }
 
 /**
@@ -513,7 +537,26 @@ export class SearchIndex {
   private static readonly QUERY_CACHE_MAX = 100;
   private static readonly QUERY_CACHE_TTL_MS = 30_000;
 
-  constructor(private readonly vault: Vault) {
+  /**
+   * Die geladene Cue-Projektion, oder `null` — und `null` ist der
+   * Produktionszustand: Solange kein Generator gelaufen ist, gibt es keine
+   * Sidecar-Datei (§11.4 Rollback). Dann wird `cues_flat` weder als Feld
+   * angemeldet noch je gesetzt, und der Index ist derselbe wie vor der
+   * Cue-Schicht — nicht „gleich gemessen", sondern gleich konstruiert.
+   */
+  private readonly cues: CueProjection | null;
+
+  constructor(
+    private readonly vault: Vault,
+    cues?: CueIndexOptions,
+  ) {
+    // Freier Parameter (§18.3): Boost und alle Cue-Parameter werden auf dem
+    // Auswahlteil bestimmt, nicht hier geraten. Der Default 0 heißt AUS, und
+    // aus heißt: das Feld existiert nicht. Ein Boost von 0 bei angemeldetem
+    // Feld wäre nicht dasselbe — ein Dokument, das NUR über einen Cue matcht,
+    // käme mit Score 0 trotzdem in den Kandidatenpool und veränderte ihn.
+    const boost = cues?.boost ?? 0;
+    this.cues = cues && boost > 0 ? cues.projection : null;
     this.mini = new DocFreqMiniSearch<IndexDoc>({
       // #162: Identifier-erhaltender Tokenizer (Dual-Emission: `my-app.config.ts`
       // + `my app config ts`). Gilt für Index- UND Query-Seite — MiniSearch fällt
@@ -528,6 +571,7 @@ export class SearchIndex {
         "recall_when_expanded_flat",
         "topic_path_flat",
         "body",
+        ...(this.cues ? (["cues_flat"] as const) : []),
       ],
       storeFields: [
         "id",
@@ -553,6 +597,10 @@ export class SearchIndex {
           topic_path_flat: 2,
           summary: 2,
           body: 1,
+          // Abgeleitete Cues: eigenes Gewicht, eigener Vertrauensklasse wegen.
+          // Der Wert kommt vom Aufrufer und wird auf dem Auswahlteil bestimmt
+          // (§18.3) — hier steht kein geratener Standardwert.
+          ...(this.cues ? { cues_flat: boost } : {}),
         },
         fuzzy: 0.2,
         prefix: true,
@@ -1323,6 +1371,11 @@ export class SearchIndex {
       recall_when_expanded_flat: (fm.recall_when_expanded ?? []).join(" \n "),
       topic_path_flat: fm.topic_path.join(" "),
       body: m.body,
+      // Nur wenn eine Projektion geladen ist. Ein Memory ohne Cues bekommt das
+      // Feld leer — es ist dann im Index vorhanden, trägt aber keine Terme.
+      ...(this.cues
+        ? { cues_flat: (this.cues.byMemory.get(fm.id) ?? []).join(" \n ") }
+        : {}),
       type: fm.type,
       scope: fm.scope,
       topic_path: fm.topic_path,
