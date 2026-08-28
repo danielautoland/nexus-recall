@@ -292,10 +292,26 @@ test("the M1 tolerances are versioned, derived, and above their own noise band",
   assert.ok(measured.value > measured.wilson_95_ci[0] && measured.value < measured.wilson_95_ci[1]);
   assert.deepEqual(rl.report_separately, ["origin_type"]);
 
-  // False abstention carries NO number on purpose — the score floor cannot fire
-  // on the hybrid path, so any tolerance would pass unconditionally.
+  // False abstention is registered on weak_result, not on the score floor — the
+  // floor could not fire on the hybrid path, so a tolerance on it was empty.
   const fa = tol.false_abstention as Record<string, unknown>;
-  assert.equal(fa.tolerance, null);
-  assert.equal(fa.status, "not_registrable_on_the_current_mechanism");
-  assert.match(String((fa.registered_follow_up as Record<string, string>).mechanism), /weak_result/);
+  assert.equal(fa.mechanism, "weak_result");
+  const faMeasured = fa.measured as { value: number; wilson_95_ci: [number, number] };
+  assert.ok(
+    (fa.tolerance as number) > faMeasured.wilson_95_ci[1],
+    "the tolerance must sit above the upper bound of the measured interval, zero count or not",
+  );
+  assert.ok(String((fa.derived_from as Record<string, string>).run_artifact).includes("eval-runs"));
+
+  // A tolerance on a predicate that never fires would be as empty as the floor
+  // it replaced. The discriminance counts are what make it a real gate.
+  const disc = fa.discriminance as Record<string, string>;
+  assert.match(disc.gibberish_probes, /^[1-9]\d*\/\d+$/, "weak_result must fire on at least one nonsense probe");
+  assert.equal(disc.answerable_cases, "0/372");
+
+  // The abandoned mechanism stays on the record: it explains why the mechanism
+  // was swapped rather than the number tuned.
+  const sup = fa.supersedes as Record<string, string>;
+  assert.equal(sup.previous_status, "not_registrable_on_the_current_mechanism");
+  assert.match(sup.why_abandoned, /81\.967/, "the arithmetic that killed the floor is part of the record");
 });

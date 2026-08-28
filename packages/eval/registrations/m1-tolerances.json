@@ -1,8 +1,9 @@
 {
   "$comment": "The numeric M1 tolerances (§18.1, §18.2, §26.1). §18.1 puts them AFTER the M0 baseline run — an effect size or a tolerance picked before the baseline shows the spread of the metric is a guess with a number attached. §26.1 makes them a V1.0 release condition: 'die numerischen M1-Toleranzen nach dem M0-Baseline-Run versioniert festgeschrieben sind'. Changing a value here means bumping registration_version and saying which version a report belongs to.",
   "schema_version": 1,
-  "registration_version": 1,
+  "registration_version": 2,
   "registered_at": "2026-08-28",
+  "$comment_version_2": "v2 (2026-08-28): false_abstention moves from not-registrable to a registered tolerance on weak_result, after faa7050 moved that predicate into core and a second run measured it. relevant_loss is unchanged.",
   "registered_by": "Daniel Nevoigt",
 
   "derived_from": {
@@ -32,18 +33,39 @@
   },
 
   "false_abstention": {
-    "tolerance": null,
-    "status": "not_registrable_on_the_current_mechanism",
-    "$comment_why": "Abstention today is a score floor, and on the hybrid path that floor cannot fire. The lowest possible score of a rank-1 hit is RRF_SCALE/(RRF_K+1) = 81.967 while the documented floor is 30 — unreachable by construction. The baseline measured 0 of 372 false abstentions AND 0 of 60 correct abstentions: the metric is pinned at zero and would pass any tolerance, including 0%. Registering a number here would register a gate that cannot test anything.",
-    "$comment_why_not_a_threshold": "A score threshold does not rescue it. The best achievable cut was measured on both arms (Youden J over every observed score): hybrid at 139.3 keeps 64.8% of answerable cases while still letting 23.3% of no-answer cases through (J=0.415); BM25-only at 2104.3 keeps only 54.0% to block 91.7% (J=0.457). Even at the optimum a third to a half of all correct answers would be suppressed. The score does not separate the two groups — median top score 152.2 answerable against 116.1 no-answer, with an identical p90 of 163.9.",
-    "registered_follow_up": {
-      "mechanism": "weak_result",
-      "source": "packages/daemon/src/weak-result.ts",
-      "definition": "fires when NO hit in the pool anchors lexically — neither matched_recall_when nor a title match. A lexical-anchor predicate, not a threshold; its own docstring describes exactly this failure ('a nonsense query still produces a top hit at 130+ … the flag says the high score is rank-1-of-nothing').",
-      "blocked_by": "weak-result.ts lives in packages/daemon and packages/eval does not depend on it, so the gold-set runner cannot call it. A second implementation in the harness is the drift the module's own docstring warns against.",
-      "enabling_step": "move weak-result.ts to packages/core, then one measurement run recording per case whether any hit anchors",
-      "then": "false_abstention = share of answerable cases with weak_result=true; the tolerance is set from that measured value the same way relevant_loss was set from its own"
-    }
+    "tolerance": 0.015,
+    "comparator": "<=",
+    "mechanism": "weak_result",
+    "mechanism_source": "packages/core/src/weak-result.ts",
+    "unit": "share of answerable cases for which weak_result fires — no hit in the pool anchors lexically (neither matched_recall_when nor a title match)",
+    "denominator": "answerable cases in the main denominator, probes excluded",
+    "measured": { "value": 0.0, "count": "0/372", "wilson_95_ci": [0.0, 0.0102] },
+    "derived_from": {
+      "run_artifact": "~/.bastra/eval-runs/2026-08-28-d907fa554780",
+      "arm": "Hybrid (BM25 + Vector RRF) · ollama-embeddinggemma",
+      "commit": "faa7050",
+      "$comment_commit": "The measured code is the working tree that became faa7050 ('weak_result zieht nach core'). The manifest of that run records git as 320e19b-dirty, because the move was not yet committed when it ran — the artifact and this field describe the same code from two sides, and neither is wrong.",
+      "$comment": "A second run on the same gold set, taken after weak_result moved to core so the gold-set runner could call the production predicate instead of reimplementing it."
+    },
+    "$comment_derivation": "Measured 0 of 372. With zero events the point estimate carries no information on its own, so the tolerance is set from the upper bound of the Wilson 95% interval: 1.02%. 0.015 sits 0.48pp above it — close enough that a genuine regression shows up, far enough that the interval itself does not breach the gate. Same construction as relevant_loss, only from a zero count instead of a rate.",
+    "$comment_stricter": "0.010 sits ON the interval bound: with 372 cases even a single false abstention is 0.27%, so a handful of them would breach a gate that the measurement cannot distinguish from the baseline.",
+    "$comment_looser": "0.03 would allow eleven answerable cases to be suppressed before the gate notices — against a baseline of zero, that is a regression nobody would see.",
+    "discriminance": {
+      "$comment": "A tolerance on a predicate that never fires would be as empty as the score floor was. These two counts are the evidence that weak_result actually discriminates: it stays silent on answerable cases and speaks on cases where there is nothing to find.",
+      "gibberish_probes": "3/8",
+      "no_answer_cases": "1/60",
+      "answerable_cases": "0/372",
+      "$comment_reading": "It fires on 3 of 8 nonsense probes and on 1 of 60 no-answer cases while staying silent on all 372 answerable ones. Sensitivity is clearly incomplete — 5 of 8 nonsense probes still produce a lexically anchored hit — but the direction is right and the false-positive side is clean, which is what a false-abstention tolerance is set against."
+    },
+    "supersedes": {
+      "$comment": "HISTORY, kept on purpose: it explains why the mechanism was changed rather than the number tuned. Do not delete when this entry is next revised.",
+      "previous_status": "not_registrable_on_the_current_mechanism",
+      "previous_mechanism": "score floor",
+      "why_abandoned": "Abstention used to be a score floor, and on the hybrid path that floor cannot fire. The lowest possible score of a rank-1 hit is RRF_SCALE/(RRF_K+1) = 81.967 while the documented floor is 30 — unreachable by construction. The M0 baseline measured 0 of 372 false abstentions AND 0 of 60 correct abstentions: the metric was pinned at zero and would have passed any tolerance, including 0%.",
+      "why_not_a_threshold": "A score threshold does not rescue it either. The best achievable cut was measured on both arms (Youden J over every observed score): hybrid at 139.3 keeps 64.8% of answerable cases while still letting 23.3% of no-answer cases through (J=0.415); BM25-only at 2104.3 keeps only 54.0% to block 91.7% (J=0.457). Even at the optimum a third to a half of all correct answers would be suppressed — the score does not separate the two groups.",
+      "resolved_by": "faa7050 moved weak_result from packages/daemon to packages/core, so the gold-set runner calls the production predicate instead of reimplementing it."
+    },
+    "$comment_open_dependency": "OPEN as of 2026-08-28: a separate run is investigating WHY weak_result is silent on all 372 answerable cases — whether that is genuine precision or the predicate being too permissive (its title match is tolerant by design, and a tolerant anchor is easy to satisfy). If that investigation changes the reading, this entry is revised and registration_version bumped. The tolerance stands until then; it is derived from what was measured, not from what the measurement means."
   },
 
   "$comment_not_registered": "Only the two tolerances named in the M0 checklist are settled here. Anything else M1 may need (§18.2) waits for its own measurement — an unmeasured tolerance is a guess whether or not it sits in a versioned file."
