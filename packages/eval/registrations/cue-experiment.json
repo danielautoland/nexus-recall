@@ -132,6 +132,77 @@
       "min_n": null
     },
     "derived_from": "OPEN — to be re-derived on the associative pool after #418",
+    "$comment_numbers_amendments": "AMENDMENTS to the power assumption, appended and dated — never folded back into the fields above, and never into `superseded_v2_values`, which stays as it is. Each entry records a derivation that was actually carried out: its inputs, the method it followed, its result, and what the result means for the pool. An amendment may report that a number is NOT derivable; that is a result, not a gap.",
+    "numbers_amendments": [
+      {
+        "amended_at": "2026-08-28",
+        "issue": "#418",
+        "amends": "power_assumption.main_effects.min_n and admissible_designs.A.min_n_per_condition",
+        "$comment": "First re-derivation on the associative axis, carried out after the axis became measurable (156 associative cases, 142 of them answerable). It follows the v2 method unchanged; only the inputs are new. RESULT: at the v2 smallest effect of interest of 6pp the minimum N is NOT derivable, because a difference of that size is arithmetically impossible at the measured discordance. The v2 registration anticipated this case and prescribed the response — see superseded_v2_values.paired_discordance.robustness. min_n_per_condition therefore stays null, now for a measured reason rather than for lack of data.",
+        "method": {
+          "$comment": "The v2 method, reconstructed from its own calibration points and verified against them before being reused. Reproduces the registered 213 (pi_d 0.108, SESOI 6pp), the registered robustness value 141 (pi_d 0.08) and the registered 275 (power 0.90) exactly, and reproduces the two detectable differences quoted in contamination_guard.$comment_shares (holdout 292 -> 5.19pp against '5.2pp', holdout 219 -> 5.92pp against '5.9pp'). No new statistics were introduced.",
+          "steps": [
+            "1. pi_d — the paired discordance — is measured as a PROXY: the hybrid arm against the BM25-only arm, case by case, on Recall@3, over the same answerable cases of the same dataset.",
+            "2. Split it at the smallest effect of interest: p01 = (pi_d + delta) / 2, p10 = (pi_d - delta) / 2, and p1 = p01 / pi_d is the favourable share among the discordant pairs.",
+            "3. Required discordant pairs, normal approximation to the binomial test against p = 0.5: n_disc = (z_(alpha/2) * 0.5 + z_power * sqrt(p1 * (1 - p1)))^2 / (p1 - 0.5)^2.",
+            "4. n = ceil(n_disc / pi_d), the number of paired cases per condition.",
+            "5. The interaction requirement is 4 x the main-effect requirement (v2: 852 = 4 x 213)."
+          ],
+          "arithmetic_ceiling": "delta must be strictly smaller than pi_d: the difference p01 - p10 cannot exceed p01 + p10. A SESOI at or above pi_d is not a hard measurement, it is an impossible one."
+        },
+        "inputs": {
+          "alpha": 0.05,
+          "alpha_sided": "two-sided",
+          "power": 0.8,
+          "$comment_alpha_power": "Unchanged from v2 — the contract standard named in $comment_alpha and $comment_power. Only pi_d is new.",
+          "paired_discordance_associative": {
+            "value": 0.0352,
+            "exact": "5 / 142",
+            "metric": "Recall@3",
+            "contingency": "both arms hit 5, hybrid only 4, BM25 only 1, neither 132",
+            "$comment": "Same proxy construction as v2 and the same caveat: two cue-generation paths on the SAME arm are likely more similar than two different arms, which lowers the discordance further. The associative axis is far more concordant than the descriptive one because both arms mostly fail on it — 132 of 142 cases are missed by both."
+          },
+          "paired_discordance_descriptive_for_comparison": {
+            "value": 0.1123,
+            "exact": "41 / 365",
+            "contingency": "both 229, hybrid only 26, BM25 only 15, neither 95",
+            "$comment": "Measured on the same run pair. Close to the v2 value of 0.108 on the same 365 descriptive cases, which is what makes the associative figure interpretable as an axis property rather than a drift of the method."
+          }
+        },
+        "result": {
+          "min_n_per_condition_at_sesoi_0_06": null,
+          "$comment_result": "Not derivable. A 6pp difference requires |p01 - p10| = 0.06 while p01 + p10 = 0.0352. Per the registered robustness rule the honest finding on this axis is not 'no difference' but 'a difference of this size does not exist', and a report must say so rather than reporting a null result.",
+          "arithmetic_ceiling_pp": 3.52,
+          "smallest_requirement_over_all_admissible_sesoi": 110,
+          "$comment_floor": "Even at the ceiling the requirement does not fall below about 110 paired cases per condition (the limit of the formula as delta approaches pi_d is z_(alpha/2)^2 / pi_d = 3.8415 / 0.0352). No SESOI makes this axis cheaper than that.",
+          "available_pool": {
+            "associative_answerable": 142,
+            "selection": 44,
+            "holdout": 98,
+            "$comment": "From splitGoldCases at the registered seed and shares on the associative pool. The comparison runs on the HOLDOUT, so 98 is the number the requirement is measured against — below the floor of 110. As it stands the associative axis cannot detect any effect size at all."
+          }
+        },
+        "what_the_pool_would_need": {
+          "$comment": "Holdout size required per SESOI at pi_d = 0.0352, and the associative pool that implies at the registered 30/70 split. For orientation before authoring more cases; none of these is registered as a target.",
+          "sesoi_3_5pp": { "holdout": 122, "pool": 175 },
+          "sesoi_3_0pp": { "holdout": 226, "pool": 323 },
+          "sesoi_2_5pp": { "holdout": 368, "pool": 526 },
+          "sesoi_2_0pp": { "holdout": 620, "pool": 886 }
+        },
+        "uncertainty": {
+          "$comment": "The load-bearing input rests on FIVE discordant pairs. This is the weakest part of the derivation and must not be quoted as a precise quantity.",
+          "wilson_95_ci_for_pi_d": "[0.0151, 0.0798]",
+          "implication": "At the lower bound the ceiling drops to 1.51pp and the floor rises to 254 cases; at the upper bound the ceiling is 7.98pp and the floor 49. The qualitative result — the registered 6pp SESOI is out of reach and the present holdout of 98 is below the floor — holds across the whole interval except its extreme upper end.",
+          "recommended_follow_up": "Re-measure pi_d once the associative pool grows. The estimate stabilises with the count of discordant pairs, not with the count of cases."
+        },
+        "measured_from": {
+          "hybrid_run": "~/.bastra/eval-runs/2026-08-28-61c940b62a8c",
+          "bm25_run": "~/.bastra/eval-runs/2026-08-28-6faf4f3b68f3",
+          "dataset_hash": "8dc20b0154083f38d7db637225e3c66f2610e65502d0d7d2bba1ce39ef123732",
+          "$comment": "Both runs carry the identical dataset hash, so the pairing is over the same cases by construction. Associative Recall@3: 0.0634 hybrid, and the axis contributes 142 of the 507 answerable cases."
+        }
+      }
+    ],
     "superseded_v2_values": {
       "$comment": "HISTORY. Valid for the descriptive configuration, kept for the re-derivation to compare against.",
       "alpha": 0.05,
