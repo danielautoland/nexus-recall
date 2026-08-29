@@ -3,21 +3,22 @@
 > Status: Release- und Zielarchitektur; V1.0 ist der nächste verbindliche
 > Releasevertrag, V2.0 das langfristige, messungsabhängige Zielbild
 >
-> Stand: 29. August 2026 (Vertragsänderung C-083 und Vertragsergänzung C-084;
-> abgenommene Basis vom 26. Juli 2026 im Übrigen unverändert)
+> Stand: 29. August 2026 (Vertragsänderung C-083, Vertragsergänzungen C-084
+> und C-085; abgenommene Basis vom 26. Juli 2026 im Übrigen unverändert)
 >
 > Ausgangsstand: Bastra Recall 0.8.6, aktueller Vault, reale
 > 30-Tage-Telemetrie und bestehende Eval-Geometrie
 >
 > **Diese Datei ist die maßgebliche Fassung.** Verbindlicher Ledgerstand:
-> C-001–C-084, elf Reviewrunden, eine Vertragsänderung und eine
-> Vertragsergänzung; C-001–C-082 am 26. Juli 2026 abgenommen, C-083 und C-084
-> am 29. August 2026 entschieden.
+> C-001–C-085, elf Reviewrunden, eine Vertragsänderung und zwei
+> Vertragsergänzungen; C-001–C-082 am 26. Juli 2026 abgenommen, C-083 bis
+> C-085 am 29. August 2026 entschieden.
 >
 > Entstehung: abgenommener Ausgangsstand C-001–C-028, fortgeschrieben durch die
 > Revisionen C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082
-> sowie durch die Vertragsänderung C-083 und die Vertragsergänzung C-084.
+> sowie durch die Vertragsänderung C-083 und die Vertragsergänzungen C-084
+> und C-085.
 > Alle zwölf Zwischenfassungen und der Ausgangsstand liegen unverändert unter
 > `docs/architecture-history/`; sie sind Belegmaterial, keine geltenden
 > Verträge.
@@ -37,7 +38,7 @@
 > Die Product-Owner-Entscheidungen in Abschnitt 31 sind getroffen und binden
 > die Umsetzung.
 >
-> Nächste freie ID: C-085. Ein neues Delta wird in dieser Datei fortgeschrieben
+> Nächste freie ID: C-086. Ein neues Delta wird in dieser Datei fortgeschrieben
 > und nicht mehr als eigene Revisionsdatei geführt.
 
 ## 0. Entscheidungs- und Reviewstatus
@@ -131,7 +132,7 @@ neuer Evidenz erneut geöffnet.
 | C-019 | bestätigt | `acted_on` und die daraus berechneten Tokenkosten werden durchgängig als Token-Overlap-Proxy bezeichnet, nicht als nachweisliche Nutzung. |
 | C-020 | bestätigt | V1.0-Telemetrie erhält `client`, `hook_source` und eine pseudonyme Session-Dimension, damit die beschlossenen Auswertungen und Experimentarme ausführbar sind. |
 | C-021 | bestätigt | M0 liefert nach dem Baseline-Run versionierte numerische M1-Toleranzen. |
-| C-022 | Product-Owner-Entscheid | Shadow-Abnahme nach mindestens 14 Tagen oder 500 geloggten Hook-Entscheidungen; zusätzlich müssen Goldset-Gates bestehen und alle `required`/`no_answer`-Divergenzen erklärt sein. |
+| C-022 | Product-Owner-Entscheid | **Ergänzt durch C-085:** Die Entscheidungs-Route verlangt zusätzlich Streuung über mindestens 20 Sessions bei höchstens 25 % Anteil je Session; gezählt wird pro Memory-Entscheidung. Shadow-Abnahme nach mindestens 14 Tagen oder 500 geloggten Hook-Entscheidungen; zusätzlich müssen Goldset-Gates bestehen und alle `required`/`no_answer`-Divergenzen erklärt sein. |
 | C-023 | Product-Owner-Entscheid | Der Live-Evidenzentscheid läuft hinter einem Konfigurations-Flag mit sofortigem Fallback auf das heutige Floor-Verhalten; kein Hard-Cutover. |
 | C-024 | Product-Owner-Entscheid | **Releasezuordnung geändert durch C-083:** Die Zuweisungs- und Fallzahlregel selbst gilt unverändert, aber das Erreichen des Mindest-N ist keine V1.0-Anforderung mehr. Retrieval-/Präsentationsexperimente weisen den Arm deterministisch pro pseudonymer Session-ID zu; Mindest-N pro Arm wird nach M0 versioniert festgelegt. |
 | C-025 | Product-Owner-Entscheid | Private Run-Artefakte liegen unter `~/.bastra/eval-runs/<datum>-<hash>/`; das öffentliche Repo erhält nur aggregierte Reports ohne Vault-abgeleitete Query-Texte. |
@@ -194,6 +195,7 @@ neuer Evidenz erneut geöffnet.
 | C-082 | Ist-Korrektur | Das versionierte Queue- beziehungsweise Run-Artefakt der Bestandsprüfung fällt nicht unter M4 und nicht unter den Schemaentscheid aus 21.4: Es verändert weder Memory-Inhalt noch Vault-Schema und darf sofort persistiert werden. 21.4 greift erst, wenn Snapshot-, Queue- oder Reviewfelder in das Memory-Frontmatter beziehungsweise das persistente Memory-Schema übernommen werden. |
 | C-083 | Vertragsänderung | V1.0 schuldet vom Retrieval-/Präsentationsexperiment aus 17.4 nur noch die vorab registrierte Anlage, die deterministische Armzuweisung und den ehrlichen Statusbericht (`underpowered` beziehungsweise `not_evaluable` nach 18.1). Der hinreichend besetzte Lauf — erreichtes Mindest-N je Arm, zweiter Hook-Wortlaut, je Session schaltbares Gate, erhobene Query-Klasse, unabhängige Relevanzlabels — ist nach 26.2 verschoben. Begründung ist gemessen: Die Versuchseinheit ist die Session, und die Ein-Nutzer-Population trägt in vertretbarer Zeit kein Mindest-N. |
 | C-084 | Vertragsergänzung | Ab V1.0 steht das Frontmatter-Format unter einer ausdrücklichen Zusicherung (26.1): Pflichtfelder, Memory-Typen, Bedeutung der dokumentierten optionalen Felder und die Ladetoleranz ändern sich nur mit einem Major-Bump. Ein 1.x-Reader verlangt kein Formatversionsfeld. Unbekannte Schlüssel werden beim Laden toleriert, überleben einen `overwrite` aber nicht garantiert. Nicht gedeckt sind Ranking, interne `.bastra/`-Ablagen und Projektionsinhalte; die `recall`-Ausgabeform fällt unter den eigenen API-Vertrag. Eine Loader-Verschärfung ist nur unter der eng gefassten Sicherheitsausnahme ohne Major-Bump zulässig. |
+| C-085 | Vertragsergänzung | Die 500-Entscheidungen-Route der Shadow-Abnahme (18.2) gilt nur bei Streuung: mindestens 20 verschiedene Sessions tragen die zählenden Entscheidungen, und keine einzelne Session stellt mehr als 25 % von ihnen. Die 14-Tage-Route bleibt unberührt. Klarstellung im selben Eintrag: Gezählt wird pro Memory-Entscheidung, nicht pro Hook-Aufruf — so ist die Schwelle implementiert und so ist sie gemeint. |
 
 **Abnahmestand 24.07.2026:** Vollabgleich Ledger C-001–C-027,
 Gate-Messbarkeit, Ist-Behauptungs-Sweep (58 Aussagen, alle gedeckt),
@@ -334,7 +336,16 @@ zugesichert sind Ranking, interne Ablagen, Projektionsinhalte und die
 Erhaltung fremder Schlüssel über einen `overwrite` hinweg; die
 `recall`-Ausgabeform ist gebunden, aber über den eigenen API-Vertrag.
 
-**Nächste freie ID: C-085.** Neue Delta-Reviews beginnen dort. Ein Urteil
+**Vertragsergänzung, 29.08.2026 (diese Fassung):** C-085 bindet die
+Entscheidungs-Route der Shadow-Abnahme an Streuung. Die Schwelle „500
+Entscheidungen oder 14 Tage" kannte nur eine Menge; im realen Bestand stammten
+2040 von 2052 geloggten Entscheidungen aus einer einzigen Session, womit ein
+Arbeitstag das Tor formal gefüllt hätte. Künftig zählt die Entscheidungs-Route
+nur bei mindestens 20 verschiedenen Sessions und höchstens 25 % Anteil je
+Session; die 14-Tage-Route bleibt unberührt. Derselbe Eintrag hält die
+Zähl-Lesart fest: pro Memory-Entscheidung, nicht pro Hook-Aufruf.
+
+**Nächste freie ID: C-086.** Neue Delta-Reviews beginnen dort. Ein Urteil
 ändert sich nur mit neuer Code-, Telemetrie- oder Run-Evidenz; Geschmacksfragen
 werden als Architekturentscheidung statt als Faktenfehler markiert.
 
@@ -3062,12 +3073,32 @@ reproduzierbaren M0-Baseline-Run finalisiert.
 Shadow-Abnahme:
 
 - mindestens 14 Kalendertage oder mindestens 500 geloggte
-  Hook-Entscheidungen;
+  Hook-Entscheidungen; die Entscheidungs-Route gilt nur, wenn diese
+  Entscheidungen aus **mindestens 20 verschiedenen Sessions** stammen und
+  **keine einzelne Session mehr als 25 %** von ihnen stellt (C-085);
 - alle retrieval-isolierten Komponentengates bestehen auf dem versionierten
   Goldset;
 - jede beobachtete `required`/`no_answer`-Divergenz zwischen Legacy- und
   Evidenzentscheid ist durch Features, Reason-Code oder Review erklärbar;
 - unerklärte Divergenzen blockieren die Live-Aktivierung.
+
+**Streuungsanforderung an die Entscheidungs-Route (C-085).** Die Schwelle
+kannte bislang nur eine Menge, keine Verteilung. Der Zweck des Shadow-Betriebs
+ist aber, das Prädikat gegen die Verteilung echter Nutzung zu beobachten, und
+eine Menge aus einer einzigen Sitzung ist keine Verteilung: Sie trägt einen
+Vault-Zustand, ein Projekt, eine Arbeitsweise und einen Tagesrhythmus. Ein
+einziger intensiver Arbeitstag konnte das Tor formal füllen. Die 14-Tage-Route
+bleibt davon unberührt — Zeit erzeugt Streuung von allein und braucht keine
+zusätzliche Auflage.
+
+**Was gezählt wird.** Gezählt wird pro **Memory-Entscheidung**, nicht pro
+Hook-Aufruf: Ein Aufruf, der über acht Kandidaten entscheidet, liefert acht
+zählende Entscheidungen. So ist die Schwelle implementiert
+(`packages/daemon/scripts/stats.ts`, `shadowDecisions`), und so ist sie
+gemeint; die Formulierung „geloggte Hook-Entscheidungen" in C-022 bezeichnet
+dieselbe Größe. Die Session-Zuordnung folgt derselben Zählung: Eine Session
+zählt, sobald sie mindestens eine zählende Entscheidung trägt, und ihr Anteil
+bemisst sich an den Entscheidungen, nicht an den Aufrufen.
 
 Rollout und Rollback:
 
@@ -4214,10 +4245,10 @@ Das Ziel ist nicht maximaler Recall. Das Ziel ist:
 
 > Zur richtigen Zeit die richtige Erinnerung – und ansonsten Ruhe.
 
-## 28. Delta-Ledger (C-029–C-084)
+## 28. Delta-Ledger (C-029–C-085)
 
 Dieser Abschnitt dokumentiert elf aufeinanderfolgende Runden von Deltas
-gegenüber dem abgenommenen Stand C-001–C-028 sowie zwei spätere
+gegenüber dem abgenommenen Stand C-001–C-028 sowie drei spätere
 Vertragseinträge. Jeder Eintrag nennt die betroffene
 Passage, die Art des Deltas, die tragende Evidenz, das Gate, die Datenquelle,
 das Abnahmekriterium und den Rollback. Kein Eintrag deutet ein früheres Urteil
@@ -4364,6 +4395,13 @@ Zusage, die bislang nur im Code stand und in keinem Dokument:
 | Bisherige Lücke | wird geschlossen durch | Art |
 |---|---|---|
 | 26.1 und 22 ohne Frontmatter-Zusicherung | C-084 | Vertragsergänzung: Schemazusage, Ladetoleranz, Breaking-/Additiv-Grenze |
+
+**Vertragsergänzung — C-085**, 29.08.2026, bindet eine bestehende Schwelle an
+eine Bedingung, die ihr Zweck immer schon verlangte:
+
+| Bisheriger Vertrag | wird ergänzt durch | Art |
+|---|---|---|
+| C-022, 18.2 Shadow-Abnahme | C-085 | Vertragsergänzung: Streuung über Sessions als Bedingung der Entscheidungs-Route |
 
 ### C-029 – Evidenzklassen für Fremdsystemzahlen
 
@@ -6041,6 +6079,50 @@ Urteil wird umgedeutet, geändert wird der Umfang des Releasevertrags.*
   Fehler statt stillem Verwerfen; sie ersetzt keinen Major-Bump für alles
   Übrige.
 
+---
+
+*Ab hier die Vertragsergänzung C-085 vom 29.08.2026.*
+
+### C-085 – Die Entscheidungs-Route der Shadow-Abnahme verlangt Streuung
+
+- **Passage:** 18.2 Shadow-Abnahme um die Streuungsbedingung und die
+  Zähl-Lesart erweitert; Ledgerzeile C-022 mit Ergänzungsverweis, neue
+  Ledgerzeile C-085; 0.4 Abnahmeblock und nächste freie ID; 28 Überschrift,
+  Zuordnung und dieser Eintrag; 35.
+- **Art:** Vertragsergänzung.
+- **Evidenz:** Die Schwelle aus C-022 nennt eine Menge und keine Verteilung.
+  Im realen Bestand über 91 Logtage tragen die
+  `evidence_decision`-Ereignisse 2052 Memory-Entscheidungen — davon **2040 aus
+  einer einzigen Session**, die drei übrigen Sessions steuern zusammen zwölf
+  bei. Die 500er-Schwelle wäre damit viermal erfüllt, ohne dass je eine zweite
+  Arbeitssituation beobachtet worden wäre. Das widerspricht dem in 18.2
+  festgehaltenen Zweck des Shadow-Betriebs, das Prädikat gegen die Verteilung
+  echter Nutzung zu beobachten: Eine Sitzung trägt einen Vault-Zustand, ein
+  Projekt, eine Arbeitsweise und einen Tagesrhythmus. Zur Kalibrierung der
+  Zahl: Im selben 14-Tage-Fenster tragen 132 verschiedene Sessions
+  `hook_call`-Ereignisse, im Tagesmittel etwa neun und an einzelnen Tagen bis
+  27. Zwanzig verschiedene Sessions sind auf dieser Nutzung also erreichbar,
+  ohne dass ein einzelner Arbeitstag sie zuverlässig allein liefert — und die
+  Anteilsgrenze fängt den beobachteten Fall ab, dass zwar viele Sessions
+  zählen, eine davon aber praktisch alles beiträgt.
+- **Gate:** keines. Die Ergänzung verschärft eine Abnahmebedingung und schaltet
+  nichts live; sie kann sofort gelten.
+- **Datenquelle:** die Ereignisprotokolle unter `~/.bastra/logs/events-*.jsonl`
+  (`kind: "evidence_decision"`, Feld `session_id`); die Auswertung in
+  `packages/daemon/scripts/stats.ts`.
+- **Abnahmekriterium:** Die Entscheidungs-Route gilt als erfüllt, wenn die
+  zählenden Entscheidungen aus mindestens 20 verschiedenen Sessions stammen und
+  keine einzelne Session mehr als 25 % von ihnen stellt. Die 14-Tage-Route
+  bleibt ohne zusätzliche Bedingung. Gezählt wird pro Memory-Entscheidung, nicht
+  pro Hook-Aufruf; eine Session zählt, sobald sie eine zählende Entscheidung
+  trägt.
+- **Rollback:** Rein vertraglich, ohne Codewirkung. Erweist sich die
+  Sessionzahl auf einer größeren Population als zu niedrig oder die
+  Anteilsgrenze als zu streng, werden beide nach dem M0-Baseline-Run mit den
+  übrigen numerischen Größen versioniert nachgezogen; bis dahin gelten die hier
+  festgeschriebenen Werte. Wer die schnellere Route nicht erreicht, verliert
+  nichts — die 14-Tage-Route bleibt offen.
+
 ## 29. Quellen- und Behauptungsmatrix
 
 Alle Angaben wurden am **25. Juli 2026** durch Abruf der jeweiligen Primärquelle
@@ -6390,7 +6472,7 @@ beschreibt abgelaufene Memories als „(or excluded if expired)"; der Code dämp
 sie nur auf 20 %.
 
 **Nächste freie ID: C-083.** *(Historischer Stand vom 26.07.2026. Die aktuell
-gültige nächste freie ID steht am Ende von Abschnitt 33.)*
+gültige nächste freie ID steht am Ende von Abschnitt 35.)*
 
 ## 33. Übergabe nach der Vertragsänderung C-083
 
@@ -6449,7 +6531,7 @@ zusätzlich der zweite Hook-Wortlaut für Arm A als Produkt- und Textentscheidun
 und die Aktivierungsentscheidung, von der Arm B abhängt.
 
 **Nächste freie ID: C-084.** *(Stand dieses Abschnitts. Die aktuell gültige
-nächste freie ID steht am Ende von Abschnitt 34.)*
+nächste freie ID steht am Ende von Abschnitt 35.)*
 
 ## 34. Übergabe nach der Vertragsergänzung C-084
 
@@ -6499,4 +6581,53 @@ Fehler statt stillem Verwerfen.
 3. Ob `docs/memory-schema.md` als Nutzerdokumentation zusätzlich auf 26.1
    verweisen soll, damit die beiden Fassungen nicht auseinanderlaufen.
 
-**Nächste freie ID: C-085.**
+**Nächste freie ID: C-085.** *(Stand dieses Abschnitts. Die aktuell gültige
+nächste freie ID steht am Ende von Abschnitt 35.)*
+
+## 35. Übergabe nach der Vertragsergänzung C-085
+
+**Was geändert wurde.** Diese Fassung fügt die Vertragsergänzung C-085 hinzu.
+Geändert wurden ausschließlich die folgenden Passagen:
+
+| Passage | Delta |
+|---|---|
+| Präambel: Ledgerstand, Entstehung, Stand-Datum, nächste freie ID | C-085 |
+| 0.4 Ergänzungsverweis an C-022, neue Ledgerzeile C-085 | C-085 |
+| 0.4 Abnahmeblock und nächste freie ID | C-085 |
+| 18.2 Shadow-Abnahme: Streuungsbedingung und Zähl-Lesart | C-085 |
+| 28 Überschrift, Vorspann, Zuordnungstabelle, Delta-Eintrag C-085 | C-085 |
+| 34 Vermerk zur ID | C-085 |
+| 35 dieser Abschnitt | — |
+
+Alle übrigen Passagen sind unangetastet. Produktcode wurde nicht verändert; die
+Auswertung in `packages/daemon/scripts/stats.ts` erfüllt die neue Bedingung
+heute noch nicht und muss sie nachziehen.
+
+**Was die Ergänzung bewirkt.** Die Shadow-Abnahme kannte zwei gleichwertige
+Routen: 500 geloggte Entscheidungen oder 14 Kalendertage. Die erste zählte nur
+eine Menge. Im realen Bestand stammen 2040 von 2052 Entscheidungen aus einer
+Session — die Schwelle wäre viermal erfüllt, ohne dass je eine zweite
+Arbeitssituation beobachtet worden wäre. Genau das soll der Shadow-Betrieb
+verhindern. Die Entscheidungs-Route verlangt deshalb künftig mindestens 20
+verschiedene Sessions und höchstens 25 % Anteil je Session. Die 14-Tage-Route
+bleibt unverändert: Zeit erzeugt Streuung von allein.
+
+Im selben Eintrag steht die Zähl-Lesart, die bis dahin nur im Code stand:
+Gezählt wird pro Memory-Entscheidung, nicht pro Hook-Aufruf. Ein Aufruf über
+acht Kandidaten liefert acht zählende Entscheidungen — so rechnet
+`stats.ts`, und die Formulierung „geloggte Hook-Entscheidungen" in C-022
+bezeichnet dieselbe Größe.
+
+**Was besonders zu prüfen ist.**
+
+1. Ob 20 Sessions und 25 % nach dem M0-Baseline-Run als versionierte Zahlen
+   bestätigt oder nachgezogen werden. Beide Werte sind aus der heutigen
+   Ein-Nutzer-Nutzung kalibriert und teilen deren Grenzen.
+2. Ob `stats.ts` die Bedingung als eigene Zeile ausweisen soll — heute meldet
+   die Ausgabe nur Entscheidungen und Tage, sodass eine erreichte Schwelle ohne
+   Streuung als „REACHED" erschiene.
+3. Ob dieselbe Streuungsanforderung für den Präsentationsexperiment-Arm aus
+   17.4 gelten soll. Dort ist die Session bereits die Versuchseinheit, weshalb
+   die Frage sich anders stellt — aber sie stellt sich.
+
+**Nächste freie ID: C-086.**

@@ -3,8 +3,8 @@
 > Status: release and target architecture; V1.0 is the next binding
 > release contract, V2.0 the measurement-dependent long-term target
 >
-> As of: 29 August 2026 (contract change C-083 and contract addition C-084;
-> the signed-off basis of 26 July 2026 otherwise unchanged)
+> As of: 29 August 2026 (contract change C-083, contract additions C-084 and
+> C-085; the signed-off basis of 26 July 2026 otherwise unchanged)
 >
 > Starting state: Bastra Recall 0.8.6, the current vault, real
 > 30-day telemetry, and the existing eval geometry
@@ -15,14 +15,14 @@
 > Where the two diverge, the German version prevails. Every change is made
 > there first and translated afterwards, never the other way round.
 >
-> Binding ledger state: C-001–C-084, eleven review rounds, one contract change
-> and one contract addition; C-001–C-082 signed off on 26 July 2026, C-083 and
-> C-084 decided on 29 August 2026.
+> Binding ledger state: C-001–C-085, eleven review rounds, one contract change
+> and two contract additions; C-001–C-082 signed off on 26 July 2026, C-083 to
+> C-085 decided on 29 August 2026.
 >
 > Genesis: signed-off starting state C-001–C-028, carried forward by the
 > revisions C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081, and C-082,
-> and by the contract change C-083 and the contract addition C-084.
+> and by the contract change C-083 and the contract additions C-084 and C-085.
 > All twelve interim versions and the starting state are held unchanged under
 > `docs/architecture-history/`; they are supporting material, not governing
 > contracts. An earlier English version at state C-001–C-028 is held there as
@@ -36,7 +36,7 @@
 > The product-owner decisions in Section 31 have been taken and bind
 > the implementation.
 >
-> Next available ID: C-085. A new delta is carried forward in this file and is
+> Next available ID: C-086. A new delta is carried forward in this file and is
 > no longer kept as a separate revision file.
 
 ## 0. Decision and Review Status
@@ -129,7 +129,7 @@ reopened only with new evidence.
 | C-019 | confirmed | `acted_on` and the token costs computed from it are consistently designated a token-overlap proxy, not demonstrable use. |
 | C-020 | confirmed | V1.0 telemetry gains `client`, `hook_source`, and a pseudonymous session dimension, so that the agreed analyses and experiment arms are executable. |
 | C-021 | confirmed | M0 delivers versioned numerical M1 tolerances after the baseline run. |
-| C-022 | product-owner decision | Shadow sign-off after at least 14 days or 500 logged hook decisions; in addition, gold set gates must pass and all `required`/`no_answer` divergences must be explained. |
+| C-022 | product-owner decision | **Extended by C-085:** the decision route additionally requires spread across at least 20 sessions with at most a 25 % share per session; counting is per memory decision. Shadow sign-off after at least 14 days or 500 logged hook decisions; in addition, gold set gates must pass and all `required`/`no_answer` divergences must be explained. |
 | C-023 | product-owner decision | The live evidence decision runs behind a configuration flag with immediate fallback to today's floor behavior; no hard cutover. |
 | C-024 | product-owner decision | **Release assignment changed by C-083:** the assignment and minimum-N rule itself applies unchanged, but reaching the minimum N is no longer a V1.0 requirement. Retrieval/presentation experiments assign the arm deterministically per pseudonymous session ID; the minimum N per arm is fixed in versioned form after M0. |
 | C-025 | product-owner decision | Private run artifacts live under `~/.bastra/eval-runs/<date>-<hash>/`; the public repository receives only aggregated reports without vault-derived query text. |
@@ -192,6 +192,7 @@ reopened only with new evidence.
 | C-082 | current-state correction | The versioned queue or run artifact of the inventory review falls neither under M4 nor under the schema decision from 21.4: it changes neither memory content nor the vault schema and may be persisted immediately. 21.4 takes effect only when snapshot, queue, or review fields are adopted into the memory frontmatter or the persistent memory schema. |
 | C-083 | contract change | Of the retrieval/presentation experiment from 17.4, V1.0 now owes only the pre-registered design, the deterministic arm assignment and the honest status report (`underpowered` or `not_evaluable` per 18.1). The adequately populated run — minimum N per arm reached, second hook wording, per-session switchable gate, query class collected, independent relevance labels — moves to 26.2. The justification is measured: the unit of randomisation is the session, and the single-user population does not carry a minimum N in reasonable time. |
 | C-084 | contract addition | From V1.0 on, the frontmatter format is under an explicit promise (26.1): required fields, memory types, the meaning of the documented optional fields and the loader leniency change only with a major bump. No 1.x reader requires a format-version field. Unknown keys are tolerated on load but are not guaranteed to survive an `overwrite`. Not covered are ranking, the internal `.bastra/` storage and projection content; the shape of `recall` output falls under the separate API contract. Tightening the loader without a major bump is admissible only under the narrowly drawn security exception. |
+| C-085 | contract addition | The 500-decision route of the shadow sign-off (18.2) applies only with spread: at least 20 different sessions carry the counting decisions, and no single session supplies more than 25 % of them. The 14-day route is untouched. Clarification in the same entry: counting is per memory decision, not per hook call — that is how the threshold is implemented and how it is meant. |
 
 **Sign-off status 24 July 2026:** full reconciliation of ledger C-001–C-027,
 gate measurability, current-state claim sweep (58 claims, all covered),
@@ -330,7 +331,16 @@ ranking, internal storage, projection content and the preservation of foreign
 keys across an `overwrite`; the shape of `recall` output is bound, but through
 its own API contract.
 
-**Next available ID: C-085.** New delta reviews begin there. A verdict
+**Contract addition, 29 August 2026 (this version):** C-085 binds the decision
+route of the shadow sign-off to spread. The threshold "500 decisions or 14
+days" knew only a quantity; in the real record 2040 of 2052 logged decisions
+came from a single session, so one working day would formally have filled the
+gate. From now on the decision route counts only with at least 20 different
+sessions and at most a 25 % share per session; the 14-day route is untouched.
+The same entry records the counting reading: per memory decision, not per hook
+call.
+
+**Next available ID: C-086.** New delta reviews begin there. A verdict
 changes only with new code, telemetry, or run evidence; matters of taste
 are marked as an architectural decision instead of a factual error.
 
@@ -3002,11 +3012,31 @@ reproducible M0 baseline run.
 
 Shadow sign-off:
 
-- at least 14 calendar days or at least 500 logged hook decisions;
+- at least 14 calendar days or at least 500 logged hook decisions; the
+  decision route applies only when those decisions come from **at least 20
+  different sessions** and **no single session supplies more than 25 %** of
+  them (C-085);
 - all retrieval-isolated component gates pass on the versioned gold set;
 - every observed `required`/`no_answer` divergence between the legacy decision
   and the evidence decision is explainable by features, reason code or review;
 - unexplained divergences block live activation.
+
+**Spread requirement on the decision route (C-085).** Until now the threshold
+knew only a quantity, not a distribution. The purpose of shadow operation,
+however, is to observe the predicate against the distribution of real usage,
+and a quantity drawn from a single sitting is not a distribution: it carries
+one vault state, one project, one way of working and one daily rhythm. A single
+intensive working day could formally fill the gate. The 14-day route is
+untouched by this — time produces spread on its own and needs no additional
+condition.
+
+**What is counted.** Counting is per **memory decision**, not per hook call: a
+call that decides over eight candidates yields eight counting decisions. That
+is how the threshold is implemented (`packages/daemon/scripts/stats.ts`,
+`shadowDecisions`) and how it is meant; the phrase "logged hook decisions" in
+C-022 denotes the same quantity. The session attribution follows the same
+count: a session counts as soon as it carries at least one counting decision,
+and its share is measured against the decisions, not against the calls.
 
 Rollout and rollback:
 
@@ -4112,10 +4142,10 @@ The goal is not maximum recall. The goal is:
 
 > The right memory at the right time – and otherwise silence.
 
-## 28. Delta ledger (C-029–C-084)
+## 28. Delta ledger (C-029–C-085)
 
 This section documents eleven consecutive rounds of deltas against the
-signed-off state C-001–C-028 as well as two later contract entries. Every entry
+signed-off state C-001–C-028 as well as three later contract entries. Every entry
 names the affected passage, the type
 of the delta, the supporting evidence, the gate, the data source, the
 acceptance criterion and the rollback. No entry reinterprets an earlier verdict.
@@ -4261,6 +4291,13 @@ promise that until now existed only in the code and in no document:
 | Previous gap | is closed by | Type |
 |---|---|---|
 | 26.1 and 22 without a frontmatter promise | C-084 | Contract addition: schema promise, loader leniency, breaking/additive boundary |
+
+**Contract addition — C-085**, 29 August 2026, binds an existing threshold to a
+condition its purpose always required:
+
+| Previous contract | is extended by | Type |
+|---|---|---|
+| C-022, 18.2 shadow sign-off | C-085 | Contract addition: spread across sessions as a condition of the decision route |
 
 ### C-029 – Evidence classes for third-party system numbers
 
@@ -5902,6 +5939,48 @@ verdict is reinterpreted; what changes is the scope of the release contract.*
   exception from 26.1 applies — four conditions, among them a visible error
   instead of a silent drop; it replaces no major bump for anything else.
 
+---
+
+*From here the contract addition C-085 of 29 August 2026.*
+
+### C-085 – The decision route of the shadow sign-off requires spread
+
+- **Passage:** 18.2 shadow sign-off extended by the spread condition and the
+  counting reading; ledger row C-022 with an extension reference, new ledger
+  row C-085; 0.4 sign-off block and next free ID; 28 heading, assignment and
+  this entry; 35.
+- **Type:** Contract addition.
+- **Evidence:** The threshold from C-022 names a quantity and not a
+  distribution. In the real record across 91 log days the `evidence_decision`
+  events carry 2052 memory decisions — **2040 of them from a single session**,
+  with the three remaining sessions contributing twelve between them. The
+  500-decision threshold would thus be met fourfold without a second working
+  situation ever having been observed. That contradicts the purpose of shadow
+  operation recorded in 18.2, namely to observe the predicate against the
+  distribution of real usage: one sitting carries one vault state, one project,
+  one way of working and one daily rhythm. To calibrate the number: in the same
+  14-day window 132 different sessions carry `hook_call` events, on average
+  about nine per day and on individual days up to 27. Twenty different sessions
+  are therefore reachable on this usage without a single working day reliably
+  supplying them alone — and the share limit catches the observed case where
+  many sessions count but one of them contributes practically everything.
+- **Gate:** none. The addition tightens a sign-off condition and activates
+  nothing live; it can apply immediately.
+- **Data source:** the event logs under `~/.bastra/logs/events-*.jsonl`
+  (`kind: "evidence_decision"`, field `session_id`); the evaluation in
+  `packages/daemon/scripts/stats.ts`.
+- **Acceptance criterion:** The decision route counts as fulfilled when the
+  counting decisions come from at least 20 different sessions and no single
+  session supplies more than 25 % of them. The 14-day route remains without an
+  additional condition. Counting is per memory decision, not per hook call; a
+  session counts as soon as it carries one counting decision.
+- **Rollback:** Purely contractual, without effect on code. Should the session
+  count prove too low on a larger population, or the share limit too strict,
+  both are carried forward in versioned form after the M0 baseline run together
+  with the other numeric quantities; until then the values fixed here apply.
+  Whoever does not reach the faster route loses nothing — the 14-day route
+  stays open.
+
 ## 29. Source and claim matrix
 
 All data were collected on **25 July 2026** by retrieving the respective primary
@@ -6246,7 +6325,7 @@ the daemon README describes expired memories as "(or excluded if expired)"; the
 code merely damps them to 20%.
 
 **Next free ID: C-083.** *(Historical state of 26 July 2026. The currently
-valid next free ID is at the end of Section 34.)*
+valid next free ID is at the end of Section 35.)*
 
 ## 33. Handover after the contract change C-083
 
@@ -6302,7 +6381,7 @@ second hook wording for arm A as a product and text decision, and the
 activation decision that arm B depends on.
 
 **Next free ID: C-084.** *(State of this section. The currently valid next free
-ID is at the end of Section 34.)*
+ID is at the end of Section 35.)*
 
 ## 34. Handover after the contract addition C-084
 
@@ -6351,4 +6430,53 @@ carries four conditions, among them a visible error instead of a silent drop.
 3. Whether `docs/memory-schema.md`, as user-facing documentation, should also
    reference 26.1 so that the two versions do not drift apart.
 
-**Next free ID: C-085.**
+**Next free ID: C-085.** *(State of this section. The currently valid next free
+ID is at the end of Section 35.)*
+
+## 35. Handover after the contract addition C-085
+
+**What was changed.** This version adds the contract addition C-085. Solely the
+following passages were changed:
+
+| Passage | Delta |
+|---|---|
+| Preamble: ledger state, genesis, as-of date, next free ID | C-085 |
+| 0.4 extension reference on C-022, new ledger row C-085 | C-085 |
+| 0.4 sign-off block and next free ID | C-085 |
+| 18.2 shadow sign-off: spread condition and counting reading | C-085 |
+| 28 heading, preamble, assignment table, delta entry C-085 | C-085 |
+| 34 note on the ID | C-085 |
+| 35 this section | — |
+
+All other passages are untouched. Product code was not changed; the evaluation
+in `packages/daemon/scripts/stats.ts` does not yet satisfy the new condition
+and has to follow.
+
+**What the addition effects.** The shadow sign-off knew two equivalent routes:
+500 logged decisions or 14 calendar days. The first counted only a quantity. In
+the real record 2040 of 2052 decisions come from one session — the threshold
+would be met fourfold without a second working situation ever having been
+observed. That is precisely what shadow operation is meant to prevent. The
+decision route therefore now requires at least 20 different sessions and at
+most a 25 % share per session. The 14-day route is unchanged: time produces
+spread on its own.
+
+The same entry records the counting reading that until now existed only in the
+code: counting is per memory decision, not per hook call. A call over eight
+candidates yields eight counting decisions — that is how `stats.ts` computes
+it, and the phrase "logged hook decisions" in C-022 denotes the same quantity.
+
+**What to check in particular.**
+
+1. Whether 20 sessions and 25 % are confirmed or carried forward as versioned
+   numbers after the M0 baseline run. Both values are calibrated from today's
+   single-user usage and share its limits.
+2. Whether `stats.ts` should report the condition as its own line — today the
+   output names only decisions and days, so a threshold reached without spread
+   would appear as "REACHED".
+3. Whether the same spread requirement should apply to the presentation
+   experiment arm from 17.4. There the session is already the unit of
+   randomisation, so the question poses itself differently — but it poses
+   itself.
+
+**Next free ID: C-086.**
