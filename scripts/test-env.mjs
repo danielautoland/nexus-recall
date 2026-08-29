@@ -38,6 +38,28 @@ if (!process.env.BASTRA_LOG_PATH) {
 }
 
 /**
+ * The same class, a second directory (#420).
+ *
+ * Both artifact writers — `packages/eval/src/goldset-run.ts` and
+ * `packages/daemon/scripts/stress-artifact.ts` — resolve their output as
+ * `BASTRA_EVAL_RUNS_DIR ?? ~/.bastra/eval-runs`, so a suite pass that exercises
+ * the stress harness deposits real run directories next to the real ones.
+ * Measured on one `npm test`: two fresh directories, both with
+ * `vault_path: packages/eval/fixtures/eval-vault` — fixture runs, indistinguishable
+ * at a glance from the M0 baseline they sit beside. The directory had grown past
+ * 490 entries that way.
+ *
+ * That matters because the registered baselines live there and are cited by path
+ * in `m1-tolerances.json` and `cue-experiment.json`: a cleanup that swept too
+ * broadly would delete evidence a release condition depends on. Same fix as
+ * above, and for the same reason — per-test-file redirection is a convention
+ * nobody can enforce, one default here closes the class.
+ */
+if (!process.env.BASTRA_EVAL_RUNS_DIR) {
+  process.env.BASTRA_EVAL_RUNS_DIR = mkdtempSync(join(tmpdir(), "bastra-test-eval-runs-"));
+}
+
+/**
  * Keep application output off the frame pipe — but ONLY application output.
  *
  * A blunt `process.stdout.write = () => true` also swallows the runner's own

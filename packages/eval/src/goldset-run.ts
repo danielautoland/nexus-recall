@@ -540,6 +540,17 @@ async function main(): Promise<void> {
 
   const manifest = {
     run_date: results.run_date,
+    /**
+     * Whether this artifact is a measurement or test debris (#420).
+     *
+     * Suite passes used to write real directories into `~/.bastra/eval-runs`
+     * beside the registered baselines; `scripts/test-env.mjs` now redirects them
+     * to a tmpdir. This field is the second line of defence: a later cleanup can
+     * tell the two apart from the artifact itself rather than from where it
+     * happens to sit, so it can never sweep away evidence a release condition
+     * cites by path.
+     */
+    run_kind: process.env.NODE_TEST_CONTEXT ? "test" : "measurement",
     vault_path: vaultPath,
     vault_size: vault.size(),
     provider: armLabel,
