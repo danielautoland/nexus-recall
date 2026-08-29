@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto";
 /**
  * Wie eine Mutation ausgegangen ist.
  *
- * Die fünf sind bewusst nicht auf „ok/nicht ok" reduziert: Sie verlangen
+ * Die sechs sind bewusst nicht auf „ok/nicht ok" reduziert: Sie verlangen
  * verschiedene Reaktionen. `conflict` ist wiederholbar, `committed` mit
  * `audit_failed` darf NICHT wiederholt werden, und `partial` braucht einen
  * Menschen.
@@ -50,7 +50,22 @@ export type MutationStatus =
   | "conflict"
   /** Die Mutation STEHT, nur ihr Beleg fehlt. Wiederholen wäre ein zweiter
    *  Schreibvorgang auf einen bereits geschriebenen Zustand. */
-  | "audit_failed";
+  | "audit_failed"
+  /**
+   * Ein verwaister Anspruch wurde übernommen — nichts an dieser Mutation ist
+   * schiefgegangen, aber eine FRÜHERE ist gestorben, ohne aufzuräumen.
+   *
+   * Der eigene Status, weil keiner der anderen fünf ihn beschreibt, ohne zu
+   * lügen: `conflict` hieße „nichts passiert" (es ist etwas passiert),
+   * `committed` hieße „diese Mutation steht" (sie fängt gerade erst an), und
+   * `partial` riefe nach einem Menschen, den es hier nicht braucht.
+   *
+   * Wer die Zahlen liest: Das ist ein Befund über den VORGÄNGER. Einzeln ein
+   * abgebrochenes Terminal, gehäuft ein Hinweis auf Abstürze oder eine zu kurz
+   * gewählte Verwaisungsfrist. Er gehört in keine Erfolgs- und in keine
+   * Fehlerquote dieser Operation.
+   */
+  | "reclaimed";
 
 export interface MutationIncident {
   /** Hält eine Mutation über ihre Phasen zusammen. Ohne das lässt sich ein

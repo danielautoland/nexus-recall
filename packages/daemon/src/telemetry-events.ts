@@ -314,13 +314,16 @@ export interface MutationIncidentEvent extends BaseEvent {
   operation_id: string;
   /** Welcher Writer: `save_memory_refile`, `audit_delete`, `area_exclusive`, … */
   op: string;
-  /** `committed` | `rolled_back` | `partial` | `conflict` | `audit_failed`.
-   *  Die fünf verlangen verschiedene Reaktionen: `conflict` ist wiederholbar,
-   *  `audit_failed` bedeutet „steht schon, NICHT wiederholen", und `partial`
-   *  ist der einzige, der einen Menschen braucht. */
+  /** `committed` | `rolled_back` | `partial` | `conflict` | `audit_failed` |
+   *  `reclaimed`. Die sechs verlangen verschiedene Reaktionen: `conflict` ist
+   *  wiederholbar, `audit_failed` bedeutet „steht schon, NICHT wiederholen",
+   *  und `partial` ist der einzige, der einen Menschen braucht. `reclaimed`
+   *  berichtet über einen FRÜHEREN, gestorbenen Schreibvorgang und gehört
+   *  deshalb in keine Quote der laufenden Operation. */
   status: string;
   /** Wo in der Operation: `publish`, `refile-trash`, `audit`, `rollback`,
-   *  `area-claim`, `area-claim-readers`. */
+   *  `area-claim`, `area-claim-readers`, `claim-reclaim`,
+   *  `reader-marker-release`, `area-claim-late-source`. */
   phase: string;
   memory_id: string | null;
   /** Wie weit ein Rollback kam — `null`, wo keiner nötig war. */

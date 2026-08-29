@@ -186,6 +186,11 @@ test("die Übernahme eines verwaisten Locks meldet sich — sie gelingt sonst ge
   assert.ok(reclaim, `ein Reclaim-Incident muss ankommen, gesehen: ${JSON.stringify(seen)}`);
   assert.equal(reclaim.phase, "claim-reclaim");
   assert.equal(reclaim.memory_id, "m");
+  // Der eigene Status: Wer Erfolgs- oder Fehlerquoten dieser Operation rechnet,
+  // muss die Übernahme ausschließen können, ohne dafür `op` zu kennen — sie
+  // berichtet über den VORGÄNGER, nicht über diesen Save.
+  assert.equal(reclaim.status, "reclaimed");
+  assert.notEqual(reclaim.status, "committed", "und zählt nicht als geglückte Mutation");
   // Der Save selbst ist durchgelaufen — der Reclaim ist ein Befund über den
   // toten Vorgänger, kein Fehler dieses Aufrufers.
   assert.ok(seeded.file_path.length > 0);

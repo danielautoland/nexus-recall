@@ -153,11 +153,13 @@ export async function acquireCommitClaim(
         if (await reclaimStaleClaim(lockPath, body)) {
           // #377: Ein übernommener Lock heißt, dass ein früherer Schreibvorgang
           // gestorben ist, ohne aufzuräumen. Für DIESEN Aufrufer geht es
-          // weiter — deshalb `committed`, es beschreibt die Übernahme, nicht
-          // die Mutation —, aber der tote Vorgänger ist ein Befund: Einzeln ist
-          // er ein abgebrochenes Terminal, gehäuft ein Hinweis auf Abstürze
-          // oder eine zu kurze Verwaisungsfrist. Ohne Ereignis sieht das
-          // niemand, weil der Reclaim geräuschlos gelingt.
+          // weiter; der tote Vorgänger ist der Befund: Einzeln ein
+          // abgebrochenes Terminal, gehäuft ein Hinweis auf Abstürze oder eine
+          // zu kurze Verwaisungsfrist. Ohne Ereignis sieht das niemand, weil
+          // der Reclaim geräuschlos gelingt.
+          //
+          // `reclaimed` ist dafür der eigene Status: Die anderen fünf würden
+          // hier alle etwas Falsches behaupten (siehe `MutationStatus`).
           //
           // Eigene `operation_id`: Die Mutation des Vorgängers ist von hier aus
           // nicht identifizierbar (sein Claim trägt pid und Zeit, keine
@@ -166,7 +168,7 @@ export async function acquireCommitClaim(
           reportMutationIncident({
             operation_id: newOperationId(),
             op: "claim_reclaim",
-            status: "committed",
+            status: "reclaimed",
             phase: "claim-reclaim",
             memory_id: id,
             detail: "abandoned claim taken over",
