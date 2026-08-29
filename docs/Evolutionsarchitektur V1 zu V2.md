@@ -3,20 +3,21 @@
 > Status: Release- und Zielarchitektur; V1.0 ist der nächste verbindliche
 > Releasevertrag, V2.0 das langfristige, messungsabhängige Zielbild
 >
-> Stand: 29. August 2026 (Vertragsänderung C-083; abgenommene Basis vom
-> 26. Juli 2026 im Übrigen unverändert)
+> Stand: 29. August 2026 (Vertragsänderung C-083 und Vertragsergänzung C-084;
+> abgenommene Basis vom 26. Juli 2026 im Übrigen unverändert)
 >
 > Ausgangsstand: Bastra Recall 0.8.6, aktueller Vault, reale
 > 30-Tage-Telemetrie und bestehende Eval-Geometrie
 >
 > **Diese Datei ist die maßgebliche Fassung.** Verbindlicher Ledgerstand:
-> C-001–C-083, elf Reviewrunden und eine Vertragsänderung; C-001–C-082 am
-> 26. Juli 2026 abgenommen, C-083 am 29. August 2026 entschieden.
+> C-001–C-084, elf Reviewrunden, eine Vertragsänderung und eine
+> Vertragsergänzung; C-001–C-082 am 26. Juli 2026 abgenommen, C-083 und C-084
+> am 29. August 2026 entschieden.
 >
 > Entstehung: abgenommener Ausgangsstand C-001–C-028, fortgeschrieben durch die
 > Revisionen C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082
-> sowie durch die Vertragsänderung C-083.
+> sowie durch die Vertragsänderung C-083 und die Vertragsergänzung C-084.
 > Alle zwölf Zwischenfassungen und der Ausgangsstand liegen unverändert unter
 > `docs/architecture-history/`; sie sind Belegmaterial, keine geltenden
 > Verträge.
@@ -36,7 +37,7 @@
 > Die Product-Owner-Entscheidungen in Abschnitt 31 sind getroffen und binden
 > die Umsetzung.
 >
-> Nächste freie ID: C-084. Ein neues Delta wird in dieser Datei fortgeschrieben
+> Nächste freie ID: C-085. Ein neues Delta wird in dieser Datei fortgeschrieben
 > und nicht mehr als eigene Revisionsdatei geführt.
 
 ## 0. Entscheidungs- und Reviewstatus
@@ -192,6 +193,7 @@ neuer Evidenz erneut geöffnet.
 | C-081 | Architekturentscheidung | **Gate korrigiert durch C-082:** Zuordnung und Nachweisartefakt sind jederzeit zulässige Sidecar-/Run-Artefakte nach C-018 und C-025 und an kein Messgate gebunden. Der eingefrorene Graph-Snapshot wird im Queue- beziehungsweise Run-Artefakt belegt — Projektionsschema und Version, Snapshot-Hash, Erstellungszeitpunkt, angewandtes Kriterium samt Schwellenwert oder Quantil und je zugeordnetem historieunbekannten Memory ID, `degree`, fremde Cluster beziehungsweise `bridge`-Wert und resultierende Stufe; alternativ content-addressed persistiert und referenziert. Ein Zeitstempel allein genügt nicht. Während eines laufenden Reviews wird nicht neu berechnet oder neu zugeordnet, ein Neustart setzt dieselbe Warteschlange fort. Ein unbekannter Reason-Code führt konservativ zu keiner Wiedervorlage. |
 | C-082 | Ist-Korrektur | Das versionierte Queue- beziehungsweise Run-Artefakt der Bestandsprüfung fällt nicht unter M4 und nicht unter den Schemaentscheid aus 21.4: Es verändert weder Memory-Inhalt noch Vault-Schema und darf sofort persistiert werden. 21.4 greift erst, wenn Snapshot-, Queue- oder Reviewfelder in das Memory-Frontmatter beziehungsweise das persistente Memory-Schema übernommen werden. |
 | C-083 | Vertragsänderung | V1.0 schuldet vom Retrieval-/Präsentationsexperiment aus 17.4 nur noch die vorab registrierte Anlage, die deterministische Armzuweisung und den ehrlichen Statusbericht (`underpowered` beziehungsweise `not_evaluable` nach 18.1). Der hinreichend besetzte Lauf — erreichtes Mindest-N je Arm, zweiter Hook-Wortlaut, je Session schaltbares Gate, erhobene Query-Klasse, unabhängige Relevanzlabels — ist nach 26.2 verschoben. Begründung ist gemessen: Die Versuchseinheit ist die Session, und die Ein-Nutzer-Population trägt in vertretbarer Zeit kein Mindest-N. |
+| C-084 | Vertragsergänzung | Ab V1.0 steht das Frontmatter-Format unter einer ausdrücklichen Zusicherung (26.1): Pflichtfelder, Memory-Typen, Bedeutung der dokumentierten optionalen Felder und die Ladetoleranz ändern sich nur mit einem Major-Bump. Ein 1.x-Reader verlangt kein Formatversionsfeld. Unbekannte Schlüssel werden beim Laden toleriert, überleben einen `overwrite` aber nicht garantiert. Nicht gedeckt sind Ranking, interne `.bastra/`-Ablagen und Projektionsinhalte; die `recall`-Ausgabeform fällt unter den eigenen API-Vertrag. Eine Loader-Verschärfung ist nur unter der eng gefassten Sicherheitsausnahme ohne Major-Bump zulässig. |
 
 **Abnahmestand 24.07.2026:** Vollabgleich Ledger C-001–C-027,
 Gate-Messbarkeit, Ist-Behauptungs-Sweep (58 Aussagen, alle gedeckt),
@@ -321,7 +323,18 @@ ehrliche Auskunft, dass ein Arm nicht auswertbar ist. Die ersetzte Fassung
 bleibt in 26.1 als solche kenntlich; kein Urteil aus C-001–C-082 wird
 umgedeutet.
 
-**Nächste freie ID: C-084.** Neue Delta-Reviews beginnen dort. Ein Urteil
+**Vertragsergänzung, 29.08.2026 (diese Fassung):** C-084 schreibt die
+Frontmatter- und Schemazusicherung fest, die V1.0 mit dem Wegfall der führenden
+`0.` abgibt. Sie war bis dahin nirgends dokumentiert — weder in 26.1 noch in 22
+noch in `docs/memory-schema.md` —, obwohl ab 1.0 jede Änderung am Vault-Format
+einen Major-Bump verlangt. Der Eintrag verspricht ausschließlich, was der Code
+heute hält: die zehn Pflichtfelder, die erkannten Typen, die Bedeutung der
+optionalen Felder und die Ladetoleranz aus dem Rescue-Pfad. Ausdrücklich nicht
+zugesichert sind Ranking, interne Ablagen, Projektionsinhalte und die
+Erhaltung fremder Schlüssel über einen `overwrite` hinweg; die
+`recall`-Ausgabeform ist gebunden, aber über den eigenen API-Vertrag.
+
+**Nächste freie ID: C-085.** Neue Delta-Reviews beginnen dort. Ein Urteil
 ändert sich nur mit neuer Code-, Telemetrie- oder Run-Evidenz; Geschmacksfragen
 werden als Architekturentscheidung statt als Faktenfehler markiert.
 
@@ -3844,6 +3857,28 @@ bestandenen Messgates.
   und behält seine heutige Bedeutung.
 - Der heutige `related_via`-Hop im Hook-Pfad bleibt aktiv, bis eine Messung
   eine bessere Sicht belegt.
+- Ab V1.0 steht das Frontmatter-Format unter der Zusicherung aus 26.1:
+  Pflichtfelder, Memory-Typen und die Bedeutung der dokumentierten optionalen
+  Felder ändern sich nur mit einem Major-Bump (C-084).
+- Die Ladetoleranz ist Teil dieser Zusicherung. Reparatur fehlender
+  Pflichtfelder, eintragsweise Rettung eines nicht parsenden Blocks, Verwerfen
+  eines ungültigen optionalen Feldes, Kappen eines überlangen `summary` und
+  Folgenlosigkeit unbekannter Schlüssel bleiben erhalten; sie zu verschärfen
+  ist ein Breaking Change. Zulässig bleibt allein die eng gefasste
+  Sicherheitsausnahme aus 26.1.
+- Unbekannte Schlüssel werden beim Laden toleriert, überleben ein
+  `save_memory` mit `overwrite` aber nicht garantiert: Dieser Pfad baut das
+  Frontmatter aus seiner bekannten Feldliste neu.
+- Ein 1.x-Reader verlangt kein Formatversionsfeld im Frontmatter. Eine von Hand
+  angelegte Datei muss nichts deklarieren, um vollwertig zu sein; ein später
+  additiv eingeführtes Versionsfeld dürfte nur optional sein.
+- Alle in diesem Abschnitt genannten V2-Felder — insbesondere
+  `provenance_class` und die Provenienz-/Review-Projektion samt
+  `unknown_legacy` und `imported_unverified` — sind additiv geplant und
+  existieren im V1-Schema **nicht**. Ihre Abwesenheit ist der definierte
+  Zustand und kein Migrationsrückstand.
+- Kein Release der 1er-Reihe schreibt Bestandsdateien in Masse um, um sein
+  eigenes Format herzustellen.
 
 ## 23. Privacy und Sicherheit
 
@@ -4054,6 +4089,67 @@ unterbesetzten Lauf als Befund auszugeben. Die Berichtsregel aus 18.1 bleibt
 davon unberührt und wird durch diesen Eintrag ausdrücklich Teil des
 V1.0-Vertrags.
 
+**Frontmatter- und Schemazusicherung ab V1.0 (C-084).** Mit V1.0 entfällt das
+Beta-Signal der führenden `0.`, und das Vault-Format steht ab dieser Version
+unter einer ausdrücklichen Zusicherung. Markdown mit YAML-Frontmatter bleibt
+Source of Truth. Die zehn Pflichtfelder — `id`, `title`, `type`, `summary`,
+`topic_path`, `tags`, `scope`, `recall_when`, `created`, `updated` — behalten
+Name, Typ und Bedeutung; die erkannten Memory-Typen bleiben gültig; die
+dokumentierten optionalen Felder werden nicht umgedeutet. Ein unter einer
+1.x-Version geschriebener Vault bleibt von jeder späteren 1.x-Version lesbar,
+ohne Migrationsschritt.
+
+Ein 1.x-Reader verlangt **kein Formatversionsfeld** im Frontmatter. Eine Datei
+ohne ein solches Feld ist heute und in jeder späteren 1.x-Version vollwertig.
+Ob ein Versionsfeld später additiv eingeführt wird, bleibt offen; es dürfte
+dann nur optional sein und niemals Ladebedingung werden.
+
+Ebenso zugesichert ist die Ladetoleranz selbst, weil sie die eigentliche Zusage
+an einen handgepflegten Vault ist: fehlende Pflichtfelder werden aus Dateiname,
+Body und Dateizeit repariert, ein nicht parsender Frontmatter-Block wird
+eintragsweise gerettet, ein ungültiges optionales Feld wird verworfen statt die
+Memory zu verlieren, ein überlanges `summary` wird beim Laden gekappt, und
+unbekannte Schlüssel bleiben folgenlos. Reparaturen sind in-memory und werden
+nie auf die Platte zurückgeschrieben. Den Loader strenger zu machen ist deshalb
+ein Breaking Change und kein Bugfix.
+
+Unbekannte Schlüssel werden beim **Laden** toleriert. Sie überleben ein
+`save_memory` mit `overwrite` jedoch **nicht garantiert**: Dieser Pfad baut das
+Frontmatter aus seiner bekannten Feldliste neu und trägt nur die Felder weiter,
+die er kennt. Die Zusicherung deckt das Lesen, nicht die Erhaltung fremder
+Felder über einen Rewrite hinweg.
+
+Breaking und damit einen Major-Bump verlangen: ein Pflichtfeld entfernen,
+umbenennen oder umtypisieren; einen Memory-Typ streichen oder umdeuten; ein
+dokumentiertes optionales Feld entfernen; den Loader so verschärfen, dass eine
+bisher ladende Datei nicht mehr lädt; die Auflösung über die `id` brechen; oder
+eine Migration verlangen, ohne die ein bestehender Vault nicht mehr geladen
+wird. Additiv und damit Minor sind: neue optionale Felder, neue Typen, weitere
+Ladetoleranz, neue Projektionen und neue Schreibrouten neben den bestehenden.
+
+Nicht Teil dieser Zusicherung sind Ranking, Trefferreihenfolge,
+Staleness-Kurven und Triggergewichte; die internen Ablagen unter
+`<vault>/.bastra/`; und die maschinell erzeugten Projektionsfelder, deren
+Berechnungsweg sich jederzeit ändern darf, während Feldname und grobe Bedeutung
+gedeckt bleiben. Die **Ausgabeform von `recall`** fällt nicht unter die
+Schemazusicherung, sondern unter den eigenen API-Vertrag, der denselben
+SemVer-Regeln folgt; sie ist damit gebunden, nur an anderer Stelle.
+
+**Sicherheitsausnahme, eng gefasst.** Eine Verschärfung des Loaders ist
+zulässig, ohne einen Major-Bump auszulösen, wenn alle vier Bedingungen erfüllt
+sind: sie schließt eine konkrete, benannte Schwachstelle; sie wird im Changelog
+ausdrücklich als sicherheitsbedingte Verschärfung ausgewiesen; die betroffene
+Datei erzeugt einen **sichtbaren Fehler** statt still verworfen zu werden; und
+der übrige Bestand bleibt so weit lesbar, wie es die Schwachstelle zulässt. Als
+Freibrief für Aufräumarbeiten am Parser taugt die Ausnahme nicht — sie deckt
+den Ernstfall und sonst nichts.
+
+Innerhalb von 1.x gibt es keinen erzwungenen Migrationsschritt. Kein Release
+schreibt Bestandsdateien in Masse um, um sein eigenes Format herzustellen; wo
+neue Felder gebraucht werden, gilt ihre Abwesenheit als definierter Default —
+so wie heute ein fehlendes `write_origin` als `agent-session` und ein fehlendes
+`recall_mode` als `deliberate` gilt.
+
 ### 26.2 Promotion zu V2.0
 
 V2.0 gilt nicht als fertig, wenn lediglich neue Komponenten existieren. Die
@@ -4118,11 +4214,11 @@ Das Ziel ist nicht maximaler Recall. Das Ziel ist:
 
 > Zur richtigen Zeit die richtige Erinnerung – und ansonsten Ruhe.
 
-## 28. Delta-Ledger (C-029–C-083)
+## 28. Delta-Ledger (C-029–C-084)
 
 Dieser Abschnitt dokumentiert elf aufeinanderfolgende Runden von Deltas
-gegenüber dem abgenommenen Stand C-001–C-028 sowie eine spätere
-Vertragsänderung. Jeder Eintrag nennt die betroffene
+gegenüber dem abgenommenen Stand C-001–C-028 sowie zwei spätere
+Vertragseinträge. Jeder Eintrag nennt die betroffene
 Passage, die Art des Deltas, die tragende Evidenz, das Gate, die Datenquelle,
 das Abnahmekriterium und den Rollback. Kein Eintrag deutet ein früheres Urteil
 um.
@@ -4261,6 +4357,13 @@ Registrierung des Experiments seine Fallzahl gemessen hat:
 | Bisheriger Vertrag | wird geändert durch | Art |
 |---|---|---|
 | C-024, 26.1 Experimentpunkt | C-083 | Vertragsänderung: Mindest-N-Erreichung wandert von 26.1 nach 26.2 |
+
+**Vertragsergänzung — C-084**, 29.08.2026, ergänzt den V1.0-Vertrag um eine
+Zusage, die bislang nur im Code stand und in keinem Dokument:
+
+| Bisherige Lücke | wird geschlossen durch | Art |
+|---|---|---|
+| 26.1 und 22 ohne Frontmatter-Zusicherung | C-084 | Vertragsergänzung: Schemazusage, Ladetoleranz, Breaking-/Additiv-Grenze |
 
 ### C-029 – Evidenzklassen für Fremdsystemzahlen
 
@@ -5898,6 +6001,46 @@ Urteil wird umgedeutet, geändert wird der Umfang des Releasevertrags.*
   in 26.1. Eine Änderung der Versuchseinheit wäre selbst eine Änderung an 17.4
   und keine Konfiguration.
 
+---
+
+*Ab hier die Vertragsergänzung vom 29.08.2026.*
+
+### C-084 – Die Frontmatter-Zusicherung ab V1.0
+
+- **Passage:** 26.1 neuer Zusicherungsblock; 22 um sechs Spiegelstriche
+  ergänzt; Ledgerzeile C-084; 0.4 Abnahmeblock und nächste freie ID; 28
+  Überschrift, Zuordnung und dieser Eintrag; 34. Außerhalb dieser Datei:
+  `docs/memory-schema.md`, Abschnitt „Compatibility Promise (1.0)“.
+- **Art:** Vertragsergänzung.
+- **Evidenz:** Mit 1.0.0 entfällt das SemVer-Beta-Signal der führenden `0.`;
+  ab dann verlangt jede Breaking-Änderung am Vault-Format einen Major-Bump.
+  Was das Format zusichert, stand bis dahin in keinem Dokument — weder in 26.1
+  noch in 22 noch in `docs/memory-schema.md`. Der Inhalt der Zusage ist am Code
+  belegt: die zehn Pflichtfelder in `packages/core/src/schema.ts`, die
+  Reparatur- und Rettungslogik in `packages/core/src/frontmatter-rescue.ts`,
+  das Verwerfen ungültiger optionaler Felder und das Kappen überlanger
+  `summary`-Werte im Parser, und die feste Feldliste des Overwrite-Pfads in
+  `packages/core/src/save.ts`. Aus derselben Prüfung stammt eine Klarstellung
+  zu diesem Abschnitt: `provenance_class`, `unknown_legacy` und
+  `imported_unverified` existieren im V1-Schema nicht; 22 las sich bislang, als
+  wären sie Bestand.
+- **Gate:** keines. Die Ergänzung dokumentiert bestehendes Verhalten und ändert
+  weder Code noch Schema.
+- **Datenquelle:** der Code selbst; `docs/memory-schema.md` als
+  Nutzerdokumentation derselben Zusage.
+- **Abnahmekriterium:** Die drei Fassungen — 26.1, 22 und
+  `docs/memory-schema.md` — sagen dasselbe, und keine von ihnen verspricht
+  etwas, das der Code nicht hält. Insbesondere: kein Versprechen, dass niemals
+  ein Formatversionsfeld eingeführt wird, sondern nur, dass ein 1.x-Reader
+  keines verlangt; keine Zusage über die Erhaltung unbekannter Schlüssel über
+  einen `overwrite` hinweg; und keine Behauptung, die `recall`-Ausgabeform sei
+  ungebunden — sie fällt unter den eigenen API-Vertrag.
+- **Rollback:** Rein dokumentarisch und ohne Codewirkung. Sollte sich die
+  Ladetoleranz als Angriffsfläche erweisen, greift die eng gefasste
+  Sicherheitsausnahme aus 26.1 — vier Bedingungen, darunter ein sichtbarer
+  Fehler statt stillem Verwerfen; sie ersetzt keinen Major-Bump für alles
+  Übrige.
+
 ## 29. Quellen- und Behauptungsmatrix
 
 Alle Angaben wurden am **25. Juli 2026** durch Abruf der jeweiligen Primärquelle
@@ -6305,4 +6448,50 @@ unverändert, nur ihre Releasezuordnung hat sich verschoben.
 zusätzlich der zweite Hook-Wortlaut für Arm A als Produkt- und Textentscheidung
 und die Aktivierungsentscheidung, von der Arm B abhängt.
 
-**Nächste freie ID: C-084.**
+**Nächste freie ID: C-084.** *(Stand dieses Abschnitts. Die aktuell gültige
+nächste freie ID steht am Ende von Abschnitt 34.)*
+
+## 34. Übergabe nach der Vertragsergänzung C-084
+
+**Was geändert wurde.** Diese Fassung fügt die Vertragsergänzung C-084 hinzu.
+Geändert wurden ausschließlich die folgenden Passagen:
+
+| Passage | Delta |
+|---|---|
+| Präambel: Ledgerstand, Entstehung, Stand-Datum, nächste freie ID | C-084 |
+| 0.4 neue Ledgerzeile C-084 | C-084 |
+| 0.4 Abnahmeblock und nächste freie ID | C-084 |
+| 22 sechs Spiegelstriche zur Zusicherung und zum V2-Feldstatus | C-084 |
+| 26.1 Zusicherungsblock | C-084 |
+| 28 Überschrift, Vorspann, Zuordnungstabelle, Delta-Eintrag C-084 | C-084 |
+| 33 Vermerk zur ID | C-084 |
+| 34 dieser Abschnitt | — |
+
+Außerhalb dieser Datei trägt `docs/memory-schema.md` denselben Inhalt als
+Abschnitt „Compatibility Promise (1.0)“. Produktcode wurde nicht verändert.
+
+**Was die Ergänzung bewirkt.** Mit 1.0.0 fällt das Beta-Signal der führenden
+`0.`, und ab dann verlangt jede Breaking-Änderung am Vault-Format einen
+Major-Bump. Was genau zugesichert ist, stand bis dahin nirgends. C-084 schließt
+diese Lücke und verspricht ausschließlich, was der Code hält: Pflichtfelder,
+Typen, Bedeutung der optionalen Felder — und die Ladetoleranz, weil sie die
+eigentliche Zusage an einen handgepflegten Vault ist. Vier Stellen sind bewusst
+eng gefasst: Ein 1.x-Reader verlangt kein Formatversionsfeld, ohne dass damit
+ein späteres optionales Feld ausgeschlossen wäre. Die `recall`-Ausgabeform ist
+gebunden, aber über den API-Vertrag statt über das Schema. Unbekannte Schlüssel
+werden beim Laden toleriert und überleben einen `overwrite` nicht garantiert.
+Und die Sicherheitsausnahme trägt vier Bedingungen, darunter einen sichtbaren
+Fehler statt stillem Verwerfen.
+
+**Was besonders zu prüfen ist.**
+
+1. Ob die Erhaltungslücke beim `overwrite` bestehen bleiben soll oder ob der
+   Save-Pfad unbekannte Schlüssel künftig durchreicht — Letzteres wäre eine
+   Verbesserung, aber keine Vertragspflicht, und es müsste vor 1.0 entschieden
+   werden, weil es sonst später als Zusage gelesen wird.
+2. Ob die Sicherheitsausnahme je Anwendung eine C-ID bekommt. Der Text verlangt
+   heute nur den Changelog-Ausweis.
+3. Ob `docs/memory-schema.md` als Nutzerdokumentation zusätzlich auf 26.1
+   verweisen soll, damit die beiden Fassungen nicht auseinanderlaufen.
+
+**Nächste freie ID: C-085.**

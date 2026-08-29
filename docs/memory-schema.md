@@ -510,3 +510,47 @@ Files without a recognized `type` are treated as ordinary notes and skipped, not
 The save path rejects duplicate ids at the destination path unless `overwrite: true` is passed. It does not require `scope` to come from a registry.
 
 `overwrite: true` permits an update; it does not give a stale writer permission to replace a newer file. `saveMemory` compares the target again under an exclusive per-path commit claim. Concurrent or stale saves fail with `MemoryWriteConflictError` (`code: "BASTRA_WRITE_CONFLICT"`) and must retry from the current file. Callers that inspect provenance or ownership before saving pass the approved raw file as `expectedTarget` (`null` for a confirmed-absent target), extending the same comparison back to that inspection. See [Architecture: Write commit contract](./architecture.md#write-commit-contract).
+
+## Compatibility Promise (1.0)
+
+From 1.0 on, this schema is under a stated compatibility promise. The package version carries the contract.
+
+**Stable across all 1.x releases**
+
+- Markdown with YAML frontmatter stays the source of truth; files remain editable in Obsidian and by hand.
+- The ten required fields keep their name, type, and meaning: `id`, `title`, `type`, `summary`, `topic_path`, `tags`, `scope`, `recall_when`, `created`, `updated`.
+- The recognized `type` values stay valid and keep their meaning.
+- The documented optional fields keep their name and meaning. Their absence stays legal and keeps its documented default.
+- `id` stays the stable key; a memory keeps resolving under the id it was written with.
+- **No 1.x reader requires a format-version field in frontmatter.** A file that carries none is fully valid, today and in every later 1.x release. Whether such a field is added later is left open; it would be optional and never a load requirement.
+- Loader leniency is part of the promise, not an implementation detail: missing required fields are repaired from filename, body, and mtime; a frontmatter block that does not parse as a whole is rescued entry by entry; an invalid *optional* field is dropped rather than costing the node; unknown keys are ignored, not rejected; an over-long `summary` is clamped on load. Repairs are in-memory and are never written back — the file on disk stays as you wrote it. Tightening any of this is a breaking change, not a bug fix.
+- A file with no recognized `type` stays an ordinary note and is skipped.
+- A vault written by any 1.x release stays readable by every later 1.x release, with no migration step.
+
+**Unknown keys: read, not preserved**
+
+Unknown frontmatter keys are tolerated on **load** — they never cost a memory its place in the index. They are **not guaranteed to survive** a `save_memory` with `overwrite: true`: that path rebuilds frontmatter from its known field list and carries forward only the fields it knows about. The promise covers reading them, not preserving them across a rewrite. Hand-added data that must survive a re-save belongs in the body.
+
+**Not covered by the promise**
+
+- Ranking, hit order, scores, staleness curves, and trigger weights. These change in minor and patch releases.
+- The shape of `recall` output. It is not part of the *schema* promise; it falls under the API contract, which follows the same SemVer rules — bound, but elsewhere.
+- Machine-written projections — `recall_when_expanded`, `recall_when_expanded_src`, `related_via`, `superseded_by`, `stale_status`, `injection_flags`, and the in-memory `damaged` annotation. The field names and their rough meaning are covered; their content, their computation, and when they get written are not.
+- Everything under `<vault>/.bastra/` — embeddings, audit log, trash, and any later projection. Internal storage, free to change.
+- The write-routing folders under `memories/`. Scanning is recursive, so these are a convention for new writes, not a load requirement. Routes may change; the readability of existing layouts may not.
+
+**Breaking (major bump)**
+
+Removing, renaming, or retyping a required field; removing a `type` or changing what it means; removing or reinterpreting a documented optional field; tightening the loader so that a file which used to load no longer loads; breaking id resolution; or requiring a migration without which an existing vault no longer loads.
+
+**Additive (minor bump)**
+
+New optional fields, always tolerant of absence; new `type` values; more loader leniency; new projections under `.bastra/`; changed ranking and trigger behavior; new write routes alongside the existing ones.
+
+**Security exception, narrowly drawn**
+
+The loader may be tightened without a major bump only when all four hold: it closes a specific, named vulnerability; the change is called out in the changelog as a security-driven tightening; an affected file produces a **visible error** rather than being dropped silently; and the rest of the vault stays as readable as the vulnerability allows. This is not a licence for parser cleanup — it covers the real case and nothing else.
+
+**Migration**
+
+No 1.x release rewrites existing files in bulk to produce its own format. Where a new field is needed, its absence is a defined default — as a missing `write_origin` reads as `agent-session` and a missing `recall_mode` as `deliberate` today.
