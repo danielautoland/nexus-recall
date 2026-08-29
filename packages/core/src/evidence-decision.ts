@@ -111,13 +111,43 @@ export interface DecisionInput {
 const IDENTIFIER_SHAPE = /[./_-]/;
 
 /**
+ * Ab welcher Trigger-Abdeckung die Teilabdeckung überhaupt ein Signal ist
+ * (§10.3, seit 2026-08-29).
+ *
+ * Vorher genügte ein einziger geteilter Term: `recall_when_coverage > 0`.
+ * Zusammen mit der Armübereinstimmung — dem zweiten der drei unabhängigen
+ * Signale — reichte damit ein zufälliges Allerweltswort für eine PFLICHT. Auf
+ * dem Goldsatz gemessen: Vier von acht Unsinnsanfragen erzeugten so mindestens
+ * ein `required`, gegen eine in §18.2 registrierte Obergrenze von 5 %.
+ *
+ * Der Wert 0,5 ist gemessen, nicht gewählt. Von den geprüften Kandidaten war er
+ * der einzige, der über alle Query-Längen gleich wirkt (58–65 % weniger
+ * Pflichten in jeder Längenklasse); die Alternative „mindestens zwei getroffene
+ * Terme" nahm auf kurzen Anfragen 74 % zurück und auf langen nur 12 % — und
+ * lange Stichwortketten sind gerade der Fall, in dem ein einzelner geteilter
+ * Term am wenigsten trägt. Recall@3 bewegt sich auf dem Goldsatz in keiner der
+ * geprüften Varianten (0,4743), die Falsch-Abstention bleibt null.
+ *
+ * Belege: `~/.bastra/eval-runs/2026-08-29-f5d803104893` (Varianten-Tabelle).
+ */
+export const MIN_TRIGGER_COVERAGE = 0.5;
+
+/**
  * Trägt ein Query-Term die Form eines Identifiers UND steht er wörtlich im
- * autorisierten Text?
+ * DEKLARIERTEN Text?
  *
  * Bewusst eng: Ein Wort wie „konfiguration" ist kein Identifier, auch wenn es
  * trifft. Gefragt ist der Fall aus §10.2 — „exakte Identifier-, Pfad-, Symbol-
  * und Entity-Matches" —, und der ist das stärkste deterministische Signal, das
  * V1.0 hat.
+ *
+ * Der BODY zählt seit §10.3 nicht mehr dazu. Ein Pfad, der irgendwo im
+ * Fließtext eines Memorys vorkommt, war bis dahin ein harter Anker und trug
+ * damit allein eine Pflicht — obwohl niemand ihn als Auslöser deklariert hat.
+ * Gemessen auf dem Goldsatz (2026-08-29): 361 Pflichten ruhten auf einer
+ * solchen Prosa-Fundstelle, 49 davon ausschließlich. Ein harter Anker soll eine
+ * ERKLÄRUNG des Autors sein, kein Zufallsfund im Volltext — deshalb bleiben
+ * Titel, `recall_when` und Frontmatter, und der Body geht.
  */
 function hasExactIdentifier(input: DecisionInput): boolean {
   const candidates = input.queryTerms.filter((t) => t.length >= 3 && IDENTIFIER_SHAPE.test(t));
@@ -125,7 +155,7 @@ function hasExactIdentifier(input: DecisionInput): boolean {
   const m = input.memory;
   const haystack = [
     input.hit.title,
-    ...(m ? [m.fm.title, ...(m.fm.recall_when ?? []), m.body] : []),
+    ...(m ? [m.fm.title, ...(m.fm.recall_when ?? [])] : []),
   ]
     .join(" \n ")
     .toLowerCase();
@@ -225,7 +255,7 @@ export function decideHit(input: DecisionInput): RecallDecisionHit {
 
   const hardAnchor = evidence.exact_identifier || evidence.recall_when_coverage >= 1;
   const independent = [
-    evidence.recall_when_coverage > 0,
+    evidence.recall_when_coverage >= MIN_TRIGGER_COVERAGE,
     evidence.arm_agreement,
     evidence.scope_match,
   ].filter(Boolean).length;

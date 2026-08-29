@@ -126,10 +126,12 @@ test("an expired or obsolete target is never a duty, whatever else it has", () =
   }
 });
 
-test("the body is what the anchor variant takes away — and the only thing (§10.3)", () => {
-  // The A1 pattern: an identifier-shaped query term appearing in flowing BODY
-  // prose anchors the hit, and a hard anchor alone carries `required`. The
-  // variant blanks the body and nothing else; this pins that "nothing else".
+test("body prose no longer anchors — the §10.3 narrowing, landed", () => {
+  // The A1 pattern, closed: an identifier-shaped query term appearing in
+  // flowing BODY text used to be a hard anchor, and a hard anchor alone carries
+  // `required`. On the gold set 361 duties rested on such a prose find, 49 of
+  // them on nothing else. Since 2026-08-29 the haystack is title, `recall_when`
+  // and frontmatter; the body is out.
   const withBody = {
     fm: { id: "m1", title: "Ein Memory ohne Pfad im Titel", recall_when: ["wenn der Daemon klemmt"] },
     body: "wir haben das in packages/core/src/search.ts nachgezogen",
@@ -142,17 +144,15 @@ test("the body is what the anchor variant takes away — and the only thing (§1
   };
 
   const before = decideHit({ ...input, memory: withBody });
-  assert.equal(before.evidence.exact_identifier, true, "prose in the body anchors today");
-  assert.equal(before.decision, "required", "and that alone is enough for a duty");
+  assert.equal(before.evidence.exact_identifier, false, "a path in the body is no longer an anchor");
+  assert.notEqual(before.decision, "required", "so it no longer carries a duty on its own");
 
+  // And the body is now provably irrelevant to the decision: blanking it
+  // changes nothing at all. Before the narrowing this was the one thing it did
+  // change — which is what made the variant measurement possible.
   const after = decideHit({ ...input, memory: noBody });
-  assert.equal(after.evidence.exact_identifier, false, "the variant takes the anchor away");
-  assert.notEqual(after.decision, "required");
-
-  // Everything else the decision reads is untouched by blanking the body.
-  for (const field of ["recall_when_coverage", "arm_agreement", "scope_match", "temporal_status"] as const) {
-    assert.deepEqual(after.evidence[field], before.evidence[field], `${field} must not move with the body`);
-  }
+  assert.deepEqual(after.evidence, before.evidence, "the body reaches no evidence field any more");
+  assert.equal(after.decision, before.decision);
 });
 
 test("an anchor in the title survives the variant (§10.3)", () => {
@@ -212,20 +212,27 @@ test("the narrowings tighten only what they say they tighten (§10.3)", () => {
     temporal_status: "valid",
     lexical_score: 120,
   };
-  assert.equal(redecide(evidence, "direct", 8), "required", "one shared term in eight carries a duty today");
-  assert.equal(redecide(evidence, "direct", 8, { minCoverage: 0.5 }), "optional", "a relative floor withholds it");
-  assert.equal(redecide(evidence, "direct", 8, { minMatchedTerms: 2 }), "required", "two of eight terms matched");
-  assert.equal(redecide(evidence, "direct", 4, { minMatchedTerms: 2 }), "optional", "one of four did not");
+  // A quarter of the query covered is below MIN_TRIGGER_COVERAGE, so the
+  // partial-coverage signal no longer counts and the pair with arm agreement is
+  // one signal short. Before 2026-08-29 this was `required` — that difference is
+  // the whole change.
+  assert.equal(redecide(evidence, "direct", 8), "optional", "one shared term in eight is not a duty");
+  assert.equal(redecide({ ...evidence, recall_when_coverage: 0.5 }, "direct", 8), "required", "half of it is");
+  assert.equal(
+    redecide(evidence, "direct", 8, { minCoverage: 0 }),
+    "required",
+    "and the old rule, spelled out, still says what it used to — the red proof for the change",
+  );
 
-  // Neither narrowing may push anything to no_answer: a signal that no longer
-  // earns a duty is still a signal.
-  for (const rule of [{ minCoverage: 0.5 }, { minMatchedTerms: 2 }]) {
+  // No narrowing may push anything to no_answer: a signal that no longer earns
+  // a duty is still a signal.
+  for (const rule of [{}, { minCoverage: 0.75 }, { minMatchedTerms: 2 }]) {
     assert.notEqual(redecide(evidence, "direct", 4, rule), "no_answer", "a weakened duty stays a suggestion");
   }
 
-  // And a hard anchor is untouched by both — they narrow the OTHER half of §10.3.
+  // And a hard anchor is untouched — the narrowing is on the OTHER half of §10.3.
   const anchored = { ...evidence, exact_identifier: true };
-  for (const rule of [{}, { minCoverage: 0.5 }, { minMatchedTerms: 2 }]) {
+  for (const rule of [{}, { minCoverage: 0.75 }, { minMatchedTerms: 2 }]) {
     assert.equal(redecide(anchored, "direct", 8, rule), "required");
   }
 });

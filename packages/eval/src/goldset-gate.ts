@@ -22,7 +22,7 @@
  * core, called the way the daemon calls it, so the measurement describes the
  * predicate that ships.
  */
-import type { RecallDecisionHit } from "@bastra-recall/core";
+import { MIN_TRIGGER_COVERAGE, type RecallDecisionHit } from "@bastra-recall/core";
 
 /** What the gated arm produced for one case. Compact on purpose — a full
  *  `RecallEvidence` per hit would multiply the artifact by its nine fields. */
@@ -312,8 +312,16 @@ export interface NarrowingRule {
   minMatchedTerms?: number;
 }
 
-/** Today's rule — the identity of the family. */
-export const CURRENT_RULE: NarrowingRule = {};
+/**
+ * Today's rule — the identity of the family.
+ *
+ * Carries `MIN_TRIGGER_COVERAGE` from core rather than a literal: the §10.3
+ * narrowing landed IN the predicate on 2026-08-29, so the identity moved with
+ * it. A hard-coded 0 here would make `assertReproducesShipped` fail on every
+ * hit whose coverage sits between 0 and the threshold — the exact population
+ * the change was about.
+ */
+export const CURRENT_RULE: NarrowingRule = { minCoverage: MIN_TRIGGER_COVERAGE };
 
 /**
  * `decideHit`'s decision, re-derived from evidence (§10.3 variants).
@@ -398,10 +406,15 @@ export function gateCaseUnder(
  * the gold set holds both shapes.
  */
 export const NARROWINGS: Record<string, NarrowingRule> = {
-  /** Partial coverage counts only from half the query. */
-  "coverage>=0.5": { minCoverage: 0.5 },
-  /** …or from two matched terms, whatever the query's length. */
-  "matched>=2": { minMatchedTerms: 2 },
+  /**
+   * Two matched terms on top of the coverage floor — the candidate that was
+   * measured beside `coverage>=0.5` and lost: it takes 74 % of the duties on
+   * short queries and only 12 % on long ones, and the long keyword chains are
+   * where a single shared term is weakest. Kept as a variant, not adopted.
+   */
+  "matched>=2": { minCoverage: MIN_TRIGGER_COVERAGE, minMatchedTerms: 2 },
+  /** The next step up, unmeasured until someone asks for it. */
+  "coverage>=0.75": { minCoverage: 0.75 },
 };
 
 /** One row of the comparison table: a variant, its seven figures, its shift. */

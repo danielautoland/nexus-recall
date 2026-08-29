@@ -99,7 +99,7 @@ export { abandonAfter } from "./deadline.js";
 // #264: der deterministische Evidenzentscheid. In core, damit BEIDE
 // Recall-Pipelines und die Eval-Harness dieselbe Entscheidung treffen — §16.2
 // verlangt eine zentrale Implementierung, nicht eine pro Oberfläche.
-export { decideHit, decideHits, collectEvidence } from "./evidence-decision.js";
+export { decideHit, decideHits, collectEvidence, MIN_TRIGGER_COVERAGE } from "./evidence-decision.js";
 export type {
   RecallDecision,
   RecallDecisionHit,
