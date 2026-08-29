@@ -116,6 +116,39 @@ test("zwei Dokumente derselben Kategorie bekommen verschiedene Trigger", async (
   }
 });
 
+test("ein mitgeschickter Kategorie-Trigger wird ebenso qualifiziert wie ein abgeleiteter", async () => {
+  // Der gemessene Schaden kam NICHT über den Default: ein Agent hat beim
+  // Massenimport `["nach Dokument suchen <Name>", "<Kategorie>", "file <Name>"]`
+  // von Hand mitgeschickt. Eine Regel, die nur den Default absichert, hätte
+  // genau diesen Vorfall nicht verhindert.
+  const dir = await mkdtemp(join(tmpdir(), "bastra-doc-trigger-"));
+  try {
+    const vault = new Vault(join(dir, "vault"));
+    await vault.init();
+
+    const triggers = await triggersOf(
+      vault,
+      dir,
+      "afd-pitch-v2_2026-05-09.pdf",
+      "afd-pitch-v2",
+      ["sonstiges"],
+      "sonstiges",
+      ["nach Dokument suchen afd-pitch-v2", "sonstiges", "file afd-pitch-v2_2026-05-09"],
+    );
+
+    assert.equal(
+      triggers.includes("sonstiges"),
+      false,
+      `a hand-written bare category survived: ${JSON.stringify(triggers)}`,
+    );
+    // Die beiden dokumentspezifischen Trigger bleiben Wort für Wort erhalten.
+    assert.ok(triggers.includes("nach Dokument suchen afd-pitch-v2"), JSON.stringify(triggers));
+    assert.ok(triggers.includes("file afd-pitch-v2_2026-05-09"), JSON.stringify(triggers));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("explizit uebergebene recall_when bleiben unangetastet", async () => {
   const dir = await mkdtemp(join(tmpdir(), "bastra-doc-trigger-"));
   try {
