@@ -205,6 +205,46 @@ test("integration — TodoWrite with topical todos yields hints + type=project-f
   }
 });
 
+test("integration — Codex update_plan is normalized and identified as codex (#15)", async () => {
+  let received: { client?: string; tool_name?: string; query?: string } | null = null;
+  const daemon = await startMockDaemon((req, res) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk.toString()));
+    req.on("end", () => {
+      if (req.url === "/hook/recall") received = JSON.parse(body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        hits: [{ id: "codex-layout", title: "Layout", type: "project-fact", scope: "all-projects", summary: "Current adapter layout.", score: 130 }],
+        vault_size: 1,
+        latency_ms: 1,
+        recall_id: "codex-plan",
+      }));
+    });
+  });
+  try {
+    const { stdout } = await runLane({
+      hook_event_name: "PreToolUse",
+      tool_name: "update_plan",
+      model: "gpt-5.6-codex",
+      cwd: process.cwd(),
+      tool_input: {
+        plan: [
+          { step: "Implement Codex adapter hooks", status: "in_progress" },
+          { step: "Test Codex adapter hooks", status: "pending" },
+        ],
+      },
+    }, `http://127.0.0.1:${daemon.port}`);
+    const context = JSON.parse(stdout).hookSpecificOutput?.additionalContext ?? "";
+    assert.match(context, /surface="codex"/);
+    assert.match(context, /via update_plan/);
+    assert.equal((received as { client?: string } | null)?.client, "codex");
+    assert.equal((received as { tool_name?: string } | null)?.tool_name, "update_plan");
+    assert.match((received as { query?: string } | null)?.query ?? "", /Codex adapter hooks/i);
+  } finally {
+    await daemon.close();
+  }
+});
+
 test("integration — low-confidence todos emit empty object", async () => {
   let hit = false;
   const daemon = await startMockDaemon((_req, res) => {

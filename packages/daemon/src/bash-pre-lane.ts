@@ -1,5 +1,5 @@
 /**
- * Bash tripwire lane, daemon-side (#343 pattern, applied to the hottest path).
+ * Bash tripwire lane, daemon-side (#343/#15 pattern, shared by Claude and Codex).
  *
  * The pipeline from `bash-pre-hook.ts`: pattern-match destructive/risky shell
  * commands, recall safety lessons, emit the STOP/CAUTION tripwire block.
@@ -23,6 +23,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
+import { hookClient } from "./hook-surface.js";
 import { governContext } from "./context-governor.js";
 import { postLane } from "./thin-client.js";
 import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
@@ -150,6 +151,7 @@ function matchPattern(cmd: string): { label: string; severity: "destructive" | "
  */
 export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: string): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "PreToolUse") return "{}";
   if (payload.tool_name !== "Bash") return "{}";
@@ -196,7 +198,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
           scope: "all-projects",
           k: 3,
           // #263: siehe bash-fail-lane — die Lane weist sich aus.
-          client: "claude-code",
+          client,
           hook_source: "bash-pre",
         },
         remainingMs,
@@ -272,7 +274,7 @@ export async function runBashPreLane(payload: BashHookPayload, selfBaseUrl: stri
 
   // Emit hint even if no memories match — the warning itself is the point.
   // #161 CONSTRAINT (see top of file): the tripwire is exempt from backoff.
-  const block = formatHintBlock(match.label, match.severity, emitted, unfused);
+  const block = formatHintBlock(match.label, match.severity, emitted, unfused, client);
   const stdout = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -317,8 +319,9 @@ export function formatHintBlock(
   severity: "destructive" | "risky",
   hits: RecallHit[],
   unfused = false,
+  surface = "claude-code",
 ): string {
-  const head = `<recall-hints surface="claude-code" trigger="bash-${severity}">`;
+  const head = `<recall-hints surface="${surface}" trigger="bash-${severity}">`;
   const tail = `</recall-hints>`;
   const lines: string[] = [];
 

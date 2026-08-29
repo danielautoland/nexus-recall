@@ -1,3 +1,4 @@
+/** Installer update orchestration and cross-client restart guidance (#15). */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -493,6 +494,6 @@ export async function cmdUpdate(args: ParsedArgs): Promise<number> {
     process.stdout.write("    kill <pid>                 # forwarder respawns it with new code on next call\n\n");
   }
 
-  process.stdout.write("→ done. Restart any open AI clients (Claude Code, Claude Desktop, Cursor) to pick up the new code.\n");
+  process.stdout.write("→ done. Restart any open AI clients (Claude Code, Claude Desktop, Codex, ChatGPT Desktop, Cursor) to pick up the new code.\n");
   return 0;
 }

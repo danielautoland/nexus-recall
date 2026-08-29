@@ -250,6 +250,18 @@ describe("stop-hook: parseTranscriptFile", () => {
     assert.equal(turns[0].content, "hello");
   });
 
+  it("parses current Codex response_item message records (#15)", () => {
+    const raw = [
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hello from Codex" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "hello back" }] } }),
+    ].join("\n");
+    const turns = parseTranscriptFile(raw);
+    assert.deepEqual(turns, [
+      { role: "user", content: "hello from Codex" },
+      { role: "assistant", content: "hello back" },
+    ]);
+  });
+
   it("parses array-of-content-blocks", () => {
     const items = [{ role: "user", content: [{ type: "text", text: "hi there" }] }];
     const turns = normalizeTurns(items);

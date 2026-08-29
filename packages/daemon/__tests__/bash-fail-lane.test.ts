@@ -8,6 +8,7 @@ import {
   extractCommandHead,
   extractErrorKeywords,
   formatHintBlock,
+  normalizeToolResponse,
   isThrottled,
   markThrottle,
   throttleFile,
@@ -36,6 +37,9 @@ describe("bash-fail-hook: readExitCode", () => {
   });
   it("returns null when missing", () => {
     assert.equal(readExitCode({}), null);
+  });
+  it("reads Codex plain-text tool responses", () => {
+    assert.equal(readExitCode(normalizeToolResponse("Process exited with code 17\nError: failed")), 17);
   });
 });
 

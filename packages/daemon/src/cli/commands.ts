@@ -1,3 +1,4 @@
+/** CLI command orchestration, including Codex/ChatGPT installation (#15). */
 import { resolveTargets } from "./registry.js";
 import {
   VERSION,
@@ -225,11 +226,11 @@ export async function cmdInstall(args: ParsedArgs): Promise<number> {
   if (firstRun.exit !== null) return firstRun.exit;
   if (firstRun.vaultPath) opts.vaultPath = firstRun.vaultPath;
 
-  // #350: the compiled hook client for Claude Code. Runs before the adapters
+  // #350/#15: the compiled hook client for Claude Code and Codex. Runs before the adapters
   // plan their hook entries, because registration prefers the stub only when
   // the binary already exists on disk (buildHookEntry). Nothing here fails the
   // install — the node client serves the same daemon lanes, just slower.
-  if (targets.some((a) => a.surface === "claude-code")) {
+  if (targets.some((a) => a.surface === "claude-code" || a.surface === "codex")) {
     const stub = await ensureHookStub({ dryRun: args.dryRun, mode: args.stub ?? "ask", interactive: isInteractive() });
     process.stdout.write(`${stub.status === "failed" ? "⚠" : "·"} hook client: ${stub.detail}\n\n`);
   }

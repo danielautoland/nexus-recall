@@ -1,5 +1,5 @@
 /**
- * TodoWrite lane, daemon-side (#369 — the #343/#344 pattern, applied to the
+ * TodoWrite/update_plan lane, daemon-side (#369/#15 — the #343/#344 pattern, applied to the
  * third of the three lanes that were still booting a full node interpreter).
  *
  * The pipeline that lived in `todo-hook.ts` (#36), moved verbatim: topic
@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { reportHinted } from "./hook-hinted.js";
+import { hookClient } from "./hook-surface.js";
 import {
   decideBackoff,
   loadSessionState,
@@ -59,7 +60,7 @@ export interface ClaudeHookPayload {
   cwd?: string;
   hook_event_name?: string;
   tool_name?: string;
-  tool_input?: { todos?: unknown } & Record<string, unknown>;
+  tool_input?: { todos?: unknown; plan?: unknown } & Record<string, unknown>;
 }
 
 export interface RecallHit {
@@ -189,11 +190,19 @@ export async function runTodoLane(
   selfBaseUrl: string,
 ): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "PreToolUse") return "{}";
-  if (payload.tool_name !== "TodoWrite") return "{}";
+  if (payload.tool_name !== "TodoWrite" && payload.tool_name !== "update_plan") return "{}";
 
-  const extraction = extractTopicsFromTodos(payload.tool_input?.todos);
+  const planItems = payload.tool_name === "update_plan" && Array.isArray(payload.tool_input?.plan)
+    ? payload.tool_input.plan.map((item) => {
+        if (!item || typeof item !== "object") return item;
+        const step = (item as Record<string, unknown>).step;
+        return { ...(item as Record<string, unknown>), content: step };
+      })
+    : payload.tool_input?.todos;
+  const extraction = extractTopicsFromTodos(planItems);
   if (isLowConfidence(extraction)) {
     await writeTelemetry({
       session_id: payload.session_id ?? null,
@@ -232,14 +241,14 @@ export async function runTodoLane(
         query: extraction.query,
         topics: extraction.topics,
         project,
-        tool_name: "TodoWrite",
+        tool_name: payload.tool_name,
         k: 5,
         type: "project-fact",
         // #445: die drei Identitätsfelder, die diese Lane als einzige gar
         // nicht sendete. Ohne sie ist ihr Ereignis weder nach Quelle noch
         // nach Session gruppierbar.
         session_id: payload.session_id ?? null,
-        client: "claude-code",
+        client,
         hook_source: "todo",
       },
       remainingMs,
@@ -304,7 +313,7 @@ export async function runTodoLane(
     const decision = decideBackoff(entry, consumed, hasRequired);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
-    const block = formatHintBlock(filtered, project, extraction.topics, unfused);
+    const block = formatHintBlock(filtered, project, extraction.topics, unfused, client, payload.tool_name);
     if (suppressed) {
       // Suppressed emits {} exactly like the empty path (#161).
       suppressedTokensEst = Math.ceil(block.length / 4);
@@ -367,10 +376,12 @@ export function formatHintBlock(
   project: string | null,
   topics: string[],
   unfused = false,
+  surface = "claude-code",
+  toolName = "TodoWrite",
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const topicsAttr = topics.length > 0 ? ` topics="${escapeAttr(topics.join(","))}"` : "";
-  const head = `<recall-hints surface="claude-code" trigger="todo-plan"${projAttr}${topicsAttr}>`;
+  const head = `<recall-hints surface="${escapeAttr(surface)}" trigger="todo-plan"${projAttr}${topicsAttr}>`;
   const tail = `</recall-hints>`;
 
   // Ohne Fusion gibt es keine Bänder: die Werte stammen aus einer offenen
@@ -381,7 +392,7 @@ export function formatHintBlock(
   const sections: string[] = [];
 
   sections.push(
-    `You just produced a multi-step plan via TodoWrite. ` +
+    `You just produced a multi-step plan via ${toolName}. ` +
       `Before starting these todos, load the project-facts above to understand ` +
       `the current file layout / past decisions in this area. ` +
       `load_memory(id) the hits relevant to these todos; treat the rest as candidates (hints, not obligations).`,

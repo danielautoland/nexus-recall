@@ -38,16 +38,18 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "../src/env.js";
 import { shouldSkipPath } from "../src/hook-skip.js";
+import { decorateHookPayload } from "../src/hook-surface.js";
+import { normalizeWritePayload } from "../src/hook-write-input.js";
 
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 600, "NEXUS_HOOK_TIMEOUT_MS");
 const DEFAULT_PORT = 6723;
-const STUB_VERSION = "0.5.0-stub"; // 0.5.0 = + stop/session/todo lanes (#369)
+const STUB_VERSION = "0.6.0-stub"; // 0.6.0 = Codex payload adaptation (#15)
 
 type Lane = "prompt" | "write" | "bash-pre" | "bash-fail" | "stop" | "session" | "todo";
 const LANES = new Set<Lane>([
   "prompt", "write", "bash-pre", "bash-fail", "stop", "session", "todo",
 ]);
-const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
 /** The lanes whose failure the CLIENT logs. The three lanes added in #369 have
  *  their own event kinds (save_eval_call / session_hook_call / todo_hook_call)
  *  that describe a pipeline which did not run at all when the daemon is
@@ -212,6 +214,7 @@ async function main(): Promise<void> {
   } catch {
     return emitOnce("{}");
   }
+  payload = decorateHookPayload(payload);
 
   const httpURL = envFirst("BASTRA_HTTP_URL", "NEXUS_HTTP_URL");
   const httpPort = envFirst("BASTRA_HTTP_PORT", "NEXUS_HTTP_PORT") ?? String(DEFAULT_PORT);
@@ -222,6 +225,9 @@ async function main(): Promise<void> {
   let body: unknown;
   if (lane === "write") {
     if (payload.hook_event_name !== "PreToolUse") return emitOnce("{}");
+    const normalized = normalizeWritePayload(payload);
+    if (!normalized) return emitOnce("{}");
+    payload = normalized;
     const toolName = payload.tool_name ?? "";
     if (!SUPPORTED_TOOLS.has(toolName)) return emitOnce("{}");
     const toolInput = (payload.tool_input ?? {}) as Record<string, unknown>;

@@ -1,5 +1,5 @@
 /**
- * `bastra help` and `bastra <command> --help` (#330).
+ * `bastra help` and `bastra <command> --help` (#330/#15).
  *
  * `--help` is the convention by which someone finds out what a command does
  * BEFORE running it. Until #330 the effect was inverted: the help flag was
@@ -121,6 +121,7 @@ Commands:
 Surfaces:
   claude-desktop             Claude Desktop App
   claude-code                Claude Code
+  codex                      Codex + ChatGPT Desktop
   cursor                     Cursor
   all                        Every surface above
 
@@ -151,6 +152,7 @@ Options:
 
 Examples:
   bastra install claude-desktop
+  bastra install codex
   bastra install all --dry-run
   bastra status --json
   bastra doctor
@@ -163,6 +165,7 @@ Supported surfaces (this build): ${supportedSurfaces}
 const SURFACE_ARG = `Surfaces:
   claude-desktop  Claude Desktop App
   claude-code     Claude Code
+  codex           Codex + ChatGPT Desktop
   cursor          Cursor
   all             Every surface above
 `;

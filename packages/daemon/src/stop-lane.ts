@@ -1,5 +1,5 @@
 /**
- * Stop lane, daemon-side (#369 — the #343/#344 pattern, applied to the lane
+ * Stop lane, daemon-side (#369/#15 — the #343/#344 pattern, applied to the lane
  * that fires at the end of EVERY answer).
  *
  * The save-evaluation this file describes ran in the hook process until #369:
@@ -316,6 +316,21 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
     const obj = item as Record<string, unknown>;
+    // Codex rollout JSONL wraps conversation messages as
+    // `{type:"response_item", payload:{type:"message", role, content}}`.
+    // Upstream documents this file format as unstable, so this parser remains
+    // additive and the older Claude/direct shapes below stay intact (#15).
+    const payload = obj.payload;
+    if (obj.type === "response_item" && payload && typeof payload === "object") {
+      const p = payload as Record<string, unknown>;
+      if (p.type === "message" && typeof p.role === "string") {
+        out.push({
+          role: effectiveRole(p.role, p.content),
+          content: scrubTurnContent(stringifyContent(p.content)),
+        });
+        continue;
+      }
+    }
     const directRole = obj.role;
     const directContent = obj.content;
     if (typeof directRole === "string") {

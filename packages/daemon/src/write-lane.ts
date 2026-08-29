@@ -1,5 +1,5 @@
 /**
- * PreToolUse Write/Edit lane, daemon-side (#343 — stage A of #305 direction 2,
+ * PreToolUse Write/Edit/apply_patch lane, daemon-side (#343/#15 — stage A of #305 direction 2,
  * second half; the UserPromptSubmit lane moved in the first).
  *
  * The pipeline that lived in `hook.ts` behind the skip gate: file-size note,
@@ -31,6 +31,7 @@ import { applyLaneScopeFilter, projectConfidence, projectForFilter } from "./sco
 import { fileSizeNote } from "./file-size-check.js";
 import { memoryLocationNote } from "./memory-location.js";
 import { reportHinted } from "./hook-hinted.js";
+import { hookClient } from "./hook-surface.js";
 import {
   bumpShown,
   cleanupOldStates,
@@ -107,7 +108,7 @@ type HookStatus =
   | "timeout"
   | "error";
 
-const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+const SUPPORTED_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
 
 /**
  * Run the Write/Edit pipeline and return the exact JSON string the thin
@@ -120,6 +121,7 @@ export async function runWriteLane(
   vaultRoot: string | null = null,
 ): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "PreToolUse") return "{}";
   const toolName = payload.tool_name ?? "";
@@ -173,7 +175,7 @@ export async function runWriteLane(
       k: 3,
       // #445: die Lane weist sich aus. `pre-tool` ist ihr Allowlist-Wert —
       // sie ist die PreToolUse-Lane für Write/Edit.
-      client: "claude-code",
+      client,
       hook_source: "pre-tool",
     }, remainingMs);
   } catch (err) {
@@ -311,11 +313,11 @@ export async function runWriteLane(
     } else {
       stdout = "{}";
     }
-    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true);
+    const block = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true, client);
     suppressedTokensEst = Math.ceil(block.length / 4);
     recordSourceSuppressed(sessionState, BACKOFF_SOURCE);
   } else {
-    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true);
+    const hintsBlock = formatHintBlock(requiredHits, optionalHits, project, resp?.weak_result === true, resp?.no_home === true, resp?.unfused === true, client);
     const block = detNote ? `${detNote}\n${hintsBlock}` : hintsBlock;
     hintTokensEst = Math.ceil(block.length / 4);
     hintedIds = [...requiredHits, ...optionalHits].map((h) => h.id);
@@ -389,9 +391,10 @@ export function formatHintBlock(
   weak = false,
   noHome = false,
   unfused = false,
+  surface = "claude-code",
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
-  const head = `<recall-hints surface="claude-code"${projAttr}>`;
+  const head = `<recall-hints surface="${escapeAttr(surface)}"${projAttr}>`;
   const tail = `</recall-hints>`;
   const sections: string[] = [];
 

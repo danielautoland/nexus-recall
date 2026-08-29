@@ -1,5 +1,5 @@
 /**
- * Topic detection for PreToolUse hooks.
+ * Topic detection for PreToolUse hooks, including Codex apply_patch (#15).
  *
  * Pure, deterministic, no IO. Given a tool invocation we are about to make
  * (Write / Edit / MultiEdit), turn it into a recall() query plus topic tags
@@ -349,9 +349,9 @@ export function detectTopics(intent: ToolIntent): TopicResult {
 }
 
 /**
- * Pull a representative content excerpt out of a Claude-Code tool_input
- * payload. Caps at maxChars to keep the recall query bounded — the goal is
- * topic detection, not full-text similarity.
+ * Pull a representative content excerpt out of a Claude-Code or Codex
+ * tool_input payload (#15). Caps at maxChars to keep the recall query bounded
+ * — the goal is topic detection, not full-text similarity.
  */
 export function extractContentExcerpt(
   toolName: string,
@@ -374,6 +374,9 @@ export function extractContentExcerpt(
   }
   if (toolName === "NotebookEdit" && typeof toolInput.new_source === "string") {
     pieces.push(toolInput.new_source);
+  }
+  if (toolName === "apply_patch" && typeof toolInput.command === "string") {
+    pieces.push(toolInput.command);
   }
   const joined = pieces.join("\n");
   return joined.length > maxChars ? joined.slice(0, maxChars) : joined;

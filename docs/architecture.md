@@ -2,7 +2,7 @@
 
 ## Goal
 
-Bastra.Recall is a local-first memory layer for AI assistants. It gives Claude Code, Claude Desktop, Cursor, ChatGPT Actions, and other MCP/HTTP clients one shared vault of durable lessons, preferences, project facts, decisions, workflows, bookmarks, and document sidecars.
+Bastra.Recall is a local-first memory layer for AI assistants. It gives Claude Code, Claude Desktop, Codex, ChatGPT Desktop, Cursor, ChatGPT Actions, and other MCP/HTTP clients one shared vault of durable lessons, preferences, project facts, decisions, workflows, bookmarks, and document sidecars.
 
 The operating goal is simple: the user should not have to re-explain stable context. The assistant saves durable memories when a lesson or rule is learned, and recalls relevant memories before acting.
 
@@ -264,7 +264,7 @@ Topic detection is deterministic and based on file extension, path segments, and
 | Vault parsing | `gray-matter` + Zod frontmatter schema |
 | File watching | `chokidar` with polling on cloud mounts |
 | HTTP | Node `http` server |
-| CLI/install adapters | Claude Code, Claude Desktop, Cursor |
+| CLI/install adapters | Claude Code, Claude Desktop, Codex/ChatGPT Desktop, Cursor |
 
 ## Historical Note
 

@@ -64,7 +64,7 @@ class BastraRecall < Formula
         bastra install all
 
       That registers bastra-recall with every supported AI client
-      (Claude Code, Claude Desktop, Cursor) and verifies the install.
+      (Claude Code, Claude Desktop, Codex/ChatGPT Desktop, Cursor) and verifies the install.
 
       The MCP forwarder auto-starts the daemon on first use, and it shuts
       down again after 30 minutes idle. That is all Claude Code, Claude

@@ -3,7 +3,7 @@
  * bastra — CLI to install/uninstall/check bastra-recall across AI clients.
  *
  * One command, every MCP-capable client: the user installs once and bastra-recall
- * is reachable from Claude Code, Claude Desktop, Cursor, etc. See vision in
+ * is reachable from Claude Code, Claude Desktop, Codex/ChatGPT Desktop, Cursor, etc. See vision in
  * bastra-recall#7 + memory `bastra-vision-universal-cross-surface-memory-onboarding`.
  *
  * Entry point only — parsing, adapters, commands live in ./cli/.

@@ -1,5 +1,5 @@
 /**
- * Bash post-run lane, daemon-side (#343 pattern, second bash lane).
+ * Bash post-run lane, daemon-side (#343/#15 pattern, shared by Claude and Codex).
  *
  * The pipeline from `bash-fail-hook.ts`: fire the #144 act-signal for EVERY
  * completed Bash command, and on real failures (non-zero exit, not Ctrl-C)
@@ -27,6 +27,7 @@ import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
 import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
 import { unfusedHeadline } from "./band-wording.js";
+import { hookClient } from "./hook-surface.js";
 import {
   decideBackoff,
   loadSessionState,
@@ -52,8 +53,8 @@ export interface BashFailPayload {
   hook_event_name?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
-  tool_result?: Record<string, unknown>;
-  tool_response?: Record<string, unknown>;
+  tool_result?: unknown;
+  tool_response?: unknown;
 }
 
 // P0: EIN gemeinsamer Response-Typ für alle Lanes. Die lokale Kopie hier
@@ -69,13 +70,14 @@ type RecallResponse = HookRecallResponse;
  */
 export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: string): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "PostToolUse") return "{}";
   if (payload.tool_name !== "Bash") return "{}";
 
   // Schema is in flux across Claude-Code versions: `tool_result` and
   // `tool_response` have both been observed. Accept either.
-  const result = (payload.tool_result ?? payload.tool_response ?? {}) as Record<string, unknown>;
+  const result = normalizeToolResponse(payload.tool_result ?? payload.tool_response);
   const exitCode = readExitCode(result);
   // Aktuelle Claude-Code-Payloads tragen z.T. GAR KEIN Exit-Code-Feld mehr —
   // readExitCode() liefert dann null. Das act-Signal muss trotzdem feuern
@@ -141,7 +143,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
           session_id: typeof payload.session_id === "string" ? payload.session_id : null,
           // #263: die Lane weist sich aus, sonst ist ihr Ereignis von dem des
           // MCP-Forwarders nicht zu unterscheiden — beide gehen hier durch.
-          client: "claude-code",
+          client,
           hook_source: "bash-fail",
         },
         remainingMs,
@@ -191,7 +193,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
     const decision = decideBackoff(entry, consumed, hasRequired);
     backoffStreak = decision.streak;
     suppressed = decision.suppress;
-    const block = formatHintBlock(hits, unfused);
+    const block = formatHintBlock(hits, unfused, client);
     if (suppressed) {
       // Suppressed emits {} like the no-hits path; the throttle stays
       // unmarked (nothing was emitted), the saved tokens go to telemetry.
@@ -263,7 +265,33 @@ export function readExitCode(result: Record<string, unknown>): number | null {
       if (Number.isFinite(n)) return n;
     }
   }
+  const text = ["stderr", "error", "output", "stdout", "content"]
+    .map((key) => result[key])
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+  const match = /(?:exit(?:ed)?(?:\s+with)?(?:\s+code)?|exit_code)\D{0,8}(-?\d+)/i.exec(text);
+  if (match) {
+    const parsed = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
   return null;
+}
+
+/** Codex permits any JSON value in tool_response, including plain text. */
+export function normalizeToolResponse(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Plain output is still useful for exit-code and error-context extraction.
+  }
+  return { output: value };
 }
 
 export function extractErrorContext(result: Record<string, unknown>): string {
@@ -318,8 +346,8 @@ function formatHintLine(h: RecallHit, hideScore = false): string {
     : `- ${h.id} (${h.type}, score ${Math.round(h.score)}): ${summary}`;
 }
 
-export function formatHintBlock(hits: RecallHit[], unfused = false): string {
-  const head = `<recall-hints surface="claude-code" trigger="bash-fail">`;
+export function formatHintBlock(hits: RecallHit[], unfused = false, surface = "claude-code"): string {
+  const head = `<recall-hints surface="${surface}" trigger="bash-fail">`;
   const tail = `</recall-hints>`;
   const lines: string[] = [];
   lines.push(

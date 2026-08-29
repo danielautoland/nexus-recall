@@ -1,5 +1,5 @@
 /**
- * Die Auswertungsdimensionen des Ereignisstroms (#263, §17.4/§17.5, §21.1).
+ * Die Auswertungsdimensionen des Ereignisstroms (#263/#15, §17.4/§17.5, §21.1).
  *
  * §21.1 nennt als Releasevertrag: „Score-, Evidenz-, Abstention- und
  * No-answer-Telemetrie um `client`, `hook_source` und eine pseudonyme
@@ -43,6 +43,7 @@ import { createHash } from "node:crypto";
  */
 export const TELEMETRY_CLIENTS = [
   "claude-code",
+  "codex",
   "claude-desktop",
   "mac-app",
   "webui",

@@ -1,5 +1,5 @@
 /**
- * UserPromptSubmit lane, daemon-side (#343 — stage A of #305 direction 2).
+ * UserPromptSubmit lane, daemon-side (#343/#15 — stage A of #305 direction 2).
  *
  * This is the pipeline that lived in `prompt-hook.ts` (#33/#252/#217/#151),
  * moved server-side verbatim: mode detection, trivial gate, recall + reflex
@@ -41,6 +41,7 @@ import { defaultLogDir } from "./telemetry.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
+import { hookClient } from "./hook-surface.js";
 import { governContext } from "./context-governor.js";
 import type { Prewarmer, PrewarmOutcome } from "./embedding-prewarm.js";
 import {
@@ -324,6 +325,7 @@ export async function runPromptLane(
   reflexPool?: () => string[],
 ): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "UserPromptSubmit") return "{}";
 
@@ -468,7 +470,7 @@ export async function runPromptLane(
           session_id: payload.session_id ?? null,
           // #445: die Lane weist sich aus — wie bash-pre/bash-fail seit #263.
           // Ohne die beiden Felder liest der Empfänger `unknown/unknown`.
-          client: "claude-code",
+          client,
           hook_source: "prompt",
         },
         remainingMs,
@@ -609,6 +611,7 @@ export async function runPromptLane(
       detectedMode,
       resp?.weak_result === true,
       resp?.unfused === true,
+      client,
     );
     if (suppressed) {
       // Suppressed drops only the recall block (#161); reflex still emits.
@@ -619,7 +622,7 @@ export async function runPromptLane(
     }
   }
 
-  const reflexBlock = reflexKept.length > 0 ? formatReflexBlock(reflexKept, project) : null;
+  const reflexBlock = reflexKept.length > 0 ? formatReflexBlock(reflexKept, project, client) : null;
   const blocks = [reflexBlock, recallBlock].filter((b): b is string => b !== null);
   const stdout =
     blocks.length === 0
@@ -712,9 +715,10 @@ export function formatHintBlock(
   mode: DetectedMode,
   weak = false,
   unfused = false,
+  surface = "claude-code",
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
-  const head = `<recall-hints surface="claude-code" trigger="prompt-lookup"${projAttr}>`;
+  const head = `<recall-hints surface="${escapeAttr(surface)}" trigger="prompt-lookup"${projAttr}>`;
   const tail = `</recall-hints>`;
 
   // P0: Ohne Fusion gibt es keine Bänder. Die Werte stammen aus einer offenen
@@ -786,9 +790,9 @@ export function formatHintBlock(
  * #217 Reflex-Block: eigener trigger="reflex"-Frame, damit das Modell die
  * Herkunft (vom User verdrahteter Trigger, kein Score-Ranking) erkennt.
  */
-export function formatReflexBlock(hits: PromptReflexHit[], project: string | null): string {
+export function formatReflexBlock(hits: PromptReflexHit[], project: string | null, surface = "claude-code"): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
-  const head = `<recall-hints surface="claude-code" trigger="reflex"${projAttr}>`;
+  const head = `<recall-hints surface="${escapeAttr(surface)}" trigger="reflex"${projAttr}>`;
   const sections: string[] = [
     `Reflex memories: the user wired these to fire when their trigger matches ` +
       `a prompt — this prompt matched. load_memory(id) before answering:`,

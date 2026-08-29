@@ -1,5 +1,5 @@
 /**
- * SessionStart lane, daemon-side (#369 — the #343/#344 pattern, applied to the
+ * SessionStart lane, daemon-side (#369/#15 — the #343/#344 pattern, applied to the
  * lane that greets every new session).
  *
  * Preloads the most relevant memorys for a fresh Claude Code session as
@@ -50,6 +50,7 @@ import { pendingPatchNotice } from "./patch-registry.js";
 import { consumePendingSuggestions } from "./pending-suggestions.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
+import { hookClient } from "./hook-surface.js";
 import {
   postSessionContext, probeHealth,
   type ConventionLean, type RecallHit, type RecallResponse, type SessionContextResponse,
@@ -78,6 +79,7 @@ export async function runSessionLane(
   selfBaseUrl: string,
 ): Promise<string> {
   const startedAt = Date.now();
+  const client = hookClient(payload);
 
   if (payload.hook_event_name !== "SessionStart") return "{}";
 
@@ -125,7 +127,7 @@ export async function runSessionLane(
           project,
           source: payload.source ?? null,
           session_id: payload.session_id ?? null,
-          client: "claude-code",
+          client,
           // Nur die Lane fragt die Cross-Project-Regeln.
           cross_project: true,
           // Die Mengen dieses Dokuments, ausdrücklich gesetzt: Der Endpunkt hat
@@ -358,7 +360,7 @@ export async function runSessionLane(
             `Files are being swapped now; the new code goes live on the next daemon ` +
             `restart (automatically after idle, or right away when the user restarts).\n` +
             `Tell the user: an update to ${u.latest} is being applied — restart Claude Code ` +
-            `(and any open Claude Desktop / Cursor) when convenient to pick it up.\n` +
+            `(and any open Claude Desktop / Codex / ChatGPT Desktop / Cursor) when convenient to pick it up.\n` +
             `</bastra-update>`;
         } else {
           updateBlock =
@@ -472,7 +474,7 @@ export async function runSessionLane(
     // real signal here, and framing the whole block as noise would hide it.
     const answered = responses.filter((r) => r.resp !== null);
     const allWeak = answered.length > 0 && answered.every((r) => r.resp!.weak_result === true);
-    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak, unfused) + extras;
+    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak, unfused, client) + extras;
     out = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
@@ -554,10 +556,11 @@ export function formatBlock(
   source: string | null,
   weak = false,
   unfused = false,
+  surface = "claude-code",
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const srcAttr = source ? ` source="${escapeAttr(source)}"` : "";
-  const head = `<session-context surface="claude-code"${projAttr}${srcAttr}>`;
+  const head = `<session-context surface="${escapeAttr(surface)}"${projAttr}${srcAttr}>`;
   const tail = `</session-context>`;
 
   // P0: zentrale Bandzuweisung. Ohne Fusion vergibt sie kein Band — die Cuts
