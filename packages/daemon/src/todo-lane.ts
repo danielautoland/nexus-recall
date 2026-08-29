@@ -235,6 +235,12 @@ export async function runTodoLane(
         tool_name: "TodoWrite",
         k: 5,
         type: "project-fact",
+        // #445: die drei Identitätsfelder, die diese Lane als einzige gar
+        // nicht sendete. Ohne sie ist ihr Ereignis weder nach Quelle noch
+        // nach Session gruppierbar.
+        session_id: payload.session_id ?? null,
+        client: "claude-code",
+        hook_source: "todo",
       },
       remainingMs,
     );
@@ -420,6 +426,12 @@ interface RecallRequestBody {
   k: number;
   scope?: string;
   type?: string;
+  /** #445: die Identitätsfelder aus #263. Sie fehlten in diesem Typ, und das
+   *  ist der Grund, warum die Lane sie nie mitschickte — der Empfänger liest
+   *  sie aus genau diesem Body. */
+  session_id: string | null;
+  client: string;
+  hook_source: string;
 }
 
 function postRecall(

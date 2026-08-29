@@ -460,7 +460,17 @@ export async function runPromptLane(
       resp = await postJson<RecallResponse>(
         selfBaseUrl,
         "/hook/recall",
-        { query: prompt, project, k, tool_name: "UserPromptSubmit", session_id: payload.session_id ?? null },
+        {
+          query: prompt,
+          project,
+          k,
+          tool_name: "UserPromptSubmit",
+          session_id: payload.session_id ?? null,
+          // #445: die Lane weist sich aus — wie bash-pre/bash-fail seit #263.
+          // Ohne die beiden Felder liest der Empfänger `unknown/unknown`.
+          client: "claude-code",
+          hook_source: "prompt",
+        },
         remainingMs,
       );
     } catch (err) {

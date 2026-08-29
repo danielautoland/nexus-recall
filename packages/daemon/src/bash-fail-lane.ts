@@ -136,6 +136,9 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
           project: null,
           tool_name: "Bash",
           k: 3,
+          // #445: die Session-id fehlte als einzige — ohne sie stempelt der
+          // Sink seine Boot-UUID und nichts lässt sich nach Session gruppieren.
+          session_id: typeof payload.session_id === "string" ? payload.session_id : null,
           // #263: die Lane weist sich aus, sonst ist ihr Ereignis von dem des
           // MCP-Forwarders nicht zu unterscheiden — beide gehen hier durch.
           client: "claude-code",

@@ -171,6 +171,10 @@ export async function runWriteLane(
       session_id: payload.session_id ?? null,
       tool_input_excerpt: intent.content_excerpt,
       k: 3,
+      // #445: die Lane weist sich aus. `pre-tool` ist ihr Allowlist-Wert —
+      // sie ist die PreToolUse-Lane für Write/Edit.
+      client: "claude-code",
+      hook_source: "pre-tool",
     }, remainingMs);
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
@@ -453,6 +457,9 @@ interface RecallRequestBody {
   tool_input_excerpt: string;
   k: number;
   scope?: string;
+  /** #445: die Identitätsfelder aus #263 — siehe todo-lane.ts. */
+  client: string;
+  hook_source: string;
 }
 
 function postRecall(
