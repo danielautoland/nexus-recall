@@ -336,6 +336,65 @@ export function areaKeyForPath(vaultRoot: string, filePath: string): string | nu
 }
 
 /**
+ * Eine Reader-Markierung entfernen — und wenn das nicht geht, sie wenigstens
+ * entwerten (#379).
+ *
+ * WARUM DAS NICHT SCHWEIGEN DARF. Hier stand `unlink(path).catch(() => {})`.
+ * Bleibt eine Markierung liegen, trägt sie die pid DIESES noch laufenden
+ * Prozesses — `claimIsAbandoned` verweigert die Freigabe also völlig zu Recht,
+ * und der Vault hält einen Save für aktiv, den es nicht gibt. Jedes Rename,
+ * Delete und Create auf diesem Regal scheitert danach mit „saves are writing
+ * into …", bis der Prozess endet. Ein verschluckter Fehler wurde so zu einer
+ * Blockade, die niemand erklären konnte.
+ *
+ * ZWEI STUFEN, weil eine nicht reicht. Melden allein ließe den Vault blockiert
+ * zurück, nur eben mit Begründung. Deshalb wird die Markierung, wenn sie sich
+ * nicht löschen lässt, ENTWERTET: Ein Body ohne pid fällt in
+ * `claimIsAbandoned` auf die Altersregel zurück und verfällt nach dem
+ * bestehenden Fenster. Das schwächt die Zusage „ein lebender Besitzer wird nie
+ * enteignet" NICHT — entwertet wird ausschließlich die eigene Markierung, und
+ * erst nachdem `fn` fertig ist.
+ *
+ * Scheitert auch das (der Repro-Fall des Issues ist ein schreibgeschützter
+ * readers-Ordner), bleibt nur die Meldung. Dann ist die Blockade echt, und
+ * wenigstens steht sie als Ereignis da statt als Rätsel.
+ */
+async function releaseReaderMarker(path: string, area: string): Promise<void> {
+  try {
+    await unlink(path);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return; // schon weg
+  }
+  let entwertet = false;
+  try {
+    // Kein pid-Feld: damit greift die Altersregel statt der Besitzerregel.
+    await writeFile(path, JSON.stringify({ released: true, ts: Date.now() }), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    entwertet = true;
+  } catch {
+    /* auch das ging nicht — bleibt die Meldung */
+  }
+  reportMutationIncident({
+    operation_id: newOperationId(),
+    op: "area_shared",
+    status: entwertet ? "rolled_back" : "partial",
+    phase: "reader-marker-release",
+    detail: entwertet
+      ? "marker could not be removed, expires by age"
+      : "marker stuck, area blocked until restart",
+  });
+  console.error(
+    `[bastra-recall] area '${area}': a reader marker could not be removed — ` +
+      (entwertet
+        ? "it will expire by age."
+        : "renames, deletes and creates on this area will fail until the process restarts."),
+  );
+}
+
+/**
  * Den Namen für die Dauer von `fn` MITBENUTZEN — ein Save, der ins Regal
  * schreibt, ohne es zu verändern.
  */
@@ -367,10 +426,10 @@ export async function withAreaShared<T>(
       try {
         return await fn();
       } finally {
-        for (const m of markers) await unlink(m.path).catch(() => {});
+        for (const m of markers) await releaseReaderMarker(m.path, m.shelf.name);
       }
     }
-    for (const m of markers) await unlink(m.path).catch(() => {});
+    for (const m of markers) await releaseReaderMarker(m.path, m.shelf.name);
     if (attempt >= SHARED_RETRIES) {
       throw new Error(
         `the area '${blockedBy}' is being renamed, deleted or created right now — ` +
