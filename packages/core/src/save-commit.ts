@@ -16,6 +16,7 @@ import { readFile, access, open, rename, stat, unlink, writeFile } from "node:fs
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { MemoryWriteConflictError } from "./save-schema.js";
+import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 
 export async function fileExists(path: string): Promise<boolean> {
   try {
@@ -149,7 +150,29 @@ export async function acquireCommitClaim(
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err;
       if (attempt === 0 && (await claimIsAbandoned(lockPath))) {
-        if (await reclaimStaleClaim(lockPath, body)) return token;
+        if (await reclaimStaleClaim(lockPath, body)) {
+          // #377: Ein übernommener Lock heißt, dass ein früherer Schreibvorgang
+          // gestorben ist, ohne aufzuräumen. Für DIESEN Aufrufer geht es
+          // weiter — deshalb `committed`, es beschreibt die Übernahme, nicht
+          // die Mutation —, aber der tote Vorgänger ist ein Befund: Einzeln ist
+          // er ein abgebrochenes Terminal, gehäuft ein Hinweis auf Abstürze
+          // oder eine zu kurze Verwaisungsfrist. Ohne Ereignis sieht das
+          // niemand, weil der Reclaim geräuschlos gelingt.
+          //
+          // Eigene `operation_id`: Die Mutation des Vorgängers ist von hier aus
+          // nicht identifizierbar (sein Claim trägt pid und Zeit, keine
+          // Operations-id). `memory_id` ist die Verbindung, an der man im
+          // Audit-Log weitersucht.
+          reportMutationIncident({
+            operation_id: newOperationId(),
+            op: "claim_reclaim",
+            status: "committed",
+            phase: "claim-reclaim",
+            memory_id: id,
+            detail: "abandoned claim taken over",
+          });
+          return token;
+        }
         // Der Reclaim ging an jemand anderen, oder der Claim war zwischendurch
         // wieder frisch. Beides ist ein Konflikt, kein zweiter Versuch.
         throw writeConflict(id, filePath, "another save is reclaiming this claim");

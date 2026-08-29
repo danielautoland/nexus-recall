@@ -161,3 +161,56 @@ test("ein Re-File, dessen Trash scheitert, meldet den Ausgang statt still zu ble
   assert.ok(incident.rollback === "complete" || incident.rollback === "none");
   assert.ok(first.file_path.length > 0);
 });
+
+test("die Übernahme eines verwaisten Locks meldet sich — sie gelingt sonst geräuschlos", async (t) => {
+  const root = await vault(t);
+  const seeded = await saveMemory(root, input());
+
+  // Ein Lock von einem Prozess, dessen Tod dieser Test beweisen kann: ein Kind
+  // starten und sein Ende abwarten. Damit greift der ESRCH-Zweig in
+  // `claimIsAbandoned` sofort, ohne auf das Verwaisungsfenster zu warten.
+  const { spawn } = await import("node:child_process");
+  const { hostname } = await import("node:os");
+  const { commitLockPathFor } = await import("../src/save-commit.js");
+  const dead = await new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    child.on("exit", () => resolve(child.pid as number));
+  });
+  const lock = commitLockPathFor(root, "m");
+  await mkdir(join(root, ".bastra", "locks"), { recursive: true });
+  await writeFile(lock, JSON.stringify({ pid: dead, host: hostname(), ts: Date.now() }), "utf8");
+
+  const { seen } = await collect(() => saveMemory(root, input({ overwrite: true })));
+
+  const reclaim = seen.find((i) => i.op === "claim_reclaim");
+  assert.ok(reclaim, `ein Reclaim-Incident muss ankommen, gesehen: ${JSON.stringify(seen)}`);
+  assert.equal(reclaim.phase, "claim-reclaim");
+  assert.equal(reclaim.memory_id, "m");
+  // Der Save selbst ist durchgelaufen — der Reclaim ist ein Befund über den
+  // toten Vorgänger, kein Fehler dieses Aufrufers.
+  assert.ok(seeded.file_path.length > 0);
+});
+
+test("kein Incident trägt Inhalte — auch der Reclaim nicht", async (t) => {
+  const root = await vault(t);
+  await saveMemory(root, input());
+
+  const { spawn } = await import("node:child_process");
+  const { hostname } = await import("node:os");
+  const { commitLockPathFor } = await import("../src/save-commit.js");
+  const dead = await new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    child.on("exit", () => resolve(child.pid as number));
+  });
+  const lock = commitLockPathFor(root, "m");
+  await mkdir(join(root, ".bastra", "locks"), { recursive: true });
+  await writeFile(lock, JSON.stringify({ pid: dead, host: hostname(), ts: Date.now() }), "utf8");
+
+  const { seen } = await collect(() => saveMemory(root, input({ overwrite: true })));
+
+  assert.ok(seen.length > 0, "der Lauf muss überhaupt etwas gemeldet haben");
+  const raw = JSON.stringify(seen);
+  assert.ok(!raw.includes("GEHEIMER-INHALT"), "kein Body im Ereignis");
+  assert.ok(!raw.includes("geheime-zusammenfassung"), "keine Zusammenfassung im Ereignis");
+  assert.ok(!raw.includes(root), "kein absoluter Pfad im Ereignis");
+});

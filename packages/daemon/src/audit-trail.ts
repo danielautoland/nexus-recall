@@ -34,6 +34,8 @@
 import {
   AuditLog,
   saveMemory,
+  newOperationId,
+  reportMutationIncident,
   type AuditActor,
   type AuditOperation,
   type SaveMemoryCommitOptions,
@@ -94,6 +96,27 @@ export async function recordAudit(input: AuditTrailInput): Promise<void> {
     console.error(
       `[bastra-recall] audit: could not record ${input.operation} of ${input.memoryId}: ${(err as Error).message}`,
     );
+    // #377: stderr ist im Moment des Fehlers da und zwei Wochen später nicht.
+    // Genau dieser Pfad trägt JEDEN Agentenschreibvorgang über MCP und REST —
+    // ein stiller Ausfall hier heißt, dass die Änderung steht und ihr Beleg
+    // fehlt, und niemand kann es hinterher feststellen.
+    //
+    // `audit_failed` und nicht `partial`: Der Schreibvorgang ist vollständig
+    // durchgelaufen, nur sein Beleg fehlt. Wer das Ereignis liest, darf die
+    // Operation deshalb NICHT wiederholen — das wäre ein zweiter Schreibvorgang
+    // auf einen bereits geschriebenen Zustand.
+    //
+    // Ohne Fehlertext: `err.message` trägt hier regelmäßig den Pfad des
+    // Audit-Logs, und Pfade gehören nicht in dieses Ereignis. Die Meldung mit
+    // Pfad steht eine Zeile höher auf stderr, wo sie hingehört.
+    reportMutationIncident({
+      operation_id: newOperationId(),
+      op: `audit_${input.operation}`,
+      status: "audit_failed",
+      phase: "audit",
+      memory_id: input.memoryId,
+      detail: "append failed",
+    });
   }
 }
 
