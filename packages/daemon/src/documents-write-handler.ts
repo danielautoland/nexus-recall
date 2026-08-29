@@ -971,7 +971,13 @@ async function commitDocument(
         : undefined) ??
       [
         `find document ${args.title}`,
-        args.tags.slice(0, 3).join(" "),
+        // #289: the tag phrase alone repeats across documents whenever the tags
+        // are generic — measured on a real vault, `"sonstiges"` stood as the
+        // trigger of 19 documents and `"foto bild unsortiert"` of 4. A trigger
+        // that names a situation it cannot resolve is worse than no trigger, so
+        // the tags are qualified by the title, which is what tells two
+        // documents of the same category apart.
+        [args.tags.slice(0, 3).join(" "), args.title].filter(Boolean).join(" "),
         `file ${basename(filename, "." + (filename.split(".").pop() ?? ""))}`,
       ].filter(Boolean);
 
