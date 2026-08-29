@@ -4,7 +4,8 @@
 > release contract, V2.0 the measurement-dependent long-term target
 >
 > As of: 29 August 2026 (contract change C-083, contract additions C-084 and
-> C-085; the signed-off basis of 26 July 2026 otherwise unchanged)
+> C-085, refinement C-086; the signed-off basis of 26 July 2026 otherwise
+> unchanged)
 >
 > Starting state: Bastra Recall 0.8.6, the current vault, real
 > 30-day telemetry, and the existing eval geometry
@@ -15,14 +16,15 @@
 > Where the two diverge, the German version prevails. Every change is made
 > there first and translated afterwards, never the other way round.
 >
-> Binding ledger state: C-001–C-085, eleven review rounds, one contract change
-> and two contract additions; C-001–C-082 signed off on 26 July 2026, C-083 to
-> C-085 decided on 29 August 2026.
+> Binding ledger state: C-001–C-086, eleven review rounds, one contract change,
+> two contract additions and one refinement; C-001–C-082 signed off on 26 July
+> 2026, C-083 to C-086 decided on 29 August 2026.
 >
 > Genesis: signed-off starting state C-001–C-028, carried forward by the
 > revisions C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081, and C-082,
-> and by the contract change C-083 and the contract additions C-084 and C-085.
+> and by the contract change C-083, the contract additions C-084 and C-085,
+> and the refinement C-086.
 > All twelve interim versions and the starting state are held unchanged under
 > `docs/architecture-history/`; they are supporting material, not governing
 > contracts. An earlier English version at state C-001–C-028 is held there as
@@ -36,7 +38,7 @@
 > The product-owner decisions in Section 31 have been taken and bind
 > the implementation.
 >
-> Next available ID: C-086. A new delta is carried forward in this file and is
+> Next available ID: C-087. A new delta is carried forward in this file and is
 > no longer kept as a separate revision file.
 
 ## 0. Decision and Review Status
@@ -109,7 +111,7 @@ reopened only with new evidence.
 | ID | Verdict | Binding consequence in this document |
 |---|---|---|
 | C-001 | confirmed | The raw BM25 score and scaled RRF may no longer use shared absolute 30/100 bands as a relevance promise. |
-| C-002 | confirmed | The current `weak_result` is only an informational MCP signal and not a hook gate; V1.0 introduces a real evidence decision with abstention. |
+| C-002 | confirmed | **Refined by C-086:** the required conditions of the evidence decision are drawn more narrowly — partial coverage counts only from 50 %, and the hard identifier anchor no longer reads the body. The current `weak_result` is only an informational MCP signal and not a hook gate; V1.0 introduces a real evidence decision with abstention. |
 | C-003 | corrected | The production candidate pool is `max(k × 4, 20)`, not 20 everywhere; for out-of-pool evals it is explicitly expanded to 100/200. |
 | C-004 | corrected | `GET /hook/session-context` exists, but is projectless and internally serial; it is extended, not used unchanged as a replacement for SessionStart. |
 | C-005 | corrected | Bridges are opt-in and a no-op without a pool; on this instance two bridges were active and expanded 853 queries during the measurement period. This firing rate substantiates activity, not usefulness or quality lift. |
@@ -193,6 +195,7 @@ reopened only with new evidence.
 | C-083 | contract change | Of the retrieval/presentation experiment from 17.4, V1.0 now owes only the pre-registered design, the deterministic arm assignment and the honest status report (`underpowered` or `not_evaluable` per 18.1). The adequately populated run — minimum N per arm reached, second hook wording, per-session switchable gate, query class collected, independent relevance labels — moves to 26.2. The justification is measured: the unit of randomisation is the session, and the single-user population does not carry a minimum N in reasonable time. |
 | C-084 | contract addition | From V1.0 on, the frontmatter format is under an explicit promise (26.1): required fields, memory types, the meaning of the documented optional fields and the loader leniency change only with a major bump. No 1.x reader requires a format-version field. Unknown keys are tolerated on load but are not guaranteed to survive an `overwrite`. Not covered are ranking, the internal `.bastra/` storage and projection content; the shape of `recall` output falls under the separate API contract. Tightening the loader without a major bump is admissible only under the narrowly drawn security exception. |
 | C-085 | contract addition | The 500-decision route of the shadow sign-off (18.2) applies only with spread: at least 20 different sessions carry the counting decisions, and no single session supplies more than 25 % of them. The 14-day route is untouched. Clarification in the same entry: counting is per memory decision, not per hook call — that is how the threshold is implemented and how it is meant. |
+| C-086 | refinement | Both routes to `required` are drawn more narrowly (10.3): the partial-coverage signal of the two-of-three count applies only from 50 % trigger coverage instead of from the first shared term, and the hard identifier anchor reads title, `recall_when` and frontmatter instead of the body as well. Quantified before the change: anti-query gate from 50 % to 12.5 %, Recall@3 gated, identifier queries and false abstention unchanged, length-neutral. Open: the anti-probe set is too small, and the cost of the lost obligations is visible only to the shadow telemetry. |
 
 **Sign-off status 24 July 2026:** full reconciliation of ledger C-001–C-027,
 gate measurability, current-state claim sweep (58 claims, all covered),
@@ -340,7 +343,19 @@ sessions and at most a 25 % share per session; the 14-day route is untouched.
 The same entry records the counting reading: per memory decision, not per hook
 call.
 
-**Next available ID: C-086.** New delta reviews begin there. A verdict
+**Refinement, 29 August 2026 (this version):** C-086 draws both routes to
+`required` more narrowly. The two-of-three count treated any trigger coverage
+above zero as an independent signal, so a single coincidentally shared term
+helped carry an obligation; it now counts only from 50 % coverage. The hard
+identifier anchor additionally searched the body and thereby turned a mention
+in prose into responsibility; it now reads only title, `recall_when` and
+frontmatter. Both narrowings were quantified before the change: the anti-query
+gate falls from 50 % to 12.5 %, while Recall@3 gated, identifier queries and
+false abstention stay unchanged. Two reservations are stated explicitly in the
+entry — eight anti-probes cannot represent the 5 % threshold, and the cost of
+the lost obligations is visible only to the shadow telemetry.
+
+**Next available ID: C-087.** New delta reviews begin there. A verdict
 changes only with new code, telemetry, or run evidence; matters of taste
 are marked as an architectural decision instead of a factual error.
 
@@ -1980,6 +1995,63 @@ Deep Recall stage.
 
 The old absolute thresholds `30` and `100` are not carried over to the new
 semantics.
+
+**Refinement of the required conditions (C-086).** Both routes to `required`
+were drawn too widely, and in each case the fault lay in the quality of the
+justification, not in the quality of the hit.
+
+*Independent signals.* The two-of-three count — trigger coverage, arm rank
+agreement, scope match — previously treated any coverage above zero as a
+signal. A single coincidentally shared term thus sufficed as one of the two
+pillars of an obligation. The partial-coverage signal now counts only **from
+50 % coverage of the query terms by the hand-written trigger**. Full coverage
+remains a hard anchor unchanged.
+
+> Replaced reading: ~~the partial-coverage signal counts as soon as one query
+> term occurs in `recall_when` (`recall_when_coverage > 0`)~~.
+
+*Hard anchor.* The exact identifier, path and symbol match previously searched
+the memory **body** as well. An identifier occurring anywhere in the prose — in
+a code block, a quotation, a list of files — thereby justified an obligation on
+its own. The anchor now reads **title, `recall_when` and frontmatter**; the
+body no longer counts.
+
+> Replaced reading: ~~the identifier haystack comprises title, `recall_when`
+> and the memory body~~.
+
+The justification is the separation 10.2 already draws: title, triggers and
+frontmatter are authorized text that someone wrote as a retrieval signal. Prose
+in the body is content. A match there substantiates that the memory mentions
+the topic — not that it is responsible for this query. Reading the body as an
+anchor confuses mention with responsibility.
+
+**Measurement basis.** Both narrowings were quantified before the change (runs
+`2026-08-29-0e1dd5659433` and `2026-08-29-f5d803104893`, ten gold files, 679
+cases, all variants computed on the same served pool). The anti-query gate
+falls from 50 % to 12.5 % misinjection. Recall@3 gated (0.4743 against 0.4777
+ungated), Recall@3 on identifier queries (0.7429) and false abstention (0.0000)
+are unchanged in **all** variants examined: none of the narrowings takes the
+gold hit out of the top three ranks. The coverage threshold is moreover
+length-neutral — the drop in obligations lies between 58 % and 65 % across all
+query lengths — whereas the examined alternative "at least two matched terms"
+barely bites precisely where the evidence is weakest: a 12 % drop at eleven or
+more terms.
+
+361 obligations depended on the body anchor. 49 of them fall away; the
+remaining 312 stay obligations but now draw their justification from the
+two-of-three count instead of from a find in prose.
+
+**What this measurement does not show.** Two reservations belong to the
+decision and are not written away. First, the 5 % threshold of the anti-query
+gate cannot be represented on eight probes at all: only 0 %, 12.5 %, 25 % and
+so on are reachable, and the threshold lies between the first two values.
+Whether the narrowed version holds it cannot be answered by this probe set; the
+probe set is being extended to about twenty anti-queries. Second, the gold set
+is blind to the cost of the lost obligations: what is measured is whether the
+gold hit survives at rank ≤ 3, not whether the memories that are no longer
+obligations would have helped in a sitting. Both narrowings together remove
+71 % of all obligations. That cost is visible only to the shadow telemetry
+after the deploy — the decision is deliberately taken under this reservation.
 
 ### 10.4 Training and calibration
 
@@ -4142,10 +4214,11 @@ The goal is not maximum recall. The goal is:
 
 > The right memory at the right time – and otherwise silence.
 
-## 28. Delta ledger (C-029–C-085)
+## 28. Delta ledger (C-029–C-086)
 
 This section documents eleven consecutive rounds of deltas against the
-signed-off state C-001–C-028 as well as three later contract entries. Every entry
+signed-off state C-001–C-028 as well as four later entries on contract and
+predicate. Every entry
 names the affected passage, the type
 of the delta, the supporting evidence, the gate, the data source, the
 acceptance criterion and the rollback. No entry reinterprets an earlier verdict.
@@ -4298,6 +4371,13 @@ condition its purpose always required:
 | Previous contract | is extended by | Type |
 |---|---|---|
 | C-022, 18.2 shadow sign-off | C-085 | Contract addition: spread across sessions as a condition of the decision route |
+
+**Refinement — C-086**, 29 August 2026, narrows the required predicate after
+both narrowings had been quantified on the same pool:
+
+| Previous reading | is refined by | Type |
+|---|---|---|
+| C-002, 10.3 required conditions | C-086 | Refinement: partial coverage only from 50 %, identifier anchor without the body |
 
 ### C-029 – Evidence classes for third-party system numbers
 
@@ -5981,6 +6061,61 @@ verdict is reinterpreted; what changes is the scope of the release contract.*
   Whoever does not reach the faster route loses nothing — the 14-day route
   stays open.
 
+---
+
+*From here the refinement C-086 of 29 August 2026.*
+
+### C-086 – Both routes to `required` are drawn more narrowly
+
+- **Passage:** 10.3 extended by the refined required conditions, the
+  measurement basis and the reservations, replaced readings marked as such;
+  ledger row C-002 with a refinement reference, new ledger row C-086; 0.4
+  sign-off block and next free ID; 28 heading, assignment and this entry; 36.
+- **Type:** Refinement.
+- **Evidence:** Both routes to `required` were too wide in the quality of their
+  justification, not in the quality of the hit. The two-of-three count treated
+  any trigger coverage above zero as one of the two required signals — a single
+  coincidentally shared term sufficed. The hard identifier anchor additionally
+  searched the body; an identifier in a code block or a file listing thereby
+  justified an obligation on its own, although a find in prose substantiates
+  only that the memory mentions the topic, not that it is responsible. 10.2
+  already separates authorized retrieval text from content; the predicate did
+  not. Both narrowings were quantified **before** the change (runs
+  `2026-08-29-0e1dd5659433` and `2026-08-29-f5d803104893`, ten gold files, 679
+  cases, six variants on the same served pool, so that a difference between two
+  rows is the rule and nothing else): the anti-query gate falls from 0.5000 to
+  0.1250, while Recall@3 gated (0.4743 against 0.4777 ungated), Recall@3 on
+  identifier queries (0.7429) and false abstention (0.0000) stay identical in
+  all six variants. The coverage threshold is length-neutral (58–65 % drop in
+  obligations across all query lengths); the examined alternative "at least two
+  matched terms" is not: it bites with only a 12 % drop at eleven or more
+  terms, that is, weakest precisely where a single shared term is the weakest
+  evidence. 361 obligations rested on the body anchor; 49 fall away, 312 remain
+  obligations on the two-of-three count.
+- **Gate:** none for the shadow measurement; live activation of the evidence
+  decision stays bound to 18.2 and the configuration flag from C-023.
+- **Data source:** the two private run artifacts under `~/.bastra/eval-runs/`
+  including their `NOTES.md`; the verification run `2026-08-29-50163fb9a0d0`
+  after implementation; the predicate in
+  `packages/core/src/evidence-decision.ts`.
+- **Acceptance criterion:** The partial-coverage signal counts only from a
+  coverage of 0.5; full coverage remains a hard anchor. The identifier anchor
+  reads title, `recall_when` and frontmatter and not the body. Both are to be
+  reported in the component-gate report per 18.2. Implemented in `b30486e`
+  (`MIN_TRIGGER_COVERAGE = 0.5`, body removed from the identifier haystack) and
+  checked against the prediction: the run `2026-08-29-50163fb9a0d0` reproduces
+  the variant computation across all 679 cases with zero deviations.
+- **Rollback:** Both thresholds are constants of the predicate and can be
+  reverted without data migration. Two reservations remain explicitly open and
+  are not carried as settled: the 5 % threshold of the anti-query gate cannot
+  be represented on eight probes — only 0 %, 12.5 %, 25 % and so on are
+  reachable — which is why the probe set is being extended to about twenty
+  anti-queries; and the cost of the lost obligations (both narrowings together
+  remove 71 % of all obligations) is not visible to the gold set but only to
+  the shadow telemetry after the deploy. Should it show that removed
+  obligations were missed in sittings, the coverage threshold is the first
+  quantity to be turned back.
+
 ## 29. Source and claim matrix
 
 All data were collected on **25 July 2026** by retrieving the respective primary
@@ -6325,7 +6460,7 @@ the daemon README describes expired memories as "(or excluded if expired)"; the
 code merely damps them to 20%.
 
 **Next free ID: C-083.** *(Historical state of 26 July 2026. The currently
-valid next free ID is at the end of Section 35.)*
+valid next free ID is at the end of Section 36.)*
 
 ## 33. Handover after the contract change C-083
 
@@ -6381,7 +6516,7 @@ second hook wording for arm A as a product and text decision, and the
 activation decision that arm B depends on.
 
 **Next free ID: C-084.** *(State of this section. The currently valid next free
-ID is at the end of Section 35.)*
+ID is at the end of Section 36.)*
 
 ## 34. Handover after the contract addition C-084
 
@@ -6431,7 +6566,7 @@ carries four conditions, among them a visible error instead of a silent drop.
    reference 26.1 so that the two versions do not drift apart.
 
 **Next free ID: C-085.** *(State of this section. The currently valid next free
-ID is at the end of Section 35.)*
+ID is at the end of Section 36.)*
 
 ## 35. Handover after the contract addition C-085
 
@@ -6479,4 +6614,56 @@ it, and the phrase "logged hook decisions" in C-022 denotes the same quantity.
    randomisation, so the question poses itself differently — but it poses
    itself.
 
-**Next free ID: C-086.**
+**Next free ID: C-086.** *(State of this section. The currently valid next free
+ID is at the end of Section 36.)*
+
+## 36. Handover after the refinement C-086
+
+**What was changed.** This version adds the refinement C-086. Solely the
+following passages were changed:
+
+| Passage | Delta |
+|---|---|
+| Preamble: ledger state, genesis, as-of date, next free ID | C-086 |
+| 0.4 refinement reference on C-002, new ledger row C-086 | C-086 |
+| 0.4 sign-off block and next free ID | C-086 |
+| 10.3 required conditions, measurement basis, reservations | C-086 |
+| 28 heading, preamble, assignment table, delta entry C-086 | C-086 |
+| 35 note on the ID | C-086 |
+| 36 this section | — |
+
+All other passages are untouched. The product code now carries the change:
+`packages/core/src/evidence-decision.ts` exports `MIN_TRIGGER_COVERAGE = 0.5`
+and no longer carries the body in the identifier haystack (commit `b30486e`).
+Verified by the run `2026-08-29-50163fb9a0d0`: the changed predicate reproduces
+the prediction of the variant computation across all 679 cases without a single
+deviation — eight compared fields per case, 5432 values. In the daemon the
+change takes effect only after a restart; the shadow observation therefore
+starts afresh.
+
+**What the refinement effects.** The product semantics of `required` — a hard
+anchor or several independent signals — is unchanged; what is corrected is what
+passed as an anchor and what passed as an independent signal. A single shared
+term is not independent evidence, and an identifier in prose is not an anchor.
+Together the two produced obligations whose justification did not withstand
+scrutiny: 361 obligations rested on a find in the body alone.
+
+The measurement is the actual substance of the entry. It ran **before** the
+change and across six variants on the same pool, so a difference between two
+rows is the rule and not a second run. The result is unusually clear: the
+anti-query gate quarters itself, and not one of the three quality figures moves
+by a single digit.
+
+**What to check in particular.**
+
+1. Whether the 5 % threshold of the anti-query gate holds after the extension
+   to about twenty anti-queries. Before that the question cannot be answered,
+   and today's value of 1/8 must not be read as a pass.
+2. Whether the shadow telemetry misses obligations after the deploy that now
+   fall away. 71 % fewer obligations is a large intervention whose cost this
+   gold set structurally cannot see.
+3. Whether the 0.5 threshold is confirmed in versioned form after the M0
+   baseline run. Today it is justified from the length breakdown, not from a
+   calibration.
+
+**Next free ID: C-087.**

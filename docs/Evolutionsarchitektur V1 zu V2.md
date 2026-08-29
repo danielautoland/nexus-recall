@@ -4,21 +4,22 @@
 > Releasevertrag, V2.0 das langfristige, messungsabhängige Zielbild
 >
 > Stand: 29. August 2026 (Vertragsänderung C-083, Vertragsergänzungen C-084
-> und C-085; abgenommene Basis vom 26. Juli 2026 im Übrigen unverändert)
+> und C-085, Präzisierung C-086; abgenommene Basis vom 26. Juli 2026 im
+> Übrigen unverändert)
 >
 > Ausgangsstand: Bastra Recall 0.8.6, aktueller Vault, reale
 > 30-Tage-Telemetrie und bestehende Eval-Geometrie
 >
 > **Diese Datei ist die maßgebliche Fassung.** Verbindlicher Ledgerstand:
-> C-001–C-085, elf Reviewrunden, eine Vertragsänderung und zwei
-> Vertragsergänzungen; C-001–C-082 am 26. Juli 2026 abgenommen, C-083 bis
-> C-085 am 29. August 2026 entschieden.
+> C-001–C-086, elf Reviewrunden, eine Vertragsänderung, zwei
+> Vertragsergänzungen und eine Präzisierung; C-001–C-082 am 26. Juli 2026
+> abgenommen, C-083 bis C-086 am 29. August 2026 entschieden.
 >
 > Entstehung: abgenommener Ausgangsstand C-001–C-028, fortgeschrieben durch die
 > Revisionen C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
 > C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082
-> sowie durch die Vertragsänderung C-083 und die Vertragsergänzungen C-084
-> und C-085.
+> sowie durch die Vertragsänderung C-083, die Vertragsergänzungen C-084 und
+> C-085 und die Präzisierung C-086.
 > Alle zwölf Zwischenfassungen und der Ausgangsstand liegen unverändert unter
 > `docs/architecture-history/`; sie sind Belegmaterial, keine geltenden
 > Verträge.
@@ -38,7 +39,7 @@
 > Die Product-Owner-Entscheidungen in Abschnitt 31 sind getroffen und binden
 > die Umsetzung.
 >
-> Nächste freie ID: C-086. Ein neues Delta wird in dieser Datei fortgeschrieben
+> Nächste freie ID: C-087. Ein neues Delta wird in dieser Datei fortgeschrieben
 > und nicht mehr als eigene Revisionsdatei geführt.
 
 ## 0. Entscheidungs- und Reviewstatus
@@ -112,7 +113,7 @@ neuer Evidenz erneut geöffnet.
 | ID | Urteil | Verbindliche Konsequenz im Dokument |
 |---|---|---|
 | C-001 | bestätigt | BM25-Rohscore und skalierter RRF dürfen keine gemeinsamen absoluten 30/100-Bänder mehr als Relevanzversprechen verwenden. |
-| C-002 | bestätigt | Das heutige `weak_result` ist nur ein informatives MCP-Signal und kein Hook-Gate; V1.0 führt einen echten Evidenzentscheid mit Abstention ein. |
+| C-002 | bestätigt | **Präzisiert durch C-086:** Die Required-Bedingungen des Evidenzentscheids sind enger gefasst — Teilabdeckung zählt erst ab 50 %, der harte Identifier-Anker liest den Body nicht mehr. Das heutige `weak_result` ist nur ein informatives MCP-Signal und kein Hook-Gate; V1.0 führt einen echten Evidenzentscheid mit Abstention ein. |
 | C-003 | korrigiert | Der produktive Candidate Pool ist `max(k × 4, 20)`, nicht überall 20; für Out-of-pool-Evals wird er explizit auf 100/200 erweitert. |
 | C-004 | korrigiert | `GET /hook/session-context` existiert, ist aber projektlos und intern seriell; er wird erweitert, nicht unverändert als Ersatz für SessionStart eingesetzt. |
 | C-005 | korrigiert | Bridges sind opt-in und ohne Pool ein No-op; auf dieser Instanz waren zwei Bridges aktiv und erweiterten in der Messperiode 853 Queries. Diese Feuerrate belegt Aktivität, nicht Nutzen oder Qualitätslift. |
@@ -196,6 +197,7 @@ neuer Evidenz erneut geöffnet.
 | C-083 | Vertragsänderung | V1.0 schuldet vom Retrieval-/Präsentationsexperiment aus 17.4 nur noch die vorab registrierte Anlage, die deterministische Armzuweisung und den ehrlichen Statusbericht (`underpowered` beziehungsweise `not_evaluable` nach 18.1). Der hinreichend besetzte Lauf — erreichtes Mindest-N je Arm, zweiter Hook-Wortlaut, je Session schaltbares Gate, erhobene Query-Klasse, unabhängige Relevanzlabels — ist nach 26.2 verschoben. Begründung ist gemessen: Die Versuchseinheit ist die Session, und die Ein-Nutzer-Population trägt in vertretbarer Zeit kein Mindest-N. |
 | C-084 | Vertragsergänzung | Ab V1.0 steht das Frontmatter-Format unter einer ausdrücklichen Zusicherung (26.1): Pflichtfelder, Memory-Typen, Bedeutung der dokumentierten optionalen Felder und die Ladetoleranz ändern sich nur mit einem Major-Bump. Ein 1.x-Reader verlangt kein Formatversionsfeld. Unbekannte Schlüssel werden beim Laden toleriert, überleben einen `overwrite` aber nicht garantiert. Nicht gedeckt sind Ranking, interne `.bastra/`-Ablagen und Projektionsinhalte; die `recall`-Ausgabeform fällt unter den eigenen API-Vertrag. Eine Loader-Verschärfung ist nur unter der eng gefassten Sicherheitsausnahme ohne Major-Bump zulässig. |
 | C-085 | Vertragsergänzung | Die 500-Entscheidungen-Route der Shadow-Abnahme (18.2) gilt nur bei Streuung: mindestens 20 verschiedene Sessions tragen die zählenden Entscheidungen, und keine einzelne Session stellt mehr als 25 % von ihnen. Die 14-Tage-Route bleibt unberührt. Klarstellung im selben Eintrag: Gezählt wird pro Memory-Entscheidung, nicht pro Hook-Aufruf — so ist die Schwelle implementiert und so ist sie gemeint. |
+| C-086 | Präzisierung | Beide Wege zu `required` werden enger gefasst (10.3): Das Teilabdeckungs-Signal der Zwei-von-drei-Zählung zählt erst ab 50 % Trigger-Abdeckung statt ab dem ersten gemeinsamen Term, und der harte Identifier-Anker liest Titel, `recall_when` und Frontmatter statt zusätzlich den Body. Beziffert vor der Änderung: Anti-Query-Gate von 50 % auf 12,5 %, Recall@3 gegated, Identifier-Queries und Falsch-Abstention unverändert, längenneutral. Offen bleiben die zu kleine Anti-Probenmenge und die Kosten des Pflichtverlusts, die erst die Shadow-Telemetrie zeigt. |
 
 **Abnahmestand 24.07.2026:** Vollabgleich Ledger C-001–C-027,
 Gate-Messbarkeit, Ist-Behauptungs-Sweep (58 Aussagen, alle gedeckt),
@@ -345,7 +347,19 @@ nur bei mindestens 20 verschiedenen Sessions und höchstens 25 % Anteil je
 Session; die 14-Tage-Route bleibt unberührt. Derselbe Eintrag hält die
 Zähl-Lesart fest: pro Memory-Entscheidung, nicht pro Hook-Aufruf.
 
-**Nächste freie ID: C-086.** Neue Delta-Reviews beginnen dort. Ein Urteil
+**Präzisierung, 29.08.2026 (diese Fassung):** C-086 fasst beide Wege zu
+`required` enger. Die Zwei-von-drei-Zählung wertete jede Trigger-Abdeckung über
+null als unabhängiges Signal, sodass ein einziger zufällig geteilter Term eine
+Pflicht mittrug; künftig zählt sie erst ab 50 % Abdeckung. Der harte
+Identifier-Anker suchte zusätzlich im Body und machte damit eine Erwähnung im
+Fließtext zur Zuständigkeit; er liest künftig nur Titel, `recall_when` und
+Frontmatter. Beide Verengungen wurden vor der Änderung beziffert: Das
+Anti-Query-Gate fällt von 50 % auf 12,5 %, Recall@3 gegated, Identifier-Queries
+und Falsch-Abstention bleiben unverändert. Zwei Vorbehalte stehen ausdrücklich
+im Eintrag — acht Anti-Proben können die 5-%-Schwelle nicht darstellen, und die
+Kosten des Pflichtverlusts sieht erst die Shadow-Telemetrie.
+
+**Nächste freie ID: C-087.** Neue Delta-Reviews beginnen dort. Ein Urteil
 ändert sich nur mit neuer Code-, Telemetrie- oder Run-Evidenz; Geschmacksfragen
 werden als Architekturentscheidung statt als Faktenfehler markiert.
 
@@ -2019,6 +2033,63 @@ Deep-Recall-Stufe hinzu.
 
 Die alten absoluten Schwellen `30` und `100` werden nicht auf die neue Semantik
 übertragen.
+
+**Präzisierung der Required-Bedingungen (C-086).** Beide Wege zu `required`
+waren zu weit gefasst, und der Fehler lag jeweils in der Begründungsqualität,
+nicht in der Trefferqualität.
+
+*Unabhängige Signale.* Die Zwei-von-drei-Zählung — Trigger-Abdeckung,
+Rangübereinstimmung der Arme, Scope-Treffer — wertete bisher jede Abdeckung
+über null als Signal. Ein einziger zufällig geteilter Term genügte damit als
+eine der beiden Säulen einer Pflicht. Das Teilabdeckungs-Signal zählt künftig
+erst **ab 50 % Abdeckung der Anfrageterme durch den handgeschriebenen
+Trigger**. Die vollständige Abdeckung bleibt unverändert harter Anker.
+
+> Ersetzte Lesart: ~~das Teilabdeckungs-Signal zählt, sobald ein Anfrageterm im
+> `recall_when` vorkommt (`recall_when_coverage > 0`)~~.
+
+*Harter Anker.* Der exakte Identifier-, Pfad- und Symboltreffer suchte bisher
+auch im **Body** des Memorys. Ein Bezeichner, der irgendwo im Fließtext
+vorkommt — in einem Codeblock, einem Zitat, einer Aufzählung von Dateien —,
+begründete damit allein eine Pflicht. Der Anker liest künftig **Titel,
+`recall_when` und Frontmatter**; der Body zählt nicht mehr.
+
+> Ersetzte Lesart: ~~der Identifier-Heuhaufen umfasst Titel, `recall_when` und
+> den Memory-Body~~.
+
+Die Begründung ist die Trennung, die 10.2 ohnehin zieht: Titel, Trigger und
+Frontmatter sind autorisierter Text, den jemand als Abrufsignal geschrieben
+hat. Prosa im Body ist Inhalt. Ein Treffer dort belegt, dass das Memory das
+Thema erwähnt — nicht, dass es für diese Anfrage zuständig ist. Wer den Body
+als Anker liest, verwechselt Erwähnung mit Zuständigkeit.
+
+**Messgrundlage.** Beide Verengungen sind vor der Änderung beziffert worden
+(Läufe `2026-08-29-0e1dd5659433` und `2026-08-29-f5d803104893`, zehn
+Gold-Dateien, 679 Fälle, alle Varianten auf demselben servierten Pool). Das
+Anti-Query-Gate fällt von 50 % auf 12,5 % Fehlinjektion. Recall@3 gegated
+(0,4743 gegen 0,4777 ungegated), Recall@3 auf Identifier-Queries (0,7429) und
+die Falsch-Abstention (0,0000) sind in **allen** geprüften Varianten
+unverändert: Keine der Verengungen nimmt den Goldtreffer aus den ersten drei
+Rängen. Die Abdeckungsschwelle wirkt zudem längenneutral — der Pflichtrückgang
+liegt über alle Query-Längen zwischen 58 % und 65 % —, während die geprüfte
+Alternative „mindestens zwei getroffene Terme" genau dort kaum greift, wo die
+Evidenz am schwächsten ist: 12 % Rückgang bei elf und mehr Termen.
+
+Vom Body-Anker hingen 361 Pflichten ab. 49 von ihnen entfallen, die übrigen 312
+bleiben Pflicht, tragen ihre Begründung aber jetzt aus der Zwei-von-drei-Zählung
+statt aus einem Fund im Fließtext.
+
+**Was diese Messung nicht zeigt.** Zwei Vorbehalte gehören zum Entscheid und
+werden nicht wegformuliert. Erstens ist die 5-%-Schwelle des Anti-Query-Gates
+auf acht Proben gar nicht darstellbar: Erreichbar sind nur 0 %, 12,5 %, 25 %
+und so fort, die Schwelle liegt zwischen den ersten beiden Werten. Ob die
+verengte Fassung sie hält, kann dieser Probensatz nicht beantworten; die
+Probenmenge wird auf etwa zwanzig Anti-Queries erweitert. Zweitens ist der
+Goldsatz blind für die Kosten des Pflichtverlusts: Gemessen wird, ob der
+Goldtreffer auf Rang ≤ 3 überlebt, nicht ob die Memories, die keine Pflicht mehr
+sind, in einer Sitzung genützt hätten. Beide Verengungen zusammen streichen
+71 % aller Pflichten. Diese Kosten sieht erst die Shadow-Telemetrie nach dem
+Deploy — die Entscheidung wird bewusst unter diesem Vorbehalt getroffen.
 
 ### 10.4 Training und Kalibrierung
 
@@ -4245,11 +4316,11 @@ Das Ziel ist nicht maximaler Recall. Das Ziel ist:
 
 > Zur richtigen Zeit die richtige Erinnerung – und ansonsten Ruhe.
 
-## 28. Delta-Ledger (C-029–C-085)
+## 28. Delta-Ledger (C-029–C-086)
 
 Dieser Abschnitt dokumentiert elf aufeinanderfolgende Runden von Deltas
-gegenüber dem abgenommenen Stand C-001–C-028 sowie drei spätere
-Vertragseinträge. Jeder Eintrag nennt die betroffene
+gegenüber dem abgenommenen Stand C-001–C-028 sowie vier spätere Einträge zu
+Vertrag und Prädikat. Jeder Eintrag nennt die betroffene
 Passage, die Art des Deltas, die tragende Evidenz, das Gate, die Datenquelle,
 das Abnahmekriterium und den Rollback. Kein Eintrag deutet ein früheres Urteil
 um.
@@ -4402,6 +4473,13 @@ eine Bedingung, die ihr Zweck immer schon verlangte:
 | Bisheriger Vertrag | wird ergänzt durch | Art |
 |---|---|---|
 | C-022, 18.2 Shadow-Abnahme | C-085 | Vertragsergänzung: Streuung über Sessions als Bedingung der Entscheidungs-Route |
+
+**Präzisierung — C-086**, 29.08.2026, verengt das Required-Prädikat, nachdem
+beide Verengungen auf demselben Pool beziffert waren:
+
+| Bisherige Lesart | wird präzisiert durch | Art |
+|---|---|---|
+| C-002, 10.3 Required-Bedingungen | C-086 | Präzisierung: Teilabdeckung erst ab 50 %, Identifier-Anker ohne Body |
 
 ### C-029 – Evidenzklassen für Fremdsystemzahlen
 
@@ -6123,6 +6201,63 @@ Urteil wird umgedeutet, geändert wird der Umfang des Releasevertrags.*
   festgeschriebenen Werte. Wer die schnellere Route nicht erreicht, verliert
   nichts — die 14-Tage-Route bleibt offen.
 
+---
+
+*Ab hier die Präzisierung C-086 vom 29.08.2026.*
+
+### C-086 – Beide Wege zu `required` werden enger gefasst
+
+- **Passage:** 10.3 um die präzisierten Required-Bedingungen, die Messgrundlage
+  und die Vorbehalte erweitert, ersetzte Lesarten kenntlich; Ledgerzeile C-002
+  mit Präzisierungsverweis, neue Ledgerzeile C-086; 0.4 Abnahmeblock und
+  nächste freie ID; 28 Überschrift, Zuordnung und dieser Eintrag; 36.
+- **Art:** Präzisierung.
+- **Evidenz:** Beide Wege zu `required` waren in der Begründungsqualität zu
+  weit, nicht in der Trefferqualität. Die Zwei-von-drei-Zählung wertete jede
+  Trigger-Abdeckung über null als eines der beiden nötigen Signale — ein
+  einzelner zufällig geteilter Term genügte. Der harte Identifier-Anker suchte
+  zusätzlich im Body; ein Bezeichner in einem Codeblock oder einer Dateiliste
+  begründete damit allein eine Pflicht, obwohl ein Fund in Prosa nur belegt,
+  dass das Memory das Thema erwähnt, und nicht, dass es zuständig ist. 10.2
+  trennt autorisierten Abruftext von Inhalt bereits; das Prädikat tat es nicht.
+  Beide Verengungen wurden **vor** der Änderung beziffert (Läufe
+  `2026-08-29-0e1dd5659433` und `2026-08-29-f5d803104893`, zehn Gold-Dateien,
+  679 Fälle, sechs Varianten auf demselben servierten Pool, damit ein
+  Unterschied zwischen zwei Zeilen die Regel ist und nichts sonst): Das
+  Anti-Query-Gate fällt von 0,5000 auf 0,1250, während Recall@3 gegated
+  (0,4743 gegen 0,4777 ungegated), Recall@3 auf Identifier-Queries (0,7429) und
+  die Falsch-Abstention (0,0000) in allen sechs Varianten identisch bleiben.
+  Die Abdeckungsschwelle wirkt längenneutral (58–65 % Pflichtrückgang über alle
+  Query-Längen), die geprüfte Alternative „mindestens zwei getroffene Terme"
+  dagegen nicht: Sie greift bei elf und mehr Termen nur mit 12 % Rückgang,
+  also genau dort am schwächsten, wo ein einzelner geteilter Term die
+  schwächste Evidenz ist. Auf dem Body-Anker ruhten 361 Pflichten; 49 entfallen,
+  312 bleiben Pflicht auf der Zwei-von-drei-Zählung.
+- **Gate:** keines für die Schattenmessung; die Live-Schaltung des
+  Evidenzentscheids bleibt an 18.2 und das Konfigurations-Flag aus C-023
+  gebunden.
+- **Datenquelle:** die beiden privaten Run-Artefakte unter
+  `~/.bastra/eval-runs/` samt ihren `NOTES.md`; der Verifikationslauf
+  `2026-08-29-50163fb9a0d0` nach der Umsetzung; das Prädikat in
+  `packages/core/src/evidence-decision.ts`.
+- **Abnahmekriterium:** Das Teilabdeckungs-Signal zählt erst ab einer Abdeckung
+  von 0,5; die vollständige Abdeckung bleibt harter Anker. Der Identifier-Anker
+  liest Titel, `recall_when` und Frontmatter und nicht den Body. Beides ist im
+  Report der Komponentengates nach 18.2 auszuweisen. Umgesetzt in `b30486e`
+  (`MIN_TRIGGER_COVERAGE = 0.5`, Body aus dem Identifier-Heuhaufen entfernt) und
+  gegengerechnet: Der Lauf `2026-08-29-50163fb9a0d0` reproduziert die
+  Vorhersage der Variantenrechnung über alle 679 Fälle mit null Abweichungen.
+- **Rollback:** Beide Schwellen sind Konstanten des Prädikats und ohne
+  Datenmigration zurückzunehmen. Zwei Vorbehalte bleiben ausdrücklich offen und
+  werden nicht als erledigt geführt: Die 5-%-Schwelle des Anti-Query-Gates ist
+  auf acht Proben nicht darstellbar — erreichbar sind nur 0 %, 12,5 %, 25 % und
+  so fort —, weshalb die Probenmenge auf etwa zwanzig Anti-Queries erweitert
+  wird; und die Kosten des Pflichtverlusts (beide Verengungen zusammen streichen
+  71 % aller Pflichten) sieht der Goldsatz nicht, sondern erst die
+  Shadow-Telemetrie nach dem Deploy. Zeigt sie, dass gestrichene Pflichten in
+  Sitzungen gefehlt haben, ist die Abdeckungsschwelle die erste Größe, die
+  zurückgedreht wird.
+
 ## 29. Quellen- und Behauptungsmatrix
 
 Alle Angaben wurden am **25. Juli 2026** durch Abruf der jeweiligen Primärquelle
@@ -6472,7 +6607,7 @@ beschreibt abgelaufene Memories als „(or excluded if expired)"; der Code dämp
 sie nur auf 20 %.
 
 **Nächste freie ID: C-083.** *(Historischer Stand vom 26.07.2026. Die aktuell
-gültige nächste freie ID steht am Ende von Abschnitt 35.)*
+gültige nächste freie ID steht am Ende von Abschnitt 36.)*
 
 ## 33. Übergabe nach der Vertragsänderung C-083
 
@@ -6531,7 +6666,7 @@ zusätzlich der zweite Hook-Wortlaut für Arm A als Produkt- und Textentscheidun
 und die Aktivierungsentscheidung, von der Arm B abhängt.
 
 **Nächste freie ID: C-084.** *(Stand dieses Abschnitts. Die aktuell gültige
-nächste freie ID steht am Ende von Abschnitt 35.)*
+nächste freie ID steht am Ende von Abschnitt 36.)*
 
 ## 34. Übergabe nach der Vertragsergänzung C-084
 
@@ -6582,7 +6717,7 @@ Fehler statt stillem Verwerfen.
    verweisen soll, damit die beiden Fassungen nicht auseinanderlaufen.
 
 **Nächste freie ID: C-085.** *(Stand dieses Abschnitts. Die aktuell gültige
-nächste freie ID steht am Ende von Abschnitt 35.)*
+nächste freie ID steht am Ende von Abschnitt 36.)*
 
 ## 35. Übergabe nach der Vertragsergänzung C-085
 
@@ -6630,4 +6765,56 @@ bezeichnet dieselbe Größe.
    17.4 gelten soll. Dort ist die Session bereits die Versuchseinheit, weshalb
    die Frage sich anders stellt — aber sie stellt sich.
 
-**Nächste freie ID: C-086.**
+**Nächste freie ID: C-086.** *(Stand dieses Abschnitts. Die aktuell gültige
+nächste freie ID steht am Ende von Abschnitt 36.)*
+
+## 36. Übergabe nach der Präzisierung C-086
+
+**Was geändert wurde.** Diese Fassung fügt die Präzisierung C-086 hinzu.
+Geändert wurden ausschließlich die folgenden Passagen:
+
+| Passage | Delta |
+|---|---|
+| Präambel: Ledgerstand, Entstehung, Stand-Datum, nächste freie ID | C-086 |
+| 0.4 Präzisierungsverweis an C-002, neue Ledgerzeile C-086 | C-086 |
+| 0.4 Abnahmeblock und nächste freie ID | C-086 |
+| 10.3 Required-Bedingungen, Messgrundlage, Vorbehalte | C-086 |
+| 28 Überschrift, Vorspann, Zuordnungstabelle, Delta-Eintrag C-086 | C-086 |
+| 35 Vermerk zur ID | C-086 |
+| 36 dieser Abschnitt | — |
+
+Alle übrigen Passagen sind unangetastet. Der Produktcode trägt die Änderung
+inzwischen: `packages/core/src/evidence-decision.ts` exportiert
+`MIN_TRIGGER_COVERAGE = 0.5` und führt den Body nicht mehr im
+Identifier-Heuhaufen (Commit `b30486e`). Verifiziert durch den Lauf
+`2026-08-29-50163fb9a0d0`: Das geänderte Prädikat reproduziert die Vorhersage
+der Variantenrechnung über alle 679 Fälle ohne eine einzige Abweichung — acht
+verglichene Felder je Fall, 5432 Werte. Im Daemon wirkt die Änderung erst nach
+einem Neustart; die Shadow-Beobachtung beginnt damit neu.
+
+**Was die Präzisierung bewirkt.** Die Produktsemantik von `required` — harter
+Anker oder mehrere unabhängige Signale — blieb unverändert; korrigiert wird,
+was als Anker und was als unabhängiges Signal durchging. Ein einzelner geteilter
+Term ist keine unabhängige Evidenz, und ein Bezeichner im Fließtext ist kein
+Anker. Beides zusammen erzeugte Pflichten, deren Begründung der Prüfung nicht
+standhielt: 361 Pflichten ruhten allein auf einem Fund im Body.
+
+Die Messung ist der eigentliche Gehalt des Eintrags. Sie lief **vor** der
+Änderung und über sechs Varianten auf demselben Pool, weshalb ein Unterschied
+zwischen zwei Zeilen die Regel ist und kein zweiter Lauf. Das Ergebnis ist
+ungewöhnlich eindeutig: Das Anti-Query-Gate viertelt sich, und keine der drei
+Qualitätsgrößen bewegt sich um eine einzige Stelle.
+
+**Was besonders zu prüfen ist.**
+
+1. Ob die 5-%-Schwelle des Anti-Query-Gates nach der Erweiterung auf etwa
+   zwanzig Anti-Queries hält. Vorher ist die Frage nicht beantwortbar, und der
+   heutige Wert von 1/8 darf nicht als Bestehen gelesen werden.
+2. Ob die Shadow-Telemetrie nach dem Deploy Pflichten vermisst, die jetzt
+   entfallen. 71 % weniger Pflichten sind ein großer Eingriff, dessen Kosten
+   dieser Goldsatz strukturell nicht sehen kann.
+3. Ob die Schwelle 0,5 nach dem M0-Baseline-Run versioniert bestätigt wird. Sie
+   ist heute aus der Längenaufschlüsselung begründet, nicht aus einer
+   Kalibrierung.
+
+**Nächste freie ID: C-087.**
