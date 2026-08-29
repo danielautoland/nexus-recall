@@ -3,17 +3,20 @@
 > Status: Release- und Zielarchitektur; V1.0 ist der nächste verbindliche
 > Releasevertrag, V2.0 das langfristige, messungsabhängige Zielbild
 >
-> Stand: 26. Juli 2026
+> Stand: 29. August 2026 (Vertragsänderung C-083; abgenommene Basis vom
+> 26. Juli 2026 im Übrigen unverändert)
 >
 > Ausgangsstand: Bastra Recall 0.8.6, aktueller Vault, reale
 > 30-Tage-Telemetrie und bestehende Eval-Geometrie
 >
 > **Diese Datei ist die maßgebliche Fassung.** Verbindlicher Ledgerstand:
-> C-001–C-082, elf Reviewrunden, am 26. Juli 2026 abgenommen.
+> C-001–C-083, elf Reviewrunden und eine Vertragsänderung; C-001–C-082 am
+> 26. Juli 2026 abgenommen, C-083 am 29. August 2026 entschieden.
 >
 > Entstehung: abgenommener Ausgangsstand C-001–C-028, fortgeschrieben durch die
 > Revisionen C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
-> C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082.
+> C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081 und C-082
+> sowie durch die Vertragsänderung C-083.
 > Alle zwölf Zwischenfassungen und der Ausgangsstand liegen unverändert unter
 > `docs/architecture-history/`; sie sind Belegmaterial, keine geltenden
 > Verträge.
@@ -33,7 +36,7 @@
 > Die Product-Owner-Entscheidungen in Abschnitt 31 sind getroffen und binden
 > die Umsetzung.
 >
-> Nächste freie ID: C-083. Ein neues Delta wird in dieser Datei fortgeschrieben
+> Nächste freie ID: C-084. Ein neues Delta wird in dieser Datei fortgeschrieben
 > und nicht mehr als eigene Revisionsdatei geführt.
 
 ## 0. Entscheidungs- und Reviewstatus
@@ -129,7 +132,7 @@ neuer Evidenz erneut geöffnet.
 | C-021 | bestätigt | M0 liefert nach dem Baseline-Run versionierte numerische M1-Toleranzen. |
 | C-022 | Product-Owner-Entscheid | Shadow-Abnahme nach mindestens 14 Tagen oder 500 geloggten Hook-Entscheidungen; zusätzlich müssen Goldset-Gates bestehen und alle `required`/`no_answer`-Divergenzen erklärt sein. |
 | C-023 | Product-Owner-Entscheid | Der Live-Evidenzentscheid läuft hinter einem Konfigurations-Flag mit sofortigem Fallback auf das heutige Floor-Verhalten; kein Hard-Cutover. |
-| C-024 | Product-Owner-Entscheid | Retrieval-/Präsentationsexperimente weisen den Arm deterministisch pro pseudonymer Session-ID zu; Mindest-N pro Arm wird nach M0 versioniert festgelegt. |
+| C-024 | Product-Owner-Entscheid | **Releasezuordnung geändert durch C-083:** Die Zuweisungs- und Fallzahlregel selbst gilt unverändert, aber das Erreichen des Mindest-N ist keine V1.0-Anforderung mehr. Retrieval-/Präsentationsexperimente weisen den Arm deterministisch pro pseudonymer Session-ID zu; Mindest-N pro Arm wird nach M0 versioniert festgelegt. |
 | C-025 | Product-Owner-Entscheid | Private Run-Artefakte liegen unter `~/.bastra/eval-runs/<datum>-<hash>/`; das öffentliche Repo erhält nur aggregierte Reports ohne Vault-abgeleitete Query-Texte. |
 | C-026 | bestätigt | Chunking wird nicht durch M2 freigegeben, sondern benötigt einen gesonderten Repräsentationsentscheid auf Basis einer Chunking-on/off-Ablation. |
 | C-027 | bestätigt | Produktmetriken sind erst ab ihrer jeweils gegateten Datenquelle messbar; vorher bleiben sie ausdrücklich Zielbild. |
@@ -188,6 +191,7 @@ neuer Evidenz erneut geöffnet.
 | C-080 | Ist-Korrektur | Das Feld `GraphNode.bridge` belegt weder eine graphentheoretische Brücke noch einen Artikulationsknoten: `buildGraph` setzt es, sobald ein Knoten Nachbarn in mindestens zwei unterschiedlichen fremden Clustern besitzt, ohne zu prüfen, ob diese Cluster ohne ihn unverbunden wären. Es bleibt Bestandteil des Strukturkriteriums, aber ausschließlich mit dieser Bedeutung; eine echte Artikulationsanalyse wäre zusätzliche Grapharbeit und wird nicht behauptet. |
 | C-081 | Architekturentscheidung | **Gate korrigiert durch C-082:** Zuordnung und Nachweisartefakt sind jederzeit zulässige Sidecar-/Run-Artefakte nach C-018 und C-025 und an kein Messgate gebunden. Der eingefrorene Graph-Snapshot wird im Queue- beziehungsweise Run-Artefakt belegt — Projektionsschema und Version, Snapshot-Hash, Erstellungszeitpunkt, angewandtes Kriterium samt Schwellenwert oder Quantil und je zugeordnetem historieunbekannten Memory ID, `degree`, fremde Cluster beziehungsweise `bridge`-Wert und resultierende Stufe; alternativ content-addressed persistiert und referenziert. Ein Zeitstempel allein genügt nicht. Während eines laufenden Reviews wird nicht neu berechnet oder neu zugeordnet, ein Neustart setzt dieselbe Warteschlange fort. Ein unbekannter Reason-Code führt konservativ zu keiner Wiedervorlage. |
 | C-082 | Ist-Korrektur | Das versionierte Queue- beziehungsweise Run-Artefakt der Bestandsprüfung fällt nicht unter M4 und nicht unter den Schemaentscheid aus 21.4: Es verändert weder Memory-Inhalt noch Vault-Schema und darf sofort persistiert werden. 21.4 greift erst, wenn Snapshot-, Queue- oder Reviewfelder in das Memory-Frontmatter beziehungsweise das persistente Memory-Schema übernommen werden. |
+| C-083 | Vertragsänderung | V1.0 schuldet vom Retrieval-/Präsentationsexperiment aus 17.4 nur noch die vorab registrierte Anlage, die deterministische Armzuweisung und den ehrlichen Statusbericht (`underpowered` beziehungsweise `not_evaluable` nach 18.1). Der hinreichend besetzte Lauf — erreichtes Mindest-N je Arm, zweiter Hook-Wortlaut, je Session schaltbares Gate, erhobene Query-Klasse, unabhängige Relevanzlabels — ist nach 26.2 verschoben. Begründung ist gemessen: Die Versuchseinheit ist die Session, und die Ein-Nutzer-Population trägt in vertretbarer Zeit kein Mindest-N. |
 
 **Abnahmestand 24.07.2026:** Vollabgleich Ledger C-001–C-027,
 Gate-Messbarkeit, Ist-Behauptungs-Sweep (58 Aussagen, alle gedeckt),
@@ -305,7 +309,19 @@ den Schemaentscheid nach M4 gestellt und damit eine Regel, die sofort gelten
 soll, an ein Gate gebunden, das erst nach mehreren Messstufen fällt. C-082 hebt
 das auf: Das Artefakt ist ein Sidecar-/Run-Artefakt nach C-018 und C-025.
 
-**Nächste freie ID: C-083.** Neue Delta-Reviews beginnen dort. Ein Urteil
+**Vertragsänderung, 29.08.2026 (diese Fassung):** Erstmals ändert ein Eintrag
+nicht ein Urteil, sondern den Umfang des V1.0-Releasevertrags selbst. C-083
+nimmt das Erreichen des Mindest-N im Retrieval-/Präsentationsexperiment aus
+26.1 heraus und verschiebt den hinreichend besetzten Lauf nach 26.2. Anlass ist
+die Fallzahlmessung aus der Registrierung des Experiments: Die Versuchseinheit
+ist nach 17.4 die Session, und auf der heutigen Ein-Nutzer-Population erreicht
+kein Arm in vertretbarer Zeit eine tragfähige Besetzung. Was V1.0 schuldet,
+bleibt vollständig prüfbar — Registrierung, deterministische Zuweisung und die
+ehrliche Auskunft, dass ein Arm nicht auswertbar ist. Die ersetzte Fassung
+bleibt in 26.1 als solche kenntlich; kein Urteil aus C-001–C-082 wird
+umgedeutet.
+
+**Nächste freie ID: C-084.** Neue Delta-Reviews beginnen dort. Ein Urteil
 ändert sich nur mit neuer Code-, Telemetrie- oder Run-Evidenz; Geschmacksfragen
 werden als Architekturentscheidung statt als Faktenfehler markiert.
 
@@ -2802,6 +2818,15 @@ Session verbleibt für alle zugehörigen Ereignisse im selben Arm. Das Mindest-N
 pro Arm wird nach dem M0-Baseline-Run festgelegt und gemeinsam mit
 Zuweisungsfunktion und Experimentkonfiguration versioniert abgelegt.
 
+**Releasezuordnung geändert durch C-083.** Die fünf vorstehenden Punkte
+beschreiben das vollständige Experiment; sie sind ab dem 29.08.2026 nicht mehr
+in dieser Vollständigkeit V1.0-Vertrag. V1.0 schuldet die vorab registrierte
+Anlage, die deterministische Zuweisung und den ehrlichen Statusbericht nach
+18.1; der hinreichend besetzte Lauf mit erreichtem Mindest-N, zweitem
+Hook-Wortlaut, je Session schaltbarem Gate, erhobener Query-Klasse und
+unabhängigen Relevanzlabels ist nach 26.2 verschoben. Verbindlich sind 26.1 und
+26.2 in ihrer geänderten Fassung.
+
 Tokens pro `acted_on` bleiben eine wichtige System-ROI-Metrik, werden aber nicht
 als reine Retrieval-Precision interpretiert.
 
@@ -4002,11 +4027,32 @@ V1.0 ist fertig, wenn:
   ausgewertet werden;
 - `client`, `hook_source` und pseudonyme Session-Zuordnung die dafür
   erforderlichen Telemetriedimensionen liefern;
-- Experimentarme deterministisch pro Session zugewiesen werden und ihr nach M0
-  versioniertes Mindest-N erreicht haben;
+- das Retrieval-/Präsentationsexperiment aus 17.4 vor jedem Lauf registriert
+  ist, seine Arme deterministisch pro pseudonymer Session zugewiesen werden und
+  seine Auswertung einen Arm unterhalb des Mindest-N ausdrücklich als **nicht
+  auswertbar** ausweist statt als Nullbefund;
 - Context-ROI als Systemmetrik reproduzierbar messbar ist, ohne die
   Live-Schaltung einer korrekten Retrievalentscheidung zirkulär zu steuern;
 - dafür weder Vault-Schema, Memory-Typen noch Vector-Backend migriert werden.
+
+**Vertragsänderung C-083, 29.08.2026 — Anforderung ersetzt.** Der vorstehende
+Experimentpunkt trug bis zu diesem Datum die Fassung:
+
+> ~~Experimentarme deterministisch pro Session zugewiesen werden und ihr nach
+> M0 versioniertes Mindest-N erreicht haben;~~
+
+Diese Fassung gilt nicht mehr. V1.0 schuldet die **Registrierung**, die
+**deterministische Zuweisung** und einen **ehrlichen Statusbericht** —
+`underpowered` beziehungsweise `not_evaluable` mit ausgewiesener Begründung.
+Das Erreichen des Mindest-N und damit der ausgewertete, hinreichend besetzte
+Lauf sind kein V1.0-Bestandteil mehr; sie wandern nach 26.2. Der Grund ist
+gemessen und nicht abgewogen: Die Versuchseinheit aus 17.4 ist die Session,
+und auf einer Ein-Nutzer-Population erreicht kein Arm in vertretbarer Zeit eine
+tragfähige Fallzahl. Ein Releasevertrag, der eine Zahl fordert, die die
+Population nicht hergibt, ist entweder unerfüllbar oder lädt dazu ein, einen
+unterbesetzten Lauf als Befund auszugeben. Die Berichtsregel aus 18.1 bleibt
+davon unberührt und wird durch diesen Eintrag ausdrücklich Teil des
+V1.0-Vertrags.
 
 ### 26.2 Promotion zu V2.0
 
@@ -4035,6 +4081,12 @@ Promotion erfolgt erst, wenn:
   bestätigt unklare Herkunft trägt, wobei Beobachtung, Ableitung und Vermutung
   unterscheidbar bleiben;
 - Zugänglichkeitsentscheidungen von inhaltlichen Versionen getrennt bleiben;
+- das Retrieval-/Präsentationsexperiment aus 17.4 mindestens einmal
+  **hinreichend besetzt gelaufen** ist: Arm A mit einem zweiten Hook-Wortlaut,
+  Arm B mit je Session schaltbarem Gate, beide mit erreichtem, nach M0
+  versioniertem Mindest-N je Arm, mit erhobener Query-Klassen-Dimension und mit
+  unabhängigen Relevanzlabels für ausgespielte und zurückgehaltene Kandidaten
+  (C-083, aus 26.1 hierher verschoben);
 - HNSW nur dann automatisch aktiviert wird, wenn es auf der aktuellen Hardware
   messbar sinnvoll und qualitativ sicher ist;
 - jede adaptive Entscheidung shadow-getestet, erklärbar und zurückrollbar ist.
@@ -4066,10 +4118,11 @@ Das Ziel ist nicht maximaler Recall. Das Ziel ist:
 
 > Zur richtigen Zeit die richtige Erinnerung – und ansonsten Ruhe.
 
-## 28. Delta-Ledger (C-029–C-082)
+## 28. Delta-Ledger (C-029–C-083)
 
 Dieser Abschnitt dokumentiert elf aufeinanderfolgende Runden von Deltas
-gegenüber dem abgenommenen Stand C-001–C-028. Jeder Eintrag nennt die betroffene
+gegenüber dem abgenommenen Stand C-001–C-028 sowie eine spätere
+Vertragsänderung. Jeder Eintrag nennt die betroffene
 Passage, die Art des Deltas, die tragende Evidenz, das Gate, die Datenquelle,
 das Abnahmekriterium und den Rollback. Kein Eintrag deutet ein früheres Urteil
 um.
@@ -4200,6 +4253,14 @@ beseitigt einen Gate-Widerspruch, den Runde 10 eingeführt hatte:
 | Runde 10 | wird korrigiert durch | Art |
 |---|---|---|
 | C-081 | C-082 | Ist-Korrektur: das Nachweisartefakt hing an M4, obwohl es kein Schemafeld berührt |
+
+**Vertragsänderung — C-083**, 29.08.2026, ist keine Reviewrunde. Sie korrigiert
+kein Urteil, sondern ändert den Umfang des V1.0-Releasevertrags, nachdem die
+Registrierung des Experiments seine Fallzahl gemessen hat:
+
+| Bisheriger Vertrag | wird geändert durch | Art |
+|---|---|---|
+| C-024, 26.1 Experimentpunkt | C-083 | Vertragsänderung: Mindest-N-Erreichung wandert von 26.1 nach 26.2 |
 
 ### C-029 – Evidenzklassen für Fremdsystemzahlen
 
@@ -5787,6 +5848,56 @@ Product-Owner-Entscheidungen.*
   beabsichtigt war und keine Schutzwirkung hatte. Die Nachweispflicht aus C-081
   bleibt unverändert bestehen.
 
+---
+
+*Ab hier die Vertragsänderung vom 29.08.2026. Sie ist keine Reviewrunde: kein
+Urteil wird umgedeutet, geändert wird der Umfang des Releasevertrags.*
+
+### C-083 – Das Präsentationsexperiment liefert in V1.0 die Anlage, nicht den besetzten Lauf
+
+- **Passage:** 26.1 Experimentpunkt neu gefasst, ersetzte Fassung als solche
+  kenntlich; 26.2 um den hinreichend besetzten Lauf ergänzt; 17.4
+  Releasezuordnung; Ledgerzeile C-024 mit Änderungsverweis, neue Ledgerzeile
+  C-083; 0.4 Abnahmeblock und nächste freie ID; 28 Überschrift, Zuordnung und
+  dieser Eintrag; 33.
+- **Art:** Vertragsänderung.
+- **Evidenz:** Die Registrierung des Experiments
+  (`packages/eval/registrations/presentation-experiment.json`, #267) hat die
+  Fallzahl gemessen statt geschätzt. Über 14 Tage auf dem Ein-Nutzer-Vault:
+  3876 Hook-Recall-Ereignisse, aber nur 80 unterscheidbare Sessions, davon 16
+  mit überhaupt einem geladenen Ereignis. Die Versuchseinheit ist nach 17.4 die
+  Session — die armstabile Zuweisung clustert alle Ereignisse einer Sitzung —,
+  weshalb die Gegenrechnung über Ausspielungen nicht gilt. Bei zwei Bedingungen
+  ergeben sich 18 Tage für 50, 35 Tage für 100 und 88 Tage für 50
+  ergebnistragende Sessions je Arm; bei Basisraten um 1 % trägt keine dieser
+  Besetzungen eine Aussage. Der strukturelle Grund steht über der Rechnung:
+  17.4 setzt eine Population voraus, dieser Vault hat einen Nutzer. Hinzu
+  kommen drei Voraussetzungen, die keine Fallzahlfrage sind — Arm A hat keinen
+  zweiten Hook-Wortlaut (`band-wording.ts` führt genau eine Fassung je Fall),
+  Arm B verlangt ein je Session schaltbares Gate und muss die
+  Shadow-Acceptance abwarten, weil halbscharfe Sessions genau die Beobachtung
+  verunreinigen würden, aus der die Freigabe folgt, und die nach 17.4 bindende
+  Query-Klassen-Dimension wird heute nicht erhoben.
+- **Gate:** keines. Die Änderung entfernt eine Anforderung aus dem
+  V1.0-Vertrag und fügt keine Live-Wirkung hinzu. Registrierung, Zuweisung und
+  Statusbericht sind nach C-018 jederzeit zulässige Mess- und Sidecar-Arbeit.
+- **Datenquelle:** die Registrierung selbst samt ihrem `underpowered_fallback`;
+  die Ereignisprotokolle unter `~/.bastra/logs/events-*.jsonl` für das Fenster
+  15.–28.08.2026; die Zuweisungsfunktion `assignArm` in
+  `packages/daemon/src/telemetry-dimensions.ts`.
+- **Abnahmekriterium:** V1.0 gilt in diesem Punkt als erfüllt, wenn die Anlage
+  vor jedem Lauf registriert ist, die Armzuweisung deterministisch und
+  session-stabil erfolgt und die Auswertung einen Arm unterhalb seines
+  Mindest-N als nicht auswertbar ausweist — mit ausgewiesener Begründung und
+  ohne Nullbefund. Kein Bericht darf aus einem unterbesetzten Arm ein „kein
+  Unterschied gefunden“ machen. Für V2.0 gilt der Punkt aus 26.2.
+- **Rollback:** Die Änderung ist rein vertraglich und ohne Codewirkung; sie
+  lässt sich durch Rückgängigmachen dieser Passagen aufheben. Fällt der Grund
+  weg — eine Mehrnutzer-Population entsteht, oder die Versuchseinheit wird
+  bewusst geändert —, wandert die Anforderung nach einem neuen Eintrag zurück
+  in 26.1. Eine Änderung der Versuchseinheit wäre selbst eine Änderung an 17.4
+  und keine Konfiguration.
+
 ## 29. Quellen- und Behauptungsmatrix
 
 Alle Angaben wurden am **25. Juli 2026** durch Abruf der jeweiligen Primärquelle
@@ -6135,4 +6246,63 @@ im Stand C-001–C-028 ist ins Archiv gewandert. Nebenbefund ohne C-ID: Die Daem
 beschreibt abgelaufene Memories als „(or excluded if expired)"; der Code dämpft
 sie nur auf 20 %.
 
-**Nächste freie ID: C-083.**
+**Nächste freie ID: C-083.** *(Historischer Stand vom 26.07.2026. Die aktuell
+gültige nächste freie ID steht am Ende von Abschnitt 33.)*
+
+## 33. Übergabe nach der Vertragsänderung C-083
+
+**Was geändert wurde.** Diese Fassung fügt die Vertragsänderung C-083 hinzu.
+Geändert wurden ausschließlich die folgenden Passagen:
+
+| Passage | Delta |
+|---|---|
+| Präambel: Ledgerstand, Entstehung, Stand-Datum, nächste freie ID | C-083 |
+| 0.4 Änderungsverweis an C-024, neue Ledgerzeile C-083 | C-083 |
+| 0.4 Abnahmeblock und nächste freie ID | C-083 |
+| 17.4 Releasezuordnung des Experiments | C-083 |
+| 26.1 Experimentpunkt neu gefasst, ersetzte Fassung kenntlich | C-083 |
+| 26.2 hinreichend besetzter Lauf ergänzt | C-083 |
+| 28 Überschrift, Vorspann, Zuordnungstabelle, Delta-Eintrag C-083 | C-083 |
+| 32 Klammervermerk zur historischen ID | C-083 |
+| 33 dieser Abschnitt | — |
+
+Alle übrigen Passagen sind unangetastet. Produktcode, die Registrierung des
+Experiments und die Fassungen unter `docs/architecture-history/` wurden nicht
+verändert.
+
+**Was die Änderung bewirkt.** Der V1.0-Releasevertrag verlangte, dass die
+Experimentarme „ihr nach M0 versioniertes Mindest-N erreicht haben“. Diese
+Anforderung ist auf der heutigen Population nicht erfüllbar, und das ist seit
+der Registrierung des Experiments gemessen statt vermutet: Die Versuchseinheit
+ist die Session, der Vault hat einen Nutzer, und selbst 50 ergebnistragende
+Sessions je Arm lägen rund 88 Tage entfernt. Ein Vertrag, der eine unerreichbare
+Zahl fordert, blockiert entweder das Release oder lädt dazu ein, einen
+unterbesetzten Lauf als Befund auszugeben — beides schlechter als die ehrliche
+Auskunft.
+
+V1.0 schuldet deshalb ab sofort drei prüfbare Dinge: die vor jedem Lauf
+registrierte Anlage, die deterministische und session-stabile Armzuweisung und
+den ehrlichen Statusbericht nach 18.1, der einen unterbesetzten Arm als **nicht
+auswertbar** ausweist statt als Nullbefund. Der hinreichend besetzte Lauf steht
+in 26.2 und bleibt Voraussetzung der Promotion nach V2.0. Die ersetzte Fassung
+bleibt in 26.1 sichtbar; die Zuweisungs- und Fallzahlregel aus C-024 gilt
+unverändert, nur ihre Releasezuordnung hat sich verschoben.
+
+**Was besonders zu prüfen ist.**
+
+1. Ob die Wiederaufnahme an eine Mehrnutzer-Population gebunden bleibt oder ob
+   die Versuchseinheit bewusst geändert wird — je Turn statt je Session wäre
+   eine Änderung an 17.4 und verlangt einen eigenen Eintrag, keine
+   Konfiguration.
+2. Ob der Statusbericht als Vertragsbestandteil eine eigene abnehmbare
+   Ausgabe braucht — heute trägt die Registrierung das Verdikt, ein Report
+   existiert noch nicht.
+3. Ob die drei nicht-fallzahlbedingten Voraussetzungen — zweiter Hook-Wortlaut,
+   je Session schaltbares Gate, Query-Klassen-Dimension — in 26.2 einzeln
+   gegatet oder gemeinsam mit dem Lauf abgenommen werden.
+
+**Noch offen.** Unverändert die offenen Punkte aus Abschnitt 32, jetzt
+zusätzlich der zweite Hook-Wortlaut für Arm A als Produkt- und Textentscheidung
+und die Aktivierungsentscheidung, von der Arm B abhängt.
+
+**Nächste freie ID: C-084.**
