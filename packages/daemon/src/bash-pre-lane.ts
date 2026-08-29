@@ -80,7 +80,10 @@ const DESTRUCTIVE_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: "pnpm rm", re: /\bpnpm\s+(?:rm|remove)\b/ },
   { label: "DROP TABLE", re: /\bDROP\s+TABLE\b/i },
   { label: "DROP DATABASE", re: /\bDROP\s+DATABASE\b/i },
-  { label: "TRUNCATE", re: /\bTRUNCATE\b/i },
+  // #415: `TRUNCATE` alone is an English word. Requiring the object — the same
+  // shape the two DROP patterns above already have — is what separates the
+  // statement from a sentence that mentions truncating.
+  { label: "TRUNCATE TABLE", re: /\bTRUNCATE\s+TABLE\b/i },
   { label: "docker rm", re: /\bdocker\s+rm\b/ },
   { label: "docker volume rm", re: /\bdocker\s+volume\s+rm\b/ },
   { label: "kubectl delete", re: /\bkubectl\s+delete\b/ },
@@ -103,12 +106,40 @@ const RISKY_PATTERNS: Array<{ label: string; re: RegExp }> = [
   // value. Destructive patterns above keep the STOP warning.
 ];
 
+/**
+ * Command heads that only READ (#415).
+ *
+ * `grep -rn "DROP TABLE" .` and `rg "git reset --hard" docs/` carry a
+ * destructive pattern as their SEARCH TERM. Matching them fired a STOP warning
+ * at somebody looking something up — observed on legitimate work, and the same
+ * shape of noise that got the `>` redirect pattern removed in August: a
+ * tripwire that cries on reading gets ignored when it warns on writing.
+ */
+const SEARCH_ONLY_HEAD = /^(?:sudo\s+)?(?:grep|egrep|fgrep|rg|ag|ack|git\s+grep)\b/;
+
+/**
+ * The parts of a command line that actually run something (#415).
+ *
+ * Split on pipeline and sequence separators, then drop the segments that only
+ * search. Per SEGMENT and not per command on purpose: `grep -rn "x" . | xargs
+ * rm -rf` must still trip on its second half, and it does — only the `grep`
+ * segment is dropped. A command with no separators is one segment, so the
+ * common case costs a split of a short string.
+ */
+function executableSegments(cmd: string): string[] {
+  return cmd
+    .split(/\|\||&&|[|;\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !SEARCH_ONLY_HEAD.test(s));
+}
+
 function matchPattern(cmd: string): { label: string; severity: "destructive" | "risky" } | null {
+  const segments = executableSegments(cmd);
   for (const p of DESTRUCTIVE_PATTERNS) {
-    if (p.re.test(cmd)) return { label: p.label, severity: "destructive" };
+    if (segments.some((s) => p.re.test(s))) return { label: p.label, severity: "destructive" };
   }
   for (const p of RISKY_PATTERNS) {
-    if (p.re.test(cmd)) return { label: p.label, severity: "risky" };
+    if (segments.some((s) => p.re.test(s))) return { label: p.label, severity: "risky" };
   }
   return null;
 }
