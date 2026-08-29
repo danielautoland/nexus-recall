@@ -3,7 +3,8 @@
 > Status: release and target architecture; V1.0 is the next binding
 > release contract, V2.0 the measurement-dependent long-term target
 >
-> As of: 26 July 2026
+> As of: 29 August 2026 (contract change C-083 and contract addition C-084;
+> the signed-off basis of 26 July 2026 otherwise unchanged)
 >
 > Starting state: Bastra Recall 0.8.6, the current vault, real
 > 30-day telemetry, and the existing eval geometry
@@ -14,12 +15,14 @@
 > Where the two diverge, the German version prevails. Every change is made
 > there first and translated afterwards, never the other way round.
 >
-> Binding ledger state: C-001–C-082, eleven review rounds, signed off on
-> 26 July 2026.
+> Binding ledger state: C-001–C-084, eleven review rounds, one contract change
+> and one contract addition; C-001–C-082 signed off on 26 July 2026, C-083 and
+> C-084 decided on 29 August 2026.
 >
 > Genesis: signed-off starting state C-001–C-028, carried forward by the
 > revisions C-029–C-039, C-040–C-048, C-049–C-054, C-055–C-059, C-060–C-062,
-> C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081, and C-082.
+> C-063–C-067, C-068–C-073, C-074–C-077, C-078–C-079, C-080–C-081, and C-082,
+> and by the contract change C-083 and the contract addition C-084.
 > All twelve interim versions and the starting state are held unchanged under
 > `docs/architecture-history/`; they are supporting material, not governing
 > contracts. An earlier English version at state C-001–C-028 is held there as
@@ -33,7 +36,7 @@
 > The product-owner decisions in Section 31 have been taken and bind
 > the implementation.
 >
-> Next available ID: C-083. A new delta is carried forward in this file and is
+> Next available ID: C-085. A new delta is carried forward in this file and is
 > no longer kept as a separate revision file.
 
 ## 0. Decision and Review Status
@@ -128,7 +131,7 @@ reopened only with new evidence.
 | C-021 | confirmed | M0 delivers versioned numerical M1 tolerances after the baseline run. |
 | C-022 | product-owner decision | Shadow sign-off after at least 14 days or 500 logged hook decisions; in addition, gold set gates must pass and all `required`/`no_answer` divergences must be explained. |
 | C-023 | product-owner decision | The live evidence decision runs behind a configuration flag with immediate fallback to today's floor behavior; no hard cutover. |
-| C-024 | product-owner decision | Retrieval/presentation experiments assign the arm deterministically per pseudonymous session ID; the minimum N per arm is fixed in versioned form after M0. |
+| C-024 | product-owner decision | **Release assignment changed by C-083:** the assignment and minimum-N rule itself applies unchanged, but reaching the minimum N is no longer a V1.0 requirement. Retrieval/presentation experiments assign the arm deterministically per pseudonymous session ID; the minimum N per arm is fixed in versioned form after M0. |
 | C-025 | product-owner decision | Private run artifacts live under `~/.bastra/eval-runs/<date>-<hash>/`; the public repository receives only aggregated reports without vault-derived query text. |
 | C-026 | confirmed | Chunking is not approved by M2; it requires a separate representation decision based on a chunking on/off ablation. |
 | C-027 | confirmed | Product metrics are measurable only from their respective gated data source onward; before that they explicitly remain long-term target. |
@@ -187,6 +190,8 @@ reopened only with new evidence.
 | C-080 | current-state correction | The field `GraphNode.bridge` substantiates neither a graph-theoretic bridge nor an articulation node: `buildGraph` sets it as soon as a node has neighbors in at least two different foreign clusters, without checking whether those clusters would be unconnected without it. It remains part of the structural criterion, but solely with this meaning; a genuine articulation analysis would be additional graph work and is not claimed. |
 | C-081 | architectural decision | **Gate corrected by C-082:** The assignment and the proof artifact are sidecar/run artifacts permitted at any time under C-018 and C-025 and are bound to no measurement gate. The frozen graph snapshot is substantiated in the queue or run artifact — projection schema and version, snapshot hash, creation time, applied criterion including threshold or quantile, and per assigned history-unknown memory the ID, `degree`, foreign clusters or `bridge` value, and resulting stage; alternatively persisted content-addressed and referenced. A timestamp alone is not sufficient. During a running review nothing is recomputed or reassigned, a restart continues the same queue. An unknown reason code leads conservatively to no resubmission. |
 | C-082 | current-state correction | The versioned queue or run artifact of the inventory review falls neither under M4 nor under the schema decision from 21.4: it changes neither memory content nor the vault schema and may be persisted immediately. 21.4 takes effect only when snapshot, queue, or review fields are adopted into the memory frontmatter or the persistent memory schema. |
+| C-083 | contract change | Of the retrieval/presentation experiment from 17.4, V1.0 now owes only the pre-registered design, the deterministic arm assignment and the honest status report (`underpowered` or `not_evaluable` per 18.1). The adequately populated run — minimum N per arm reached, second hook wording, per-session switchable gate, query class collected, independent relevance labels — moves to 26.2. The justification is measured: the unit of randomisation is the session, and the single-user population does not carry a minimum N in reasonable time. |
+| C-084 | contract addition | From V1.0 on, the frontmatter format is under an explicit promise (26.1): required fields, memory types, the meaning of the documented optional fields and the loader leniency change only with a major bump. No 1.x reader requires a format-version field. Unknown keys are tolerated on load but are not guaranteed to survive an `overwrite`. Not covered are ranking, the internal `.bastra/` storage and projection content; the shape of `recall` output falls under the separate API contract. Tightening the loader without a major bump is admissible only under the narrowly drawn security exception. |
 
 **Sign-off status 24 July 2026:** full reconciliation of ledger C-001–C-027,
 gate measurability, current-state claim sweep (58 claims, all covered),
@@ -303,7 +308,29 @@ artifact under the schema decision after M4, binding a rule that is to apply
 immediately to a gate that falls only after several measurement stages. C-082
 lifts that: the artifact is a sidecar/run artifact under C-018 and C-025.
 
-**Next available ID: C-083.** New delta reviews begin there. A verdict
+**Contract change, 29 August 2026 (this version):** For the first time an
+entry changes not a verdict but the scope of the V1.0 release contract itself.
+C-083 removes reaching the minimum N in the retrieval/presentation experiment
+from 26.1 and moves the adequately populated run to 26.2. The occasion is the
+sample-size measurement from the experiment's registration: per 17.4 the unit
+of randomisation is the session, and on today's single-user population no arm
+reaches a viable count in reasonable time. What V1.0 owes remains fully
+checkable — registration, deterministic assignment, and the honest statement
+that an arm is not evaluable. The replaced wording remains marked as such in
+26.1; no verdict from C-001–C-082 is reinterpreted.
+
+**Contract addition, 29 August 2026 (this version):** C-084 records the
+frontmatter and schema promise that V1.0 makes when the leading `0.` falls
+away. It was documented nowhere until then — neither in 26.1 nor in 22 nor in
+`docs/memory-schema.md` — although from 1.0 on every change to the vault format
+requires a major bump. The entry promises solely what the code holds today: the
+ten required fields, the recognized types, the meaning of the optional fields
+and the loader leniency from the rescue path. Explicitly not promised are
+ranking, internal storage, projection content and the preservation of foreign
+keys across an `overwrite`; the shape of `recall` output is bound, but through
+its own API contract.
+
+**Next available ID: C-085.** New delta reviews begin there. A verdict
 changes only with new code, telemetry, or run evidence; matters of taste
 are marked as an architectural decision instead of a factual error.
 
@@ -2754,6 +2781,14 @@ in the same arm for all events belonging to it. The minimum N per arm is fixed
 after the M0 baseline run and is stored versioned together with the assignment
 function and the experiment configuration.
 
+**Release assignment changed by C-083.** The five points above describe the
+complete experiment; as of 29 August 2026 they are no longer the V1.0 contract
+in that completeness. V1.0 owes the pre-registered design, the deterministic
+assignment and the honest status report per 18.1; the adequately populated run
+— minimum N reached, second hook wording, per-session switchable gate, query
+class collected and independent relevance labels — is moved to 26.2. Binding
+are 26.1 and 26.2 in their amended form.
+
 Tokens per `acted_on` remains an important system ROI metric, but is not
 interpreted as pure retrieval precision.
 
@@ -3742,6 +3777,27 @@ measurement gates.
   keeps its present meaning.
 - The present `related_via` hop in the hook path stays active until a
   measurement substantiates a better view.
+- From V1.0 on, the frontmatter format is under the promise from 26.1:
+  required fields, memory types and the meaning of the documented optional
+  fields change only with a major bump (C-084).
+- The loader leniency is part of that promise. Repair of missing required
+  fields, entry-by-entry rescue of a block that does not parse, dropping an
+  invalid optional field, clamping an over-long `summary` and the
+  inconsequence of unknown keys all remain; tightening them is a breaking
+  change. The only admissible exception is the narrowly drawn security
+  exception from 26.1.
+- Unknown keys are tolerated on load, but are not guaranteed to survive a
+  `save_memory` with `overwrite`: that path rebuilds the frontmatter from its
+  known field list.
+- No 1.x reader requires a format-version field in the frontmatter. A
+  hand-written file need declare nothing to be fully valid; a version field
+  introduced additively later would have to be optional.
+- All V2 fields named in this section — in particular `provenance_class` and
+  the provenance/review projection including `unknown_legacy` and
+  `imported_unverified` — are planned additively and do **not** exist in the V1
+  schema. Their absence is the defined state, not a migration backlog.
+- No release in the 1.x line rewrites existing files in bulk to produce its own
+  format.
 
 ## 23. Privacy and security
 
@@ -3913,11 +3969,87 @@ V1.0 is finished when:
   separately;
 - `client`, `hook_source` and the pseudonymous session assignment deliver the
   telemetry dimensions required for that;
-- experiment arms are assigned deterministically per session and have reached
-  their minimum N versioned after M0;
+- the retrieval/presentation experiment from 17.4 is registered before every
+  run, its arms are assigned deterministically per pseudonymous session, and
+  its evaluation reports an arm below the minimum N explicitly as **not
+  evaluable** rather than as a null result;
 - context ROI is reproducibly measurable as a system metric without circularly
   governing the live activation of a correct retrieval decision;
 - neither vault schema, memory types nor vector backend are migrated for that.
+
+**Contract change C-083, 29 August 2026 — requirement replaced.** Until that
+date the experiment point above read:
+
+> ~~experiment arms are assigned deterministically per session and have reached
+> their minimum N versioned after M0;~~
+
+That wording no longer applies. V1.0 owes the **registration**, the
+**deterministic assignment** and an **honest status report** — `underpowered`
+or `not_evaluable` with a stated justification. Reaching the minimum N, and
+with it the evaluated, adequately populated run, is no longer part of V1.0;
+both move to 26.2. The reason is measured rather than weighed: per 17.4 the
+unit of randomisation is the session, and on a single-user population no arm
+reaches a viable sample size in reasonable time. A release contract demanding a
+number the population cannot supply is either unfulfillable or an invitation to
+present an underpopulated run as a finding. The reporting rule from 18.1 is
+untouched by this and is made an explicit part of the V1.0 contract by this
+entry.
+
+**Frontmatter and schema promise from V1.0 on (C-084).** With V1.0 the beta
+signal of the leading `0.` falls away, and from that version the vault format
+is under an explicit promise. Markdown with YAML frontmatter remains the source
+of truth. The ten required fields — `id`, `title`, `type`, `summary`,
+`topic_path`, `tags`, `scope`, `recall_when`, `created`, `updated` — keep their
+name, type and meaning; the recognized memory types stay valid; the documented
+optional fields are not reinterpreted. A vault written by a 1.x version stays
+readable by every later 1.x version, with no migration step.
+
+A 1.x reader requires **no format-version field** in the frontmatter. A file
+carrying none is fully valid, today and in every later 1.x version. Whether a
+version field is introduced additively later is left open; it would then have
+to be optional and never become a load requirement.
+
+The loader leniency is promised as well, because it is the actual pledge to a
+hand-maintained vault: missing required fields are repaired from filename, body
+and file time, a frontmatter block that does not parse is rescued entry by
+entry, an invalid optional field is dropped instead of costing the memory, an
+over-long `summary` is clamped on load, and unknown keys remain
+inconsequential. Repairs are in-memory and are never written back to disk.
+Tightening the loader is therefore a breaking change and not a bug fix.
+
+Unknown keys are tolerated on **load**. They are **not guaranteed** to survive
+a `save_memory` with `overwrite`, however: that path rebuilds the frontmatter
+from its known field list and carries forward only the fields it knows. The
+promise covers reading, not the preservation of foreign fields across a
+rewrite.
+
+Breaking, and therefore requiring a major bump: removing, renaming or retyping
+a required field; deleting or reinterpreting a memory type; removing a
+documented optional field; tightening the loader such that a file that used to
+load no longer loads; breaking resolution by `id`; or requiring a migration
+without which an existing vault no longer loads. Additive, and therefore minor:
+new optional fields, new types, further loader leniency, new projections, and
+new write routes alongside the existing ones.
+
+Not part of this promise are ranking, hit order, staleness curves and trigger
+weights; the internal storage under `<vault>/.bastra/`; and the
+machine-written projection fields, whose computation may change at any time
+while field name and rough meaning stay covered. The **shape of `recall`
+output** does not fall under the schema promise but under its own API contract,
+which follows the same SemVer rules; it is bound, just elsewhere.
+
+**Security exception, narrowly drawn.** Tightening the loader is admissible
+without triggering a major bump when all four conditions hold: it closes a
+specific, named vulnerability; it is called out in the changelog as a
+security-driven tightening; the affected file produces a **visible error**
+instead of being dropped silently; and the rest of the inventory stays as
+readable as the vulnerability allows. The exception is no licence for parser
+cleanup — it covers the real case and nothing else.
+
+Within 1.x there is no forced migration step. No release rewrites existing
+files in bulk to produce its own format; where new fields are needed, their
+absence counts as a defined default — as a missing `write_origin` reads as
+`agent-session` and a missing `recall_mode` as `deliberate` today.
 
 ### 26.2 Promotion to V2.0
 
@@ -3944,6 +4076,12 @@ promotion follows only when:
   confirmed unclear origin, with observation, derivation and conjecture
   remaining distinguishable;
 - accessibility decisions stay separate from content versions;
+- the retrieval/presentation experiment from 17.4 has run **adequately
+  populated** at least once: arm A with a second hook wording, arm B with a
+  per-session switchable gate, both with the minimum N per arm versioned after
+  M0 reached, with the query-class dimension collected and with independent
+  relevance labels for surfaced and withheld candidates (C-083, moved here from
+  26.1);
 - HNSW is activated automatically only when it is measurably worthwhile on the
   current hardware and qualitatively safe;
 - every adaptive decision is shadow-tested, explainable and reversible.
@@ -3974,10 +4112,11 @@ The goal is not maximum recall. The goal is:
 
 > The right memory at the right time – and otherwise silence.
 
-## 28. Delta ledger (C-029–C-082)
+## 28. Delta ledger (C-029–C-084)
 
 This section documents eleven consecutive rounds of deltas against the
-signed-off state C-001–C-028. Every entry names the affected passage, the type
+signed-off state C-001–C-028 as well as two later contract entries. Every entry
+names the affected passage, the type
 of the delta, the supporting evidence, the gate, the data source, the
 acceptance criterion and the rollback. No entry reinterprets an earlier verdict.
 
@@ -4107,6 +4246,22 @@ removes a gate contradiction that round 10 had introduced:
 | Round 10 | is corrected by | Type |
 |---|---|---|
 | C-081 | C-082 | Current-state correction: the proof artifact was tied to M4 although it touches no schema field |
+
+**Contract change — C-083**, 29 August 2026, is not a review round. It corrects
+no verdict but changes the scope of the V1.0 release contract, after the
+experiment's registration measured its sample size:
+
+| Previous contract | is changed by | Type |
+|---|---|---|
+| C-024, 26.1 experiment point | C-083 | Contract change: reaching the minimum N moves from 26.1 to 26.2 |
+
+**Contract addition — C-084**, 29 August 2026, adds to the V1.0 contract a
+promise that until now existed only in the code and in no document:
+
+| Previous gap | is closed by | Type |
+|---|---|---|
+| 26.1 and 22 without a frontmatter promise | C-084 | Contract addition: schema promise, loader leniency, breaking/additive boundary |
+
 ### C-029 – Evidence classes for third-party system numbers
 
 - **Passage:** 2.3 (new), 18.1 M0 under work and gate.
@@ -5657,6 +5812,96 @@ on 25 July 2026.*
 - **Rollback:** None needed — the correction removes a gate binding that was never
   intended and had no protective effect. The proof obligation from C-081
   remains unchanged in force.
+
+---
+
+*From here the contract change of 29 August 2026. It is not a review round: no
+verdict is reinterpreted; what changes is the scope of the release contract.*
+
+### C-083 – In V1.0 the presentation experiment owes the design, not the populated run
+
+- **Passage:** 26.1 experiment point rewritten, replaced wording marked as
+  such; 26.2 extended by the adequately populated run; 17.4 release
+  assignment; ledger row C-024 with a change reference, new ledger row C-083;
+  0.4 sign-off block and next free ID; 28 heading, assignment and this entry;
+  33.
+- **Type:** Contract change.
+- **Evidence:** The experiment's registration
+  (`packages/eval/registrations/presentation-experiment.json`, #267) measured
+  the sample size rather than estimating it. Over 14 days on the single-user
+  vault: 3876 hook recall events, but only 80 distinguishable sessions, 16 of
+  them with any loaded event at all. Per 17.4 the unit of randomisation is the
+  session — the arm-stable assignment clusters all events of one sitting —
+  which is why the counter-calculation over surfacings does not hold. With two
+  conditions this yields 18 days for 50, 35 days for 100 and 88 days for 50
+  outcome-bearing sessions per arm; at base rates around 1% none of these
+  counts carries a statement. The structural reason stands above the
+  arithmetic: 17.4 presupposes a population, and this vault has one user. Added
+  to that are three preconditions that are not questions of sample size — arm A
+  has no second hook wording (`band-wording.ts` carries exactly one version per
+  case), arm B requires a per-session switchable gate and must await the shadow
+  acceptance, because half-armed sessions would contaminate the very
+  observation the activation depends on, and the query-class dimension binding
+  under 17.4 is not collected today.
+- **Gate:** none. The change removes a requirement from the V1.0 contract and
+  adds no live effect. Registration, assignment and status report are
+  measurement and sidecar work permitted at any time under C-018.
+- **Data source:** the registration itself including its
+  `underpowered_fallback`; the event logs under `~/.bastra/logs/events-*.jsonl`
+  for the window 15–28 August 2026; the assignment function `assignArm` in
+  `packages/daemon/src/telemetry-dimensions.ts`.
+- **Acceptance criterion:** V1.0 counts as fulfilled on this point when the
+  design is registered before every run, the arm assignment is deterministic
+  and session-stable, and the evaluation reports an arm below its minimum N as
+  not evaluable — with a stated justification and without a null result. No
+  report may turn an underpopulated arm into a "no difference found". For V2.0
+  the point from 26.2 applies.
+- **Rollback:** The change is purely contractual and without effect on code; it
+  can be undone by reverting these passages. Should the reason fall away — a
+  multi-user population arises, or the unit of randomisation is deliberately
+  changed — the requirement returns to 26.1 after a new entry. A change to the
+  unit of randomisation would itself be a change to 17.4 and not a
+  configuration.
+
+---
+
+*From here the contract addition of 29 August 2026.*
+
+### C-084 – The frontmatter promise from V1.0 on
+
+- **Passage:** 26.1 new promise block; 22 extended by six bullets; ledger row
+  C-084; 0.4 sign-off block and next free ID; 28 heading, assignment and this
+  entry; 34. Outside this file: `docs/memory-schema.md`, section "Compatibility
+  Promise (1.0)".
+- **Type:** Contract addition.
+- **Evidence:** With 1.0.0 the SemVer beta signal of the leading `0.` falls
+  away; from then on every breaking change to the vault format requires a major
+  bump. What the format promises was documented in no document until then —
+  neither in 26.1 nor in 22 nor in `docs/memory-schema.md`. The content of the
+  promise is substantiated in the code: the ten required fields in
+  `packages/core/src/schema.ts`, the repair and rescue logic in
+  `packages/core/src/frontmatter-rescue.ts`, the dropping of invalid optional
+  fields and the clamping of over-long `summary` values in the parser, and the
+  fixed field list of the overwrite path in `packages/core/src/save.ts`. The
+  same review produced a clarification for section 22: `provenance_class`,
+  `unknown_legacy` and `imported_unverified` do not exist in the V1 schema; 22
+  read as though they were present stock.
+- **Gate:** none. The addition documents existing behaviour and changes neither
+  code nor schema.
+- **Data source:** the code itself; `docs/memory-schema.md` as the user-facing
+  documentation of the same promise.
+- **Acceptance criterion:** The three versions — 26.1, 22 and
+  `docs/memory-schema.md` — say the same thing, and none of them promises
+  anything the code does not hold. In particular: no promise that a
+  format-version field will never be introduced, only that a 1.x reader
+  requires none; no promise about preserving unknown keys across an
+  `overwrite`; and no claim that the shape of `recall` output is unbound — it
+  falls under its own API contract.
+- **Rollback:** Purely documentary and without effect on code. Should the
+  loader leniency turn out to be an attack surface, the narrowly drawn security
+  exception from 26.1 applies — four conditions, among them a visible error
+  instead of a silent drop; it replaces no major bump for anything else.
+
 ## 29. Source and claim matrix
 
 All data were collected on **25 July 2026** by retrieving the respective primary
@@ -6000,4 +6245,105 @@ without a C-ID:
 the daemon README describes expired memories as "(or excluded if expired)"; the
 code merely damps them to 20%.
 
-**Next free ID: C-083.**
+**Next free ID: C-083.** *(Historical state of 26 July 2026. The currently
+valid next free ID is at the end of Section 34.)*
+
+## 33. Handover after the contract change C-083
+
+**What was changed.** This version adds the contract change C-083. Solely the
+following passages were changed:
+
+| Passage | Delta |
+|---|---|
+| Preamble: ledger state, genesis, as-of date, next free ID | C-083 |
+| 0.4 change reference on C-024, new ledger row C-083 | C-083 |
+| 0.4 sign-off block and next free ID | C-083 |
+| 17.4 release assignment of the experiment | C-083 |
+| 26.1 experiment point rewritten, replaced wording marked | C-083 |
+| 26.2 adequately populated run added | C-083 |
+| 28 heading, preamble, assignment table, delta entry C-083 | C-083 |
+| 32 parenthetical note on the historical ID | C-083 |
+| 33 this section | — |
+
+All other passages are untouched. Product code, the experiment's registration
+and the versions under `docs/architecture-history/` were not changed.
+
+**What the change effects.** The V1.0 release contract required the experiment
+arms to have "reached their minimum N versioned after M0". That requirement is
+unfulfillable on today's population, and since the experiment's registration
+this is measured rather than presumed: the unit of randomisation is the
+session, the vault has one user, and even 50 outcome-bearing sessions per arm
+would be some 88 days away. A contract demanding an unreachable number either
+blocks the release or invites presenting an underpopulated run as a finding —
+both worse than the honest statement.
+
+V1.0 therefore owes three checkable things from now on: the design registered
+before every run, the deterministic and session-stable arm assignment, and the
+honest status report per 18.1 that reports an underpopulated arm as **not
+evaluable** rather than as a null result. The adequately populated run is in
+26.2 and remains a precondition of the promotion to V2.0. The replaced wording
+stays visible in 26.1; the assignment and minimum-N rule from C-024 applies
+unchanged, only its release assignment has moved.
+
+**What to check in particular.**
+
+1. Whether resumption stays tied to a multi-user population or whether the unit
+   of randomisation is deliberately changed — per turn instead of per session
+   would be a change to 17.4 and requires its own entry, not a configuration.
+2. Whether the status report needs its own acceptable output as a contract
+   component — today the registration carries the verdict and no report exists
+   yet.
+3. Whether the three preconditions unrelated to sample size — second hook
+   wording, per-session switchable gate, query-class dimension — are gated
+   individually in 26.2 or signed off together with the run.
+
+**Still open.** Unchanged the open points from Section 32, now additionally the
+second hook wording for arm A as a product and text decision, and the
+activation decision that arm B depends on.
+
+**Next free ID: C-084.** *(State of this section. The currently valid next free
+ID is at the end of Section 34.)*
+
+## 34. Handover after the contract addition C-084
+
+**What was changed.** This version adds the contract addition C-084. Solely the
+following passages were changed:
+
+| Passage | Delta |
+|---|---|
+| Preamble: ledger state, genesis, as-of date, next free ID | C-084 |
+| 0.4 new ledger row C-084 | C-084 |
+| 0.4 sign-off block and next free ID | C-084 |
+| 22 six bullets on the promise and the status of the V2 fields | C-084 |
+| 26.1 promise block | C-084 |
+| 28 heading, preamble, assignment table, delta entry C-084 | C-084 |
+| 33 note on the ID | C-084 |
+| 34 this section | — |
+
+Outside this file, `docs/memory-schema.md` carries the same content as the
+section "Compatibility Promise (1.0)". Product code was not changed.
+
+**What the addition effects.** With 1.0.0 the beta signal of the leading `0.`
+falls away, and from then on every breaking change to the vault format requires
+a major bump. What exactly is promised was documented nowhere. C-084 closes
+that gap and promises solely what the code holds: required fields, types, the
+meaning of the optional fields — and the loader leniency, because it is the
+actual pledge to a hand-maintained vault. Four points are deliberately drawn
+narrowly: a 1.x reader requires no format-version field, without thereby ruling
+out an optional field later. The shape of `recall` output is bound, but through
+the API contract rather than the schema. Unknown keys are tolerated on load and
+are not guaranteed to survive an `overwrite`. And the security exception
+carries four conditions, among them a visible error instead of a silent drop.
+
+**What to check in particular.**
+
+1. Whether the preservation gap on `overwrite` is to remain or whether the save
+   path should pass unknown keys through in future — the latter would be an
+   improvement but not a contractual obligation, and it would have to be
+   decided before 1.0, because otherwise it will later be read as a promise.
+2. Whether each application of the security exception should receive a C-ID.
+   The text currently requires only the changelog callout.
+3. Whether `docs/memory-schema.md`, as user-facing documentation, should also
+   reference 26.1 so that the two versions do not drift apart.
+
+**Next free ID: C-085.**
