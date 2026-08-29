@@ -11,7 +11,15 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readUsage, type UsageAggregate } from "../src/usage-sidecar.js";
-import { governorWhatIf, noAnswerDivergence } from "./stats-governor.js";
+import {
+  governorWhatIf,
+  noAnswerDivergence,
+  shadowAcceptance,
+  ACCEPT_MIN_DECISIONS,
+  ACCEPT_MIN_DAYS,
+  ACCEPT_MIN_SESSIONS,
+  ACCEPT_MAX_SESSION_SHARE,
+} from "./stats-governor.js";
 
 function defaultLogDir(): string {
   const next = join(homedir(), ".bastra", "logs");
@@ -691,13 +699,20 @@ function summarizeEvidenceGate(events: AnyEvent[]): void {
   if (live.length > 0) {
     console.log(`  live:   ${live.length} call(s), ${live.flatMap(decisionsOf).length} decision(s)  — the gate is ACTIVE`);
   }
-  // §18.2: eine der beiden Schwellen genügt.
-  const reached =
-    shadowDecisions.length >= 500 ? "decisions" : days.size >= 14 ? "days" : null;
+  // §18.2 plus C-085: Die Entscheidungs-Route trägt seit dem 29.08.2026 zwei
+  // Streuungsbedingungen — 500 Entscheidungen aus einer einzigen Sitzung sind
+  // 500 Beobachtungen desselben Arbeitstages, nicht 500 unabhängige Belege.
+  // Die Tage-Route bleibt unberührt.
+  const acc = shadowAcceptance(shadow, decisionsOf);
   console.log(
-    reached
-      ? `  shadow acceptance: REACHED via ${reached} (${shadowDecisions.length}/500 decisions, ${days.size}/14 days) — the divergence review below is the remaining condition`
-      : `  shadow acceptance: not yet (${shadowDecisions.length}/500 decisions, ${days.size}/14 days; either threshold suffices)`,
+    `  spread: ${acc.sessions} session(s), largest holds ${(acc.topSessionShare * 100).toFixed(1)} % of the decisions` +
+      `  (C-085: ${ACCEPT_MIN_SESSIONS}+ sessions, at most ${ACCEPT_MAX_SESSION_SHARE * 100} % each)`,
+  );
+  console.log(
+    acc.route
+      ? `  shadow acceptance: REACHED via ${acc.route} (${acc.decisions}/${ACCEPT_MIN_DECISIONS} decisions, ${acc.days}/${ACCEPT_MIN_DAYS} days) — the divergence review below is the remaining condition`
+      : `  shadow acceptance: not yet — the decision route still needs: ${acc.missing.join(", ")}` +
+          `; or ${acc.days}/${ACCEPT_MIN_DAYS} days, which carries no spread condition`,
   );
   if (degraded.length > 0 || failed.length > 0) {
     console.log(

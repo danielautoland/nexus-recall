@@ -136,6 +136,83 @@ export function governorWhatIf(events: AnyEventLike[], budgets: number[]): Gover
   };
 }
 
+// ─── Shadow-Abnahme mit Streuung (C-085, §35) ────────────────────
+
+/** Die Entscheidungs-Route. C-022, erweitert durch C-085. */
+export const ACCEPT_MIN_DECISIONS = 500;
+export const ACCEPT_MIN_SESSIONS = 20;
+export const ACCEPT_MAX_SESSION_SHARE = 0.25;
+/** Die Tage-Route. Von C-085 ausdrücklich UNBERÜHRT — sie misst Dauer, nicht
+ *  Streuung, und wer 14 Tage lang beobachtet, hat die Vielfalt in der Zeit. */
+export const ACCEPT_MIN_DAYS = 14;
+
+export interface ShadowAcceptance {
+  decisions: number;
+  days: number;
+  /** Verschiedene Sitzungen, aus denen Entscheidungen stammen. */
+  sessions: number;
+  /** Anteil der stärksten Sitzung, 0..1. */
+  topSessionShare: number;
+  /** Welche Route erreicht ist — `null` heißt: keine. */
+  route: "decisions" | "days" | null;
+  /** Was der Entscheidungs-Route fehlt. Leer, wenn sie erreicht ist. */
+  missing: string[];
+}
+
+/**
+ * Ist die Shadow-Abnahme erreicht — und über welche Route?
+ *
+ * C-085 (29.08.2026) erweitert die ENTSCHEIDUNGS-Route um zwei Streuungs-
+ * bedingungen: mindestens 20 verschiedene Sitzungen und höchstens 25 % Anteil
+ * je Sitzung, gezählt pro Memory-Entscheidung. Der Grund steht im Prüfpunkt zu
+ * §35: 500 Entscheidungen aus einer einzigen Sitzung sind 500 Beobachtungen
+ * desselben Arbeitstages, nicht 500 unabhängige Belege. Ohne die Bedingungen
+ * meldete der Report eine Abnahme, die keine ist.
+ *
+ * Die TAGE-Route bleibt unberührt. Sie misst etwas anderes — Dauer statt Menge
+ * —, und 14 Kalendertage bringen ihre Streuung mit.
+ *
+ * Entscheidungen ohne Sitzungszuordnung zählen als eine gemeinsame Gruppe. Sie
+ * belegen keine Streuung, also dürfen sie auch keine vortäuschen; als eigene
+ * Gruppe drücken sie den Höchstanteil nach oben statt ihn zu verstecken.
+ */
+export function shadowAcceptance(
+  shadow: AnyEventLike[],
+  decisionsOf: (e: AnyEventLike) => Array<{ memory_id: string }>,
+): ShadowAcceptance {
+  const perSession = new Map<string, number>();
+  let decisions = 0;
+  const days = new Set<string>();
+  for (const e of shadow) {
+    const n = decisionsOf(e).length;
+    if (n === 0) continue;
+    decisions += n;
+    days.add(String(e.ts).slice(0, 10));
+    const key = typeof e.session_id === "string" && e.session_id ? e.session_id : "(unattributed)";
+    perSession.set(key, (perSession.get(key) ?? 0) + n);
+  }
+
+  const sessions = perSession.size;
+  const top = perSession.size ? Math.max(...perSession.values()) : 0;
+  const topSessionShare = decisions > 0 ? top / decisions : 0;
+
+  const missing: string[] = [];
+  if (decisions < ACCEPT_MIN_DECISIONS) missing.push(`decisions ${decisions}/${ACCEPT_MIN_DECISIONS}`);
+  if (sessions < ACCEPT_MIN_SESSIONS) missing.push(`sessions ${sessions}/${ACCEPT_MIN_SESSIONS}`);
+  if (topSessionShare > ACCEPT_MAX_SESSION_SHARE) {
+    missing.push(
+      `top session ${(topSessionShare * 100).toFixed(1)} % (max ${ACCEPT_MAX_SESSION_SHARE * 100} %)`,
+    );
+  }
+
+  // Reihenfolge: erst die Dauer, dann die Menge. Wer 14 Tage beobachtet hat,
+  // ist unabhängig von der Streuungsfrage durch.
+  const route: ShadowAcceptance["route"] =
+    days.size >= ACCEPT_MIN_DAYS ? "days" : missing.length === 0 ? "decisions" : null;
+
+  return { decisions, days: days.size, sessions, topSessionShare, route, missing };
+}
+
 // ─── no_answer-Divergenzen (§18.2) ───────────────────────────────
 
 export interface DivergenceSignature {

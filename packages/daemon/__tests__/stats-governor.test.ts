@@ -14,6 +14,7 @@ import { strict as assert } from "node:assert";
 import {
   governorWhatIf,
   noAnswerDivergence,
+  shadowAcceptance,
   type AnyEventLike,
 } from "../scripts/stats-governor.js";
 
@@ -215,4 +216,85 @@ test("§18.2: ein Entscheid ohne zugehörigen Recall wird als unbekannter Raum g
   const d = noAnswerDivergence([], shadow, decisionsOf, 100, 30);
   assert.equal(d.unknownSpace, 1);
   assert.equal(d.gateSilentLegacyServed.length, 0, "geraten wird nicht");
+});
+
+// ─── Shadow-Abnahme mit Streuung (C-085) ─────────────────────────
+
+const entscheidungen = (session: string, tag: string, n: number): AnyEventLike => ({
+  kind: "evidence_decision",
+  ts: `${tag}T05:00:00.000Z`,
+  session_id: session,
+  shadow: true,
+  decisions: Array.from({ length: n }, (_, i) => ({ memory_id: `m${i}` })),
+});
+
+const zaehle = (e: AnyEventLike): Array<{ memory_id: string }> =>
+  Array.isArray(e.decisions) ? (e.decisions as Array<{ memory_id: string }>) : [];
+
+test("C-085: 500 Entscheidungen aus EINER Sitzung sind keine Abnahme", () => {
+  // Der Prüfpunkt aus §35: Ohne die Streuungsbedingungen meldete der Report
+  // hier REACHED — 500 Beobachtungen desselben Arbeitstages als 500 Belege.
+  const acc = shadowAcceptance([entscheidungen("s1", "2026-08-29", 600)], zaehle);
+  assert.equal(acc.decisions, 600);
+  assert.equal(acc.sessions, 1);
+  assert.equal(acc.route, null, "die Menge allein reicht nicht mehr");
+  assert.ok(acc.missing.some((m) => m.includes("sessions")));
+  assert.ok(acc.missing.some((m) => m.includes("top session")));
+});
+
+test("C-085: genug Menge und genug Streuung erreichen die Entscheidungs-Route", () => {
+  // 25 Sitzungen zu je 24 Entscheidungen: 600 gesamt, größter Anteil 4 %.
+  const events = Array.from({ length: 25 }, (_, i) => entscheidungen(`s${i}`, "2026-08-29", 24));
+  const acc = shadowAcceptance(events, zaehle);
+  assert.equal(acc.decisions, 600);
+  assert.equal(acc.sessions, 25);
+  assert.ok(acc.topSessionShare <= 0.25);
+  assert.equal(acc.route, "decisions");
+  assert.deepEqual(acc.missing, []);
+});
+
+test("C-085: eine dominante Sitzung kippt die Route, auch bei vielen Sitzungen", () => {
+  // 24 Sitzungen, aber eine hält mehr als ein Viertel.
+  const events = [
+    entscheidungen("dominant", "2026-08-29", 300),
+    ...Array.from({ length: 23 }, (_, i) => entscheidungen(`s${i}`, "2026-08-29", 20)),
+  ];
+  const acc = shadowAcceptance(events, zaehle);
+  assert.equal(acc.sessions, 24, "die Zahl der Sitzungen allein wäre in Ordnung");
+  assert.ok(acc.topSessionShare > 0.25);
+  assert.equal(acc.route, null);
+  assert.ok(acc.missing.every((m) => !m.includes("sessions ")), "es fehlt nicht an Sitzungen");
+});
+
+test("C-085: die Tage-Route bleibt unberührt von der Streuung", () => {
+  // 14 Kalendertage, alles aus einer einzigen Sitzung: erreicht trotzdem.
+  const events = Array.from({ length: 14 }, (_, i) =>
+    entscheidungen("s1", `2026-08-${String(i + 1).padStart(2, "0")}`, 3),
+  );
+  const acc = shadowAcceptance(events, zaehle);
+  assert.equal(acc.days, 14);
+  assert.equal(acc.sessions, 1);
+  assert.equal(acc.route, "days", "die Dauer misst etwas anderes als die Menge");
+});
+
+test("C-085: Entscheidungen ohne Sitzung belegen keine Streuung", () => {
+  // Sie zählen als eine gemeinsame Gruppe — so drücken sie den Höchstanteil
+  // nach oben, statt ihn zu verstecken.
+  const ohne: AnyEventLike = {
+    kind: "evidence_decision",
+    ts: "2026-08-29T05:00:00.000Z",
+    shadow: true,
+    decisions: Array.from({ length: 600 }, (_, i) => ({ memory_id: `m${i}` })),
+  };
+  const acc = shadowAcceptance([ohne], zaehle);
+  assert.equal(acc.sessions, 1);
+  assert.equal(acc.topSessionShare, 1);
+  assert.equal(acc.route, null);
+});
+
+test("C-085: ein leeres Fenster meldet keine Abnahme und keine Division durch null", () => {
+  const acc = shadowAcceptance([], zaehle);
+  assert.equal(acc.decisions, 0);
+  assert.equal(acc.topSessionShare, 0);
+  assert.equal(acc.route, null);
 });
