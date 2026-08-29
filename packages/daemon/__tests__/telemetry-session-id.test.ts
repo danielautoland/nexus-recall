@@ -124,6 +124,34 @@ async function makeDaemon(): Promise<Daemon> {
   };
 }
 
+/** ALLE Zeilen der gesuchten Event-Art, in Schreibreihenfolge — für Prüfungen,
+ *  die mehrere Ereignisse gegeneinander halten (Turn-Grenzen). Wartet, bis
+ *  mindestens `mindestens` Zeilen da sind; write() ist fire-and-forget. */
+async function readEventRows(
+  logDir: string,
+  kind: string,
+  mindestens = 1,
+): Promise<Record<string, unknown>[]> {
+  for (let i = 0; i < 25; i++) {
+    await new Promise((r) => setTimeout(r, 40));
+    let files: string[];
+    try {
+      files = await readdir(logDir);
+    } catch {
+      continue;
+    }
+    const zeilen: Record<string, unknown>[] = [];
+    for (const f of files.filter((n) => n.startsWith("events-")).sort()) {
+      const raw = await readFile(join(logDir, f), "utf8");
+      for (const l of raw.split("\n").filter((x) => x.includes(`"${kind}"`))) {
+        zeilen.push(JSON.parse(l) as Record<string, unknown>);
+      }
+    }
+    if (zeilen.length >= mindestens) return zeilen;
+  }
+  return [];
+}
+
 /** Pollt das Log-Dir auf die letzte Zeile der gesuchten Event-Art — write() ist fire-and-forget. */
 async function readEventRow(logDir: string, kind: string): Promise<Record<string, unknown> | null> {
   for (let i = 0; i < 25; i++) {
@@ -223,5 +251,50 @@ test("#363: ollama_lifecycle sagt session_id: null und trägt die Boot-id als ru
     assert.equal(row!.action, "prewarm");
   } finally {
     await rm(logDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test("#305/#361: das hook_recall-Event trägt die Turn-Grenze, nicht nur die Session", async () => {
+  const d = await makeDaemon();
+  try {
+    // Ein UserPromptSubmit rotiert den Turn — danach gehören alle Recalls
+    // derselben Session zu diesem Turn.
+    await httpPost(d.port, "/hook/recall", {
+      query: "erster prompt",
+      session_id: "claude-session-turn",
+      tool_name: "UserPromptSubmit",
+    });
+    const ersterTurn = (await readEventRow(d.logDir, "hook_recall"))!.turn_id as string;
+    assert.ok(ersterTurn, "ohne turn_id lässt sich nichts auf Turn-Ebene gruppieren (#305, #361)");
+
+    // Ein Werkzeugaufruf im selben Turn: dieselbe Turn-id, kein neuer Turn.
+    await httpPost(d.port, "/hook/recall", {
+      query: "ein Edit im selben Turn",
+      session_id: "claude-session-turn",
+      tool_name: "Edit",
+    });
+    const zeilen = await readEventRows(d.logDir, "hook_recall", 2);
+    assert.equal(zeilen.length, 2);
+    assert.equal(
+      zeilen[1].turn_id,
+      ersterTurn,
+      "derselbe Turn muss dieselbe id tragen, sonst zählt jede Auswertung Turns doppelt",
+    );
+
+    // Der nächste Prompt beginnt einen neuen Turn.
+    await httpPost(d.port, "/hook/recall", {
+      query: "zweiter prompt",
+      session_id: "claude-session-turn",
+      tool_name: "UserPromptSubmit",
+    });
+    const nachher = await readEventRows(d.logDir, "hook_recall", 3);
+    assert.notEqual(
+      nachher[2].turn_id,
+      ersterTurn,
+      "ein neuer UserPromptSubmit muss einen neuen Turn beginnen",
+    );
+    assert.equal(nachher[2].turn_source, "session", "die Zuordnung kommt aus der Session, nicht geraten");
+  } finally {
+    await d.close();
   }
 });

@@ -414,6 +414,22 @@ export interface HookActEvent extends BaseEvent, DimensionedEvent {
 export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   kind: "hook_recall";
   recall_id: string;
+  /**
+   * #305/#361: der Turn, in dem dieser Recall lief — und woher die Zuordnung
+   * stammt.
+   *
+   * `session_id` beantwortet keine Frage auf Turn-Ebene. „Wie oft reißt der
+   * ERSTE Recall eines Turns seine Deadline" ist genau die Größe, an der die
+   * Wirkung des Vorwärmens hängt, und ohne die Turn-Grenze musste jede solche
+   * Auswertung sie aus Zeitstempeln raten. `turn_source: "inferred"` sagt,
+   * dass die Zuordnung erschlossen ist — solche Zeilen gehören aus einer
+   * strengen Auswertung heraus.
+   *
+   * Optional, weil die Ereignisse davor sie nicht tragen: Ein fehlendes Feld
+   * heißt „vor dieser Änderung geschrieben", nicht „kein Turn".
+   */
+  turn_id?: string;
+  turn_source?: TurnSource;
   query: string;
   /** #351: set when this recall is one phrasing of a batched call (2-4). */
   query_count?: number;

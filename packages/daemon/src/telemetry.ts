@@ -549,11 +549,24 @@ export class Telemetry {
     }
     if (!this.enabled) return;
     const { client, hook_source, ...rest } = payload;
+    // #305/#361: der Turn, in dem dieser Recall lief. `session_id` allein
+    // beantwortet keine Frage auf Turn-Ebene — „wie oft reißt der erste Recall
+    // eines Turns seine Deadline" braucht die Turn-Grenze, und die kennt nur
+    // diese Klasse (`rotateTurn` bei UserPromptSubmit). Ohne das Feld musste
+    // jede solche Auswertung die Grenze aus Zeitstempeln raten.
+    //
+    // `currentTurn` liefert auch dann etwas, wenn kein Turn bekannt ist —
+    // `turn_source` sagt, ob die Zuordnung aus der Session stammt oder
+    // erschlossen ist. Beides mitzuschreiben ist der Unterschied zwischen einer
+    // Gruppierung, der man trauen kann, und einer, die stillschweigend rät.
+    const turn = this.currentTurn(payload.session_id ?? null);
     await this.write({
       kind: "hook_recall",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...rest,
+      turn_id: turn.turn_id,
+      turn_source: turn.turn_source,
       dimensions: this.dimensionsFor({ client, hook_source, session_id: payload.session_id }),
     });
   }
