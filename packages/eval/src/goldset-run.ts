@@ -40,10 +40,13 @@ import {
   Vault,
   isWeakResult,
   hitTitleMatches,
+  decideHits,
+  tokenizeWithIdentifiers,
   type RecallHit,
   type StageListener,
 } from "@bastra-recall/core";
 import { datasetHash, loadGoldFiles, unknownGoldIds } from "./goldset-dataset.js";
+import { componentGates, gateCase, type CaseGateResult, type GateRow } from "./goldset-gate.js";
 import type { GoldCase } from "./goldset.js";
 
 /** The k the product serves. Ranks are measured here and nowhere else. */
@@ -159,6 +162,16 @@ export interface CaseResult {
    * bodies, so the artifact's privacy posture is unchanged.
    */
   top_k: { id: string; score: number }[];
+  /**
+   * The §18.2 component gates, when the run was asked for them (#422).
+   *
+   * Absent unless `--gate` was passed: the evidence decision is a SHADOW at
+   * this stage and must not quietly become part of every artifact. Present, it
+   * describes what the shipped predicate did to this case's served pool — the
+   * ranks it would leave behind, and the counts the seven gate figures are
+   * summed from.
+   */
+  gate?: CaseGateResult;
 }
 
 const hit = (r: CaseResult, k: number, any = false): boolean => {
@@ -349,6 +362,10 @@ export async function scoreCases(
    *  only there (in BM25-only mode the score is a real BM25 quantity and the
    *  floor already does the job). False for the random control. */
   hybridActive: boolean,
+  /** #422: when given, each case is additionally scored through the evidence
+   *  decision. Called exactly the way the daemon calls it, so the measurement
+   *  describes the predicate that ships and not a second reading of it. */
+  decide?: (hits: RecallHit[], query: string) => ReturnType<typeof decideHits>,
 ): Promise<CaseResult[]> {
   const rows: CaseResult[] = [];
   for (const c of cases) {
@@ -384,10 +401,28 @@ export async function scoreCases(
       // The same `above` the ranks were read off, so a checker re-deriving them
       // is checking the runner rather than a second recording of it.
       top_k: above.map((h) => ({ id: h.id, score: h.score })),
+      // On `above`, the SERVED pool, and before anything projects the hop away
+      // — C-046 wants the decision taken where the provenance still exists.
+      ...(decide ? { gate: gateCase(above, decide(above, c.query), exp, any) } : {}),
     });
   }
   return rows;
 }
+
+/**
+ * The slice of a scored row the §18.2 report reads (#422).
+ *
+ * `has_identifier` comes from the GOLD CASE and not from the row: it is a
+ * property of the query, the artifact's row shape has never carried it, and the
+ * identifier gate is no reason to change that shape for every ungated run too.
+ */
+const toGateRow = (r: CaseResult, hasIdentifier: (id: string) => boolean): GateRow => ({
+  no_answer: r.no_answer,
+  ...(r.probe_group ? { probe_group: r.probe_group } : {}),
+  has_identifier: hasIdentifier(r.id),
+  rank_expected: r.rank_expected,
+  ...(r.gate ? { gate: r.gate } : {}),
+});
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
@@ -416,16 +451,17 @@ function hashCode(): string {
     .join("\n"));
 }
 
-interface Args { gold: string[]; out: string; hybrid: boolean; seed: number }
+interface Args { gold: string[]; out: string; hybrid: boolean; seed: number; gate: boolean }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { gold: [], out: "", hybrid: false, seed: 20260828 };
+  const a: Args = { gold: [], out: "", hybrid: false, seed: 20260828, gate: false };
   for (let i = 0; i < argv.length; i++) {
     const f = argv[i];
     if (f === "--gold") a.gold.push(argv[++i] ?? "");
     else if (f === "--out") a.out = argv[++i] ?? "";
     else if (f === "--hybrid") a.hybrid = true;
     else if (f === "--seed") a.seed = Number(argv[++i]);
+    else if (f === "--gate") a.gate = true;
     else throw new Error(`unknown flag: ${f}`);
   }
   if (!a.gold.length) throw new Error("--gold is required (repeatable)");
@@ -477,8 +513,33 @@ async function main(): Promise<void> {
     : async (q) => search.recall(q, { k: PRODUCTION_K });
 
   const hybridActive = search.hasEmbeddings();
+  // #422: the same call the daemon makes in `http-hook-routes.ts` — the
+  // ORIGINAL query terms, the requested scope, the vault for temporal status.
+  // Reproducing it rather than paraphrasing it is the whole point: a second
+  // reading of the predicate would measure the second reading.
+  //
+  // The runner writes NO `evidence_decision` event. `decideHits` is pure and
+  // logs nothing; the events come from the daemon. That separation keeps the
+  // shadow-acceptance count in #422's first checkbox free of gold-set runs.
+  //
+  // `scope: null` on purpose, and it makes the gated arm STRICTER than a scoped
+  // production call: `scope_match` is false for every hit, so one of the three
+  // independent signals is unavailable and `required` needs the other two. It
+  // is the honest setting here — the runner's own retrieval is unscoped, and
+  // crediting a scope match the search never filtered on would report a signal
+  // that did no work. Whoever reads the figures should know the direction: with
+  // a scope, more hits reach `required`, not fewer.
+  const decide = args.gate
+    ? (hits: RecallHit[], query: string): ReturnType<typeof decideHits> =>
+        decideHits(hits, {
+          queryTerms: tokenizeWithIdentifiers(query),
+          scope: null,
+          memoryOf: (id) => vault.get(id),
+        })
+    : undefined;
+  const identifierQueries = new Set(cases.filter((c) => c.has_identifier).map((c) => c.id));
   const started = Date.now();
-  const main = await scoreCases(cases, recaller, knownIds, hybridActive);
+  const main = await scoreCases(cases, recaller, knownIds, hybridActive, decide);
   const mainMs = Date.now() - started;
   const control = await scoreCases(cases, controlRecaller([...knownIds], args.seed), knownIds, false);
   await cleanup?.();
@@ -535,6 +596,9 @@ async function main(): Promise<void> {
       return a;
     }, {}),
     duration_ms: { main_arm: mainMs },
+    ...(args.gate
+      ? { component_gates: componentGates(main.map((r) => toGateRow(r, (id) => identifierQueries.has(id)))) }
+      : {}),
     rows: main,
   };
 
