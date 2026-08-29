@@ -31,7 +31,7 @@
 |---|---|---|
 | **Claude Code** | ✅ tested — in daily use | MCP + Skill + seven quiet hooks + statusline |
 | **Claude Desktop** | ✅ tested | MCP + Skill, autonomous session context without hooks; `.mcpb` double-click extension |
-| **Cursor** | 🟡 implemented | installs and registers cleanly; not yet verified in daily use — targeted testing planned for v1.0 |
+| **Cursor** | 🟡 implemented | installs and registers cleanly; implemented, but not yet field-tested |
 | **ChatGPT** (Custom GPT Actions) | 🗺️ planned | the REST gateway and an OpenAPI starter spec ship today; the packaged Custom-GPT action is next in line — tracked in [#13](https://github.com/n0mad-ai/bastra-recall/issues/13) |
 | **Codex CLI** | 🗺️ planned | lands via the same MCP forwarder — adapter tracked in [#15](https://github.com/n0mad-ai/bastra-recall/issues/15) |
 
@@ -214,7 +214,7 @@ Built by [@n0mad-ai](https://github.com/n0mad-ai).
 |---|---|---|
 | **Claude Code** | ✅ getestet — im täglichen Einsatz | MCP + Skill + sieben ruhige Hooks + Statusline |
 | **Claude Desktop** | ✅ getestet | MCP + Skill, autonomer Session-Kontext ohne Hooks; `.mcpb`-Doppelklick-Extension |
-| **Cursor** | 🟡 implementiert | installiert und registriert sauber; noch nicht im Alltag verifiziert — gezielter Test ab v1.0 geplant |
+| **Cursor** | 🟡 implementiert | installiert und registriert sauber; implementiert, aber noch nicht im Feld getestet |
 | **ChatGPT** (Custom GPT Actions) | 🗺️ geplant | REST-Gateway und OpenAPI-Starter-Spec sind da; die verpackte Custom-GPT-Action ist als Nächstes dran — verfolgt in [#13](https://github.com/n0mad-ai/bastra-recall/issues/13) |
 | **Codex CLI** | 🗺️ geplant | kommt über denselben MCP-Forwarder — Adapter verfolgt in [#15](https://github.com/n0mad-ai/bastra-recall/issues/15) |
 
