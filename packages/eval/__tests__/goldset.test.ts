@@ -11,6 +11,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  checkGoldCases,
+  checkGoldShape,
   checkLabels,
   checkStaged,
   coverage,
@@ -312,5 +314,97 @@ test("hook-composed strings are not formulations and never reach the set", () =>
     r.staged.map((s) => s.query),
     ["readabilityHandler subprocess pipe blocking read"],
     "a quarter of the set being one machine sentence with the nouns swapped is not coverage",
+  );
+});
+
+/**
+ * A finished, well-formed gold case — the shape a gold FILE holds, not the two
+ * halves the authoring pipeline joins. Overrides are deliberately typed loosely
+ * so a test can put a wrong TYPE in a field, which is the whole point of #434.
+ */
+const goldCase = (q: string, over: Record<string, unknown> = {}): unknown => ({
+  ...staged(q),
+  expected_ids: ["m1"],
+  acceptable_alternatives: [],
+  expected_zone: "orbit",
+  no_answer: false,
+  scope: null,
+  time_view: null,
+  allowed_retrieval_depth: 3,
+  rationale: "m1 is the only memory stating this rule",
+  kind: "descriptive",
+  labelled_at: "2026-08-28",
+  labelled_by: "Daniel",
+  ...over,
+});
+
+test("a well-formed gold case passes both validation layers (#434)", () => {
+  assert.deepEqual(checkGoldCases([goldCase("wie war die regel für force pushes")]), []);
+});
+
+test("wrong field TYPES are caught before the semantic checks see them (#434)", () => {
+  // Codex' repro cases: each of these returned zero issues on ea3a910, because
+  // checkStaged/checkLabels answer "is this label admissible", not "is this the
+  // right type".
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ["has_identifier", { has_identifier: "false" }, /has_identifier must be a boolean/],
+    ["scope", { scope: 42 }, /scope must be a string or null/],
+    ["labelled_at", { labelled_at: "yesterday" }, /labelled_at must be a YYYY-MM-DD date/],
+    ["no_answer", { no_answer: "nein" }, /no_answer must be a boolean/],
+    ["time_view", { time_view: 7 }, /time_view must be a string or null/],
+    ["allowed_retrieval_depth", { allowed_retrieval_depth: "3" }, /allowed_retrieval_depth must be a number/],
+    ["labelled_by", { labelled_by: "  " }, /labelled_by must be a non-empty string/],
+    ["probe_group", { probe_group: 1 }, /probe_group must be a string when present/],
+    ["non_application", { correct_answer_is_non_application: "ja" }, /correct_answer_is_non_application must be a boolean/],
+  ];
+  for (const [field, over, expected] of cases) {
+    const issues = checkGoldCases([goldCase("eine frage", over)]);
+    assert.ok(issues.length > 0, `${field} with a wrong type must be reported`);
+    assert.match(issues.map((i) => i.problem).join(" | "), expected);
+  }
+});
+
+test("an unknown language is reported rather than counted (#434)", () => {
+  // `lang` had no value check anywhere: the shape guard sees a string and waves
+  // it through, so the enum check belongs with the other §19 enums.
+  const issues = checkGoldCases([goldCase("eine frage", { lang: "englisch" })]);
+  assert.match(issues.map((i) => i.problem).join(" | "), /lang `englisch` is not one of de, en, mixed, neutral/);
+  for (const lang of ["de", "en", "mixed", "neutral"]) {
+    assert.deepEqual(checkGoldCases([goldCase("eine frage", { lang })]), [], `${lang} is admissible`);
+  }
+});
+
+test("a missing or non-array id list is a dataset error, never an exception (#434)", () => {
+  // These used to throw MID-validation: every later check reads .length or
+  // .filter on them, so the caller got a TypeError instead of a report.
+  for (const over of [
+    { expected_ids: undefined },
+    { expected_ids: "m1" },
+    { expected_ids: ["m1", 7] },
+    { acceptable_alternatives: undefined },
+    { acceptable_alternatives: {} },
+  ]) {
+    const field = "expected_ids" in over ? "expected_ids" : "acceptable_alternatives";
+    let issues: ReturnType<typeof checkGoldCases> = [];
+    assert.doesNotThrow(() => { issues = checkGoldCases([goldCase("eine frage", over)]); }, `${field} must not throw`);
+    assert.match(issues.map((i) => i.problem).join(" | "), new RegExp(`${field} must be an array of strings`));
+  }
+});
+
+test("a case that is not an object at all is reported by position (#434)", () => {
+  for (const raw of [null, 42, "a string", ["nested"]]) {
+    const issues = checkGoldShape([raw]);
+    assert.deepEqual(issues, [{ where: "case #0", problem: "is not a JSON object" }]);
+  }
+});
+
+test("a broken shape short-circuits the semantic checks (#434)", () => {
+  // Both layers would have something to say here; only the shape layer reports,
+  // because the semantic checks cannot be trusted on input they never expected.
+  const issues = checkGoldCases([goldCase("eine frage", { expected_ids: undefined, kind: "erzaehlend" })]);
+  assert.match(issues.map((i) => i.problem).join(" | "), /expected_ids must be an array of strings/);
+  assert.ok(
+    !issues.some((i) => /unknown kind/.test(i.problem)),
+    "the semantic layer does not run on a broken shape",
   );
 });

@@ -39,6 +39,10 @@ export type Zone = (typeof ZONES)[number];
 export const CASE_KINDS = ["descriptive", "associative"] as const;
 export type CaseKind = (typeof CASE_KINDS)[number];
 
+/** The admissible language buckets — see {@link StagedQuery.lang} on `neutral`. */
+export const LANGS = ["de", "en", "mixed", "neutral"] as const;
+export type Lang = (typeof LANGS)[number];
+
 /**
  * Real recall traffic that is not a retrieval question.
  *
@@ -83,7 +87,7 @@ export interface StagedQuery {
    * They are language-NEUTRAL, and saying so keeps `mixed` for queries that
    * genuinely carry both.
    */
-  lang: "de" | "en" | "mixed" | "neutral";
+  lang: Lang;
   /** True when the query carries an exact identifier, path or symbol (§19). */
   has_identifier: boolean;
 }
@@ -179,6 +183,9 @@ export function checkStaged(rows: StagedQuery[]): GoldIssue[] {
     if (!ORIGIN_TYPES.includes(r.origin_type)) {
       issues.push({ where, problem: `origin_type \`${r.origin_type}\` is not one of the five §19 sources` });
     }
+    if (!LANGS.includes(r.lang)) {
+      issues.push({ where, problem: `lang \`${r.lang}\` is not one of ${LANGS.join(", ")}` });
+    }
     if (!r.authoring_mode?.trim()) issues.push({ where, problem: "authoring_mode is mandatory (§19)" });
     if (!/^[a-f0-9]{64}$/.test(r.origin_ref_hash ?? "")) {
       issues.push({ where, problem: "origin_ref_hash must be a sha256 hex digest (§19)" });
@@ -224,18 +231,85 @@ export function checkLabels(labels: GoldLabel[], staged: StagedQuery[]): GoldIss
   return issues;
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const isString = (v: unknown): v is string => typeof v === "string";
+const isFilled = (v: unknown): boolean => isString(v) && v.trim() !== "";
+const isIdList = (v: unknown): boolean => Array.isArray(v) && v.every(isString);
+
 /**
- * The same two check sets, applied to a FINISHED gold file (#434).
+ * The runtime shape guard the semantic checks assume (#434).
  *
- * A `GoldCase` is a staged query plus its label, so both existing checks apply
- * unchanged — that is the point. The measurement entry point must grade the
- * file rather than trust its creation history (a case can be hand-edited after
- * the authoring pipeline signed it off), and a second rule set written for the
- * runner would drift from the one the authoring step enforces.
+ * `checkStaged` and `checkLabels` answer "is this label admissible", not "is
+ * this an object of the right shape" — they were written for values that
+ * already carry the right TYPE. A finished gold file is arbitrary JSON, so
+ * `has_identifier: "false"`, `scope: 42` or `labelled_at: "yesterday"` walked
+ * through them unseen, and a missing id list made them throw MID-validation
+ * instead of producing a controlled dataset error.
+ *
+ * This runs first and reports every field whose type is wrong. It deliberately
+ * does not repeat the enum checks that follow: `origin_type`, `expected_zone`,
+ * `kind`, `lang` and `probe_group` are only checked here for being strings at
+ * all, because their admissible VALUES are the semantic layer's job and a
+ * second copy of that list would be the drift this file keeps warning about.
  */
-export function checkGoldCases(cases: GoldCase[]): GoldIssue[] {
-  const labels = cases.map((c) => ({ ...c, staged_id: c.id }));
-  return [...checkStaged(cases), ...checkLabels(labels, cases)];
+export function checkGoldShape(cases: readonly unknown[]): GoldIssue[] {
+  const issues: GoldIssue[] = [];
+  cases.forEach((raw, i) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      issues.push({ where: `case #${i}`, problem: "is not a JSON object" });
+      return;
+    }
+    const c = raw as Record<string, unknown>;
+    const where = isFilled(c.id) ? String(c.id) : `case #${i}`;
+    const bad = (field: string, expected: string): void => {
+      issues.push({ where, problem: `${field} must be ${expected}, got ${JSON.stringify(c[field]) ?? "undefined"}` });
+    };
+
+    for (const f of ["id", "query", "authoring_mode", "rationale", "labelled_by"]) {
+      if (!isFilled(c[f])) bad(f, "a non-empty string");
+    }
+    for (const f of ["origin_ref_hash", "origin_type", "expected_zone", "kind", "lang"]) {
+      if (!isString(c[f])) bad(f, "a string");
+    }
+    for (const f of ["has_identifier", "no_answer"]) {
+      if (typeof c[f] !== "boolean") bad(f, "a boolean");
+    }
+    // Missing or non-array id lists are the ones that used to throw: every
+    // later check reads `.length` or `.filter` on them.
+    for (const f of ["expected_ids", "acceptable_alternatives"]) {
+      if (!isIdList(c[f])) bad(f, "an array of strings");
+    }
+    if (typeof c.allowed_retrieval_depth !== "number") bad("allowed_retrieval_depth", "a number");
+    if (c.scope !== null && !isString(c.scope)) bad("scope", "a string or null");
+    if (c.time_view !== null && !isString(c.time_view)) bad("time_view", "a string or null");
+    if (!isString(c.labelled_at) || !ISO_DATE.test(c.labelled_at)) bad("labelled_at", "a YYYY-MM-DD date");
+    if (c.probe_group !== undefined && !isString(c.probe_group)) bad("probe_group", "a string when present");
+    if (c.correct_answer_is_non_application !== undefined && typeof c.correct_answer_is_non_application !== "boolean") {
+      bad("correct_answer_is_non_application", "a boolean when present");
+    }
+  });
+  return issues;
+}
+
+/**
+ * The full check a FINISHED gold file must pass before it is measured (#434).
+ *
+ * Two layers, in this order. The shape guard above establishes that every field
+ * has the type the rest of the code assumes; only then do the authoring
+ * pipeline's own rule sets run, because a `GoldCase` is a staged query plus its
+ * label and reusing `checkStaged`/`checkLabels` is what keeps the measurement
+ * and the authoring step from drifting apart.
+ *
+ * A broken shape short-circuits: the semantic checks are written for well-typed
+ * input and would throw on anything else, and an exception during validation is
+ * not a dataset error a caller can report.
+ */
+export function checkGoldCases(cases: readonly unknown[]): GoldIssue[] {
+  const shape = checkGoldShape(cases);
+  if (shape.length) return shape;
+  const typed = cases as GoldCase[];
+  const labels = typed.map((c) => ({ ...c, staged_id: c.id }));
+  return [...checkStaged(typed), ...checkLabels(labels, typed)];
 }
 
 /**
