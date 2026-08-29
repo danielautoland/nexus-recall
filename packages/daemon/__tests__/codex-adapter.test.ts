@@ -152,7 +152,9 @@ test("apply_patch payloads expose target paths and retain the patch body", () =>
 
 test("surface detection prefers explicit Codex markers and keeps Claude default", () => {
   assert.equal(hookClient({ bastra_client: "codex" }), "codex");
-  assert.equal(hookClient({ turn_id: "turn-1" }), "codex");
+  assert.equal(hookClient({ bastra_client: "claude-code", tool_name: "apply_patch" }), "claude-code");
+  assert.equal(hookClient({ model: "claude-opus-4-1" }), "claude-code");
+  assert.equal(hookClient({ turn_id: "turn-1" }), "claude-code");
   assert.equal(hookClient({ tool_name: "apply_patch" }), "codex");
   assert.equal(hookClient({ tool_name: "Write" }), "claude-code");
 });

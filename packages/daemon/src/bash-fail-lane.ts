@@ -48,6 +48,7 @@ const THROTTLE_DIR = join(tmpdir(), "bastra-hook");
 const BACKOFF_SOURCE = "bash-fail";
 
 export interface BashFailPayload {
+  bastra_client?: "claude-code" | "codex";
   session_id?: string;
   cwd?: string;
   hook_event_name?: string;
@@ -55,6 +56,10 @@ export interface BashFailPayload {
   tool_input?: Record<string, unknown>;
   tool_result?: unknown;
   tool_response?: unknown;
+  /** Claude Code PostToolUseFailure carries failure details at top level. */
+  error?: string;
+  is_interrupt?: boolean;
+  duration_ms?: number;
 }
 
 // P0: EIN gemeinsamer Response-Typ für alle Lanes. Die lokale Kopie hier
@@ -72,12 +77,18 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
   const startedAt = Date.now();
   const client = hookClient(payload);
 
-  if (payload.hook_event_name !== "PostToolUse") return "{}";
+  const hookEventName = payload.hook_event_name;
+  if (hookEventName !== "PostToolUse" && hookEventName !== "PostToolUseFailure") return "{}";
   if (payload.tool_name !== "Bash") return "{}";
+  const failureEvent = hookEventName === "PostToolUseFailure";
 
   // Schema is in flux across Claude-Code versions: `tool_result` and
-  // `tool_response` have both been observed. Accept either.
+  // `tool_response` have both been observed. PostToolUseFailure instead puts
+  // `error` and `is_interrupt` at the top level (official Claude Code schema).
   const result = normalizeToolResponse(payload.tool_result ?? payload.tool_response);
+  if (failureEvent && typeof payload.error === "string" && !("error" in result)) {
+    result.error = payload.error;
+  }
   const exitCode = readExitCode(result);
   // Aktuelle Claude-Code-Payloads tragen z.T. GAR KEIN Exit-Code-Feld mehr —
   // readExitCode() liefert dann null. Das act-Signal muss trotzdem feuern
@@ -85,6 +96,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
   // echten non-zero Code. Ein frühes `exitCode === null → return` war ein
   // Kill-Switch: 3-Tage-Audit 2026-07-10 fand 15 von ~7200 erwarteten
   // act-Signalen (0,2 %).
+  if (payload.is_interrupt === true) return "{}"; // PostToolUseFailure Ctrl-C
   if (exitCode === 130) return "{}"; // SIGINT — user Ctrl-C
   if (result.interrupted === true) return "{}"; // Schema-Äquivalent von 130
 
@@ -107,12 +119,14 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
       tool_input_excerpt: command.slice(0, 1000),
       exit_code: exitCode,
       session_id: typeof payload.session_id === "string" ? payload.session_id : null,
+      client,
+      hook_source: "bash-fail",
     },
     Math.min(120, Math.max(50, HOOK_TIMEOUT_MS - (Date.now() - startedAt))),
   );
 
   // Success path ends here — the act-signal was the only job.
-  if (exitCode === null || exitCode === 0) return "{}";
+  if (!failureEvent && (exitCode === null || exitCode === 0)) return "{}";
 
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "default";
   if (await isThrottled(sessionId)) return "{}";
@@ -210,7 +224,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
       await saveSessionState(sessionId, state);
       stdout = JSON.stringify({
         hookSpecificOutput: {
-          hookEventName: "PostToolUse",
+          hookEventName,
           additionalContext: block,
         },
       });
@@ -269,7 +283,7 @@ export function readExitCode(result: Record<string, unknown>): number | null {
     .map((key) => result[key])
     .filter((value): value is string => typeof value === "string")
     .join("\n");
-  const match = /(?:exit(?:ed)?(?:\s+with)?(?:\s+code)?|exit_code)\D{0,8}(-?\d+)/i.exec(text);
+  const match = /(?:exit(?:ed)?(?:\s+with)?(?:\s+(?:non-zero\s+)?status)?(?:\s+code)?|status\s+code|exit_code)\D{0,8}(-?\d+)/i.exec(text);
   if (match) {
     const parsed = Number.parseInt(match[1] ?? "", 10);
     if (Number.isFinite(parsed)) return parsed;
@@ -392,7 +406,14 @@ export async function markThrottle(sessionId: string): Promise<void> {
  *  outcome; the act-signal must never break or delay the lane's main job. */
 async function postAct(
   baseUrl: string,
-  body: { tool_name: string; tool_input_excerpt: string; exit_code: number | null; session_id: string | null },
+  body: {
+    tool_name: string;
+    tool_input_excerpt: string;
+    exit_code: number | null;
+    session_id: string | null;
+    client: ReturnType<typeof hookClient>;
+    hook_source: "bash-fail";
+  },
   timeoutMs: number,
 ): Promise<void> {
   try {
@@ -407,7 +428,7 @@ interface BashFailHookTelemetry {
    *  session_id, so per-session aggregation (context tax, #354) is possible.
    *  A synthetic UUID is the fallback only when the payload carried none. */
   session_id?: string | null;
-  exit_code: number;
+  exit_code: number | null;
   command_head: string;
   daemon_url: string;
   daemon_reachable: boolean;

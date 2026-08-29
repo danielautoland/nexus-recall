@@ -33,7 +33,13 @@ import type { Adapter, DoctorResult, InstallOpts, InstallResult, UninstallResult
 
 // ─── Hook helpers (claude-code-only surface) ─────────────────────
 
-type HookEventName = "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "Stop";
+type HookEventName =
+  | "SessionStart"
+  | "UserPromptSubmit"
+  | "PreToolUse"
+  | "PostToolUse"
+  | "PostToolUseFailure"
+  | "Stop";
 
 interface HookDef {
   event: HookEventName;
@@ -70,6 +76,7 @@ function hookDefinitions(opts: { includeStop?: boolean } = {}): HookDef[] {
     { event: "PreToolUse", matcher: "TodoWrite", bin: TODO_HOOK_BIN, timeout: 2, note: "bastra-recall TodoWrite hook (topology-recall, #36)", stubSubcommand: "todo" },
     { event: "PreToolUse", matcher: "Bash", bin: BASH_PRE_HOOK_BIN, timeout: 2, note: "bastra-recall Bash-pre hook (safety, #34)", stubSubcommand: "bash-pre" },
     { event: "PostToolUse", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash post hook (act-signal #144 + lesson recall on fail #37)", stubSubcommand: "bash-fail" },
+    { event: "PostToolUseFailure", matcher: "Bash", bin: BASH_FAIL_HOOK_BIN, timeout: 2, note: "bastra-recall Bash failure hook (act-signal #144 + lesson recall on fail #37)", stubSubcommand: "bash-fail" },
   ];
   if (opts.includeStop) defs.push(STOP_HOOK_DEF);
   return defs;
@@ -165,7 +172,7 @@ function isOurHookEntry(matcher: unknown): boolean {
 }
 
 const HOOK_EVENTS: HookEventName[] = [
-  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop",
 ];
 
 /**
@@ -209,7 +216,7 @@ export function hookCommandPath(
  * `io` is injectable for tests; production passes nothing.
  */
 export async function checkHookPaths(
-  found: Map<string, string>,
+  found: Iterable<readonly [string, string]>,
   io: {
     exists?: (p: string) => Promise<boolean>;
     running?: string;
@@ -238,7 +245,13 @@ export async function checkHookPaths(
 // the command that runs them — doctor reports N/7 coverage from the keys and
 // checks the paths from the values (#321).
 export function registeredHookBins(hooks: Record<string, unknown>): Map<string, string> {
-  const found = new Map<string, string>();
+  return new Map(registeredHookCommands(hooks));
+}
+
+/** Every owned hook command, without deduplicating two event registrations
+ * that intentionally share one binary (PostToolUse + PostToolUseFailure). */
+export function registeredHookCommands(hooks: Record<string, unknown>): Array<[string, string]> {
+  const found: Array<[string, string]> = [];
   for (const ev of HOOK_EVENTS) {
     const arr = Array.isArray(hooks[ev]) ? (hooks[ev] as unknown[]) : [];
     for (const entry of arr) {
@@ -251,17 +264,46 @@ export function registeredHookBins(hooks: Record<string, unknown>): Map<string, 
           : "";
         for (const f of OUR_HOOK_FILES) {
           if (cmd.includes(`/${f}`)) {
-            found.set(f, cmd);
+            found.push([f, cmd]);
             continue;
           }
           // …or the same lane on the compiled stub (#344/#350).
           const sub = stubSubcommandForFile(f);
-          if (sub && stubLaneCommandPath(cmd, sub)) found.set(f, cmd);
+          if (sub && stubLaneCommandPath(cmd, sub)) found.push([f, cmd]);
         }
       }
     }
   }
   return found;
+}
+
+/**
+ * Required logical registrations that are absent from their exact event and
+ * matcher. Counting hook binaries alone cannot see that the same bash-fail
+ * binary must be registered on both PostToolUse and PostToolUseFailure: an old
+ * seven-entry install otherwise still looks like 7/7 healthy to doctor.
+ */
+export function missingRequiredHookRegistrations(hooks: Record<string, unknown>): string[] {
+  const missing: string[] = [];
+  for (const def of hookDefinitions()) {
+    const entries = Array.isArray(hooks[def.event]) ? hooks[def.event] as unknown[] : [];
+    const file = def.bin.split("/").pop() ?? "";
+    const found = entries.some((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const record = entry as Record<string, unknown>;
+      if ((record.matcher ?? undefined) !== (def.matcher ?? undefined)) return false;
+      const handlers = Array.isArray(record.hooks) ? record.hooks : [];
+      return handlers.some((handler) => {
+        if (!handler || typeof handler !== "object") return false;
+        const command = (handler as Record<string, unknown>).command;
+        if (typeof command !== "string") return false;
+        return command.includes(`/${file}`) ||
+          (def.stubSubcommand ? stubLaneCommandPath(command, def.stubSubcommand) !== null : false);
+      });
+    });
+    if (!found) missing.push(`${def.event}${def.matcher ? `:${def.matcher}` : ""}`);
+  }
+  return missing;
 }
 
 type HookStepStatus = "installed" | "already-installed" | "would-install" | "removed" | "not-present" | "would-remove" | "error";
@@ -387,7 +429,7 @@ async function patchClaudeCodeHooks(
   return action === "install"
     ? {
         status: "installed",
-        detail: `${sourceDefs.length} hooks registered (SessionStart, UserPromptSubmit, PreToolUse×3, PostToolUse${includeStop ? ", Stop" : stopPreserved ? "; Stop kept at current path" : "; Stop optional/off"})`,
+        detail: `${sourceDefs.length} hooks registered (SessionStart, UserPromptSubmit, PreToolUse×3, PostToolUse, PostToolUseFailure${includeStop ? ", Stop" : stopPreserved ? "; Stop kept at current path" : "; Stop optional/off"})`,
         backupPath: backupPath ?? undefined,
       }
     : { status: "removed", detail: "bastra-recall hook entries removed", backupPath: backupPath ?? undefined };
@@ -684,18 +726,23 @@ async function claudeCodeDoctor(): Promise<DoctorResult> {
       ? settingsRead.data.hooks as Record<string, unknown>
       : {};
     const found = registeredHookBins(hooks);
+    const registeredCommands = registeredHookCommands(hooks);
     const requiredMissing = REQUIRED_HOOK_FILES.filter((f) => !found.has(f));
+    const registrationMissing = missingRequiredHookRegistrations(hooks);
     const optionalMissing = OUR_HOOK_FILES
       .filter((f) => !REQUIRED_HOOK_FILES.includes(f))
       .filter((f) => !found.has(f));
-    requiredHooksMissing = requiredMissing.length > 0;
+    requiredHooksMissing = requiredMissing.length > 0 || registrationMissing.length > 0;
     details["hooks"] = requiredHooksMissing
-      ? `${found.size}/${OUR_HOOK_FILES.length} registered (missing required: ${requiredMissing.join(", ")})`
+      ? `${found.size}/${OUR_HOOK_FILES.length} lanes registered (missing required: ${[
+          ...requiredMissing,
+          ...registrationMissing,
+        ].join(", ")})`
       : optionalMissing.length > 0
         ? `${found.size}/${OUR_HOOK_FILES.length} registered (optional disabled: ${optionalMissing.join(", ")})`
         : `${OUR_HOOK_FILES.length}/${OUR_HOOK_FILES.length} registered`;
 
-    const hookPathProblems = await checkHookPaths(found);
+    const hookPathProblems = await checkHookPaths(registeredCommands);
     hookPathBroken = hookPathProblems.length > 0;
     if (hookPathBroken) details["hook-paths"] = hookPathProblems.join("; ");
 

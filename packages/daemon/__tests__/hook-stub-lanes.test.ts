@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   checkHookPaths,
+  missingRequiredHookRegistrations,
   planHookEntries,
   registeredHookBins,
   stubLaneCommandPath,
@@ -43,7 +44,7 @@ function commandsOf(entries: unknown[]): string[] {
   });
 }
 
-/** Every command a full install writes, across all five events. */
+/** Every command a full install writes, across all six events. */
 function allCommands(stubPresent: boolean): string[] {
   const plan = planHookEntries("install", {}, { includeStop: true, stubPresent });
   return Object.values(plan.after).flatMap((entries) => commandsOf(entries));
@@ -51,19 +52,19 @@ function allCommands(stubPresent: boolean): string[] {
 
 // ─── every lane is on the stub ───────────────────────────────────────────────
 
-test("all seven lanes register as a stub subcommand when the binary is there", () => {
+test("all seven lanes register across all eight hook entries when the binary is there", () => {
   const cmds = allCommands(true);
-  assert.equal(cmds.length, 7, `expected seven hook entries, got ${cmds.length}`);
+  assert.equal(cmds.length, 8, `expected eight hook entries, got ${cmds.length}`);
   for (const cmd of cmds) {
     assert.ok(cmd.startsWith(`${HOOK_STUB_BIN} `), `still on node: ${cmd}`);
   }
   const subs = cmds.map((c) => c.slice(HOOK_STUB_BIN.length + 1)).sort();
-  assert.deepEqual(subs, ["bash-fail", "bash-pre", "prompt", "session", "stop", "todo", "write"]);
+  assert.deepEqual(subs, ["bash-fail", "bash-fail", "bash-pre", "prompt", "session", "stop", "todo", "write"]);
 });
 
 test("without the binary every lane falls back to its node client", () => {
   const cmds = allCommands(false);
-  assert.equal(cmds.length, 7);
+  assert.equal(cmds.length, 8);
   for (const cmd of cmds) assert.ok(cmd.startsWith("node /"), `not the node client: ${cmd}`);
 });
 
@@ -74,8 +75,22 @@ test("the stub declares exactly the lanes registration hands it", async () => {
   const decl = /const LANES = new Set<Lane>\(\[([\s\S]*?)\]\)/.exec(src);
   assert.ok(decl, "could not find the LANES declaration in stub/bastra-hook.ts");
   const declared = [...decl[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]).sort();
-  const registered = allCommands(true).map((c) => c.slice(HOOK_STUB_BIN.length + 1)).sort();
+  const registered = [...new Set(allCommands(true).map((c) => c.slice(HOOK_STUB_BIN.length + 1)))].sort();
   assert.deepEqual(declared, registered);
+});
+
+test("doctor-level registration check requires PostToolUseFailure:Bash", () => {
+  const current = stubSettings();
+  assert.deepEqual(missingRequiredHookRegistrations(current), []);
+
+  const legacy = { ...current };
+  delete legacy.PostToolUseFailure;
+  assert.deepEqual(missingRequiredHookRegistrations(legacy), ["PostToolUseFailure:Bash"]);
+  assert.equal(
+    registeredHookBins(legacy).size,
+    7,
+    "the old binary-only 7/7 count cannot detect the missing event registration",
+  );
 });
 
 test("stubSubcommandForFile maps every hook file to its lane", () => {
@@ -112,6 +127,7 @@ test("a mixed install — some lanes on the stub, some on node — counts all of
       entry(`${HOOK_STUB_BIN} bash-pre`),
     ],
     PostToolUse: [entry(`${HOOK_STUB_BIN} bash-fail`)],
+    PostToolUseFailure: [entry(`${HOOK_STUB_BIN} bash-fail`)],
     Stop: [entry(`${HOOK_STUB_BIN} stop`)],
   });
   assert.equal(found.size, 7);
