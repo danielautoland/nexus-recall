@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readUsage, type UsageAggregate } from "../src/usage-sidecar.js";
+import { governorWhatIf, noAnswerDivergence } from "./stats-governor.js";
 
 function defaultLogDir(): string {
   const next = join(homedir(), ".bastra", "logs");
@@ -756,7 +757,16 @@ function summarizeEvidenceGate(events: AnyEvent[]): void {
 function summarizeGateDivergence(
   events: AnyEvent[],
   shadow: AnyEvent[],
-  decisionsOf: (e: AnyEvent) => Array<{ memory_id: string; decision: string; evidence?: Record<string, unknown> }>,
+  // `abstain_reason` gehört seit der no_answer-Sicht unten dazu: Ohne den Grund
+  // sind zwei Abweichungen mit gleichen Merkmalen nicht unterscheidbar.
+  decisionsOf: (
+    e: AnyEvent,
+  ) => Array<{
+    memory_id: string;
+    decision: string;
+    abstain_reason?: string;
+    evidence?: Record<string, unknown>;
+  }>,
 ): void {
   const fused = new Map<string, boolean>();
   for (const r of events.filter((e) => e.kind === "hook_recall")) {
@@ -798,6 +808,92 @@ function summarizeGateDivergence(
   if (unknownSpace > 0) {
     console.log(`    (${unknownSpace} decision(s) skipped: no hook_recall in this window, so the score space is unknown)`);
   }
+
+  // §18.2 verlangt JEDE beobachtete `required`/`no_answer`-Abweichung. Die
+  // Zeilen oben vergleichen `required` gegen `required` — die größte Klasse,
+  // „der Entscheid schweigt, wo Legacy im optional-Band ausgespielt hätte",
+  // kam darin gar nicht vor. Gruppiert nach Merkmalssignatur, weil hunderte
+  // Ereignisse mit derselben Signatur EIN Befund sind und nicht hunderte.
+  const na = noAnswerDivergence(events, shadow, decisionsOf, MUST_LOAD_SCORE, SCORE_FLOOR);
+  const richtungen: Array<[string, typeof na.gateSilentLegacyServed]> = [
+    ["gate silent, legacy would have served", na.gateSilentLegacyServed],
+    ["gate serves, legacy would have stayed silent", na.gateServedLegacySilent],
+  ];
+  for (const [label, groups] of richtungen) {
+    if (groups.length === 0) continue;
+    const events_ = groups.reduce((s, g) => s + g.events, 0);
+    const memories = groups.reduce((s, g) => s + g.memories, 0);
+    console.log(
+      `  no_answer divergence — ${label}:  ${events_} decision(s) across ${memories} memory/-ies, ${groups.length} signature(s)`,
+    );
+    for (const g of groups) {
+      const s = g.signature;
+      console.log(
+        `    ${String(g.events).padStart(5)} dec / ${String(g.memories).padStart(3)} mem  legacy=${s.legacyBand.padEnd(11)} gate=${s.decision.padEnd(9)} reason=${s.abstainReason.padEnd(11)}`,
+      );
+      console.log(
+        `                              identifier=${String(s.exactIdentifier).padEnd(5)} coverage=${String(s.coverage).padEnd(4)} arms=${String(s.armAgreement).padEnd(5)} scope=${String(s.scopeMatch).padEnd(5)} temporal=${s.temporalStatus}`,
+      );
+    }
+  }
+}
+
+/**
+ * Was ein Sitzungsbudget gekostet hätte (#354).
+ *
+ * Die Frage, die #354 stellt, ist nicht „wieviel Kontext kostet uns das" — das
+ * beantwortet der ROI-Abschnitt oben. Sie lautet: Was hätte ein Budget
+ * abgeschnitten? Ohne diese Gegenfrage ist jede Budgetzahl geraten.
+ *
+ * Die Rechnung steht in `stats-governor.ts`; hier wird nur gedruckt. Ihre
+ * Grenze steht in der Ausgabe, weil eine Zahl ohne ihre Grenze schlechter ist
+ * als keine.
+ */
+function summarizeContextGovernor(events: AnyEvent[]): void {
+  // Drei Stufen um den beobachteten Median: knapp darunter, darüber, weit
+  // darüber. Über `--budgets` überschreibbar, damit eine andere Maschine ihre
+  // eigenen Größenordnungen durchrechnen kann.
+  const arg = process.argv.indexOf("--budgets");
+  const budgets =
+    arg >= 0 && process.argv[arg + 1]
+      ? process.argv[arg + 1]
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [2000, 5000, 10000];
+
+  const wi = governorWhatIf(events, budgets);
+  if (wi.sessionsMultiEmission === 0) return;
+
+  console.log(`\n## Context governor  (#354 — what a session budget would have trimmed)`);
+  console.log(
+    `  today: no budget is set — \`governContext\` defaults to 0 (unlimited) on all three wired lanes`,
+  );
+  console.log(
+    `  sessions with injections:     ${wi.sessionsWithInjection}  (of those, ${wi.sessionsMultiEmission} with 2+ — only these are readable as a session)`,
+  );
+  console.log(
+    `  hint tokens per session:      p50 ${wi.tokensPerSession.p50}  p75 ${wi.tokensPerSession.p75}  p90 ${wi.tokensPerSession.p90}  max ${wi.tokensPerSession.max}`,
+  );
+  console.log(
+    `  injections per session:       p50 ${wi.emissionsPerSession.p50}  p90 ${wi.emissionsPerSession.p90}  max ${wi.emissionsPerSession.max}`,
+  );
+  console.log(`  budget      sessions hit   injections trimmed   tokens trimmed`);
+  for (const r of wi.rows) {
+    console.log(
+      `  ${String(r.budget).padStart(6)}   ${String(r.sessionsAffected).padStart(13)}   ${String(r.emissionsTrimmed).padStart(18)}   ${String(r.tokensTrimmed).padStart(14)}`,
+    );
+  }
+  console.log(
+    `  (per-injection granularity: the events carry one token sum per injection, while the governor`,
+  );
+  console.log(
+    `   decides per ENTRY by priority — so this is coarser than the governor and reads as an upper bound`,
+  );
+  console.log(
+    `   on what a budget touches. Single-injection sessions are excluded: the bash lane stamps a fresh`,
+  );
+  console.log(`   synthetic session id per call.)`);
 }
 
 async function main(): Promise<void> {
@@ -818,6 +914,7 @@ async function main(): Promise<void> {
   summarizeUseRate(events);
   summarizeActSignals(events);
   summarizeContextROI(events);
+  summarizeContextGovernor(events);
   await summarizeExposureNormalised(events);
   summarizeEvidenceGate(events);
   summarizeBridges(events);
