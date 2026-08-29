@@ -9,6 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -343,7 +344,28 @@ test("the M1 tolerances are versioned, derived, and above their own noise band",
     assert.ok(m.value > m.wilson_95_ci[0] && m.value < m.wilson_95_ci[1], "each point estimate lies inside its own interval");
   }
   assert.ok(confirming.length >= 1, "a raised tolerance names the runs that forced the raise");
-  assert.deepEqual(rl.report_separately, ["origin_type"]);
+  assert.deepEqual(rl.report_separately, ["origin_type", "kind"]);
+
+  // v4: the tolerance is measured against a FROZEN set of cases, not against an
+  // axis. `kind == descriptive` looked stable over four runs and moved 7.5pp the
+  // moment a new case family was authored into it, so the denominator has to be
+  // a named list that authoring cannot touch.
+  const ref = rl.reference_set as Record<string, unknown>;
+  assert.equal(ref.case_count, 365);
+  assert.match(String(rl.denominator), /frozen reference set/);
+  assert.match(String(ref.growth_rule), /never inside it/, "new families are reported beside the set, not into it");
+
+  // And the set is checkable: the ids are committed, and their hash is the one
+  // the tolerance cites. A silent edit to either file breaks this.
+  const refFile = JSON.parse(
+    readFileSync(join(import.meta.dirname, "..", "registrations", "m1-reference-set.json"), "utf8"),
+  ) as { case_ids: string[]; case_ids_sha256: string };
+  assert.equal(refFile.case_ids.length, 365);
+  assert.deepEqual(refFile.case_ids, [...refFile.case_ids].sort(), "the ids are stored sorted, so the hash is reproducible");
+  assert.equal(new Set(refFile.case_ids).size, 365, "no duplicates");
+  const digest = createHash("sha256").update(refFile.case_ids.join(",")).digest("hex");
+  assert.equal(digest, refFile.case_ids_sha256, "the reference set hashes to what it says it does");
+  assert.equal(digest, ref.case_ids_sha256, "and the tolerance cites that same hash");
 
   // False abstention is registered on weak_result, not on the score floor — the
   // floor could not fire on the hybrid path, so a tolerance on it was empty.
