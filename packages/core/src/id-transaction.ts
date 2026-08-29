@@ -137,6 +137,37 @@ export interface IdClaim {
   locate(): Promise<Located>;
 }
 
+/**
+ * Trägt dieser Claim die Marke — oder hat ihn jemand nachgebaut (#381)?
+ *
+ * Die nominale Typisierung schützt den TYPESCRIPT-Vertrag: Ohne das Symbol
+ * lässt sich `IdClaim` nicht literal erzeugen. Zur LAUFZEIT galt das nicht.
+ * `@bastra-recall/core` ist ein veröffentlichtes Paket, `moveToTrashUnderClaim`
+ * und `restoreFromTrashUnderClaim` sind exportiert, und ein Aufrufer ohne
+ * TypeScript — JavaScript, ein anderer Sprachbindungs-Layer, ein
+ * Kompilat ohne Typprüfung — konnte ein schlichtes `{ id, locate }` übergeben.
+ * Die Zusage „wer den Claim hat, hält den passenden Lock" war damit eine
+ * Konvention, keine Garantie.
+ *
+ * DER SCHADEN WAR BEGRENZT, und das bleibt die ehrliche Einordnung: Die
+ * Trash-Primitive prüft zusätzlich, dass die Datei wirklich das Memory dieser
+ * id enthält — verschieben ließ sich also nur, was der id ohnehin gehört.
+ * Gehalten wurde der Lock trotzdem nicht, und damit konnte die Operation mit
+ * einem gleichzeitigen echten Writer kollidieren.
+ *
+ * Wirft statt `false` zurückzugeben: Ein nachgebauter Claim ist kein Zustand,
+ * über den ein Aufrufer entscheiden dürfte, sondern ein Programmierfehler an
+ * der Schnittstelle.
+ */
+export function assertRealClaim(claim: IdClaim, op: string): void {
+  if (claim?.[ID_CLAIM] !== true) {
+    throw new Error(
+      `${op} requires a real id claim from withIdClaim() — the object passed was not one. ` +
+        `Wrap the call in withIdClaim({ vaultRoot, id, filePath }, (claim) => …).`,
+    );
+  }
+}
+
 export interface IdClaimOptions {
   vaultRoot: string;
   /** Die id, die beansprucht wird — der Lock hängt an ihr, nicht am Pfad. */

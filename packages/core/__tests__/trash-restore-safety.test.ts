@@ -227,3 +227,69 @@ test("scheitert das Aufräumen des Trash-Links, bleibt keine halbe Wiederherstel
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── #381: die Marke wird zur Laufzeit geprüft ───────────────────
+//
+// Die nominale Typisierung schützt den TypeScript-Vertrag; zur Laufzeit war die
+// Marke nie geprüft. `@bastra-recall/core` ist ein veröffentlichtes Paket und
+// die beiden Primitiven sind exportiert — ein Aufrufer ohne Typprüfung konnte
+// ein schlichtes `{ id, locate }` übergeben und damit ohne den Lock arbeiten,
+// auf den sich beide verlassen. Die Tests bauen genau diesen Aufrufer nach,
+// deshalb das `as never`: In TypeScript ist der Fehler bereits ausgeschlossen,
+// und ohne die Laufzeitprüfung wäre er es nirgends sonst.
+
+test("#381: ein nachgebauter Claim kommt nicht an den Trash", async (t) => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "bastra-claim-brand-"));
+  t.after(() => rm(vaultRoot, { recursive: true, force: true }));
+  const file = path.join(vaultRoot, "memories", "m.md");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, mem("m", "ORIGINAL"), "utf8");
+
+  const gefaelscht = { id: "m", locate: async () => ({ kind: "none" }) } as never;
+
+  await assert.rejects(
+    () => moveToTrashUnderClaim(vaultRoot, file, gefaelscht),
+    /requires a real id claim/,
+    "ohne Marke darf nichts bewegt werden",
+  );
+  // Und die Datei liegt unangetastet da, wo sie war.
+  assert.equal(await bodyOf(file), "ORIGINAL");
+  assert.ok(existsSync(file));
+});
+
+test("#381: auch der Restore verlangt die Marke", async (t) => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "bastra-claim-brand-restore-"));
+  t.after(() => rm(vaultRoot, { recursive: true, force: true }));
+  const file = path.join(vaultRoot, "memories", "m.md");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, mem("m", "ORIGINAL"), "utf8");
+
+  // Echt in den Trash — mit gültigem Claim, das ist der Normalweg.
+  const trashPath = await moveToTrash(vaultRoot, file, "m");
+  assert.ok(existsSync(trashPath));
+
+  const gefaelscht = { id: "m", locate: async () => ({ kind: "none" }) } as never;
+
+  await assert.rejects(
+    () => restoreFromTrashUnderClaim(vaultRoot, trashPath, file, gefaelscht),
+    /requires a real id claim/,
+  );
+  assert.ok(existsSync(trashPath), "die Trash-Fassung liegt noch da");
+  assert.ok(!existsSync(file), "und nichts wurde zurückgeschrieben");
+});
+
+test("#381: der echte Claim aus withIdClaim funktioniert unverändert", async (t) => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "bastra-claim-brand-ok-"));
+  t.after(() => rm(vaultRoot, { recursive: true, force: true }));
+  const file = path.join(vaultRoot, "memories", "m.md");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, mem("m", "ORIGINAL"), "utf8");
+
+  // Die Prüfung darf den Normalweg nicht anfassen — Trash und Restore am Stück.
+  const trashPath = await moveToTrash(vaultRoot, file, "m");
+  await withIdClaim({ vaultRoot, id: "m", filePath: file }, (claim) =>
+    restoreFromTrashUnderClaim(vaultRoot, trashPath, file, claim),
+  );
+
+  assert.equal(await bodyOf(file), "ORIGINAL", "zurückgeholt wie gehabt");
+});

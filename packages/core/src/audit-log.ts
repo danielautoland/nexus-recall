@@ -3,7 +3,7 @@ import { join, dirname, resolve, sep } from "node:path";
 import { assertInsideDir, assertOwnSubdir } from "./file-identity.js";
 import { readTarget } from "./save-commit.js";
 import { MemoryWriteConflictError } from "./save-schema.js";
-import type { IdClaim } from "./id-transaction.js";
+import { assertRealClaim, type IdClaim } from "./id-transaction.js";
 import matter from "gray-matter";
 import { occupantOfRaw } from "./memory-locator.js";
 
@@ -369,6 +369,9 @@ export async function moveToTrashUnderClaim(
   claim: IdClaim,
   expectedPreimage?: string | null,
 ): Promise<TrashMoveResult> {
+  // #381: Die Marke, bevor irgendetwas bewegt wird. Ohne sie hielt niemand den
+  // Lock, auf den sich alles Weitere hier verlässt.
+  assertRealClaim(claim, "moveToTrashUnderClaim");
   const id = claim.id;
   const raw = await readTarget(filePath);
   if (raw === null) {
@@ -423,6 +426,9 @@ export async function restoreFromTrashUnderClaim(
   destFile: string,
   claim: IdClaim,
 ): Promise<void> {
+  // #381: wie oben — der Restore schreibt in den aktiven Bestand zurück und
+  // braucht den Anspruch auf die id genauso.
+  assertRealClaim(claim, "restoreFromTrashUnderClaim");
   // #240/A4: ein blankes rename() überschrieb eine bereits wieder aktive
   // Datei am Zielpfad — beobachtet: eine laufende Bearbeitung wurde still
   // durch den Trash-Stand ersetzt. Restore darf niemals Daten vernichten;
