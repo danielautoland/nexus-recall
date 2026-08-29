@@ -950,6 +950,46 @@ export class SearchIndex {
       opts.vector_deadline_ms ?? 0,
     );
 
+    // #305: EIN Durchlauf des Event Loops, bevor der lexikalische Arm ihn
+    // synchron belegt.
+    //
+    // WARUM DAS NÖTIG IST. Die Zeile darüber startet den dichten Arm, aber sie
+    // SENDET ihn nicht: Ein HTTP-Request verlässt den Prozess erst, wenn der
+    // Loop das nächste Mal frei ist. `this.mini.search()` unten ist synchron
+    // und hält ihn — bei langen Queries mehrere hundert Millisekunden. Ohne
+    // diese Zeile lief also folgendes ab: Deadline-Timer startet, Ollama wird
+    // gar nicht gefragt, der Timer fällt, und der Arm gilt als „zu langsam".
+    //
+    // Nachgestellt mit der dichten Seite in einem eigenen Prozess: ohne den
+    // Durchlauf 5 von 5 Läufen im Timeout, mit ihm 0 von 5 — bei sonst
+    // identischen Zeiten. In der Produktionstelemetrie ist derselbe Effekt als
+    // 96 % Event-Loop-Blockade an der scheinbaren Vektorzeit sichtbar.
+    //
+    // WAS DAS NICHT TUT. Es ändert weder die Reihenfolge der Arme noch ihre
+    // Eingaben noch die Fusion — beide bekommen dieselbe Query wie vorher, RRF
+    // rechnet unverändert. Und es verschiebt die Deadline nicht: `abandonAfter`
+    // hat seinen Timer oben schon gestartet, die Frist läuft weiterhin ab dem
+    // Abfeuern. Ein Arm, der wirklich zu langsam ist, läuft weiterhin in seinen
+    // Timeout.
+    //
+    // WARUM EIN TIMER UND KEIN `setImmediate`. Gemessen gegen einen echten
+    // Fremdprozess, je 5 Läufe mit 300 ms Blockade:
+    //
+    //   nichts (vorher)   5/5 Timeouts    0,000 ms
+    //   1x setImmediate   5/5 Timeouts    0,020 ms
+    //   3x setImmediate   5/5 Timeouts    0,048 ms
+    //   setTimeout(0)     0/5 Timeouts    1,141 ms
+    //
+    // `setImmediate` läuft in der Check-Phase und lässt die Poll-Phase aus —
+    // genau die, in der der Socket-Connect fertig wird und der Request
+    // geschrieben wird. Ein Timer durchläuft den Zyklus vollständig. Beliebig
+    // viele Immediates helfen deshalb nicht; einer allein tut es hier nicht.
+    //
+    // Der Preis ist die Timer-Mindestauflösung, gemessen 1,1 ms, und er fällt
+    // nur an, wo es überhaupt einen dichten Arm gibt: Dieser Zweig läuft nur
+    // mit angehängtem Embedding-Index.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
     // BM25 — top 50 für RRF-Pool. Läuft jetzt IM Schatten des Dense-Arms.
     // #362: der lexikalische Arm bekommt die gekappte Query (siehe
     // `bm25Query`), der Dense-Arm oben bewusst die vollständige — Embedding-
