@@ -190,7 +190,7 @@ export function collectClaimedTwice(
       if (answered.get(mine.id)?.has(theirs.id)) continue;
       // One row per memory pair: the same two memories colliding on four
       // triggers is one decision for the human, not four.
-      const key = mine.id < theirs.id ? `${mine.id} ${theirs.id}` : `${theirs.id} ${mine.id}`;
+      const key = mine.id < theirs.id ? `${mine.id}\0${theirs.id}` : `${theirs.id}\0${mine.id}`;
       if (reported.has(key)) continue;
       if (claimingTrigger(mine.trigger, [theirs.trigger]) === undefined) continue;
       reported.add(key);
