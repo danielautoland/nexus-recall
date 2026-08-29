@@ -78,8 +78,18 @@ export interface AuditTrailInput {
 /**
  * Append one entry. Never throws — a broken audit log must not turn a
  * successful save into a failed tool call.
+ *
+ * #380: Gibt im Fehlerfall den Satz zurück, den der AUFRUFER sehen soll.
+ * `auditedSave` in core kennt ihn seit `dfb044e` als `audit_warning`, aber nur
+ * der Bridge-Pfad reichte ihn durch — über MCP und REST sah ein Aufrufer eine
+ * gewöhnliche Erfolgsantwort, obwohl kein Beleg geschrieben wurde. `undefined`
+ * heißt: alles protokolliert.
+ *
+ * Der Satz sagt ausdrücklich NICHT WIEDERHOLEN: Die Mutation steht bereits,
+ * ein zweiter Versuch wäre ein zweiter Schreibvorgang auf einen schon
+ * geschriebenen Zustand.
  */
-export async function recordAudit(input: AuditTrailInput): Promise<void> {
+export async function recordAudit(input: AuditTrailInput): Promise<string | undefined> {
   try {
     await logFor(input.vaultRoot).record({
       memory_id: input.memoryId,
@@ -117,7 +127,14 @@ export async function recordAudit(input: AuditTrailInput): Promise<void> {
       memory_id: input.memoryId,
       detail: "append failed",
     });
+    // #380: Wortgleich mit `recordOrWarn` in core — ein Aufrufer soll denselben
+    // Satz lesen, egal über welchen Transport er schreibt.
+    return (
+      `the ${input.operation} was committed, but the audit entry could not be written ` +
+      `(${(err as Error).message}) — do NOT retry the operation; it already happened.`
+    );
   }
+  return undefined;
 }
 
 export interface SaveMemoryWithAuditTrailInput {

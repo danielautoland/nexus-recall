@@ -512,7 +512,7 @@ async function saveMemoryInner(
   // throws when an assistant mutation has no `reason`, and the tool schema has
   // no reason field, so routing through it would break every agent save or
   // force a fabricated reason into the log.
-  await recordAudit({
+  const auditWarning = await recordAudit({
     vaultRoot: deps.vaultPath,
     memoryId: result.id,
     operation: result.created ? "create" : "update",
@@ -530,7 +530,11 @@ async function saveMemoryInner(
     sessionId: deps.telemetry.runId(),
   });
 
-  const warning = [refileWarning, supersedeWarning].filter(Boolean).join(" ");
+  // #380: Der fehlende Beleg gehört in dieselbe Zeile wie die anderen
+  // Warnungen — er sagt dem Aufrufer das Wichtigste überhaupt, nämlich NICHT
+  // zu wiederholen. Zuletzt, weil die anderen beiden von der Mutation selbst
+  // handeln und diese von ihrer Protokollierung.
+  const warning = [refileWarning, supersedeWarning, auditWarning].filter(Boolean).join(" ");
   // Vor- und Nachbild sind AUDIT-Material und gehören nicht in die
   // Tool-Antwort: Sie sind vollständige Frontmatter-Abbilder (inklusive
   // `sensitivity: private`) und würden über den Spread still an jeden Client
@@ -615,7 +619,7 @@ export async function archiveMemoryHandler(
   // index, so it is the one that most needs a record. `diff_before` keeps the
   // frontmatter as it was — the trash file is recoverable, but the log is what
   // says WHEN and through which run it left.
-  await recordAudit({
+  const auditWarning = await recordAudit({
     vaultRoot: deps.vaultPath,
     memoryId: id,
     operation: "delete",
@@ -627,7 +631,14 @@ export async function archiveMemoryHandler(
     ...(superseded_by ? { reason: `superseded by ${superseded_by}` } : {}),
     sessionId: deps.telemetry.runId(),
   });
-  return { id, archived_to: archivedTo, superseded_by: superseded_by ?? null };
+  return {
+    id,
+    archived_to: archivedTo,
+    superseded_by: superseded_by ?? null,
+    // #380: Ein Archivieren ohne Beleg ist der Fall, der am meisten wehtut —
+    // das Memory ist aus dem aktiven Index, und das Log sollte sagen, wann.
+    ...(auditWarning ? { warning: auditWarning } : {}),
+  };
 }
 
 // ─── MCP Tool-Definitionen ───────────────────────────────────────

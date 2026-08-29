@@ -154,7 +154,7 @@ export async function saveProductDocHandler(
 
   // #206: product docs are vault writes like any other — they were the second
   // path with no audit record at all.
-  await recordAudit({
+  const auditWarning = await recordAudit({
     vaultRoot: deps.vaultPath,
     memoryId: result.id,
     operation: result.created ? "create" : "update",
@@ -175,6 +175,9 @@ export async function saveProductDocHandler(
     file_path: result.file_path,
     created: !existed,
     updated: existed,
+    // #380: bis hierher sah dieser Pfad wie ein glatter Erfolg aus, auch wenn
+    // kein Beleg geschrieben wurde.
+    ...(auditWarning ? { warning: auditWarning } : {}),
   };
 }
 

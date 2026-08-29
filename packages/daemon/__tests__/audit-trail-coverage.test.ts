@@ -337,3 +337,103 @@ test("#377: ein erfolgreiches Audit-Append meldet gar nichts", async (t) => {
 
   assert.deepEqual(seen, [], "der Normalfall ist kein Incident");
 });
+
+/**
+ * #380 — `audit_warning` erreichte nur den Bridge-Pfad.
+ *
+ * `auditedSave` in core kennt den Satz seit `dfb044e`: die Mutation steht, ihr
+ * Beleg fehlt, NICHT wiederholen. Über MCP und REST sah ein Aufrufer davon
+ * nichts — die Antwort war ein gewöhnlicher Erfolg. Für den Betreiber ist der
+ * Fall seit #377 als `mutation_incident` sichtbar; hier geht es um den
+ * AUFRUFER, der wissen muss, dass sein Schreibvorgang unprotokolliert blieb.
+ */
+test("#380: recordAudit gibt die Warnung heraus, statt sie zu behalten", async (t) => {
+  const { recordAudit } = await import("../src/audit-trail.js");
+  const { mkdir } = await import("node:fs/promises");
+
+  resetAuditLogCache();
+  const vaultPath = await mkdtemp(join(tmpdir(), "bastra-audit-warn-"));
+  t.after(() => rm(vaultPath, { recursive: true, force: true }));
+  await mkdir(join(vaultPath, ".bastra", "audit-log.ndjson"), { recursive: true });
+
+  const err = console.error;
+  console.error = () => {};
+  let warning: string | undefined;
+  try {
+    warning = await recordAudit({
+      vaultRoot: vaultPath,
+      memoryId: "m-380",
+      operation: "update",
+      actor: "assistant",
+      actorDetail: "mcp:save_memory",
+      diffBefore: null,
+      diffAfter: null,
+    });
+  } finally {
+    console.error = err;
+  }
+
+  assert.ok(warning, "im Fehlerfall muss ein Satz zurückkommen");
+  assert.match(warning, /do NOT retry/, "das ist die eigentliche Botschaft");
+  assert.match(warning, /was committed/, "und die Mutation gilt als geschehen");
+});
+
+test("#380: im Normalfall gibt recordAudit nichts heraus", async () => {
+  const { deps, cleanup } = await makeDeps();
+  try {
+    const res = (await saveMemoryHandler(deps, memo("Ohne Warnung"))) as Record<string, unknown>;
+    assert.ok(!("warning" in res) || !String(res.warning).includes("audit"), 
+      `eine gelungene Protokollierung erzeugt keine Warnung: ${JSON.stringify(res.warning)}`);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#380: die MCP-Antwort trägt die Warnung, wenn der Beleg fehlt", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  const err = console.error;
+  console.error = () => {};
+  try {
+    // Ledgerpfad als Verzeichnis: der Append scheitert, der Save läuft durch.
+    await mkdir(join(vaultPath, ".bastra", "audit-log.ndjson"), { recursive: true });
+    resetAuditLogCache();
+
+    const res = (await saveMemoryHandler(deps, memo("Mit Warnung"))) as Record<string, unknown>;
+
+    assert.ok(res.id, "der Save selbst ist gelungen — das ist die Zusage von dfb044e");
+    assert.ok(
+      typeof res.warning === "string" && res.warning.includes("do NOT retry"),
+      `die Antwort muss die Warnung tragen, war: ${JSON.stringify(res.warning)}`,
+    );
+  } finally {
+    console.error = err;
+    await cleanup();
+  }
+});
+
+test("#380: auch archive_memory sagt es, wenn sein Beleg fehlt", async () => {
+  const { mkdir } = await import("node:fs/promises");
+  const { deps, vaultPath, cleanup } = await makeDeps();
+  const err = console.error;
+  console.error = () => {};
+  try {
+    const saved = await saveMemoryHandler(deps, memo("Wird archiviert"));
+    // Erst NACH dem Save den Ledger unbrauchbar machen, damit der Save selbst
+    // sauber protokolliert ist und nur das Archivieren die Warnung erzeugt.
+    await rm(join(vaultPath, ".bastra", "audit-log.ndjson"), { force: true });
+    await mkdir(join(vaultPath, ".bastra", "audit-log.ndjson"), { recursive: true });
+    resetAuditLogCache();
+
+    const res = (await archiveMemoryHandler(deps, { id: saved.id })) as Record<string, unknown>;
+
+    assert.equal(res.id, saved.id, "archiviert wurde trotzdem");
+    assert.ok(
+      typeof res.warning === "string" && res.warning.includes("do NOT retry"),
+      `die Antwort muss die Warnung tragen, war: ${JSON.stringify(res.warning)}`,
+    );
+  } finally {
+    console.error = err;
+    await cleanup();
+  }
+});
