@@ -156,6 +156,54 @@ export interface DetectedProject {
   confidence: "git-root" | "root-match" | "fallback" | "none";
 }
 
+/** The words a hook-composed recall query can be made of. See {@link hookQueryVocabulary}. */
+export interface HookQueryVocabulary {
+  /** File labels: the extensions `detectTopics` turns into `fileLabel`, without the dot. */
+  readonly fileLabels: readonly string[];
+  /** Every topic any of the three sources can contribute. */
+  readonly topics: readonly string[];
+}
+
+let vocabularyCache: HookQueryVocabulary | undefined;
+
+/**
+ * The vocabulary a hook-composed recall query is built from (#413).
+ *
+ * The gold set must not contain queries the hooks BUILT — they are real traffic
+ * but they are not formulations, and a set of them measures how well the index
+ * matches a template. The harvester's filter recognised only the English form
+ * (`editing ts involving typescript, daemon, testing`), while the
+ * language-neutral default of #231 — `fileLabel` plus its topics, joined by
+ * spaces — has been the shipped composition since then and passed through
+ * completely: 46 of 400 staged queries in the measured batch.
+ *
+ * A recogniser for that form cannot work on shape alone, because a
+ * space-joined keyword chain is exactly what a genuine telemetry query looks
+ * like too. It needs to know the WORDS, so the vocabulary is exported here
+ * rather than restated in the harvester: a second copy would drift from the
+ * composition it is supposed to recognise the first time either changes.
+ *
+ * Computed on first call and cached — the hook path never asks for it, so it
+ * costs the recall budget nothing.
+ */
+export function hookQueryVocabulary(): HookQueryVocabulary {
+  if (!vocabularyCache) {
+    vocabularyCache = {
+      fileLabels: Object.keys(EXT_TOPICS)
+        .map((e) => (e.startsWith(".") ? e.slice(1) : e))
+        .sort(),
+      topics: [
+        ...new Set([
+          ...Object.values(EXT_TOPICS).flat(),
+          ...Object.values(PATH_SEGMENT_TOPICS).flat(),
+          ...CONTENT_PATTERNS.flatMap((p) => p.topics),
+        ]),
+      ].sort(),
+    };
+  }
+  return vocabularyCache;
+}
+
 /**
  * Structured project detection (#360-Folgefund C): the old `detectProject()`
  * collapsed EVERY outcome — a real repo-root match, a last-segment guess, and

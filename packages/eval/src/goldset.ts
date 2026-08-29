@@ -144,15 +144,111 @@ export function originRefHash(reference: string): string {
   return createHash("sha256").update(reference).digest("hex");
 }
 
-const DE_MARKERS = /\b(der|die|das|und|nicht|wie|warum|beim|nach|für|mit|von|ist|wird|soll)\b/i;
-const EN_MARKERS = /\b(the|and|not|how|why|when|with|from|is|are|should|does)\b/i;
+/**
+ * Function words, not marker samples (#423).
+ *
+ * The first version tested fifteen German words. Any German sentence built from
+ * other function words fell through to `neutral` — "Welcher Fehler hat mich
+ * einen ganzen Samstag gekostet?" contains not one of the fifteen. Twelve of
+ * roughly 68 authored German queries were misfiled that way in a single batch,
+ * and the consequence is not cosmetic: the M0 baseline showed language to be a
+ * real seam (de R@3 0.544, en 0.400, neutral 0.747), so every German batch was
+ * silently donating part of its cases to the easy bucket.
+ *
+ * Telemetry never exposed this because harvested queries are keyword chains
+ * where `neutral` is the correct answer. It only bites once a person writes
+ * prose. The lists below are the ~70 most frequent function words per language
+ * — the same construction the shipped detector in
+ * `packages/daemon/src/learned-recall/language.ts` uses, and for the same
+ * reason: function words are high-frequency, language-specific, and survive in
+ * fragments where content words do not.
+ *
+ * Deliberately NOT shared with that detector. It answers a different question —
+ * which language POOL a live query may draw from, two-valued with an
+ * abstention — while this one assigns a four-valued REPORTING bucket that
+ * includes `mixed` and `neutral`. Consolidating them would force one of the two
+ * contracts onto the other.
+ */
+const DE_WORDS = new Set([
+  "aber", "alle", "als", "am", "auch", "auf", "aus", "bei", "beim", "bin", "bis",
+  "da", "damit", "dann", "darf", "das", "dass", "dem", "den", "der", "des", "die",
+  "diese", "dieser", "doch", "dort", "du", "durch", "ein", "eine", "einem",
+  "einen", "einer", "eines", "er", "es", "für", "ganz", "ganzen", "gegen", "gibt",
+  "hat", "hatte", "habe", "haben", "hier", "ich", "ihm", "ihn", "ihr", "im", "in",
+  "ist", "kann", "kein", "keine", "man", "mich", "mir", "mit", "muss", "nach",
+  "nicht", "noch", "nur", "ob", "oder", "ohne", "schon", "sein", "seine", "sich",
+  "sie", "sind", "soll", "sollte", "über", "um", "und", "uns", "unter", "vom",
+  "von", "vor", "war", "waren", "warum", "was", "wann", "weil", "welche",
+  "welcher", "welches", "wenn", "wer", "wie", "wieder", "wir", "wird", "wo",
+  "wurde", "würde", "zu", "zum", "zur", "trotzdem", "übrig",
+]);
+
+const EN_WORDS = new Set([
+  "about", "after", "against", "all", "also", "am", "an", "and", "any", "are",
+  "as", "at", "be", "because", "been", "before", "both", "but", "by", "can", "in",
+  "cannot", "did", "do", "does", "each", "few", "for", "from", "had", "has",
+  "have", "he", "her", "here", "his", "how", "i", "if", "into", "is", "it",
+  "its", "just", "many", "may", "me", "might", "must", "my", "no", "not", "of",
+  "on", "once", "only", "or", "our", "out", "over", "own", "same", "she",
+  "should", "since", "so", "some", "still", "such", "than", "that", "the",
+  "their", "them", "then", "there", "these", "they", "this", "those", "through",
+  "to", "too", "under", "until", "up", "very", "was", "we", "were", "what",
+  "when", "where", "which", "while", "who", "why", "will", "with", "would",
+  "you", "your",
+]);
+
+/**
+ * Tokens that cannot discriminate, and therefore must not vote.
+ *
+ * Two sources. The intersection of the two lists is the obvious half. The other
+ * half is cross-language homographs: words that are a function word in one
+ * language and an ordinary word in the other. `hat`, `war`, `man`, `die`, `bin`
+ * and `also` are German function words and English nouns, verbs or adverbs;
+ * `will` and `her` are the reverse. Measured on the gold set before they were
+ * excluded, they filed 38 purely German and 14 purely English queries as
+ * `mixed` — one stray homograph was enough, which is exactly the failure the
+ * fifteen-word list had, inverted.
+ */
+const HOMOGRAPHS = ["an", "am", "all", "also", "bin", "die", "hat", "her", "in", "man", "so", "war", "was", "will"];
+const AMBIGUOUS = new Set([...[...DE_WORDS].filter((w) => EN_WORDS.has(w)), ...HOMOGRAPHS]);
+
+/** German umlauts and ß — a near-certain German signal, and the one cue a
+ *  function-word list misses entirely on short prose. */
+const DE_DIACRITICS = /[äöüß]/i;
+
+/**
+ * `mixed` needs a SECOND language, not a stray token.
+ *
+ * Presence alone was enough while the lists were fifteen words long. At seventy
+ * it is not: a German sentence naming `survival-by-id.test.ts` donates `by` to
+ * the English count, and `no-answer` donates `no` — identifier fragments split
+ * like words and vote like them. Measured, that filed nine German sentences as
+ * `mixed` for one borrowed token each.
+ *
+ * So the weaker language has to carry real weight: at least two hits, and at
+ * least a third of the stronger one. "what is the diff für this" clears both
+ * (4 vs 2) and stays `mixed`; a German question mentioning one English
+ * identifier does not.
+ */
+const MIN_SECOND_LANGUAGE_HITS = 2;
+const SECOND_LANGUAGE_SHARE = 3;
 
 export function detectLang(query: string): StagedQuery["lang"] {
-  const de = DE_MARKERS.test(query);
-  const en = EN_MARKERS.test(query);
-  if (de && en) return "mixed";
-  if (de) return "de";
-  if (en) return "en";
+  const tokens = query.toLowerCase().split(/[^a-zäöüß]+/i).filter(Boolean);
+  let de = 0;
+  let en = 0;
+  for (const t of tokens) {
+    if (AMBIGUOUS.has(t)) continue;
+    if (DE_WORDS.has(t)) de++;
+    if (EN_WORDS.has(t)) en++;
+  }
+  if (DE_DIACRITICS.test(query)) de++;
+  const weaker = Math.min(de, en);
+  const stronger = Math.max(de, en);
+  if (weaker >= MIN_SECOND_LANGUAGE_HITS && weaker * SECOND_LANGUAGE_SHARE >= stronger) return "mixed";
+  if (de > en) return "de";
+  if (en > de) return "en";
+  if (de > 0) return "mixed";
   // Neither language's function words appear: a technical token chain that is
   // not in a language at all. Guessing here would be the difference between a
   // usable language balance and a single 94% bucket.

@@ -408,3 +408,102 @@ test("a broken shape short-circuits the semantic checks (#434)", () => {
     "the semantic layer does not run on a broken shape",
   );
 });
+
+test("the three composed families the English regex missed are filtered too (#413)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goldset-tmpl-413-"));
+  const file = join(dir, "events-2026-08-29.jsonl");
+  writeFileSync(
+    file,
+    [
+      // The language-neutral default of #231 — the SHIPPED composition since
+      // then, and the one the old three regexes let through completely.
+      JSON.stringify({ kind: "hook_recall", query: "html markup daemon input form button", ts: 1 }),
+      JSON.stringify({ kind: "hook_recall", query: "css styles daemon overflow scrollbar", ts: 2 }),
+      JSON.stringify({ kind: "hook_recall", query: "mjs javascript esm script sql query crypto", ts: 3 }),
+      // The English template with an empty topic list: no ` involving `, so the
+      // first regex never matched it.
+      JSON.stringify({ kind: "hook_recall", query: "editing command", ts: 4 }),
+      JSON.stringify({ kind: "hook_recall", query: "writing CODEOWNERS", ts: 5 }),
+      // The bash lane before 22.08.2026 padded a command label with filler.
+      JSON.stringify({ kind: "hook_recall", query: "git reset --hard safety workflow user-preference", ts: 6 }),
+      JSON.stringify({ kind: "hook_recall", query: "DROP TABLE safety workflow user-preference", ts: 7 }),
+      // And the queries a person actually typed survive — including a keyword
+      // chain, which is what most real telemetry queries look like. Separating
+      // those from a composed one is exactly why the filter reads the hook's
+      // vocabulary instead of the shape.
+      JSON.stringify({ kind: "recall", query: "readabilityHandler subprocess pipe blocking read", ts: 8 }),
+      JSON.stringify({ kind: "recall", query: "wie war die regel für force pushes", ts: 9 }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const r = harvestFromEvents([file], 100, 12);
+  assert.equal(r.skippedTemplate, 7, "all three composed families are recognised");
+  assert.deepEqual(
+    r.staged.map((s) => s.query),
+    ["readabilityHandler subprocess pipe blocking read", "wie war die regel für force pushes"],
+    "and nothing a person formulated is dropped with them",
+  );
+});
+
+test("a keyword chain outside the hook vocabulary is a real query (#413)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goldset-tmpl-vocab-"));
+  const file = join(dir, "events-2026-08-29.jsonl");
+  writeFileSync(
+    file,
+    [
+      // Same SHAPE as the neutral composition — lowercase words joined by
+      // spaces — but the words are not the hook's. A shape rule would have
+      // eaten this; membership does not.
+      JSON.stringify({ kind: "recall", query: "chokidar glob watcher silently stops", ts: 1 }),
+      // One token from the vocabulary is not enough either.
+      JSON.stringify({ kind: "recall", query: "daemon restart nach dem deploy vergessen", ts: 2 }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const r = harvestFromEvents([file], 100, 12);
+  assert.equal(r.skippedTemplate, 0);
+  assert.equal(r.staged.length, 2, "the language-neutral cases the set needs must survive");
+});
+
+test("German prose without the old fifteen markers is German, not neutral (#423)", () => {
+  // The issue's own example: not one of der|die|das|und|nicht|wie|warum|beim|
+  // nach|für|mit|von|ist|wird|soll appears in it.
+  assert.equal(detectLang("Welcher Fehler hat mich einen ganzen Samstag gekostet?"), "de");
+  for (const q of [
+    "Was zählt als echter Beleg dafür, dass eine Erinnerung geholfen hat",
+    "Welche Semantik hat CURATOR_DEMOTION_MULTIPLIER in search.ts",
+    "Worauf achten wir, bevor wir zwei Auswertungen nebeneinanderstellen",
+  ]) {
+    assert.equal(detectLang(q), "de", q);
+  }
+  for (const q of [
+    "What makes cloud-mounted vaults switch to polling",
+    "What decides whether embeddings use Ollama, OpenAI, or nothing",
+  ]) {
+    assert.equal(detectLang(q), "en", q);
+  }
+});
+
+test("a borrowed identifier does not make a sentence bilingual (#423)", () => {
+  // Identifier fragments split like words and would vote like them: `by` out of
+  // `survival-by-id`, `no` out of `no-answer`. A second language needs weight.
+  assert.equal(detectLang("Welche Garantie prüft survival-by-id.test.ts beim Entpinnen"), "de");
+  assert.equal(detectLang("Warum wurde #230 als no-answer Problem eröffnet"), "de");
+  assert.equal(detectLang("Wie konnte das Anheben einer fremden Abhängigkeit still etwas lahmlegen"), "de");
+  // A genuinely bilingual query still reads as one.
+  assert.equal(detectLang("what is the diff für diese Datei"), "mixed");
+});
+
+test("keyword chains stay neutral — the bucket exists for them (#423)", () => {
+  // 94% of a harvest is this shape, and calling it a language would make the
+  // language balance meaningless.
+  for (const q of [
+    "memory format schema json yaml markdown frontmatter structure",
+    "readabilityHandler subprocess pipe blocking read",
+    "NSPanel resignKey Observer attachedSheet",
+  ]) {
+    assert.equal(detectLang(q), "neutral", q);
+  }
+});
