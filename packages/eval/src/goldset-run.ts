@@ -46,7 +46,7 @@ import {
   type StageListener,
 } from "@bastra-recall/core";
 import { datasetHash, loadGoldFiles, unknownGoldIds } from "./goldset-dataset.js";
-import { componentGates, gateCase, type CaseGateResult, type GateRow } from "./goldset-gate.js";
+import { gateVariants, gateCase, type CaseGateResult, type GateRow } from "./goldset-gate.js";
 import type { GoldCase } from "./goldset.js";
 
 /** The k the product serves. Ranks are measured here and nowhere else. */
@@ -172,6 +172,17 @@ export interface CaseResult {
    * summed from.
    */
   gate?: CaseGateResult;
+  /**
+   * The same case with the identifier anchor narrowed to title, `recall_when`
+   * and frontmatter — the §10.3 variant Daniel asked to be measured before it
+   * is decided (the A1 pattern: an identifier appearing in flowing BODY text
+   * counts as a hard anchor today, and a hard anchor alone carries `required`).
+   *
+   * Produced by the SHIPPED predicate, called with an empty memory body:
+   * `evidence-decision.ts` reads `m.body` in exactly one place, the identifier
+   * haystack. Nothing else moves.
+   */
+  gate_no_body?: CaseGateResult;
 }
 
 const hit = (r: CaseResult, k: number, any = false): boolean => {
@@ -366,6 +377,8 @@ export async function scoreCases(
    *  decision. Called exactly the way the daemon calls it, so the measurement
    *  describes the predicate that ships and not a second reading of it. */
   decide?: (hits: RecallHit[], query: string) => ReturnType<typeof decideHits>,
+  /** #422/§10.3: the same decision under the narrowed anchor, for the delta. */
+  decideNoBody?: (hits: RecallHit[], query: string) => ReturnType<typeof decideHits>,
 ): Promise<CaseResult[]> {
   const rows: CaseResult[] = [];
   for (const c of cases) {
@@ -404,6 +417,7 @@ export async function scoreCases(
       // On `above`, the SERVED pool, and before anything projects the hop away
       // — C-046 wants the decision taken where the provenance still exists.
       ...(decide ? { gate: gateCase(above, decide(above, c.query), exp, any) } : {}),
+      ...(decideNoBody ? { gate_no_body: gateCase(above, decideNoBody(above, c.query), exp, any) } : {}),
     });
   }
   return rows;
@@ -422,6 +436,7 @@ const toGateRow = (r: CaseResult, hasIdentifier: (id: string) => boolean): GateR
   has_identifier: hasIdentifier(r.id),
   rank_expected: r.rank_expected,
   ...(r.gate ? { gate: r.gate } : {}),
+  ...(r.gate_no_body ? { gate_no_body: r.gate_no_body } : {}),
 });
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
@@ -537,9 +552,25 @@ async function main(): Promise<void> {
           memoryOf: (id) => vault.get(id),
         })
     : undefined;
+  // The counterfactual: the same call, with the memory's body blanked. That is
+  // the ONLY input `hasExactIdentifier` loses — `temporalStatus` reads
+  // `obsolete`/`valid_until`, `recallWhenCoverage` reads `recall_when`. So this
+  // is the shipped predicate answering "what if the body did not anchor", not a
+  // second implementation of it.
+  const decideNoBody = args.gate
+    ? (hits: RecallHit[], query: string): ReturnType<typeof decideHits> =>
+        decideHits(hits, {
+          queryTerms: tokenizeWithIdentifiers(query),
+          scope: null,
+          memoryOf: (id) => {
+            const m = vault.get(id);
+            return m ? { ...m, body: "" } : undefined;
+          },
+        })
+    : undefined;
   const identifierQueries = new Set(cases.filter((c) => c.has_identifier).map((c) => c.id));
   const started = Date.now();
-  const main = await scoreCases(cases, recaller, knownIds, hybridActive, decide);
+  const main = await scoreCases(cases, recaller, knownIds, hybridActive, decide, decideNoBody);
   const mainMs = Date.now() - started;
   const control = await scoreCases(cases, controlRecaller([...knownIds], args.seed), knownIds, false);
   await cleanup?.();
@@ -597,7 +628,7 @@ async function main(): Promise<void> {
     }, {}),
     duration_ms: { main_arm: mainMs },
     ...(args.gate
-      ? { component_gates: componentGates(main.map((r) => toGateRow(r, (id) => identifierQueries.has(id)))) }
+      ? { component_gates: gateVariants(main.map((r) => toGateRow(r, (id) => identifierQueries.has(id)))) }
       : {}),
     rows: main,
   };

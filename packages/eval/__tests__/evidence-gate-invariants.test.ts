@@ -124,3 +124,48 @@ test("an expired or obsolete target is never a duty, whatever else it has", () =
     assert.equal(stale.abstain_reason, "stale", "and the reason names the rule");
   }
 });
+
+test("the body is what the anchor variant takes away — and the only thing (§10.3)", () => {
+  // The A1 pattern: an identifier-shaped query term appearing in flowing BODY
+  // prose anchors the hit, and a hard anchor alone carries `required`. The
+  // variant blanks the body and nothing else; this pins that "nothing else".
+  const withBody = {
+    fm: { id: "m1", title: "Ein Memory ohne Pfad im Titel", recall_when: ["wenn der Daemon klemmt"] },
+    body: "wir haben das in packages/core/src/search.ts nachgezogen",
+  } as never;
+  const noBody = { ...(withBody as object), body: "" } as never;
+  const input = {
+    hit: hit({ title: "Ein Memory ohne Pfad im Titel", hop: "direct" }),
+    queryTerms: ["packages/core/src/search.ts"],
+    scope: null,
+  };
+
+  const before = decideHit({ ...input, memory: withBody });
+  assert.equal(before.evidence.exact_identifier, true, "prose in the body anchors today");
+  assert.equal(before.decision, "required", "and that alone is enough for a duty");
+
+  const after = decideHit({ ...input, memory: noBody });
+  assert.equal(after.evidence.exact_identifier, false, "the variant takes the anchor away");
+  assert.notEqual(after.decision, "required");
+
+  // Everything else the decision reads is untouched by blanking the body.
+  for (const field of ["recall_when_coverage", "arm_agreement", "scope_match", "temporal_status"] as const) {
+    assert.deepEqual(after.evidence[field], before.evidence[field], `${field} must not move with the body`);
+  }
+});
+
+test("an anchor in the title survives the variant (§10.3)", () => {
+  // The narrowing keeps title, recall_when and frontmatter — a hit anchored
+  // there must be unaffected, or the variant would measure something else.
+  const fm = { id: "m1", title: "packages/core/src/search.ts erklärt", recall_when: ["wenn die Suche klemmt"] };
+  const input = {
+    hit: hit({ title: "packages/core/src/search.ts erklärt", hop: "direct" }),
+    queryTerms: ["packages/core/src/search.ts"],
+    scope: null,
+  };
+  const before = decideHit({ ...input, memory: { fm, body: "irgendein Fließtext" } as never });
+  const after = decideHit({ ...input, memory: { fm, body: "" } as never });
+  assert.equal(before.decision, "required");
+  assert.equal(after.decision, "required", "the title still anchors it");
+  assert.equal(after.evidence.exact_identifier, true);
+});

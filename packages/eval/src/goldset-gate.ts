@@ -103,6 +103,8 @@ export interface GateRow {
   /** Ungated rank, as the run measured it. */
   rank_expected: number;
   gate?: CaseGateResult;
+  /** The same case under the anchor variant — see {@link gateVariants}. */
+  gate_no_body?: CaseGateResult;
 }
 
 const ratio = (n: number, d: number): number => (d === 0 ? 0 : Number((n / d).toFixed(4)));
@@ -210,5 +212,73 @@ export function componentGates(rows: GateRow[]): ComponentGateReport {
       + "threshold, so `recall_at_3` and `recall_at_3_identifier_queries` report a delta and nothing else. "
       + "The two that do carry one report `within`. Deriving the missing thresholds is a separate, deliberate "
       + "step — see m1-tolerances.json on what an unmeasured tolerance is worth.",
+  };
+}
+
+/**
+ * The two anchor readings, side by side (§10.3, the E decision).
+ *
+ * `hasExactIdentifier` searches the memory's TITLE, its `recall_when` and its
+ * BODY. A query term shaped like an identifier that appears anywhere in flowing
+ * prose therefore counts as a hard anchor, and a hard anchor alone carries
+ * `required` — the A1 pattern of the divergence classification. Daniel's
+ * decision is to narrow the anchor to title / recall_when / frontmatter, and to
+ * put a number on it first.
+ *
+ * The counterfactual needs no second implementation and no change to the
+ * predicate. `m.body` is read in exactly ONE place in `evidence-decision.ts`,
+ * the identifier haystack; `temporalStatus` reads `obsolete`/`valid_until` and
+ * `recallWhenCoverage` reads `recall_when`. So calling the SHIPPED `decideHits`
+ * with a memory whose body is empty changes `exact_identifier` and nothing
+ * else. The variant is therefore the real predicate answering a different
+ * question, not a reimplementation of it that could drift.
+ *
+ * Both reports are computed by the same `componentGates`, so the seven figures
+ * mean the same thing on both sides.
+ */
+export interface GateVariantReport {
+  current: ComponentGateReport;
+  anchor_without_body: ComponentGateReport;
+  delta: {
+    /** How many hits stop being a duty when the body no longer anchors. */
+    required: number;
+    /** …and where they go. */
+    optional: number;
+    no_answer: number;
+    /** The two figures a narrowing could cost something. */
+    recall_at_3_gated: number;
+    false_abstention: number;
+    /** The figure it is meant to buy. */
+    anti_query_injection: number;
+    $comment: string;
+  };
+  $comment: string;
+}
+
+export function gateVariants(rows: GateRow[]): GateVariantReport {
+  const current = componentGates(rows);
+  const withoutBody = componentGates(
+    rows.map((r) => ({ ...r, gate: r.gate_no_body })),
+  );
+  const d = (a: number, b: number): number => Number((b - a).toFixed(4));
+  return {
+    current,
+    anchor_without_body: withoutBody,
+    delta: {
+      required: withoutBody.decisions.required - current.decisions.required,
+      optional: withoutBody.decisions.optional - current.decisions.optional,
+      no_answer: withoutBody.decisions.no_answer - current.decisions.no_answer,
+      recall_at_3_gated: d(current.recall_at_3.gated, withoutBody.recall_at_3.gated),
+      false_abstention: d(current.false_abstention.value, withoutBody.false_abstention.value),
+      anti_query_injection: d(current.anti_query_injection.value, withoutBody.anti_query_injection.value),
+      $comment:
+        "Negative means the variant is lower. A narrowed anchor should cost `required` and buy "
+        + "`anti_query_injection`; what it must NOT cost is recall_at_3_gated and false_abstention, and "
+        + "those two are the price this measurement exists to name.",
+    },
+    $comment:
+      "MEASUREMENT of a counterfactual, taken before any change to the predicate (§10.3). `anchor_without_body` "
+      + "is the shipped `decideHits` called with an empty memory body — the only field the identifier haystack "
+      + "reads beyond title and recall_when. Nothing here changes what the daemon does.",
   };
 }
