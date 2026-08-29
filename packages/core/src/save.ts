@@ -30,6 +30,81 @@ import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
 /**
+ * Die Frontmatter-Felder, die DIESER Save-Pfad selbst verwaltet (C-084,
+ * entschieden am 29.08.2026).
+ *
+ * Der Save baut das Frontmatter aus einer festen Feldliste NEU, statt das
+ * bestehende zu patchen — jeder Key, den er nicht kennt, fiel deshalb bei jedem
+ * Overwrite weg. Für einen Vault, der in Obsidian liegt, heißt das: `aliases`
+ * aus dem Properties-Panel, `cssclasses`, ein Dataview-Feld, ein Tag-Plugin —
+ * alles einmal in der App gesetzt und beim nächsten Save des Agenten still
+ * verloren. Seit dieser Entscheidung überleben fremde Keys ein Overwrite
+ * unverändert.
+ *
+ * DIE LISTE IST DIE KOLLISIONSREGEL: Was hier steht, gehört dem Save-Pfad —
+ * er setzt es aus Input und Bestand nach seinen eigenen Regeln, und ein
+ * gleichnamiger Wert aus der alten Datei kann ihn nicht überstimmen. Bekannt
+ * schlägt fremd. Alles andere wird unverändert durchgereicht.
+ *
+ * Sie enthält deshalb AUCH die Felder, die der Save bewusst WEGLÄSST: Die
+ * Bookmark-Felder (`url`, `read_status`, …) werden nur bei `type: "bookmark"`
+ * geschrieben, damit ein Memory kein bookmark-förmiges Frontmatter bekommt.
+ * Stünden sie nicht hier, machte ein Typwechsel bookmark→reference sie zu
+ * „fremden" Keys und trüge sie genau in die Datei zurück, aus der sie
+ * herausgehalten werden sollen.
+ *
+ * Wer ein Feld ergänzt, das der Save schreibt, trägt es hier ein. Vergisst er
+ * es, wird das Feld als fremd behandelt und aus dem Bestand zurückgeholt —
+ * `save-unknown-keys.test.ts` prüft genau diesen Fall für die Felder, bei denen
+ * das Weglassen Absicht ist.
+ */
+export const SAVE_MANAGED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
+  // Kernfelder, bei jedem Save geschrieben
+  "id",
+  "title",
+  "type",
+  "summary",
+  "topic_path",
+  "tags",
+  "scope",
+  "recall_when",
+  "related",
+  "aliases",
+  "related_via",
+  "sensitivity",
+  "write_origin",
+  "confidence",
+  "created",
+  "updated",
+  "affects_files",
+  "issues",
+  // Optionale Felder: Input gewinnt, sonst Bestand, sonst weg
+  "recall_when_expanded",
+  "recall_when_expanded_src",
+  "valid_until",
+  "expires_after_days",
+  "last_reviewed_at",
+  "stale_status",
+  "content_hash",
+  "content_size",
+  "source",
+  "replaces",
+  "siblings",
+  "verify_cmd",
+  "superseded_by",
+  "salience",
+  "emotion",
+  "recall_mode",
+  // Bookmark-Felder — nur bei `type: "bookmark"` gesetzt, siehe oben
+  "url",
+  "categories",
+  "read_status",
+  "og_image",
+  "source_app",
+  "saved_at",
+]);
+
+/**
  * Build the .md content for a new memory and write it into the vault.
  * The vault watcher will pick it up and index it automatically.
  */
@@ -451,6 +526,22 @@ async function commitMemory(
     // Stack leitet daraus Staleness ab. Ohne Carry-over restampte jedes
     // Overwrite den Importzeitpunkt des Bookmarks auf jetzt.
     fm.saved_at = input.saved_at ?? kept<string>(prev.saved_at, isStr) ?? new Date().toISOString();
+  }
+
+  // C-084: Was der Save-Pfad nicht kennt, gehört ihm auch nicht — es überlebt
+  // das Overwrite unverändert. Steht am ENDE, nachdem `fm` fertig ist: Die
+  // Prüfung gegen `SAVE_MANAGED_FRONTMATTER_KEYS` entscheidet die Kollision
+  // (bekannt schlägt fremd), `key in fm` fängt zusätzlich ein verwaltetes Feld
+  // ab, das jemand in `fm` ergänzt und in der Liste vergessen hat.
+  //
+  // Die Werte werden NICHT geprüft oder normalisiert. Ein fremdes Feld hat für
+  // uns keine Semantik — es zu validieren hieße, sie ihm zuzuschreiben, und
+  // eine Reparatur nach unseren Regeln wäre für den Besitzer des Feldes eine
+  // stille Änderung. Bei einer Neuanlage (`prev` leer) passiert hier nichts.
+  for (const [key, value] of Object.entries(prev)) {
+    if (SAVE_MANAGED_FRONTMATTER_KEYS.has(key)) continue;
+    if (key in fm) continue;
+    fm[key] = value;
   }
 
   const body = input.body.startsWith("\n") ? input.body : `\n${input.body}`;

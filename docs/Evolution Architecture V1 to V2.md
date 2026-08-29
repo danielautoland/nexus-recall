@@ -6337,10 +6337,15 @@ carries four conditions, among them a visible error instead of a silent drop.
 
 **What to check in particular.**
 
-1. Whether the preservation gap on `overwrite` is to remain or whether the save
-   path should pass unknown keys through in future — the latter would be an
-   improvement but not a contractual obligation, and it would have to be
-   decided before 1.0, because otherwise it will later be read as a promise.
+1. ~~Whether the preservation gap on `overwrite` is to remain or whether the save
+   path should pass unknown keys through in future~~ — **decided on 29 August
+   2026: the save path passes them through.** On an `overwrite` every key the
+   save path does not manage itself is carried over from the existing
+   frontmatter unchanged; the managed fields keep their present semantics and
+   win any name collision. The contract wording in C-084 stays as it is: the
+   gap is closed in the code, not turned into a promise — a key can still be
+   lost through paths other than this one, and a guarantee would have to name
+   all of them.
 2. Whether each application of the security exception should receive a C-ID.
    The text currently requires only the changelog callout.
 3. Whether `docs/memory-schema.md`, as user-facing documentation, should also

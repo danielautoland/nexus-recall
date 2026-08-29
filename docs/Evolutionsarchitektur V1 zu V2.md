@@ -6485,10 +6485,15 @@ Fehler statt stillem Verwerfen.
 
 **Was besonders zu prüfen ist.**
 
-1. Ob die Erhaltungslücke beim `overwrite` bestehen bleiben soll oder ob der
-   Save-Pfad unbekannte Schlüssel künftig durchreicht — Letzteres wäre eine
-   Verbesserung, aber keine Vertragspflicht, und es müsste vor 1.0 entschieden
-   werden, weil es sonst später als Zusage gelesen wird.
+1. ~~Ob die Erhaltungslücke beim `overwrite` bestehen bleiben soll oder ob der
+   Save-Pfad unbekannte Schlüssel künftig durchreicht~~ — **entschieden am
+   29.08.2026: Der Save-Pfad reicht sie durch.** Bei einem `overwrite` wird
+   jeder Schlüssel, den der Save-Pfad nicht selbst verwaltet, unverändert aus
+   dem bestehenden Frontmatter übernommen; die verwalteten Felder behalten ihre
+   heutige Semantik und gewinnen jede Namenskollision. Der Vertragswortlaut in
+   C-084 bleibt, wie er ist: Die Lücke ist im Code geschlossen, nicht in eine
+   Zusage verwandelt — über andere Wege als diesen kann ein Schlüssel weiterhin
+   verlorengehen, und eine Garantie müsste sie alle benennen.
 2. Ob die Sicherheitsausnahme je Anwendung eine C-ID bekommt. Der Text verlangt
    heute nur den Changelog-Ausweis.
 3. Ob `docs/memory-schema.md` als Nutzerdokumentation zusätzlich auf 26.1

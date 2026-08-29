@@ -527,9 +527,11 @@ From 1.0 on, this schema is under a stated compatibility promise. The package ve
 - A file with no recognized `type` stays an ordinary note and is skipped.
 - A vault written by any 1.x release stays readable by every later 1.x release, with no migration step.
 
-**Unknown keys: read, not preserved**
+**Unknown keys: read, and carried through a re-save**
 
-Unknown frontmatter keys are tolerated on **load** — they never cost a memory its place in the index. They are **not guaranteed to survive** a `save_memory` with `overwrite: true`: that path rebuilds frontmatter from its known field list and carries forward only the fields it knows about. The promise covers reading them, not preserving them across a rewrite. Hand-added data that must survive a re-save belongs in the body.
+Unknown frontmatter keys are tolerated on **load** — they never cost a memory its place in the index. Since 29 August 2026 a `save_memory` with `overwrite: true` also carries them through: the save path still rebuilds frontmatter from its known field list, and appends every key it does not manage itself, unchanged. The fields it does manage keep their own rules and win any name collision.
+
+This is behaviour, not a guarantee. The schema promise still covers reading unknown keys, not preserving them across every write — other paths write into a vault, and a later one may not carry them. Hand-added data that must survive under all circumstances still belongs in the body.
 
 **Not covered by the promise**
 
