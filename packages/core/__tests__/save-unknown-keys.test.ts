@@ -25,7 +25,8 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import matter from "gray-matter";
-import { saveMemory, SAVE_MANAGED_FRONTMATTER_KEYS } from "../src/save.js";
+import { saveMemory } from "../src/save.js";
+import { SAVE_MANAGED_FRONTMATTER_KEYS } from "../src/save-frontmatter.js";
 import type { SaveMemoryInput } from "../src/save.js";
 
 const base = (over: Partial<SaveMemoryInput> = {}): SaveMemoryInput =>
