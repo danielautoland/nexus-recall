@@ -25,7 +25,12 @@ import { sameFile } from "./file-identity.js";
 import { normalizeScopeKey } from "./scope.js";
 import { resolveMemoryTarget } from "./save-target.js";
 import { moveToTrashUnderClaim } from "./audit-log.js";
-import { areaKeyForPath, assertAreaWritable, withAreaShared } from "./area-claim.js";
+import {
+  areaExclusivelyHeld,
+  areaKeyForPath,
+  assertAreaWritable,
+  withAreaShared,
+} from "./area-claim.js";
 import { newOperationId, reportMutationIncident } from "./mutation-incident.js";
 import { readOccupant, scanVaultForId, vaultRelative, type Located } from "./memory-locator.js";
 
@@ -243,6 +248,44 @@ async function commitMemory(
     input.folder === undefined && located.kind === "unique" && !sameFile(located.filePath, filePath0)
       ? located.filePath
       : filePath0;
+
+  // #382: Die Quelle, die nur der autoritative Scan kennt.
+  //
+  // Der Area-Claim oben sperrt, was die Routing-Auskunft wusste. Ist deren
+  // Index veraltet — er kann aus einem anderen Prozess stammen —, liegt die
+  // echte Quelle womöglich in einem Regal, das nicht mitgesperrt wurde. Ein
+  // gleichzeitiger Rename dieses Regals wäre dann nicht gegen das Trashen der
+  // Quelle serialisiert.
+  //
+  // Nachträglich mitsperren geht nicht: Die globale Reihenfolge ist Area vor
+  // ID, und wer nach der Leerprüfung eines exklusiven Erwerbers noch einen
+  // Reader einträgt, öffnet genau das Fenster, das das Protokoll schließt.
+  // FRAGEN geht. Läuft dort gerade eine Area-Operation, tritt der Save zurück,
+  // statt in sie hineinzuschreiben — derselbe wiederholbare Konflikt, den auch
+  // ein gekreuzter Save bekommt.
+  //
+  // Was das NICHT löst: Ein Rename, der eine Mikrosekunde nach dieser Frage
+  // beginnt. Das Fenster wird schmal, nicht null; ganz zu ist es erst mit
+  // einem Vaultscan vor dem Area-Claim, und der wäre wieder ungesperrt.
+  if (located.kind === "unique" && !sameFile(located.filePath, filePath0)) {
+    const sourceArea = areaKeyForPath(vaultRoot, located.filePath);
+    if (sourceArea !== null && (await areaExclusivelyHeld(vaultRoot, sourceArea))) {
+      reportMutationIncident({
+        operation_id: newOperationId(),
+        op: "save_memory",
+        status: "conflict",
+        phase: "area-claim-late-source",
+        memory_id: id,
+        detail: "source shelf found only by the authoritative scan is under an area operation",
+      });
+      throw writeConflict(
+        id,
+        located.filePath,
+        `the area holding this memory is being renamed, deleted or created right now — ` +
+          `nothing was written. Retry in a moment.`,
+      );
+    }
+  }
 
   assertIdIsNotClaimedElsewhere(vaultRoot, id, filePath, input.overwrite === true, located);
 

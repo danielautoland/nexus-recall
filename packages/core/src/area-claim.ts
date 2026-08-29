@@ -268,6 +268,27 @@ async function exclusiveHeld(lockPath: string): Promise<boolean> {
   return !(await claimIsAbandoned(lockPath));
 }
 
+/**
+ * Wird dieses Regal gerade exklusiv gehalten (#382)?
+ *
+ * Für den einen Aufrufer, der ein Regal erst ERFÄHRT, wenn er den Area-Claim
+ * längst genommen hat: Der autoritative Plattenscan unter dem ID-Claim kann
+ * eine Quelle in einem Regal finden, das die Routing-Auskunft nicht kannte.
+ * Nachträglich mitzusperren ist keine Option — die globale Reihenfolge ist
+ * Area vor ID, und ein Reader, der nach der Leerprüfung eines exklusiven
+ * Erwerbers einträgt, ist genau das Fenster, das das Protokoll ausschließt.
+ *
+ * Fragen kann man trotzdem. Diese Auskunft ist deshalb ausdrücklich KEIN
+ * Anspruch: Sie sagt, ob in diesem Moment jemand exklusiv arbeitet, und
+ * erlaubt dem Save, zurückzutreten statt in eine laufende Umbenennung zu
+ * schreiben. Ein Rename, der eine Mikrosekunde SPÄTER beginnt, bleibt
+ * unentdeckt — das Restfenster wird kleiner, nicht null.
+ */
+export async function areaExclusivelyHeld(vaultRoot: string, name: string): Promise<boolean> {
+  const { lock } = areaLockPaths(vaultRoot, name);
+  return exclusiveHeld(lock);
+}
+
 /** Alle LEBENDEN Reader dieses Namens. Verwaiste werden gleich mitgeräumt. */
 async function liveReaders(readersDir: string): Promise<string[]> {
   let entries: string[];
