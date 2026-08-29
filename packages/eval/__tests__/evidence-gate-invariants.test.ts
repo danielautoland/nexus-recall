@@ -20,6 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decideHit, type RecallHit } from "@bastra-recall/core";
+import { redecide } from "../src/goldset-gate.js";
 
 /** A hit with everything the decision reads, defaulting to "no signal at all". */
 const hit = (over: Partial<RecallHit> = {}): RecallHit =>
@@ -168,4 +169,63 @@ test("an anchor in the title survives the variant (§10.3)", () => {
   assert.equal(before.decision, "required");
   assert.equal(after.decision, "required", "the title still anchors it");
   assert.equal(after.evidence.exact_identifier, true);
+});
+
+test("the variant re-derivation reproduces decideHit exactly (§10.3, #422)", () => {
+  // The guarantee the whole narrowing family rests on. `redecide` combines the
+  // shipped evidence itself, so it can drift from `decideHit`; every shape
+  // below is a case where it could.
+  const shapes = [
+    { title: "packages/core/src/search.ts", terms: ["packages/core/src/search.ts"], scope: null },
+    { title: "Ein Memory", terms: ["ein", "memory"], scope: null },
+    { title: "Ein Memory", terms: ["voellig", "andere", "worte"], scope: "bastra-recall" },
+    { title: "Ein Memory", terms: ["ein"], scope: "bastra-recall" },
+  ];
+  for (const s of shapes) {
+    for (const hop of ["direct", "1-hop"] as const) {
+      for (const fm of [
+        { id: "m1", title: s.title, recall_when: ["ein memory fuer den fall"] },
+        { id: "m1", title: s.title, recall_when: ["ein memory fuer den fall"], obsolete: true },
+        { id: "m1", title: s.title },
+      ]) {
+        const d = decideHit({
+          hit: hit({ title: s.title, hop, scope: "bastra-recall" }),
+          memory: { fm, body: "" } as never,
+          queryTerms: s.terms,
+          scope: s.scope,
+        });
+        const mine = redecide(d.evidence, hop, s.terms.filter((t) => t.length >= 3).length);
+        assert.equal(mine, d.decision, `re-derivation must match on ${JSON.stringify({ ...s, hop, fm })}`);
+      }
+    }
+  }
+});
+
+test("the narrowings tighten only what they say they tighten (§10.3)", () => {
+  // Evidence with partial coverage and arm agreement — a duty today through
+  // the two-of-three rule, and exactly the population the candidates target.
+  const evidence = {
+    exact_identifier: false,
+    recall_when_coverage: 0.25,
+    arm_agreement: true,
+    scope_match: false,
+    temporal_status: "valid",
+    lexical_score: 120,
+  };
+  assert.equal(redecide(evidence, "direct", 8), "required", "one shared term in eight carries a duty today");
+  assert.equal(redecide(evidence, "direct", 8, { minCoverage: 0.5 }), "optional", "a relative floor withholds it");
+  assert.equal(redecide(evidence, "direct", 8, { minMatchedTerms: 2 }), "required", "two of eight terms matched");
+  assert.equal(redecide(evidence, "direct", 4, { minMatchedTerms: 2 }), "optional", "one of four did not");
+
+  // Neither narrowing may push anything to no_answer: a signal that no longer
+  // earns a duty is still a signal.
+  for (const rule of [{ minCoverage: 0.5 }, { minMatchedTerms: 2 }]) {
+    assert.notEqual(redecide(evidence, "direct", 4, rule), "no_answer", "a weakened duty stays a suggestion");
+  }
+
+  // And a hard anchor is untouched by both — they narrow the OTHER half of §10.3.
+  const anchored = { ...evidence, exact_identifier: true };
+  for (const rule of [{}, { minCoverage: 0.5 }, { minMatchedTerms: 2 }]) {
+    assert.equal(redecide(anchored, "direct", 8, rule), "required");
+  }
 });

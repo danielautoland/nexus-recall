@@ -105,6 +105,8 @@ export interface GateRow {
   gate?: CaseGateResult;
   /** The same case under the anchor variant — see {@link gateVariants}. */
   gate_no_body?: CaseGateResult;
+  /** …and under each candidate narrowing of the two-of-three rule. */
+  gate_narrowed?: Record<string, CaseGateResult>;
 }
 
 const ratio = (n: number, d: number): number => (d === 0 ? 0 : Number((n / d).toFixed(4)));
@@ -239,6 +241,8 @@ export function componentGates(rows: GateRow[]): ComponentGateReport {
 export interface GateVariantReport {
   current: ComponentGateReport;
   anchor_without_body: ComponentGateReport;
+  /** Every candidate rule side by side — see {@link variantTable}. */
+  variants?: ReturnType<typeof variantTable>;
   delta: {
     /** How many hits stop being a duty when the body no longer anchors. */
     required: number;
@@ -264,6 +268,7 @@ export function gateVariants(rows: GateRow[]): GateVariantReport {
   return {
     current,
     anchor_without_body: withoutBody,
+    ...(rows.some((r) => r.gate_narrowed) ? { variants: variantTable(rows) } : {}),
     delta: {
       required: withoutBody.decisions.required - current.decisions.required,
       optional: withoutBody.decisions.optional - current.decisions.optional,
@@ -280,5 +285,184 @@ export function gateVariants(rows: GateRow[]): GateVariantReport {
       "MEASUREMENT of a counterfactual, taken before any change to the predicate (§10.3). `anchor_without_body` "
       + "is the shipped `decideHits` called with an empty memory body — the only field the identifier haystack "
       + "reads beyond title and recall_when. Nothing here changes what the daemon does.",
+  };
+}
+
+/**
+ * A candidate narrowing of the two-of-three rule (§10.3, #422).
+ *
+ * The E variant could be measured by taking an INPUT away — blank the body and
+ * the shipped predicate answers a different question by itself. This family
+ * cannot: "partial coverage counts only from 0.5" is not a missing input, it is
+ * a different combination rule, and no argument to `decideHit` expresses it.
+ *
+ * So the rule is re-derived here from the evidence the SHIPPED `collectEvidence`
+ * produced — the features stay the product's, only their combination is varied.
+ * That is a drift risk, and {@link assertReproducesShipped} is the answer to it:
+ * with the identity rule the re-derivation must reproduce `decideHit`'s output
+ * for every hit of the run, and the runner fails loudly if it ever does not.
+ * A variant family whose baseline does not reproduce measures nothing.
+ */
+export interface NarrowingRule {
+  /** Partial trigger coverage counts as a signal only from here. 0 = today
+   *  ("any shared term at all"). */
+  minCoverage?: number;
+  /** …or, absolutely: at least this many query terms must have matched the
+   *  hand-written trigger. Needs the case's term count. 0 = today. */
+  minMatchedTerms?: number;
+}
+
+/** Today's rule — the identity of the family. */
+export const CURRENT_RULE: NarrowingRule = {};
+
+/**
+ * `decideHit`'s decision, re-derived from evidence (§10.3 variants).
+ *
+ * Mirrors `packages/core/src/evidence-decision.ts` exactly at the identity
+ * rule: the two blocks (`stale`, `hopOnly`), the hard anchor, the two-of-three
+ * count, and the `anySignal` fallback. `anySignal` is deliberately NOT narrowed
+ * with the rule: the tightening is about what earns a DUTY, not about whether
+ * anything was found at all, and folding it in would move cases to `no_answer`
+ * for a reason nobody asked for.
+ */
+export function redecide(
+  evidence: RecallDecisionHit["evidence"],
+  hop: string | undefined,
+  termCount: number,
+  rule: NarrowingRule = CURRENT_RULE,
+): RecallDecisionHit["decision"] {
+  const stale = evidence.temporal_status === "expired" || evidence.temporal_status === "obsolete";
+  const hopOnly = hop === "1-hop";
+  const hardAnchor = evidence.exact_identifier || evidence.recall_when_coverage >= 1;
+
+  const cov = evidence.recall_when_coverage;
+  const matched = Math.round(cov * termCount);
+  const coverageCounts =
+    cov > 0
+    && cov >= (rule.minCoverage ?? 0)
+    && matched >= (rule.minMatchedTerms ?? 0);
+
+  const independent = [coverageCounts, evidence.arm_agreement, evidence.scope_match].filter(Boolean).length;
+  if (!stale && !hopOnly && (hardAnchor || independent >= 2)) return "required";
+
+  const anySignal = cov > 0 || evidence.arm_agreement || evidence.scope_match || evidence.exact_identifier;
+  return anySignal ? "optional" : "no_answer";
+}
+
+/**
+ * The guarantee the whole variant family rests on.
+ *
+ * Throws when the re-derivation and the shipped predicate disagree on a single
+ * hit at the identity rule. Called per case in the runner, so a divergence
+ * stops the measurement instead of quietly skewing one column of it.
+ */
+export function assertReproducesShipped(
+  decisions: RecallDecisionHit[],
+  served: { hop?: string }[],
+  termCount: number,
+): void {
+  decisions.forEach((d, i) => {
+    const mine = redecide(d.evidence, served[i]?.hop, termCount, CURRENT_RULE);
+    if (mine !== d.decision) {
+      throw new Error(
+        `variant re-derivation drifted from decideHit on ${d.id}: shipped ${d.decision}, re-derived ${mine}. `
+          + "The narrowing measurements are only meaningful while these agree.",
+      );
+    }
+  });
+}
+
+/** Score one case under a narrowing, from the shipped evidence. */
+export function gateCaseUnder(
+  served: { id: string; hop?: string }[],
+  decisions: RecallDecisionHit[],
+  expected: Set<string>,
+  any: Set<string>,
+  termCount: number,
+  rule: NarrowingRule,
+): CaseGateResult {
+  const varied: RecallDecisionHit[] = decisions.map((d, i) => ({
+    ...d,
+    decision: redecide(d.evidence, served[i]?.hop, termCount, rule),
+  }));
+  return gateCase(served, varied, expected, any);
+}
+
+/**
+ * The candidates §10.3 asks to be priced (#422).
+ *
+ * Two readings of "partial coverage is too cheap today", because they are not
+ * the same claim: a RELATIVE floor asks what share of the question the trigger
+ * answered, an ABSOLUTE one asks how many terms it actually matched. On a
+ * three-word query they coincide; on a fifteen-word one they are far apart, and
+ * the gold set holds both shapes.
+ */
+export const NARROWINGS: Record<string, NarrowingRule> = {
+  /** Partial coverage counts only from half the query. */
+  "coverage>=0.5": { minCoverage: 0.5 },
+  /** …or from two matched terms, whatever the query's length. */
+  "matched>=2": { minMatchedTerms: 2 },
+};
+
+/** One row of the comparison table: a variant, its seven figures, its shift. */
+export interface VariantRow {
+  variant: string;
+  anti_query_injection: number;
+  anti_query_count: string;
+  recall_at_3_gated: number;
+  recall_at_3_identifier: number;
+  false_abstention: number;
+  required: number;
+  optional: number;
+  no_answer: number;
+  required_delta_vs_current: number;
+  required_without_hard_anchor: number;
+}
+
+/**
+ * Every variant against the current predicate, in one table (§10.3, #422).
+ *
+ * The point of putting them side by side rather than in separate runs: they are
+ * measured on the SAME served pools, so a difference between two rows is the
+ * rule and nothing else — not a re-run, not a grown vault, not a reshuffled
+ * ranking.
+ */
+export function variantTable(rows: GateRow[]): { table: VariantRow[]; $comment: string } {
+  const names = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r.gate_narrowed ?? {})) names.add(k);
+
+  const asRow = (variant: string, pick: (r: GateRow) => CaseGateResult | undefined): VariantRow => {
+    const g = componentGates(rows.map((r) => ({ ...r, gate: pick(r) })));
+    return {
+      variant,
+      anti_query_injection: g.anti_query_injection.value,
+      anti_query_count: g.anti_query_injection.count,
+      recall_at_3_gated: g.recall_at_3.gated,
+      recall_at_3_identifier: g.recall_at_3_identifier_queries.gated,
+      false_abstention: g.false_abstention.value,
+      required: g.decisions.required,
+      optional: g.decisions.optional,
+      no_answer: g.decisions.no_answer,
+      required_delta_vs_current: 0,
+      required_without_hard_anchor: g.invariants.required_without_hard_anchor,
+    };
+  };
+
+  const table = [
+    asRow("current", (r) => r.gate),
+    asRow("no_body", (r) => r.gate_no_body),
+    ...[...names].sort().map((n) => asRow(n, (r) => r.gate_narrowed?.[n])),
+  ];
+  const base = table[0].required;
+  for (const row of table) row.required_delta_vs_current = row.required - base;
+
+  return {
+    table,
+    $comment:
+      "All variants scored on the SAME served pools, so a difference between two rows is the rule alone. "
+      + "`no_body` is the §10.3 anchor narrowing (an input taken away from the shipped predicate); the "
+      + "`coverage>=` and `matched>=` rows re-derive the two-of-three combination from the shipped evidence, "
+      + "guarded by a per-case assertion that the re-derivation reproduces `decideHit` at the identity rule. "
+      + "Rows ending in `+no_body` are the combination of both.",
   };
 }

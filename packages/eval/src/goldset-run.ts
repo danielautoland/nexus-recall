@@ -46,7 +46,15 @@ import {
   type StageListener,
 } from "@bastra-recall/core";
 import { datasetHash, loadGoldFiles, unknownGoldIds } from "./goldset-dataset.js";
-import { gateVariants, gateCase, type CaseGateResult, type GateRow } from "./goldset-gate.js";
+import {
+  gateVariants,
+  gateCase,
+  gateCaseUnder,
+  assertReproducesShipped,
+  NARROWINGS,
+  type CaseGateResult,
+  type GateRow,
+} from "./goldset-gate.js";
 import type { GoldCase } from "./goldset.js";
 
 /** The k the product serves. Ranks are measured here and nowhere else. */
@@ -183,6 +191,16 @@ export interface CaseResult {
    * haystack. Nothing else moves.
    */
   gate_no_body?: CaseGateResult;
+  /**
+   * The same case under each candidate narrowing of the two-of-three rule
+   * (§10.3), keyed by variant name — and each of those again with the body
+   * anchor removed, so solo and combined effects are both readable.
+   *
+   * Re-derived from the SHIPPED evidence, never from a second feature
+   * extraction, and guarded: the runner asserts per case that the
+   * re-derivation reproduces `decideHit` at the identity rule.
+   */
+  gate_narrowed?: Record<string, CaseGateResult>;
 }
 
 const hit = (r: CaseResult, k: number, any = false): boolean => {
@@ -379,6 +397,13 @@ export async function scoreCases(
   decide?: (hits: RecallHit[], query: string) => ReturnType<typeof decideHits>,
   /** #422/§10.3: the same decision under the narrowed anchor, for the delta. */
   decideNoBody?: (hits: RecallHit[], query: string) => ReturnType<typeof decideHits>,
+  /** #422/§10.3: the candidate narrowings of the two-of-three rule. */
+  narrow?: (
+    served: RecallHit[],
+    query: string,
+    expected: Set<string>,
+    any: Set<string>,
+  ) => Record<string, CaseGateResult>,
 ): Promise<CaseResult[]> {
   const rows: CaseResult[] = [];
   for (const c of cases) {
@@ -418,6 +443,7 @@ export async function scoreCases(
       // — C-046 wants the decision taken where the provenance still exists.
       ...(decide ? { gate: gateCase(above, decide(above, c.query), exp, any) } : {}),
       ...(decideNoBody ? { gate_no_body: gateCase(above, decideNoBody(above, c.query), exp, any) } : {}),
+      ...(narrow ? { gate_narrowed: narrow(above, c.query, exp, any) } : {}),
     });
   }
   return rows;
@@ -437,6 +463,7 @@ const toGateRow = (r: CaseResult, hasIdentifier: (id: string) => boolean): GateR
   rank_expected: r.rank_expected,
   ...(r.gate ? { gate: r.gate } : {}),
   ...(r.gate_no_body ? { gate_no_body: r.gate_no_body } : {}),
+  ...(r.gate_narrowed ? { gate_narrowed: r.gate_narrowed } : {}),
 });
 
 const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
@@ -568,9 +595,44 @@ async function main(): Promise<void> {
           },
         })
     : undefined;
+  // The narrowings of the two-of-three rule, solo and combined with the anchor
+  // variant. Each is re-derived from the SHIPPED evidence of the run it belongs
+  // to — `decide` for the solo column, `decideNoBody` for the combined one — and
+  // `assertReproducesShipped` stops the run if the re-derivation and
+  // `decideHit` ever disagree at the identity rule.
+  const narrow = args.gate
+    ? (
+        served: RecallHit[],
+        query: string,
+        expected: Set<string>,
+        anyIds: Set<string>,
+      ): Record<string, CaseGateResult> => {
+        const terms = tokenizeWithIdentifiers(query).filter((t) => t.length >= 3);
+        const shipped = decideHits(served, {
+          queryTerms: tokenizeWithIdentifiers(query),
+          scope: null,
+          memoryOf: (id) => vault.get(id),
+        });
+        const noBody = decideHits(served, {
+          queryTerms: tokenizeWithIdentifiers(query),
+          scope: null,
+          memoryOf: (id) => {
+            const m = vault.get(id);
+            return m ? { ...m, body: "" } : undefined;
+          },
+        });
+        assertReproducesShipped(shipped, served, terms.length);
+        const out: Record<string, CaseGateResult> = {};
+        for (const [name, rule] of Object.entries(NARROWINGS)) {
+          out[name] = gateCaseUnder(served, shipped, expected, anyIds, terms.length, rule);
+          out[`${name}+no_body`] = gateCaseUnder(served, noBody, expected, anyIds, terms.length, rule);
+        }
+        return out;
+      }
+    : undefined;
   const identifierQueries = new Set(cases.filter((c) => c.has_identifier).map((c) => c.id));
   const started = Date.now();
-  const main = await scoreCases(cases, recaller, knownIds, hybridActive, decide, decideNoBody);
+  const main = await scoreCases(cases, recaller, knownIds, hybridActive, decide, decideNoBody, narrow);
   const mainMs = Date.now() - started;
   const control = await scoreCases(cases, controlRecaller([...knownIds], args.seed), knownIds, false);
   await cleanup?.();
