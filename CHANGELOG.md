@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`acted_on` no longer weighs in heat and trust, and a load without a hint
+  is `not_hinted`, not `below_floor`** (#469). `acted_on` fires when a loaded
+  memory shares two tokens with the next tool input. On 1 September one Bash
+  call closed three thematically unrelated memories as acted on at once, and
+  across 84 episodes the match strength showed no gradient (median 4 for the
+  non-surfaced cases, 3 for the surfaced ones). That signal counted double in
+  the usage heat the map paints on nodes and was the up-step of the #160 trust
+  shadow, so the 21.08. shadow reading (11 higher / 4 lower) rested on it.
+  Heat and reach weight are now `loaded` alone; trust only demotes on
+  shown-and-never-opened, which opening neutralises. The counter itself stays
+  in the aggregate. And a direct `load_memory` with no hook hint carried
+  `band: below_floor` with no score — ten such episodes in the window read as
+  ten ranking failures. They are now `not_hinted`; the band quotas already
+  excluded them, the label just stops lying. The curator's engagement
+  timestamps and the reflex/adoption candidate counts are unchanged.
+
 - **`archive_memory` now respects `sensitivity: private`** (#464). The read
   path hid private memories from external callers; the archive path did not,
   so an MCP caller could move a memory to the trash that it could neither load

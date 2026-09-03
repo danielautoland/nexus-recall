@@ -92,7 +92,8 @@ const SCORE_FLOOR = envInt("BASTRA_RECALL_FLOOR", 30);
 const MUST_LOAD_SCORE = envInt("BASTRA_MUST_LOAD_SCORE", 100);
 
 function bandForScore(score: number | null): RecallBand {
-  if (score === null) return "below_floor";
+  // #469: kein Hint, kein Score, kein Band — nicht „unter dem Floor".
+  if (score === null) return "not_hinted";
   if (score >= MUST_LOAD_SCORE) return "required";
   if (score >= SCORE_FLOOR) return "optional";
   return "below_floor";

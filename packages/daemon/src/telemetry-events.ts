@@ -263,7 +263,10 @@ export interface ReadDocumentEvent extends BaseEvent {
   caller_session?: string | null;
 }
 
-export type RecallBand = "required" | "optional" | "below_floor";
+/** #469: `not_hinted` = the load had no hook hint and therefore no score —
+ *  there was never a floor for it to be below. Before, such episodes were
+ *  filed as `below_floor` and every readout counted them as ranking failures. */
+export type RecallBand = "required" | "optional" | "below_floor" | "not_hinted";
 export type TurnSource = "session" | "inferred";
 
 export interface RecallEpisodeEvent extends BaseEvent {
