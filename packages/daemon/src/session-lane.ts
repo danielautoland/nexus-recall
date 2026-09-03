@@ -472,6 +472,9 @@ export async function runSessionLane(
   // hint_tokens_est (#72): Token-Schätzung des injizierten Kontexts.
   let injected = "";
   let out = "{}";
+  // #462: der Recall-Block einmal gebaut, damit er als eigener Posten messbar
+  // ist — bisher gab es EINE Zahl für zehn Teile.
+  let recallBlock = "";
   if (top.length === 0 && pinnedBlock === "" && extras === "") {
     if (status === "ok") status = "no-hits";
     // stays "{}"
@@ -490,7 +493,8 @@ export async function runSessionLane(
     // real signal here, and framing the whole block as noise would hide it.
     const answered = responses.filter((r) => r.resp !== null);
     const allWeak = answered.length > 0 && answered.every((r) => r.resp!.weak_result === true);
-    injected = pinnedHead + formatBlock(top, project, payload.source ?? null, allWeak, unfused, client) + extras;
+    recallBlock = formatBlock(top, project, payload.source ?? null, allWeak, unfused, client);
+    injected = pinnedHead + recallBlock + extras;
     out = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
@@ -512,6 +516,24 @@ export async function runSessionLane(
     top_score: top[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
     hint_tokens_est: Math.ceil(injected.length / 4),
+    // #462: dieselbe Schätzung je Teil. Nichts injiziert = alle Teile 0.
+    hint_tokens_by_part: tokensByPart(
+      injected === ""
+        ? {}
+        : {
+            pinned: pinnedBlock,
+            recalls: recallBlock,
+            taxonomy: taxonomyBlock,
+            language: languageBlock,
+            care: careBlock,
+            import: importBlock,
+            onboarding: onboardingBlock,
+            update: updateBlock,
+            patch: patchBlock,
+            pending: pendingBlock,
+            doku: dokuBlock,
+          },
+    ),
     hinted_ids: top.map((h) => h.id),
     hinted_types: top.map((h) => h.type),
     status,
@@ -683,11 +705,48 @@ interface SessionHookTelemetry {
   latency_ms_total: number;
   /** Geschätzte Tokens des injizierten Session-Kontexts (#72). */
   hint_tokens_est: number;
+  /** #462: dieselbe Schätzung je Teil des Blocks (pinned, recalls, taxonomy,
+   *  language, care, import, onboarding, update, patch, pending, doku). Die
+   *  Teile runden einzeln, ihre Summe kann `hint_tokens_est` um wenige Tokens
+   *  übersteigen. Fehlt auf Zeilen vor #462. */
+  hint_tokens_by_part: Record<SessionContextPart, number>;
   hinted_ids: string[];
   /** #354: Memory-Typ je `hinted_ids`-Eintrag, gleiche Reihenfolge. */
   hinted_types: string[];
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
+}
+
+export const SESSION_CONTEXT_PARTS = [
+  "pinned",
+  "recalls",
+  "taxonomy",
+  "language",
+  "care",
+  "import",
+  "onboarding",
+  "update",
+  "patch",
+  "pending",
+  "doku",
+] as const;
+export type SessionContextPart = (typeof SESSION_CONTEXT_PARTS)[number];
+
+/**
+ * #462: Token-Schätzung je Teil des Session-Start-Blocks — derselbe chars/4-
+ * Schätzer wie `hint_tokens_est`, auf jeden Teil einzeln. 152 Starts trugen
+ * 14,5 % der gesamten Kontextsteuer, und niemand konnte sagen, welcher der
+ * zehn Teile die 2.344 Tokens pro Start ausgibt. Erst messen, dann über die
+ * Kadenz entscheiden — die Entscheidung bleibt beim Nutzer, nicht hier.
+ * Fehlende Teile zählen 0; ein leerer Eingabe-Record heißt „nichts injiziert".
+ */
+export function tokensByPart(parts: Partial<Record<SessionContextPart, string>>): Record<SessionContextPart, number> {
+  const out = {} as Record<SessionContextPart, number>;
+  for (const name of SESSION_CONTEXT_PARTS) {
+    const text = parts[name] ?? "";
+    out[name] = text.length === 0 ? 0 : Math.ceil(text.trim().length / 4);
+  }
+  return out;
 }
 
 async function writeTelemetry(payload: SessionHookTelemetry): Promise<void> {

@@ -158,6 +158,47 @@ function summarizeSessionHook(events: AnyEvent[]): void {
   for (const [s, n] of [...sources.entries()].sort((a, b) => b[1] - a[1])) {
     console.log(`     ${n.toString().padStart(4)}  ${s}`);
   }
+
+  // #462: welcher der zehn Teile gibt die Tokens aus? Nur Zeilen mit dem
+  // Feld (ab #462); ältere Starts tragen eine Summe und keine Teile.
+  const withParts = calls.filter((c) => c.hint_tokens_by_part && typeof c.hint_tokens_by_part === "object");
+  if (withParts.length === 0) return;
+  const partTotals = new Map<string, number>();
+  const partHits = new Map<string, number>();
+  let allParts = 0;
+  for (const c of withParts) {
+    for (const [part, v] of Object.entries(c.hint_tokens_by_part as Record<string, unknown>)) {
+      const n = typeof v === "number" ? v : 0;
+      partTotals.set(part, (partTotals.get(part) ?? 0) + n);
+      if (n > 0) partHits.set(part, (partHits.get(part) ?? 0) + 1);
+      allParts += n;
+    }
+  }
+  console.log(`  tokens by part (${withParts.length} starts with per-part data, ${allParts} tokens):`);
+  console.log(`     part          total   share   avg/start  present-in`);
+  for (const [part, total] of [...partTotals.entries()].sort((a, b) => b[1] - a[1])) {
+    if (total === 0 && (partHits.get(part) ?? 0) === 0) continue;
+    console.log(
+      `     ${part.padEnd(12)} ${total.toString().padStart(6)}  ${pct(total, allParts).padStart(6)}  ${(total / withParts.length).toFixed(0).padStart(9)}  ${(partHits.get(part) ?? 0).toString().padStart(4)}/${withParts.length}`,
+    );
+  }
+  // Derselbe Schnitt nach Startquelle — `clear` war der teuerste Start.
+  const bySource = new Map<string, { n: number; parts: Map<string, number> }>();
+  for (const c of withParts) {
+    const s = String(c.source ?? "unknown");
+    const row = bySource.get(s) ?? { n: 0, parts: new Map<string, number>() };
+    row.n++;
+    for (const [part, v] of Object.entries(c.hint_tokens_by_part as Record<string, unknown>)) {
+      row.parts.set(part, (row.parts.get(part) ?? 0) + (typeof v === "number" ? v : 0));
+    }
+    bySource.set(s, row);
+  }
+  console.log(`  avg tokens per part by source:`);
+  for (const [s, row] of [...bySource.entries()].sort((a, b) => b[1].n - a[1].n)) {
+    const top = [...row.parts.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 4)
+      .map(([p, v]) => `${p} ${(v / row.n).toFixed(0)}`).join(", ");
+    console.log(`     ${s.padEnd(8)} n=${row.n.toString().padStart(3)}  ${top}`);
+  }
 }
 
 function summarizeMcp(events: AnyEvent[]): void {

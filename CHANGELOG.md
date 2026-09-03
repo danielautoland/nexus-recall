@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The session-start block is measured per part** (#462, measurement only).
+  152 session starts — 0.8 % of all hook emissions — carried 14.5 % of the
+  entire context tax, and telemetry recorded one number for a block assembled
+  from ten parts, so nobody could say which part spends the ~2,300 tokens a
+  start costs. `session_hook_call` now carries `hint_tokens_by_part` (pinned,
+  recalls, taxonomy, language, care, import, onboarding, update, patch,
+  pending, doku; same chars/4 estimator, each part rounded on its own) and
+  `bastra logs --stats` prints total, share, average per start and how many
+  starts contained each part, plus the top parts per start source (startup /
+  clear / compact / resume). No cadence or content changes — that decision
+  follows the measurement.
+
+### Added
+
 - **Cross-surface instruction parity is enforced — in CI, in the package and
   in `bastra doctor`** (#456). Building on #455's generated projections: CI
   regenerates them and fails on any diff; a test compares the daemon
