@@ -64,7 +64,12 @@ async function providerProzess(t: {
   const quelle = `
     const http = require("node:http");
     const s = http.createServer((req, res) => {
-      const ms = Number(new URL(req.url, "http://x").searchParams.get("ms") || "0");
+      const raw = new URL(req.url, "http://x").searchParams.get("ms") || "0";
+      // "never": die Antwort kommt nie — der Socket bleibt offen, bis der
+      // Prozess stirbt. Ein Arm, der WIRKLICH zu langsam ist, unabhängig davon,
+      // wie lange der Testprozess vorher blockiert war.
+      if (raw === "never") return;
+      const ms = Number(raw);
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify([{ id: "m0", score: 0.9 }]));
@@ -87,7 +92,7 @@ async function providerProzess(t: {
 /** Ein Embedding-Index-Doppel, das seine Treffer über echtes Netz-I/O holt.
  *  Ohne `agent` läuft es über Nodes globalen Agent, der seit Node 19 Keep-
  *  Alive hält — nach dem ersten Lauf ist der Socket also WARM. */
-function embeddingsUeberNetz(port: number, antwortNachMs: number, agent?: Agent) {
+function embeddingsUeberNetz(port: number, antwortNachMs: number | "never", agent?: Agent) {
   return {
     size: () => 1,
     runtimeHealth: () => ({ errorCount: 0 }),
@@ -129,7 +134,7 @@ const teureQuery = (versatz = 0): string =>
 
 async function laufMitTimeoutMarke(
   search: SearchIndex,
-  antwortNachMs: number,
+  antwortNachMs: number | "never",
   port: number,
   versatz = 0,
   agent?: Agent,
@@ -222,10 +227,13 @@ test("ein wirklich zu langsamer Arm läuft weiterhin in seinen Timeout", async (
   const search = await vaultMitVielenMemories(t);
   const { port } = await providerProzess(t);
 
-  // Die Invariante aus #342: Die Frist läuft ab dem Abfeuern. Ein Provider, der
-  // länger braucht als sie, muss weiterhin abgeschnitten werden — sonst hätte
-  // der Durchlauf oben die Deadline stillschweigend verlängert.
-  const { timeout } = await laufMitTimeoutMarke(search, DEADLINE_MS * 4, port, 7);
+  // Die Frist läuft seit #466 ab dem Warten (nach BM25). Ein Provider mit
+  // FESTER Verzögerung taugt hier nicht mehr als „zu langsam": Auf einem
+  // langsamen CI-Runner dauert BM25 länger als die Verzögerung, die Antwort
+  // liegt beim Blockende schon gepuffert und der Arm kommt durch — genau so
+  // fiel der Test am 03.09. auf Node 22 und 24. Ein Provider, der NIE
+  // antwortet, ist die einzige Verzögerung, die von der Maschine unabhängig ist.
+  const { timeout } = await laufMitTimeoutMarke(search, "never", port, 7);
   assert.ok(timeout, "die Deadline muss weiterhin greifen, wenn der Arm sie wirklich reißt");
 });
 

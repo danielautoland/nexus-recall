@@ -72,6 +72,8 @@ class TracingProvider implements EmbeddingProvider {
   readonly id = "tracing-mock";
   readonly dim = 3;
   public delayMs = 0;
+  /** `Infinity`: antwortet nie — der einzige „zu langsame" Arm, der nicht von
+   *  der Geschwindigkeit des Runners abhängt (#466, CI-Flake 03.09.). */
   /** Wurde `embed` betreten? Wird gesetzt, bevor irgendein `await` läuft. */
   public dispatched = false;
   public dispatchedAt = 0;
@@ -79,6 +81,7 @@ class TracingProvider implements EmbeddingProvider {
   async embed(texts: string[]): Promise<Float32Array[]> {
     this.dispatched = true;
     this.dispatchedAt = Date.now();
+    if (this.delayMs === Infinity) await new Promise<never>(() => {});
     if (this.delayMs > 0) await sleep(this.delayMs);
     return texts.map(() => new Float32Array([1, 0, 0]));
   }
@@ -192,9 +195,11 @@ test("#466: work between dispatch and await does not consume the dense arm's bud
 
 test("#466: an arm still slower than its budget after the await keeps timing out", async (t) => {
   const { search, provider } = await hybridFixture(t);
-  // 150 ms Arbeit, dann 100 ms Frist: ein Arm, der 500 ms braucht, ist auch
+  // 150 ms Arbeit, dann 100 ms Frist: ein Arm, der nie antwortet, ist auch
   // ab dem `await` gemessen zu langsam — die Frist ist verschoben, nicht weg.
-  provider.delayMs = 500;
+  // „Nie" statt einer festen Verzögerung, damit ein langsamer Runner die
+  // Antwort nicht doch noch vor die Frist schiebt.
+  provider.delayMs = Infinity;
 
   let degraded: unknown = "no done event";
   const started = Date.now();
@@ -210,7 +215,7 @@ test("#466: an arm still slower than its budget after the await keeps timing out
 
   assert.equal(degraded, "vector-arm-timeout");
   assert.ok(hits.length > 0, "the cheap arm's answer is still served");
-  assert.ok(elapsed < 400, `≈ 150 + 100 ms expected, must not wait for the 500 ms arm — took ${elapsed} ms`);
+  assert.ok(elapsed < 1000, `≈ 150 + 100 ms expected, must not wait for an arm that never answers — took ${elapsed} ms`);
 });
 
 // ─── 4. Telemetrie und Progress ─────────────────────────────────────────────
