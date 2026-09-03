@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   historical ROI view; the estimator is chars/4 everywhere and labelled as
   such. No retrieval, presentation or loading behavior changes.
 
+### Added
+
+- **Cross-surface instruction parity is enforced — in CI, in the package and
+  in `bastra doctor`** (#456). Building on #455's generated projections: CI
+  regenerates them and fails on any diff; a test compares the daemon
+  package's shipped `skill/` and the plugin payload against the canonical
+  source and checks the `npm pack` file list, so a release cannot carry a
+  Cursor rule or plugin skill that disagrees with the skill. Every installed
+  skill now carries one bundle revision (sha256 over the payload), and
+  `bastra doctor` compares the installed copy for Claude Code, Claude Desktop
+  and Codex/ChatGPT file by file against the shipped bundle instead of
+  reporting "present" for any SKILL.md at the path — a stale or partial
+  install is `broken`, and `--fix` refreshes exactly the differing files
+  (the same comparison `install` already used). The Cursor adapter reports the
+  current project's `.cursor/rules/bastra-recall.mdc` as up to date, stale or
+  not installed.
+
 ### Changed
 
 - **One canonical instruction source — the Cursor rule and the Codex/ChatGPT
