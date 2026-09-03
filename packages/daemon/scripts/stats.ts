@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { readUsage, type UsageAggregate } from "../src/usage-sidecar.js";
 import { governorWhatIf } from "./stats-governor.js";
 import { summarizeEvidenceGate } from "./stats-evidence.js";
+import { buildContextLedger, HOOK_LANE_KINDS, TOOL_PAYLOAD_KINDS } from "../src/context-ledger.js";
 
 function defaultLogDir(): string {
   const next = join(homedir(), ".bastra", "logs");
@@ -404,6 +405,56 @@ function topProjects(events: AnyEvent[]): void {
   }
 }
 
+/**
+ * #457: die VOLLSTÄNDIGE Kontextrechnung — alle sechs Hook-Lanes plus die
+ * Tool-Payloads (`recall`, `load_memory`, `read_document`). Der historische
+ * `Net-context-ROI`-Block darunter zählt bewusst nur drei Lanes; er bleibt als
+ * Vergleichsgröße stehen, beschreibt aber nicht „den Kontext".
+ */
+function summarizeContextTax(events: AnyEvent[]): void {
+  const ledger = buildContextLedger(events);
+  const t = ledger.total;
+  const emissions = [...Object.values(t.lanes), ...Object.values(t.tools)].reduce((s, p) => s + p.emissions, 0);
+  if (emissions === 0) return;
+  console.log(`\n## Context tax — complete  (ledger v${ledger.version}, estimator ${ledger.estimator})`);
+  console.log(`  total (known parts):          ${t.totalTokens} tokens across ${emissions} emissions`);
+  if (t.totalUnknown > 0) {
+    console.log(
+      `  unknown residual:             ${t.totalUnknown} emissions carry no size field (pre-#457/#72 rows) — the total is a lower bound`,
+    );
+  }
+  const row = (label: string, p: { emissions: number; tokens: number; unknown: number }): void => {
+    if (p.emissions === 0) return;
+    console.log(
+      `    ${label.padEnd(22)} ${p.tokens.toString().padStart(8)}  ${p.emissions.toString().padStart(5)} emissions` +
+        (p.unknown > 0 ? `  (${p.unknown} unknown)` : ""),
+    );
+  };
+  console.log(`  by lane:`);
+  for (const k of HOOK_LANE_KINDS) row(k, t.lanes[k]);
+  console.log(`  by tool payload:`);
+  for (const k of TOOL_PAYLOAD_KINDS) row(k, t.tools[k]);
+  if (t.loadByPresentation.lean.emissions + t.loadByPresentation.full.emissions > 0) {
+    console.log(`  load_memory by presentation:`);
+    row("lean", t.loadByPresentation.lean);
+    row("full", t.loadByPresentation.full);
+  }
+  const laneSum = Object.values(t.lanes).reduce((s, p) => s + p.tokens, 0);
+  const toolSum = Object.values(t.tools).reduce((s, p) => s + p.tokens, 0);
+  console.log(`  parts: lanes ${laneSum} + tool payloads ${toolSum} = ${laneSum + toolSum}`);
+  const top = [...ledger.sessions.values()]
+    .filter((s) => s.session !== "(none)")
+    .sort((a, b) => b.totalTokens - a.totalTokens)
+    .slice(0, 5);
+  if (top.length > 0) {
+    console.log(`  top sessions by total context:`);
+    for (const s of top) console.log(`    ${s.totalTokens.toString().padStart(7)}  ${s.session.slice(0, 8)}…`);
+  }
+  console.log(
+    `  (tool payloads are attributed to the caller session where the forwarder sent one; hook lanes to their own session_id)`,
+  );
+}
+
 function summarizeContextROI(events: AnyEvent[]): void {
   // #72 net-context-ROI: Tokens, die die Reflex-Layer-Hooks injiziert haben,
   // vs. acted-on-Loads, die sie verursacht haben. hint_tokens_est gibt es
@@ -767,6 +818,7 @@ async function main(): Promise<void> {
   summarizeFollowThrough(events);
   summarizeUseRate(events);
   summarizeActSignals(events);
+  summarizeContextTax(events);
   summarizeContextROI(events);
   summarizeContextGovernor(events);
   await summarizeExposureNormalised(events);

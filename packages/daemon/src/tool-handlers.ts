@@ -140,17 +140,38 @@ export async function loadMemoryHandler(
   const m = own ?? deps.commonsSearch?.loadFull(parsed.data.id);
   const fromCommons = !own && m !== undefined;
   const hookHint = deps.telemetry.findHookHintFor(parsed.data.id);
-  fireAndForget(
-    deps.telemetry.logLoadMemory({
-      id: parsed.data.id,
-      found: !!m,
-      follows_recall: deps.telemetry.recentRecallId(),
-      from_hook_recall: hookHint?.recall_id ?? null,
-      hook_hint_rank: hookHint?.rank ?? null,
-    }),
-  );
+  const followsRecall = deps.telemetry.recentRecallId();
+  // #457: das Ereignis trägt die GELIEFERTE Größe, also erst nach der
+  // Projektion — ein Load, der nichts liefert, trägt keine.
+  const logLoad = (delivered?: {
+    delivered_chars: number;
+    body_chars: number;
+    presentation: "lean" | "full";
+  }): void =>
+    fireAndForget(
+      deps.telemetry.logLoadMemory({
+        id: parsed.data.id,
+        found: !!m,
+        follows_recall: followsRecall,
+        from_hook_recall: hookHint?.recall_id ?? null,
+        hook_hint_rank: hookHint?.rank ?? null,
+        ...(delivered
+          ? {
+              delivered_chars: delivered.delivered_chars,
+              delivered_tokens_est: Math.ceil(delivered.delivered_chars / 4),
+              body_chars: delivered.body_chars,
+              presentation: delivered.presentation,
+              origin: hookHint ? "hook" : followsRecall ? "recall" : "direct",
+            }
+          : {}),
+        caller_session: ctx?.sessionId ?? null,
+      }),
+    );
 
-  if (!m) throw new Error(`memory not found: ${parsed.data.id}`);
+  if (!m) {
+    logLoad();
+    throw new Error(`memory not found: ${parsed.data.id}`);
+  }
 
   // Sensitivity-Filter (#58): externe Caller sehen Private-Memories
   // nicht — auch nicht über direkte ID-Lookups. Mac-App overridet mit
@@ -160,6 +181,7 @@ export async function loadMemoryHandler(
     !allowPrivate &&
     (m.fm as { sensitivity?: string }).sensitivity === "private"
   ) {
+    logLoad();
     throw new Error(`memory not found: ${parsed.data.id}`);
   }
 
@@ -219,7 +241,7 @@ export async function loadMemoryHandler(
         },
       }
     : {};
-  return {
+  const result = {
     id: m.fm.id,
     frontmatter: full ? fm : leanFrontmatter(fm),
     body: full ? m.body : bodyForTelemetry,
@@ -227,6 +249,12 @@ export async function loadMemoryHandler(
     ...verifyBlock,
     ...verifyAnchor,
   };
+  logLoad({
+    delivered_chars: JSON.stringify(result, null, 2).length,
+    body_chars: result.body.length,
+    presentation: full ? "full" : "lean",
+  });
+  return result;
 }
 
 // ─── Save Memory ─────────────────────────────────────────────────

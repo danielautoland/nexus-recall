@@ -213,6 +213,7 @@ export async function runTodoLane(
       // #352: null = never asked (gate branch, no POST)
       daemon_reachable: null,
       hit_count: 0,
+      hint_tokens_est: 0,
       top_score: null,
       latency_ms_total: Date.now() - startedAt,
       status: "low-confidence",
@@ -294,6 +295,9 @@ export async function runTodoLane(
   let backoffStreak = 0;
   let suppressed = false;
   let suppressedTokensEst = 0;
+  // #457: Tokens des TATSÄCHLICH injizierten Blocks — die Lane stand bisher
+  // in keiner Kontextrechnung.
+  let hintTokensEst = 0;
   let out = "{}";
   if (filtered.length === 0) {
     // stays "{}"
@@ -320,6 +324,7 @@ export async function runTodoLane(
       recordSourceSuppressed(state, BACKOFF_SOURCE);
       await saveSessionState(sessionId, state);
     } else {
+      hintTokensEst = Math.ceil(block.length / 4);
       out = JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -346,6 +351,7 @@ export async function runTodoLane(
     backoff_streak: backoffStreak,
     suppressed,
     suppressed_tokens_est: suppressedTokensEst,
+    hint_tokens_est: hintTokensEst,
     status: suppressed ? "suppressed" : status,
     error: errMsg,
     scope_filter_mode: scopeFilter.mode,
@@ -535,6 +541,8 @@ interface TodoHookTelemetry {
   suppressed?: boolean;
   /** #161: est. tokens of the NOT-injected block — the savings side of ROI. */
   suppressed_tokens_est?: number;
+  /** #457: est. tokens of the injected block; 0 when nothing was emitted. */
+  hint_tokens_est?: number;
   status:
     | "ok"
     | "no-hits"

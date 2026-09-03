@@ -45,6 +45,7 @@ import type {
   OllamaLifecycleEvent,
   RecallBand,
   TurnSource,
+  ReadDocumentEvent,
 } from "./telemetry-events.js";
 
 const RECALL_FOLLOWUP_WINDOW_MS = 5 * 60 * 1000;
@@ -495,6 +496,19 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "load_memory",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  /** #457: eine Zeile pro `read_document`, nur Größen, kein Text. */
+  async logReadDocument(
+    payload: Omit<ReadDocumentEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "read_document",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

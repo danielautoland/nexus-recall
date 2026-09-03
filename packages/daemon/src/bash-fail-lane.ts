@@ -192,6 +192,9 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
   let backoffStreak = 0;
   let suppressed = false;
   let suppressedTokensEst = 0;
+  // #457: Tokens des TATSÄCHLICH injizierten Blocks — die Lane stand bisher
+  // in keiner Kontextrechnung.
+  let hintTokensEst = 0;
   let stdout = "{}";
   if (hits.length > 0) {
     // #161 empty-streak backoff: unconsumed injection streaks widen the
@@ -218,6 +221,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
       // Mark throttle only when we actually emit — otherwise quiet calls
       // would burn the budget.
       await markThrottle(sessionId);
+      hintTokensEst = Math.ceil(block.length / 4);
       // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
       await reportHinted(selfBaseUrl, hits.map((h) => h.id));
       recordSourceEmit(state, BACKOFF_SOURCE, hits.map((h) => h.id), consumed);
@@ -243,6 +247,7 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
     backoff_streak: backoffStreak,
     suppressed,
     suppressed_tokens_est: suppressedTokensEst,
+    hint_tokens_est: hintTokensEst,
     status: suppressed ? "suppressed" : status,
     error: errMsg,
   });
@@ -441,6 +446,8 @@ interface BashFailHookTelemetry {
   suppressed: boolean;
   /** #161: Tokens des NICHT injizierten Blocks — die Sparseite der ROI. */
   suppressed_tokens_est: number;
+  /** #457: est. tokens of the injected block; 0 when nothing was emitted. */
+  hint_tokens_est: number;
   status: "ok" | "no-hits" | "suppressed" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
 }

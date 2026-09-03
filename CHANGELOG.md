@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The context tax is now measured end to end — one ledger for hook
+  injections and tool payloads** (#457). Two official views answered "how much
+  context does Recall add" with different numerators: `Net-context-ROI` counted
+  three hook lanes, the governor what-if six, and neither counted what
+  `recall`, `load_memory` and `read_document` return — the bodies the model
+  actually reads. `recall` events now carry the serialized payload size,
+  `load_memory` the delivered size AFTER the lean/full projection (plus
+  presentation and origin: hook hint, own recall, or cold), and a new
+  `read_document` event records document reads. The Bash-fail and Todo lanes,
+  which emitted text but never a token count, now record `hint_tokens_est`
+  like every other lane. `context-ledger.ts` folds all of it per session with
+  one rule for old rows: no size field means `unknown`, never zero — the total
+  is a lower bound and says by how many emissions. `bastra logs --stats` prints
+  the complete total with its lane / tool / presentation breakdown next to the
+  historical ROI view; the estimator is chars/4 everywhere and labelled as
+  such. No retrieval, presentation or loading behavior changes.
+
 ### Fixed
 
 - **`archive_memory` now respects `sensitivity: private`** (#464). The read

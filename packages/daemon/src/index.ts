@@ -592,6 +592,19 @@ async function main(): Promise<void> {
       const parsed = ReadDocumentArgs.safeParse(args);
       if (!parsed.success) return errorResult(parsed.error.message);
       const doc = readDocument(vault, parsed.data);
+      // #457: derselbe Größen-Eintrag wie auf dem HTTP-Pfad.
+      void toolDeps.telemetry.logReadDocument({
+        id: parsed.data.id,
+        found: doc !== null,
+        ...(doc
+          ? {
+              delivered_chars: JSON.stringify(doc, null, 2).length,
+              delivered_tokens_est: Math.ceil(JSON.stringify(doc, null, 2).length / 4),
+              body_chars: doc.body.length,
+            }
+          : {}),
+        caller_session: null,
+      }).catch(() => {});
       if (!doc) return errorResult(`document not found: ${parsed.data.id}`);
       return {
         content: [
