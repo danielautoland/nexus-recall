@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   historical ROI view; the estimator is chars/4 everywhere and labelled as
   such. No retrieval, presentation or loading behavior changes.
 
+### Added
+
+- **The evidence-gate readout groups the `required` divergences by feature
+  signature** (#422). §18.2 makes explaining every `required` / `no_answer`
+  divergence a condition for switching the gate on; the readout counted the
+  `required` ones (430 withheld, 995 promoted on 03.09.) without saying what
+  they had in common. Both directions are now grouped like the `no_answer`
+  view already was — on 03.09. every withheld case is arm agreement alone
+  (coverage below one half, no identifier, no scope), every promoted case a
+  second signal beside it or a full trigger match: the two-of-three rule,
+  visible instead of argued.
+
 ### Fixed
 
 - **Hint blocks now say what they are: candidates, not the memories** (#465).
