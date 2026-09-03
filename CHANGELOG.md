@@ -4,6 +4,39 @@ All notable changes to bastra-recall are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Long prompts no longer lose the dense arm — the prompt lane fuses again
+  where conventions matter most** (#466). On 02.09. 27 of 49 prompt-lane
+  recalls came back `bm25`, every one of them on a prompt over ~1,000
+  characters, with `vector_search_ms` sitting on `bm25_search_ms` + 2–7 ms or
+  exactly on the 150 ms deadline — while Ollama answered the same embeds in
+  25–66 ms. The arm was not slow; it was never asked in time. The dense request
+  only leaves the process once the event loop is free, and #305's one-tick
+  yield sends it only over a socket that is ALREADY open. `fetch` closes its
+  connection after 4 s idle and prompt-lane calls are minutes apart, so the
+  connect completed after BM25 had blocked the loop, the request went out
+  behind the lexical pass, and a deadline armed at dispatch (#370) had by then
+  charged the arm for the whole BM25 run. Without fusion the lane drops the
+  REQUIRED band, the backoff bypass and the semantic reflex layer — a weaker
+  signal on exactly the long, spoken prompts that carry the conventions.
+
+  Two changes, no ranking effect (identical inputs to both arms, RRF
+  unchanged). The Ollama provider now speaks over a keep-alive agent, so the
+  turn-start prewarm (#361) warms the socket as well as the model and the
+  request is on the wire during the yield — measured on a 1,500-character
+  prompt with a 140 ms lexical block: warm socket 0 ms after the block, cold
+  88–111 ms. And the deadline is armed when the arm is actually awaited, not
+  when it is dispatched: work between the two is not the arm's time. A dense
+  arm that is still slower than its budget after the wait keeps timing out.
+
+  Before/after against the live daemon, six real prompts of ~1,500 and ~3,000
+  characters, socket cold between calls: 0/6 fused before, 6/6 after (table in
+  the commit). `dense-arm-dispatch.test.ts` gains a cold-socket case,
+  the #370 deadline test is inverted.
+
 ## [0.9.2] — 2026-08-27
 
 ### Added
