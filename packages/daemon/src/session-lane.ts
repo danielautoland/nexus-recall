@@ -34,7 +34,7 @@
 // start against +0.8ms for the three leafs, on a fresh spawn per event.
 import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
-import { bandHits, requiredHeadline, unfusedHeadline } from "./band-wording.js";
+import { bandHits, requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE } from "./band-wording.js";
 import { isUnfused } from "./hook-recall-response.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -588,7 +588,7 @@ export function formatBlock(
 
   if (unbanded.length > 0) {
     sections.push(
-      `${unfusedHeadline(`the ${project ?? "current"} session`)} ` +
+      `${unfusedHeadline(`the ${project ?? "current"} session`)} ${CANDIDATES_ONLY_NOTICE} ` +
         `load_memory(id) the ones relevant to what the user actually asks for. ` +
         `These are hints, not obligations.`,
     );
@@ -601,6 +601,7 @@ export function formatBlock(
       weak
         ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
         : `${requiredHeadline(`the ${project ?? "current"} session`, MUST_LOAD_SCORE, { k: RRF_K, scale: RRF_SCALE })} ` +
+          `${CANDIDATES_ONLY_NOTICE} ` +
           `load_memory(id) the ones relevant to what the user actually asks for. ` +
           `These are hints, not obligations: load only what fits, don't batch-load the list, ` +
           `and if the user requested a specific number or scope, honor that over this list.`,

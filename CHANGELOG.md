@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Hint blocks now say what they are: candidates, not the memories** (#465).
+  The session-context header read "apply what fits, load_memory(id) for
+  details" — an invitation to treat a one-line summary as the content and the
+  body as optional depth. On 1–2 September an explicit override memory ranked
+  top with score 163, was never loaded, and the session followed the opposite
+  rule. Every surface now carries the same sentence, defined once in
+  `band-wording.ts`: these are candidates (id, title, summary), NOT the
+  memories themselves — nothing is in context until `load_memory(id)` is
+  called and read; a summary is a pointer, not the rule. Session context,
+  session-start block, prompt lane and write lane carry it on their REQUIRED
+  and unfused headlines. A user should not have to counteract Recall's own
+  wording in their agent instructions.
+
 - **`acted_on` no longer weighs in heat and trust, and a load without a hint
   is `not_hinted`, not `below_floor`** (#469). `acted_on` fires when a loaded
   memory shares two tokens with the next tool input. On 1 September one Bash

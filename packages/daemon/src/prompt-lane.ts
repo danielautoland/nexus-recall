@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto";
 import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
-import { requiredHeadline, unfusedHeadline } from "./band-wording.js";
+import { requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE } from "./band-wording.js";
 import { applyLaneScopeFilter, projectConfidence, projectForFilter, type ScopeFilterMode } from "./scope-filter.js";
 
 import { envFirst, envInt } from "./env.js";
@@ -775,7 +775,7 @@ export function formatHintBlock(
       weak
         ? `Ranked matches, but NONE anchors lexically (no trigger phrase, no title term matched) — on the hybrid path a high score is rank-1-of-nothing. Treat these as probably-not-relevant unless one obviously fits; do not load them just because they are listed.`
         : `${requiredHeadline("this prompt", MUST_LOAD_SCORE, { k: RRF_K, scale: RRF_SCALE })} ` +
-          `load_memory(id) the relevant ones before responding ` +
+          `${CANDIDATES_ONLY_NOTICE} load_memory(id) the relevant ones before responding ` +
           `(hints, not obligations; honor an explicit count or scope from the user):`,
     );
     for (const h of required) sections.push(formatHintLine(h));
