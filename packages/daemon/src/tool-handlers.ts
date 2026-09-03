@@ -560,6 +560,9 @@ async function saveMemoryInner(
 export const ArchiveMemoryArgs = z.object({
   id: z.string().min(1),
   superseded_by: z.string().optional(),
+  /** #464: spiegelt `LoadMemoryArgs.allow_private`. Nur die Mac-App setzt
+   *  es; ein MCP-Caller kann Private-Memories weder lesen noch archivieren. */
+  allow_private: z.boolean().optional(),
 });
 
 /**
@@ -582,6 +585,15 @@ export async function archiveMemoryHandler(
   const { id, superseded_by } = parsed.data;
   const mem = deps.vault.get(id);
   if (!mem) {
+    throw new Error(`unknown memory: ${id} — archive_memory only archives memories that exist in the vault.`);
+  }
+  // #464: Der Lesepfad (`loadMemoryHandler`) verbirgt Private-Memories vor
+  // externen Callern, der Archivpfad tat es nicht — ein Caller konnte
+  // entfernen, was er nicht sehen durfte, und lernte aus dem Erfolg sogar,
+  // dass die Id existiert. Dieselbe Antwort wie beim Lesen: als gäbe es
+  // die Id nicht.
+  const allowPrivate = parsed.data.allow_private ?? false;
+  if (!allowPrivate && (mem.fm as { sensitivity?: string }).sensitivity === "private") {
     throw new Error(`unknown memory: ${id} — archive_memory only archives memories that exist in the vault.`);
   }
   // Codex-Gegenreview (P0): Verschoben wurde der Pfad aus dem CACHE, ohne ihn

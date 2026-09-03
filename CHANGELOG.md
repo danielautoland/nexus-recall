@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`archive_memory` now respects `sensitivity: private`** (#464). The read
+  path hid private memories from external callers; the archive path did not,
+  so an MCP caller could move a memory to the trash that it could neither load
+  nor find — and learn from the success that the id existed. Archiving now
+  answers exactly as loading does: as if the id were unknown. The Mac app keeps
+  its `allow_private: true` override, mirroring `load_memory`.
+
 - **Long prompts no longer lose the dense arm — the prompt lane fuses again
   where conventions matter most** (#466). On 02.09. 27 of 49 prompt-lane
   recalls came back `bm25`, every one of them on a prompt over ~1,000
