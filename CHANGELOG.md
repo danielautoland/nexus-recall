@@ -25,6 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   historical ROI view; the estimator is chars/4 everywhere and labelled as
   such. No retrieval, presentation or loading behavior changes.
 
+### Changed
+
+- **The evidence gate is ON by default** (#422, §18.2). The deterministic
+  `required` / `optional` / `no_answer` decision from #264 ran in shadow since
+  28.08.; it is now enforced: a hit the predicate marks `no_answer` is not
+  injected. All three activation conditions were met on 03.09.: shadow
+  acceptance via the decisions route (6,544 decisions, 40 sessions, largest
+  24.3 %), every `required` / `no_answer` divergence explained by feature
+  signature, and the §18.2 component gates within their thresholds on the full
+  gold set (anti-query injection 1/28 = 3.6 %, false abstention 0/584,
+  recall@3 delta −0.0034, identifier queries unchanged, invariants 0/0).
+  Expected effect from the shadow stream: about 27 % of the decisions legacy
+  served in the optional band fall silent (one signature: no evidence at all).
+  `BASTRA_EVIDENCE_GATE=0` is the instant off-switch; `evidenceGate.enabled:
+  false` in the CLI settings the durable one — that settings block was written
+  but never read back before, so the file could not switch the gate; it can
+  now. The daemon prints the gate state at startup either way.
+
 ### Added
 
 - **The evidence-gate readout groups the `required` divergences by feature
