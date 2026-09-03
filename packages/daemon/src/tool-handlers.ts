@@ -364,7 +364,29 @@ async function saveMemoryInner(
   // diverted before any quality scoring or file I/O touches the vault.
   if (parsed.data.conflict_with) return markConflict(deps, parsed.data, finalId);
 
-  const saveQuality = scoreSaveQuality(deps, parsed.data, finalId);
+  const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+  // Die Versionskette, die dieser Save ablöst: der `replaces`-Vorgänger und
+  // alles, was DIESER schon ersetzt hatte. `out` guards a hand-written cycle.
+  const supersededChain = (start: string | undefined): Set<string> => {
+    const out = new Set<string>();
+    let cursor: string | undefined = start;
+    while (cursor !== undefined && !out.has(cursor)) {
+      out.add(cursor);
+      const predecessor: unknown = deps.vault.get(cursor)?.fm.replaces;
+      cursor = typeof predecessor === "string" ? predecessor : undefined;
+    }
+    return out;
+  };
+
+  // Beim Overwrite trägt der Payload die Supersession meist nicht erneut — sie
+  // steht längst im Frontmatter des Memories, das hier neu geschrieben wird.
+  // Ohne diesen Rückgriff meldete ausgerechnet die Aktualisierung eines
+  // Nachfolgers wieder die Kollision mit dem Vorgänger, den sie abgelöst hat.
+  const declaredReplaces = parsed.data.replaces
+    ?? (parsed.data.overwrite ? asString(deps.vault.get(finalId)?.fm.replaces) : undefined);
+
+  const saveQuality = scoreSaveQuality(deps, parsed.data, finalId, supersededChain(declaredReplaces));
 
   // #360: the claim gate. A save whose recall_when fully contains an existing
   // memory's trigger declares a situation that memory already owns — that is a
@@ -384,17 +406,7 @@ async function saveMemoryInner(
         const m = deps.vault.get(id);
         return m ? { summary: m.fm.summary, body: m.body } : undefined;
       },
-      (id) => {
-        // Walk down the version chain. `seen` guards a hand-written cycle.
-        const out = new Set<string>();
-        let cursor: string | undefined = id;
-        while (cursor !== undefined && !out.has(cursor)) {
-          out.add(cursor);
-          const predecessor: unknown = deps.vault.get(cursor)?.fm.replaces;
-          cursor = typeof predecessor === "string" ? predecessor : undefined;
-        }
-        return out;
-      },
+      supersededChain,
     );
     if (claimed.length > 0) return claimGateResult(finalId, claimed, saveQuality);
   }
