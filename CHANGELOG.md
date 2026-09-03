@@ -27,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **One canonical instruction source — the Cursor rule and the Codex/ChatGPT
+  plugin skill are generated from `packages/skill/SKILL.md`** (#455). Two
+  hand-authored copies of the Recall/Save policy existed beside the canonical
+  skill and had already drifted from it: the Cursor rule carried fixed score
+  guidance ("~100+ … below ~30 is noise") and its own "recall first" policy,
+  the plugin a separately shortened one — so a policy change could land on
+  Claude and leave Cursor with the opposite behavior (#7's "skill ≠ rules
+  drift"). Generated projections rather than thin wrappers, because neither
+  client can read a file it does not own: Cursor rules are self-contained
+  `.mdc` files in the project, a Codex plugin ships its own SKILL.md. Each
+  projection is the canonical body verbatim under client-specific metadata
+  (display description, `alwaysApply`, install pointer) with a generated header
+  carrying the canonical hash; the plugin dir now also carries the four
+  reference files so every pointer resolves. `npm run skill:build` regenerates,
+  every daemon build runs it, and a test fails on a stale or hand-edited copy.
+
+### Changed
+
 - **The evidence gate is ON by default** (#422, §18.2). The deterministic
   `required` / `optional` / `no_answer` decision from #264 ran in shadow since
   28.08.; it is now enforced: a hit the predicate marks `no_answer` is not
