@@ -229,3 +229,32 @@ test("#463 window: only day files inside the window are read, and the route is u
     await rm(settingsDir, { recursive: true, force: true });
   }
 });
+
+test("#458 budget shadow: per lane and per day, sessions affected, first crossing, changed budget flagged", async () => {
+  const { summarizeBudgetShadow } = await import("../src/telemetry-report.js");
+  const ev = (day: string, session_id: string, lane: string, tokens: number, would_drop: boolean, extra: object = {}) => ({
+    kind: "budget_shadow", ts: ts(day), session_id, lane, tokens, budget: 1000, would_drop, ...extra,
+  });
+  const events: ReportEvent[] = [
+    ev("2026-09-04", "s1", "session_hook_call", 700, false, { emission_index: 1 }),
+    ev("2026-09-04", "s1", "prompt_hook_call", 400, true, { first_over: true, emission_index: 2 }),
+    ev("2026-09-04", "s1", "hook_call", 100, true, { emission_index: 3 }),
+    ev("2026-09-05", "s2", "session_hook_call", 300, false, { emission_index: 1 }),
+    ev("2026-09-05", "s3", "prompt_hook_call", 900, false, { emission_index: 1, budget: 2000 }),
+  ];
+  const b = summarizeBudgetShadow(events)!;
+  assert.equal(b.budget, 2000, "the latest decision's budget");
+  assert.deepEqual(b.budgets, [1000, 2000]);
+  assert.deepEqual([b.emissions, b.tokens, b.sessions, b.sessionsAffected, b.wouldDrop, b.tokensTrimmed], [5, 2400, 3, 1, 2, 500]);
+  assert.deepEqual(b.byLane, [
+    { lane: "session_hook_call", emissions: 2, tokens: 1000, wouldDrop: 0, tokensTrimmed: 0 },
+    { lane: "prompt_hook_call", emissions: 2, tokens: 1300, wouldDrop: 1, tokensTrimmed: 400 },
+    { lane: "hook_call", emissions: 1, tokens: 100, wouldDrop: 1, tokensTrimmed: 100 },
+  ]);
+  assert.deepEqual(b.daily, [
+    { day: "2026-09-04", tokens: 1200, tokensTrimmed: 500, wouldDrop: 2, sessionsAffected: 1 },
+    { day: "2026-09-05", tokens: 1200, tokensTrimmed: 0, wouldDrop: 0, sessionsAffected: 0 },
+  ]);
+  assert.equal(b.firstOverAtEmission, 2);
+  assert.equal(summarizeBudgetShadow([]), null);
+});

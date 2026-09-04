@@ -152,3 +152,38 @@ test("#373: an unreachable daemon still yields a row with the payload session an
     await rm(logDir, { recursive: true, force: true });
   }
 });
+
+test("#458 (shadow): the SessionStart lane charges its emitted block to the session budget and writes a reconciling budget_shadow row; clear resets, compact does not", async () => {
+  const logDir = await mkdtemp(join(tmpdir(), "bastra-session-budget-"));
+  try {
+    await withDaemon(async (base) => {
+      await withEnv({ BASTRA_TELEMETRY: "on", BASTRA_LOG_PATH: logDir, BASTRA_SESSION_BUDGET_SHADOW: "100" }, async () => {
+        await runSessionLane({ hook_event_name: "SessionStart", source: "startup", cwd: "/tmp", session_id: "sess-458" }, base);
+        await runSessionLane({ hook_event_name: "SessionStart", source: "compact", cwd: "/tmp", session_id: "sess-458" }, base);
+        await runSessionLane({ hook_event_name: "SessionStart", source: "clear", cwd: "/tmp", session_id: "sess-458" }, base);
+      });
+    });
+    // fire-and-forget writes — give them a tick
+    await new Promise((r) => setTimeout(r, 50));
+    const events = await readEvents(logDir);
+    const calls = events.filter((e) => e.kind === "session_hook_call");
+    const shadow = events.filter((e) => e.kind === "budget_shadow" && e.session_id === "sess-458");
+    assert.equal(calls.length, 3);
+    assert.equal(shadow.length, 3, "one decision per emission");
+    for (let i = 0; i < 3; i++) {
+      assert.equal(shadow[i].lane, "session_hook_call");
+      assert.equal(shadow[i].tokens, calls[i].hint_tokens_est, "the shadow charges exactly the lane's hint_tokens_est (#457 reconciliation)");
+      assert.equal(shadow[i].budget, 100);
+    }
+    const t = calls[0].hint_tokens_est as number;
+    assert.ok(t > 100, "fixture block exceeds the 100-token test budget");
+    assert.equal(shadow[0].spent_before, 0);
+    assert.equal(shadow[0].would_drop, true, "even the first block would fall against a 100-token budget");
+    assert.equal(shadow[1].spent_before, t, "compact keeps the ledger — the injected text survives compaction");
+    assert.equal(shadow[2].spent_before, 0, "clear starts a new context");
+    // and nothing was trimmed: every call still injected its block
+    for (const c of calls) assert.equal(c.hint_count, 1);
+  } finally {
+    await rm(logDir, { recursive: true, force: true });
+  }
+});

@@ -404,7 +404,7 @@ export function summarizeBudgetShadow(events: ReportEvent[]): BudgetShadowSectio
     const drop = e.would_drop === true;
     const b = num(e.budget);
     if (b !== null) budgets.add(b);
-    if (!latest || String(e.ts) > String(latest.ts)) latest = e;
+    if (!latest || String(e.ts) >= String(latest.ts)) latest = e;
     sessions.add(sid);
     tokens += t;
     const l = byLane.get(lane) ?? { emissions: 0, tokens: 0, wouldDrop: 0, tokensTrimmed: 0 };

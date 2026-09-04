@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **One cumulative context budget per session, across all six lanes — in
+  shadow mode** (#458, first slice). The governor decided per lane call and
+  no lane knew what the others had already spent in the same session, so a
+  "global context budget" was a reusable trimming function, not a bound.
+  The daemon now keeps a bounded, pseudonymous per-session ledger: every
+  automatic lane (SessionStart, Prompt, Write/PreTool, Bash-pre, Bash-fail,
+  Todo) charges the estimated tokens of the block it actually emitted — the
+  same number it logs as `hint_tokens_est`, so the shadow reconciles with the
+  #457 ledger by construction — and records the governor's decision against
+  the remaining session allowance as a `budget_shadow` event: would this block
+  still have fit, or would it have fallen? **Nothing is trimmed.** `clear`
+  resets a session's ledger; `compact` and `resume` do not, because the
+  injected text survives compaction. The provisional shadow budget is 7,500
+  tokens per session — the p75 of hook-lane tokens per evaluable session in
+  the 7- and 30-day ledger on 4 September — overridable via
+  `BASTRA_SESSION_BUDGET_SHADOW` (`0` = count only); the live value is a
+  separate, measured decision. The Telemetry tab gains a "Context budget —
+  shadow" section: sessions touched, tokens that would not have been
+  injected per lane and per day, the emission at which sessions first
+  crossed, and a flag when the budget changed inside the window. The
+  decision is per emission, like the stats.ts what-if, and reads as an upper
+  bound on what a per-entry live governor would touch.
+
 - **A Telemetry tab in the vault map — the measurements are visible in the
   product** (#463). Everything recall measures was readable only by running
   `packages/daemon/scripts/stats.ts` and reading a wall of monospace text. The
