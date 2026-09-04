@@ -84,7 +84,10 @@ export type DropReason =
   /** Die Höchstzahl war erreicht. */
   | "item_budget"
   /** In dieser Sitzung schon gezeigt (§16.3 Frage 4). */
-  | "already_shown";
+  | "already_shown"
+  /** #438: dieselbe id stand schon einmal in dieser Liste — eine zweite
+   *  Erwähnung im selben Block kostet Budget und trägt nichts bei. */
+  | "duplicate_id";
 
 export interface GovernorDecision {
   /** Was ausgespielt wird — in der Reihenfolge, in der es hereinkam. */
@@ -123,6 +126,14 @@ export interface GovernorOptions {
  * Ein Eintrag, der für sich allein das Token-Budget sprengt, fällt — er wird
  * NICHT gekürzt. Kürzen hieße, eine Evidenz halb auszugeben, und ein halber
  * Beleg ist keiner.
+ *
+ * #438: Entschieden wird je EINTRAG, nicht je id. Die erste Fassung hielt die
+ * Behaltenen in einem `Set<string>` nach id und filterte die Ausgabe darüber —
+ * bei doppelten ids markierte ein angenommenes Vorkommen alle, ein als
+ * `token_budget` verworfenes Duplikat stand trotzdem in `kept`, und die
+ * Item-Zählung (eindeutige ids) passte nicht zur Ausgabe (Einträge). Jetzt
+ * trägt jeder Kandidat seinen Index, und eine zweite Erwähnung derselben id
+ * fällt als `duplicate_id`, bevor sie Budget kostet.
  */
 export function governContext(
   items: GovernedItem[],
@@ -147,9 +158,15 @@ export function governContext(
     .map((it, i) => ({ it, i }))
     .sort((a, b) => a.it.priority - b.it.priority || a.i - b.i);
 
-  const keep = new Set<string>();
+  const keep = new Set<number>();
+  const seenIds = new Set<string>();
   let spent = 0;
-  for (const { it } of order) {
+  for (const { it, i } of order) {
+    if (seenIds.has(it.id)) {
+      dropped.push({ id: it.id, reason: "duplicate_id" });
+      continue;
+    }
+    seenIds.add(it.id);
     if (itemBudget > 0 && keep.size >= itemBudget) {
       dropped.push({ id: it.id, reason: "item_budget" });
       continue;
@@ -160,11 +177,11 @@ export function governContext(
       continue;
     }
     spent += cost;
-    keep.add(it.id);
+    keep.add(i);
   }
 
   return {
-    kept: eligible.filter((it) => keep.has(it.id)),
+    kept: eligible.filter((_, i) => keep.has(i)),
     dropped,
     tokens_spent: spent,
     budget: { tokens: tokenBudget, items: itemBudget },

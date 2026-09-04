@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The context governor decides per entry, not per id** (#438). Kept
+  candidates were tracked in a set keyed by id and the output filtered by that
+  set, so with duplicate ids one accepted occurrence marked all of them as kept:
+  a duplicate the report had dropped for the token budget was emitted anyway,
+  and the item count (unique ids) did not match the output (entries). Each
+  candidate now carries its index, and a second mention of the same id in one
+  block is dropped as `duplicate_id` before it costs budget — the occurrence
+  with the better priority is the one that stays. This was the prerequisite for
+  a live cumulative budget (#458).
+
 - **Hint blocks now say what they are: candidates, not the memories** (#465).
   The session-context header read "apply what fits, load_memory(id) for
   details" — an invitation to treat a one-line summary as the content and the
