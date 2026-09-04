@@ -593,6 +593,54 @@ export function summarizeEvidence(events: ReportEvent[], t: ReportThresholds): E
   };
 }
 
+// ─── Save-Pfad (#477) ────────────────────────────────────────────
+
+export interface SaveSection {
+  /** Saves that became a file. */
+  written: number;
+  /** Saves that exited before the write — the half that was invisible. */
+  held: number;
+  /** Held saves per exit reason, biggest first. */
+  byReason: Array<{ reason: string; count: number }>;
+  /** Claim-gate holds only: how many memories the gate found unanswered. */
+  claimedTotal: number;
+  /** Writes split by create vs. overwrite — a held save is neither. */
+  created: number;
+  overwritten: number;
+}
+
+/**
+ * The save path in both halves. Before #477 only `save_memory` was logged, so
+ * the ledger showed successful writes and nothing else: a save the claim gate
+ * held, a `conflict_with` redirect and the two throwing exits left no trace at
+ * all, and the hold rate was not derivable from the log in any way.
+ *
+ * Returns null when the window saw neither half — a vault that simply did not
+ * save in the window should not grow an empty section.
+ */
+export function summarizeSaves(events: ReportEvent[]): SaveSection | null {
+  const writes = events.filter((e) => e.kind === "save_memory");
+  const holds = events.filter((e) => e.kind === "save_hold");
+  if (writes.length === 0 && holds.length === 0) return null;
+
+  const byReason = new Map<string, number>();
+  let claimedTotal = 0;
+  for (const h of holds) {
+    bump(byReason, String(h.reason ?? "unknown"));
+    const claimed = num(h.claimed_count);
+    if (claimed !== null) claimedTotal += claimed;
+  }
+
+  return {
+    written: writes.length,
+    held: holds.length,
+    byReason: [...byReason].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+    claimedTotal,
+    created: writes.filter((e) => e.created === true).length,
+    overwritten: writes.filter((e) => e.overwrite === true).length,
+  };
+}
+
 // ─── Session-Start ───────────────────────────────────────────────
 
 export interface SessionStartSection {
@@ -673,6 +721,8 @@ export interface TelemetryReport {
   budgetShadow: BudgetShadowSection | null;
   latency: LatencySection;
   evidence: EvidenceSection | null;
+  /** #477: attempted vs. written saves — null while the window saw neither. */
+  saves: SaveSection | null;
   sessionStart: SessionStartSection;
 }
 
@@ -692,6 +742,7 @@ export function buildTelemetryReport(
     budgetShadow: summarizeBudgetShadow(events),
     latency: summarizeLatency(events),
     evidence: summarizeEvidence(events, t),
+    saves: summarizeSaves(events),
     sessionStart: summarizeSessionStart(events),
   };
 }

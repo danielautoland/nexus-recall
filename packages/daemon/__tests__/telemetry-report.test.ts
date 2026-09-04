@@ -17,6 +17,7 @@ import {
   summarizeEvidence,
   summarizeLatency,
   summarizeQuality,
+  summarizeSaves,
   summarizeSessionStart,
   type ReportEvent,
 } from "../src/telemetry-report.js";
@@ -148,6 +149,28 @@ test("#463 evidence: acceptance over shadow only, mix over usable, divergence on
   // u: unfused → skipped. x: no hook_recall → unknown space.
   assert.deepEqual(ev.divergence, { agree: 1, withholds: 1, promotes: 1, unknownSpace: 1, unfused: 1 });
   assert.equal(summarizeEvidence([], T), null);
+});
+
+test("#477 saves: written and held paths stay comparable without recording content", () => {
+  const saves = summarizeSaves([
+    { kind: "save_memory", ts: ts("2026-09-01"), created: true, overwrite: false },
+    { kind: "save_memory", ts: ts("2026-09-01"), created: false, overwrite: true },
+    { kind: "save_hold", ts: ts("2026-09-01"), reason: "claim_gate", claimed_count: 2 },
+    { kind: "save_hold", ts: ts("2026-09-01"), reason: "claim_gate", claimed_count: 1 },
+    { kind: "save_hold", ts: ts("2026-09-01"), reason: "id_exists", claimed_count: 0 },
+  ]);
+  assert.deepEqual(saves, {
+    written: 2,
+    held: 3,
+    byReason: [
+      { reason: "claim_gate", count: 2 },
+      { reason: "id_exists", count: 1 },
+    ],
+    claimedTotal: 3,
+    created: 1,
+    overwritten: 1,
+  });
+  assert.equal(summarizeSaves([]), null);
 });
 
 test("#463 session start: shares only over starts that carry per-part data, the rest is counted as a gap", () => {

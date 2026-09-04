@@ -418,6 +418,49 @@ function renderEvidence(ev) {
   );
 }
 
+/**
+ * #477 — the save path in both halves. Until save_hold existed only the left
+ * column had a number: a save the claim gate held, a conflict redirect and the
+ * two throwing exits left no event at all, so "recall never saves" could not be
+ * answered with a measurement in either direction.
+ */
+function renderSaves(sv) {
+  if (!sv) {
+    return section("Saves", "How many saves became a file, and how many never got there?", empty("no save_memory or save_hold events in this window"));
+  }
+  const attempted = sv.written + sv.held;
+  const REASONS = {
+    claim_gate: "claim gate — the triggers were already owned",
+    conflict_redirect: "conflict_with — diverted into the target's body",
+    unresolved_replaces: "replaces pointed at nothing",
+    id_exists: "id exists and overwrite was not set",
+  };
+  const maxR = Math.max(1, ...sv.byReason.map((r) => r.count));
+  const rows = sv.byReason.map((r) =>
+    h("tr", null, td(REASONS[r.reason] ?? r.reason), barCell(r.count, maxR, true), td(fmt(r.count)), td(pct(r.count, sv.held), "dim")),
+  );
+  return section(
+    "Saves",
+    "How many saves became a file, and how many never got there?",
+    h(
+      "div",
+      { class: "tv-figs" },
+      h("div", null, h("div", { class: "tv-fig-k" }, "attempted"), h("div", { class: "tv-fig-v" }, fmt(attempted))),
+      h("div", null, h("div", { class: "tv-fig-k" }, "written"), h("div", { class: "tv-fig-v ok" }, fmt(sv.written)),
+        h("div", { class: "tv-fig-sub" }, `${fmt(sv.created)} created · ${fmt(sv.overwritten)} overwritten`)),
+      h("div", null, h("div", { class: "tv-fig-k" }, "held"), h("div", { class: "tv-fig-v" }, fmt(sv.held)),
+        h("div", { class: "tv-fig-sub" }, `${pct(sv.held, attempted)} of attempts`)),
+    ),
+    sv.byReason.length > 0
+      ? table(["exit", "", "holds", "share"], rows)
+      : empty("nothing was held in this window"),
+    sv.claimedTotal > 0
+      ? note(`The claim gate named ${fmt(sv.claimedTotal)} already-owned memories across ${fmt(sv.byReason.find((r) => r.reason === "claim_gate")?.count ?? 0)} hold(s) — each one is a successor, a contradiction or a deliberate pair that nobody answered yet.`)
+      : null,
+    note("A held save carries no title, body or trigger text into the log: what a save wanted to say is yours, and a rejected one says it just as much as an accepted one."),
+  );
+}
+
 function renderSessionStart(ss) {
   const rows = ss.parts.map((p) =>
     h("tr", null, td(p.part), barCell(p.tokens, Math.max(1, ss.totalTokens)), td(fmt(p.tokens)), td(pct(p.tokens, ss.totalTokens), "dim"), td(fmt(p.avgPerStart)), td(`${p.presentIn}/${ss.withParts}`, "dim")),
@@ -481,6 +524,7 @@ export function createTelemetryView() {
           renderBudgetShadow(r.budgetShadow),
           renderLatency(r.latency),
           renderEvidence(r.evidence),
+          renderSaves(r.saves),
           renderSessionStart(r.sessionStart),
         );
         const span = r.window.from && r.window.to ? `${r.window.from.slice(0, 10)} → ${r.window.to.slice(0, 10)}` : "no events";

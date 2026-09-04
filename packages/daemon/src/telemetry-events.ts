@@ -18,6 +18,7 @@ export type TelemetryEvent =
   | RecallEvent
   | LoadMemoryEvent
   | SaveMemoryEvent
+  | SaveHoldEvent
   | HookRecallEvent
   | HookReflexEvent
   | HookActEvent
@@ -297,6 +298,34 @@ export interface SaveMemoryEvent extends BaseEvent {
   body_chars: number;
   overwrite: boolean;
   created: boolean;
+  follows_recall: string | null;
+}
+
+/**
+ * #477 — a save that never became a write.
+ *
+ * `save_memory` has four exits above the write: the claim gate holds a create
+ * whose triggers a memory already owns, a `conflict_with` payload is diverted
+ * into a conflict block, an unresolved `replaces` throws, and an existing id
+ * without `overwrite` throws. None of them reached `logSaveMemory`, so the
+ * ledger only ever showed saves that succeeded and the hold rate was not
+ * derivable from it at all — see #376, which cannot be evaluated without a
+ * baseline of how often the gate currently bites.
+ *
+ * Deliberately carries NO content: no title, no body, no trigger text. What a
+ * save wanted to say is the user's, and a rejected one says it just as much as
+ * an accepted one.
+ */
+export interface SaveHoldEvent extends BaseEvent {
+  kind: "save_hold";
+  /** Which exit fired. `claim_gate` is the only one that is not an error. */
+  reason: "claim_gate" | "conflict_redirect" | "unresolved_replaces" | "id_exists";
+  id: string;
+  type: string;
+  scope: string;
+  /** Memories the claim gate found unanswered; 0 for every other reason. */
+  claimed_count: number;
+  overwrite: boolean;
   follows_recall: string | null;
 }
 

@@ -48,6 +48,16 @@ export interface LogStats {
   totals: { calls: number; timeouts: number; errors: number };
   /** Non-prompt event kinds seen in the window, for orientation. */
   otherKinds: Array<{ kind: string; count: number }>;
+  /** #477: attempted vs. written saves. Until save_hold existed, only the
+   *  written half was visible and the hold rate could not be read at all. */
+  saves: SaveStats;
+}
+
+export interface SaveStats {
+  written: number;
+  held: number;
+  /** Held saves per exit reason, biggest first. */
+  byReason: Array<{ reason: string; count: number }>;
 }
 
 export function percentiles(values: number[]): Percentiles | null {
@@ -68,6 +78,8 @@ export function percentiles(values: number[]): Percentiles | null {
 export function aggregate(events: Array<Record<string, unknown>>): LogStats {
   const byMode = new Map<string, LaneStats & { latencies: number[] }>();
   const otherKinds = new Map<string, number>();
+  const holdReasons = new Map<string, number>();
+  let written = 0;
   let from: string | null = null;
   let to: string | null = null;
 
@@ -82,6 +94,13 @@ export function aggregate(events: Array<Record<string, unknown>>): LogStats {
     // Keeping them apart would have hidden the bigger number — the
     // PreToolUse lane is where the volume is.
     const kindName = String(e.kind ?? "event");
+    // #477: the two halves of the save path, counted before the lane filter —
+    // they are not hook calls and would otherwise only appear as a kind name.
+    if (kindName === "save_memory") written++;
+    if (kindName === "save_hold") {
+      const reason = String(e.reason ?? "unknown");
+      holdReasons.set(reason, (holdReasons.get(reason) ?? 0) + 1);
+    }
     if (kindName !== "prompt_hook_call" && kindName !== "hook_call") {
       otherKinds.set(kindName, (otherKinds.get(kindName) ?? 0) + 1);
       continue;
@@ -123,7 +142,27 @@ export function aggregate(events: Array<Record<string, unknown>>): LogStats {
       .map(([kind, count]) => ({ kind, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8),
+    saves: {
+      written,
+      held: [...holdReasons.values()].reduce((n, c) => n + c, 0),
+      byReason: [...holdReasons.entries()]
+        .map(([reason, count]) => ({ reason, count }))
+        .sort((a, b) => b.count - a.count),
+    },
   };
+}
+
+/** #477 — the save line: attempted, written, held, and where the holds came
+ *  from. Printed whenever the window saw either half, including the case where
+ *  every attempt was held and nothing was written. */
+function renderSaves(s: SaveStats): string[] {
+  const attempted = s.written + s.held;
+  if (attempted === 0) return [];
+  const out = [`  saves — ${attempted} attempted, ${s.written} written, ${s.held} held (${pct(s.held, attempted)})`];
+  if (s.byReason.length > 0) {
+    out.push(`    held by: ${s.byReason.map((r) => `${r.reason}×${r.count}`).join(", ")}`);
+  }
+  return out;
 }
 
 function pct(part: number, whole: number): string {
@@ -139,6 +178,7 @@ export function renderStats(stats: LogStats, budgetMs: number): string {
     if (stats.otherKinds.length > 0) {
       out.push(`  other events present: ${stats.otherKinds.map((k) => `${k.kind}×${k.count}`).join(", ")}`);
     }
+    out.push(...renderSaves(stats.saves));
     return out.join("\n");
   }
 
@@ -177,6 +217,11 @@ export function renderStats(stats: LogStats, budgetMs: number): string {
       `  ${stats.totals.timeouts} timeout(s), ${stats.totals.errors} error(s) ` +
         `= ${pct(stats.totals.timeouts + stats.totals.errors, stats.totals.calls)} of all calls`,
     );
+  }
+  const saveLines = renderSaves(stats.saves);
+  if (saveLines.length > 0) {
+    out.push("");
+    out.push(...saveLines);
   }
   if (stats.otherKinds.length > 0) {
     out.push("");

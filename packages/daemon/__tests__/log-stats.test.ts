@@ -102,6 +102,27 @@ test("non-hook events are counted, never mistaken for lanes", () => {
   assert.deepEqual(stats.otherKinds, [{ kind: "save_memory", count: 2 }]);
 });
 
+test("save attempts report written and held halves with hold reasons", () => {
+  const stats = aggregate([
+    { kind: "save_memory", ts: "2026-07-28T05:00:00.000Z" },
+    { kind: "save_memory", ts: "2026-07-28T05:00:01.000Z" },
+    { kind: "save_hold", ts: "2026-07-28T05:00:02.000Z", reason: "claim_gate" },
+    { kind: "save_hold", ts: "2026-07-28T05:00:03.000Z", reason: "claim_gate" },
+    { kind: "save_hold", ts: "2026-07-28T05:00:04.000Z", reason: "id_exists" },
+  ]);
+  assert.deepEqual(stats.saves, {
+    written: 2,
+    held: 3,
+    byReason: [
+      { reason: "claim_gate", count: 2 },
+      { reason: "id_exists", count: 1 },
+    ],
+  });
+  const out = renderStats(stats, 600);
+  assert.match(out, /5 attempted, 2 written, 3 held \(60%\)/);
+  assert.match(out, /claim_gate×2, id_exists×1/);
+});
+
 test("the render names the budget and the headroom against it", () => {
   const stats = aggregate([
     promptCall({ detected_mode: "assertion", latency_ms_total: 259, status: "timeout" }),

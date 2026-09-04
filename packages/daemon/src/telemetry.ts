@@ -36,6 +36,7 @@ import type {
   RecallEvent,
   LoadMemoryEvent,
   SaveMemoryEvent,
+  SaveHoldEvent,
   HookRecallEvent,
   HookReflexEvent,
   HookActEvent,
@@ -190,15 +191,13 @@ export class Telemetry {
     return this.sessionId;
   }
 
-  constructor(opts: { onUsage?: UsageSink } = {}) {
+  constructor(opts: { onUsage?: UsageSink; logDir?: string } = {}) {
     this.onUsage = opts.onUsage;
     this.enabled =
       (envFirst("BASTRA_TELEMETRY", "NEXUS_TELEMETRY") ?? "on").toLowerCase() !== "off";
     // Log-Pfad bleibt bei `~/.nexus-recall/logs` bis zur User-Data-Migration
     // (Daniel hat existing logs, die wir nicht orphanen wollen).
-    this.logDir =
-      envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ??
-      defaultLogDir();
+    this.logDir = opts.logDir ?? envFirst("BASTRA_LOG_PATH", "NEXUS_LOG_PATH") ?? defaultLogDir();
     this.sessionId = randomUUID();
     // Korrelations-State boot-übergreifend wiederherstellen (Audit 26.6.):
     // ohne das gehen follows_recall/from_hook_recall/recall_episode bei jedem
@@ -522,6 +521,23 @@ export class Telemetry {
     if (!this.enabled) return;
     await this.write({
       kind: "save_memory",
+      ts: new Date().toISOString(),
+      session_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  /**
+   * #477 — ein Save, der nie ein Write wurde. Best-effort wie jedes andere
+   * Telemetrie-Ereignis: der Hold selbst passiert auch dann, wenn das
+   * Schreiben des Events scheitert.
+   */
+  async logSaveHold(
+    payload: Omit<SaveHoldEvent, "kind" | "ts" | "session_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "save_hold",
       ts: new Date().toISOString(),
       session_id: this.sessionId,
       ...payload,

@@ -20,6 +20,7 @@ import {
   stripAutoRelatedSection,
 } from "@bastra-recall/core";
 import { fireAndForget } from "./telemetry.js";
+import type { SaveHoldEvent } from "./telemetry-events.js";
 import { recordAudit } from "./audit-trail.js";
 import { markConflict } from "./conflict-marking.js";
 import { claimGateResult, unansweredClaims, GENERATED_TRIGGER_TYPES, type ClaimGateResult } from "./claim-gate.js";
@@ -369,6 +370,31 @@ export async function saveMemoryHandler(
   return { ...result, note: result.note ?? "Save complete — do not repeat this save_memory call." };
 }
 
+/**
+ * #477 — record a save that never became a write. Every exit above the write
+ * goes through here, so "attempted" and "written" become comparable numbers
+ * instead of the write alone being visible.
+ */
+function noteSaveHold(
+  deps: ToolDeps,
+  reason: SaveHoldEvent["reason"],
+  id: string,
+  data: { type: string; scope: string; overwrite?: boolean },
+  claimedCount = 0,
+): void {
+  fireAndForget(
+    deps.telemetry.logSaveHold({
+      reason,
+      id,
+      type: data.type,
+      scope: data.scope,
+      claimed_count: claimedCount,
+      overwrite: data.overwrite ?? false,
+      follows_recall: deps.telemetry.recentRecallId(),
+    }),
+  );
+}
+
 async function saveMemoryInner(
   deps: ToolDeps,
   rawArgs: unknown,
@@ -390,7 +416,10 @@ async function saveMemoryInner(
 
   // #205: a save declaring a contradiction is a conflict report, not a write —
   // diverted before any quality scoring or file I/O touches the vault.
-  if (parsed.data.conflict_with) return markConflict(deps, parsed.data, finalId);
+  if (parsed.data.conflict_with) {
+    noteSaveHold(deps, "conflict_redirect", finalId, parsed.data);
+    return markConflict(deps, parsed.data, finalId);
+  }
 
   const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
@@ -436,7 +465,10 @@ async function saveMemoryInner(
       },
       supersededChain,
     );
-    if (claimed.length > 0) return claimGateResult(finalId, claimed, saveQuality);
+    if (claimed.length > 0) {
+      noteSaveHold(deps, "claim_gate", finalId, parsed.data, claimed.length);
+      return claimGateResult(finalId, claimed, saveQuality);
+    }
   }
 
   // #164: validate the supersession target BEFORE writing anything. A
@@ -445,9 +477,11 @@ async function saveMemoryInner(
   const supersedes = parsed.data.replaces;
   if (supersedes !== undefined) {
     if (supersedes === finalId) {
+      noteSaveHold(deps, "unresolved_replaces", finalId, parsed.data);
       throw new Error(`replaces: a memory cannot supersede itself (${finalId}).`);
     }
     if (!deps.vault.get(supersedes)) {
+      noteSaveHold(deps, "unresolved_replaces", finalId, parsed.data);
       throw new Error(
         `replaces: unknown memory '${supersedes}' — it must exist in the vault. ` +
           `Note that an archived memory is no longer in the living vault and cannot be superseded.`,
@@ -462,6 +496,7 @@ async function saveMemoryInner(
   // die alte Datei in den Trash verschieben (recoverbar, kein Hard-Delete).
   const previous = deps.vault.get(finalId);
   if (previous && !parsed.data.overwrite) {
+    noteSaveHold(deps, "id_exists", finalId, parsed.data);
     throw new Error(
       `memory already exists: ${finalId} (at ${previous.filePath}). ` +
         `Pass overwrite=true to replace it — a changed folder/scope moves the file.`,
