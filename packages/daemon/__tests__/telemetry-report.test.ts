@@ -15,6 +15,7 @@ import {
   readEventWindow,
   summarizeContextTax,
   summarizeEvidence,
+  summarizeHintSuppression,
   summarizeLatency,
   summarizeQuality,
   summarizeSaves,
@@ -171,6 +172,48 @@ test("#477 saves: written and held paths stay comparable without recording conte
     overwritten: 1,
   });
   assert.equal(summarizeSaves([]), null);
+});
+
+test("#479 suppression: report measures removed hints and estimated context", () => {
+  const section = summarizeHintSuppression([
+    {
+      kind: "hook_recall",
+      ts: ts("2026-09-05"),
+      usage_suppressed: [
+        { id: "fact-a", type: "project-fact", surfaced: 8 },
+        { id: "lesson-b", type: "lesson", surfaced: 12 },
+      ],
+      usage_suppressed_tokens_est: 70,
+    },
+    {
+      kind: "hook_recall",
+      ts: ts("2026-09-05"),
+      usage_suppressed: [{ id: "fact-a", type: "project-fact", surfaced: 9 }],
+    },
+  ])!;
+  assert.deepEqual(
+    {
+      calls: section.calls,
+      hints: section.hints,
+      tokensAvoided: section.tokensAvoided,
+      unknownTokenCalls: section.unknownTokenCalls,
+      uniqueMemories: section.uniqueMemories,
+      byType: section.byType,
+    },
+    {
+      calls: 2,
+      hints: 3,
+      tokensAvoided: 70,
+      unknownTokenCalls: 1,
+      uniqueMemories: 2,
+      byType: [
+        { type: "project-fact", count: 2 },
+        { type: "lesson", count: 1 },
+      ],
+    },
+  );
+  assert.deepEqual(section.topMemories[0], { id: "fact-a", type: "project-fact", count: 2, surfaced: 9 });
+  assert.equal(summarizeHintSuppression([]), null);
 });
 
 test("#463 session start: shares only over starts that carry per-part data, the rest is counted as a gap", () => {

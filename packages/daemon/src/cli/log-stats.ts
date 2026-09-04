@@ -51,6 +51,8 @@ export interface LogStats {
   /** #477: attempted vs. written saves. Until save_hold existed, only the
    *  written half was visible and the hold rate could not be read at all. */
   saves: SaveStats;
+  /** #479: automatic hints removed after repeated version-local non-use. */
+  hintSuppression: HintSuppressionStats;
 }
 
 export interface SaveStats {
@@ -58,6 +60,13 @@ export interface SaveStats {
   held: number;
   /** Held saves per exit reason, biggest first. */
   byReason: Array<{ reason: string; count: number }>;
+}
+
+export interface HintSuppressionStats {
+  calls: number;
+  hints: number;
+  tokens: number;
+  byType: Array<{ type: string; count: number }>;
 }
 
 export function percentiles(values: number[]): Percentiles | null {
@@ -79,7 +88,11 @@ export function aggregate(events: Array<Record<string, unknown>>): LogStats {
   const byMode = new Map<string, LaneStats & { latencies: number[] }>();
   const otherKinds = new Map<string, number>();
   const holdReasons = new Map<string, number>();
+  const suppressedTypes = new Map<string, number>();
   let written = 0;
+  let suppressionCalls = 0;
+  let suppressionHints = 0;
+  let suppressionTokens = 0;
   let from: string | null = null;
   let to: string | null = null;
 
@@ -94,6 +107,15 @@ export function aggregate(events: Array<Record<string, unknown>>): LogStats {
     // Keeping them apart would have hidden the bigger number — the
     // PreToolUse lane is where the volume is.
     const kindName = String(e.kind ?? "event");
+    if (kindName === "hook_recall" && Array.isArray(e.usage_suppressed) && e.usage_suppressed.length > 0) {
+      suppressionCalls++;
+      suppressionHints += e.usage_suppressed.length;
+      suppressionTokens += typeof e.usage_suppressed_tokens_est === "number" ? e.usage_suppressed_tokens_est : 0;
+      for (const item of e.usage_suppressed as Array<Record<string, unknown>>) {
+        const type = String(item.type ?? "unknown");
+        suppressedTypes.set(type, (suppressedTypes.get(type) ?? 0) + 1);
+      }
+    }
     // #477: the two halves of the save path, counted before the lane filter —
     // they are not hook calls and would otherwise only appear as a kind name.
     if (kindName === "save_memory") written++;
@@ -149,6 +171,14 @@ export function aggregate(events: Array<Record<string, unknown>>): LogStats {
         .map(([reason, count]) => ({ reason, count }))
         .sort((a, b) => b.count - a.count),
     },
+    hintSuppression: {
+      calls: suppressionCalls,
+      hints: suppressionHints,
+      tokens: suppressionTokens,
+      byType: [...suppressedTypes.entries()]
+        .map(([type, count]) => ({ type, count }))
+        .sort((a, b) => b.count - a.count),
+    },
   };
 }
 
@@ -165,6 +195,14 @@ function renderSaves(s: SaveStats): string[] {
   return out;
 }
 
+function renderHintSuppression(s: HintSuppressionStats): string[] {
+  if (s.hints === 0) return [];
+  return [
+    `  hint suppression — ${s.hints} repeated-unused hint(s) removed across ${s.calls} recall(s), ~${s.tokens} hook-payload tokens avoided`,
+    `    by type: ${s.byType.map((r) => `${r.type}×${r.count}`).join(", ")}`,
+  ];
+}
+
 function pct(part: number, whole: number): string {
   if (whole === 0) return "—";
   const v = (part / whole) * 100;
@@ -179,6 +217,7 @@ export function renderStats(stats: LogStats, budgetMs: number): string {
       out.push(`  other events present: ${stats.otherKinds.map((k) => `${k.kind}×${k.count}`).join(", ")}`);
     }
     out.push(...renderSaves(stats.saves));
+    out.push(...renderHintSuppression(stats.hintSuppression));
     return out.join("\n");
   }
 
@@ -222,6 +261,11 @@ export function renderStats(stats: LogStats, budgetMs: number): string {
   if (saveLines.length > 0) {
     out.push("");
     out.push(...saveLines);
+  }
+  const suppressionLines = renderHintSuppression(stats.hintSuppression);
+  if (suppressionLines.length > 0) {
+    out.push("");
+    out.push(...suppressionLines);
   }
   if (stats.otherKinds.length > 0) {
     out.push("");

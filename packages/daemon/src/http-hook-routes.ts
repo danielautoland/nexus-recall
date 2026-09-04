@@ -7,7 +7,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   Vault,
   SearchIndex,
-  RecallHit,
   RecallStage,
   StageListener,
 } from "@bastra-recall/core";
@@ -23,6 +22,8 @@ import { type SupportedLanguage } from "./learned-recall/language.js";
 import { isWeakResult, isNoHome, decideHits, type RecallDecisionHit } from "@bastra-recall/core";
 import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
+import { suppressRepeatedUnused } from "./hint-suppression.js";
+import { mergeHookRecallHits } from "./hook-recall-merge.js";
 import {
   MAX_BODY_BYTES,
   clampInt,
@@ -31,8 +32,6 @@ import {
   sendJson,
   writeSseEvent,
 } from "./http-util.js";
-
-// ─── /hook/act handler (#144) ────────────────────────────────────
 
 // ─── /hook/recall handler ────────────────────────────────────────
 
@@ -70,40 +69,6 @@ const hookVectorDeadlineMs = (): number => envInt("BASTRA_VECTOR_DEADLINE_MS", 1
 /** #305/#362: Zielbudget der Hook-Lane in ms — die Zahl, gegen die der
  *  Schatten-Router seine Kostenschätzung hält. Das Milestone-Ziel ist 200. */
 const hookBudgetMs = (): number => envInt("BASTRA_HOOK_BUDGET_MS", 200);
-
-/**
- * Zwei Recalls über DASSELBE Memory zu einem Treffer zusammenlegen: der höhere
- * Score gewinnt, und zwar MIT seinem ganzen Beleg-Bündel.
- *
- * Codex-Gegenreview: Vorher wurde der Gewinner genommen, aber
- * `matched_recall_when` per ODER und `matched_terms` per Vereinigung aus BEIDEN
- * Treffern zusammengesetzt. Damit entstand ein Treffer, den es nie gab:
- * Prompt-Treffer mit Score 150 ohne Triggeranker + Content-Treffer mit Score 80,
- * `matched_recall_when: true` und `anchor_strength: "weak"` ergaben Score 150 UND
- * `matched_recall_when: true` — die `anchor_strength` blieb dabei weg, weil sie
- * vom Gewinner kam. Eine fehlende `anchor_strength` behandelt
- * `passesScopeFilter` aus Kompatibilitätsgründen wie den alten Boolean, also
- * genügten Flag + Score ≥ mustLoadScore für einen Cross-Scope-Bypass, den
- * keiner der beiden Recalls je gerechtfertigt hat.
- *
- * Score, Ankerstärke und Matchbeweis gehören zu EINER Query. Sie werden hier
- * deshalb nicht mehr getrennt: Der Gewinner geht unverändert weiter, die Belege
- * des Verlierers gehen mit dem Verlierer.
- */
-export function mergeHookRecallHits(
-  first: RecallHit[],
-  second: RecallHit[],
-  limit: number,
-): RecallHit[] {
-  const byId = new Map<string, RecallHit>();
-  for (const hit of [...first, ...second]) {
-    const previous = byId.get(hit.id);
-    if (!previous || hit.score > previous.score) byId.set(hit.id, hit);
-  }
-  return [...byId.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
-}
 
 export function handleHookRecall(
   req: IncomingMessage,
@@ -487,6 +452,17 @@ export async function runHookRecall(
             })
           : undefined;
       const totalLatencyMs = Date.now() - t0;
+      // #479: automatic hook hints get a version-local circuit breaker. Manual
+      // recall is untouched; directives/reflexes are exempt inside the helper.
+      const usageSuppression = suppressRepeatedUnused(
+        hits,
+        (id) => vault.get(id),
+        usageForShadow(vault.root),
+        undefined,
+        (hit) => Math.ceil(JSON.stringify(toLeanHit(hit)).length / 4),
+      );
+      hits = usageSuppression.kept;
+      const usageSuppressedTokensEst = usageSuppression.suppressed.reduce((n, s) => n + s.tokens_est, 0);
       const recallId = telemetry.newRecallId();
       telemetry.recordHookHints(recallId, hits);
 
@@ -629,6 +605,8 @@ export async function runHookRecall(
             // #263: die Hop-Herkunft, die §18.2 fürs M1-Gate braucht.
             ...(h.hop ? { hop: h.hop } : {}),
           })),
+          usage_suppressed: usageSuppression.suppressed.length > 0 ? usageSuppression.suppressed : undefined,
+          usage_suppressed_tokens_est: usageSuppression.suppressed.length > 0 ? usageSuppressedTokensEst : undefined,
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,

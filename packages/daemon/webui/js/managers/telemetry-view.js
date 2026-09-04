@@ -284,6 +284,33 @@ function renderContextTax(c) {
   );
 }
 
+function renderHintSuppression(hs) {
+  if (!hs) {
+    return section(
+      "Cross-session hint suppression",
+      "Which repeatedly ignored fact hints were removed from automatic hook responses?",
+      empty("no memory version reached the suppression threshold in this window"),
+      note("Only automatic hook injection is filtered. Manual recall and load_memory remain available; directive memories and explicit reflex wiring are exempt."),
+    );
+  }
+  const max = Math.max(1, ...hs.byType.map((r) => r.count));
+  return section(
+    "Cross-session hint suppression",
+    "Which repeatedly ignored fact hints were removed from automatic hook responses?",
+    h(
+      "div",
+      { class: "tv-figs" },
+      h("div", null, h("div", { class: "tv-fig-k" }, "hints removed"), h("div", { class: "tv-fig-v ok" }, fmt(hs.hints)), h("div", { class: "tv-fig-sub" }, `${fmt(hs.calls)} hook recall(s)`)),
+      h("div", null, h("div", { class: "tv-fig-k" }, "hook payload avoided"), h("div", { class: "tv-fig-v" }, `~${fmt(hs.tokensAvoided)}`), h("div", { class: "tv-fig-sub" }, `tokens · ${fmt(hs.unknownTokenCalls)} unknown call(s)`)),
+      h("div", null, h("div", { class: "tv-fig-k" }, "memory versions"), h("div", { class: "tv-fig-v" }, fmt(hs.uniqueMemories))),
+    ),
+    table(["type", "", "removed"], hs.byType.map((r) => h("tr", null, td(r.type), barCell(r.count, max), td(fmt(r.count))))),
+    h3("Most often suppressed"),
+    table(["memory", "type", "removed", "prior surfaces"], hs.topMemories.map((r) => h("tr", null, td(r.id, "id"), td(r.type, "dim"), td(fmt(r.count)), td(fmt(r.surfaced), "dim")))),
+    note("Suppression is version-local: changing the memory text or recall_when gives it a clean trial. Token savings estimate the serialized lean hit at chars/4 and exclude wrapper markup."),
+  );
+}
+
 /** Two bars per day: what the lanes emitted, and the part a session budget would have cut. */
 function budgetDaily(daily) {
   const svg = s("svg", { class: "tv-chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
@@ -521,6 +548,7 @@ export function createTelemetryView() {
           renderOverview(r),
           renderQuality(r.quality, r.thresholds),
           renderContextTax(r.contextTax),
+          renderHintSuppression(r.hintSuppression),
           renderBudgetShadow(r.budgetShadow),
           renderLatency(r.latency),
           renderEvidence(r.evidence),

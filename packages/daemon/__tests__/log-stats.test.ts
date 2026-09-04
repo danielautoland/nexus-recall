@@ -123,6 +123,36 @@ test("save attempts report written and held halves with hold reasons", () => {
   assert.match(out, /claim_gate×2, id_exists×1/);
 });
 
+test("cross-session hint suppression reports avoided hints and context", () => {
+  const stats = aggregate([
+    {
+      kind: "hook_recall",
+      ts: "2026-09-05T05:00:00.000Z",
+      usage_suppressed: [
+        { id: "a", type: "project-fact" },
+        { id: "b", type: "lesson" },
+      ],
+      usage_suppressed_tokens_est: 73,
+    },
+    {
+      kind: "hook_recall",
+      ts: "2026-09-05T05:01:00.000Z",
+      usage_suppressed: [{ id: "a", type: "project-fact" }],
+      usage_suppressed_tokens_est: 31,
+    },
+  ]);
+  assert.deepEqual(stats.hintSuppression, {
+    calls: 2,
+    hints: 3,
+    tokens: 104,
+    byType: [
+      { type: "project-fact", count: 2 },
+      { type: "lesson", count: 1 },
+    ],
+  });
+  assert.match(renderStats(stats, 600), /3 repeated-unused hint\(s\).*~104 hook-payload tokens avoided/);
+});
+
 test("the render names the budget and the headroom against it", () => {
   const stats = aggregate([
     promptCall({ detected_mode: "assertion", latency_ms_total: 259, status: "timeout" }),

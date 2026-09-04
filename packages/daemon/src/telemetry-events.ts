@@ -521,6 +521,16 @@ export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
    *  nichts zu melden hat. Die schlanke Hook-Projektion bleibt unberührt —
    *  das hier ist Telemetrie, kein Teil des öffentlichen Vertrags (C-046). */
   hits: { id: string; score: number; type: string; hop?: "direct" | "1-hop" }[];
+  /** #479: candidates removed from automatic injection after repeated
+   *  version-local surfaces with no explicit load. Never includes content. */
+  usage_suppressed?: Array<{
+    id: string;
+    type: string;
+    surfaced: number;
+    tokens_est: number;
+  }>;
+  /** Sum of the lean-hit token estimates above (chars/4). */
+  usage_suppressed_tokens_est?: number;
   latency_ms_recall: number;
   latency_ms_total: number;
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
@@ -690,4 +700,3 @@ export interface OllamaLifecycleEvent extends Omit<BaseEvent, "session_id"> {
   /** Provider-Calls (query + backfill batches) seit Daemon-Boot. */
   embed_calls_since_boot: number | null;
 }
-

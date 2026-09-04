@@ -125,7 +125,7 @@ export {
   resolveCorsOrigin,
   gateApiRequest,
 } from "./http-auth.js";
-export { mergeHookRecallHits } from "./http-hook-routes.js";
+export { mergeHookRecallHits } from "./hook-recall-merge.js";
 
 export interface HttpOptions {
   port: number;

@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   // Lifecycle-Events darüber loggen. Der onUsage-Sink speist den Per-Memory-
   // Usage-Sidecar (#154) — fire-and-forget, ein kaputter Sidecar darf keinen
   // Tool-Call brechen (Contract in usage-sidecar.ts).
-  const telemetry = createDaemonTelemetry(VAULT_PATH!);
+  const telemetry = createDaemonTelemetry(VAULT_PATH!, (id) => vault.get(id));
 
   // #267: Die Armzuweisung der §17.4-Experimente. Ohne registrierte
   // Konfiguration bleibt jedes Ereignis `unassigned` — die Spalte existiert
