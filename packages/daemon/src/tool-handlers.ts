@@ -31,6 +31,7 @@ import type { ToolDeps } from "./tool-deps.js";
 import { vaultLocator } from "./vault-locator.js";
 import { scoreSaveQuality, GENERIC_TRIGGER_WORDS, type SaveQualityResult } from "./save-quality.js";
 import { MEMORY_TOOL_DEFS } from "./tool-defs-memory.js";
+import { detectSaveCallCorruption, saveCallCorruptionMessage } from "./save-call-corruption.js";
 
 // Re-exported so the 18 existing importers keep their import path.
 export type { ToolDeps };
@@ -347,6 +348,12 @@ export async function saveMemoryHandler(
   deps: ToolDeps,
   rawArgs: unknown,
 ): Promise<SaveMemoryResult | ClaimGateResult> {
+  // Claude/Opus can switch from native JSON arguments into legacy XML inside
+  // the first multiline value. That is terminal immediately: retrying the same
+  // generated call cannot recreate fields that never crossed the MCP boundary,
+  // and it must not poison the ordinary save-failure counter.
+  const corruption = detectSaveCallCorruption(rawArgs);
+  if (corruption) throw new Error(saveCallCorruptionMessage(corruption));
   let result: SaveMemoryResult | ClaimGateResult;
   try {
     result = await saveMemoryInner(deps, rawArgs);
@@ -733,4 +740,3 @@ export async function archiveMemoryHandler(
 // save_memory). Sowohl der embedded MCP-Server in index.ts als auch
 // der HTTP-Forwarder mcp-forwarder.ts importieren das hier, damit Schema
 // und Description nicht aus dem Sync geraten.
-

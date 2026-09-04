@@ -291,9 +291,12 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "  existing memories under a new convention.\n" +
       "\n" +
       "AFTER SAVING: surface a single-line ack to the user, prefixed " +
-      "with `→`: `→ saved: <title> (id: <id>)`. Nothing more.",
+      "with `→`: `→ saved: <title> (id: <id>)`. Nothing more.\n\n" +
+      "CALL FORMAT: send every argument as its own native JSON property. " +
+      "Never embed XML tags such as <body> or <topic_path> inside summary.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         title: {
           type: "string",
