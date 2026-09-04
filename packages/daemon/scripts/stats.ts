@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readUsage, type UsageAggregate } from "../src/usage-sidecar.js";
-import { governorWhatIf } from "./stats-governor.js";
+import { governorWhatIf } from "../src/stats-governor.js";
 import { summarizeEvidenceGate } from "./stats-evidence.js";
 import { buildContextLedger, HOOK_LANE_KINDS, TOOL_PAYLOAD_KINDS } from "../src/context-ledger.js";
 

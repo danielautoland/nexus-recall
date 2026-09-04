@@ -1,5 +1,5 @@
 /**
- * Die beiden Report-Rechnungen aus `scripts/stats-governor.ts` (#354, §18.2).
+ * Die beiden Report-Rechnungen aus `src/stats-governor.ts` (#354, §18.2).
  *
  * Beide beantworten Gegenfragen, die der Report bisher nicht stellte: Was hätte
  * ein Sitzungsbudget beschnitten, und welche `no_answer`-Abweichungen gibt es
@@ -17,7 +17,7 @@ import {
   requiredDivergence,
   shadowAcceptance,
   type AnyEventLike,
-} from "../scripts/stats-governor.js";
+} from "../src/stats-governor.js";
 
 const injektion = (session: string, tokens: number, kind = "hook_call"): AnyEventLike => ({
   kind,

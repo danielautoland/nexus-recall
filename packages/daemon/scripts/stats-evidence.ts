@@ -25,7 +25,7 @@ import {
   ACCEPT_MAX_SESSION_SHARE,
   type AnyEventLike,
   requiredDivergence,
-} from "./stats-governor.js";
+} from "../src/stats-governor.js";
 
 /** Ein geladenes Log-Ereignis, wie `stats.ts` es reicht. */
 type AnyEvent = AnyEventLike;

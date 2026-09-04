@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Regression tests for the SessionStart and TodoWrite lanes** (#373). Both
+  lanes had no test of their own, which is how #372 — both stamping a fresh
+  UUID instead of the hook payload's session — went unnoticed through the
+  whole #356 series. The new tests pin the telemetry row of each lane: session
+  id from the payload, synthetic UUID only as the fallback, `hook_version`
+  present, the right event kind, the daemon-unreachable and gate branches, and
+  for SessionStart the per-part token split.
+
+### Added
+
 - **The session-start block is measured per part** (#462, measurement only).
   152 session starts — 0.8 % of all hook emissions — carried 14.5 % of the
   entire context tax, and telemetry recorded one number for a block assembled
