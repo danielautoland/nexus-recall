@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A Telemetry tab in the vault map — the measurements are visible in the
+  product** (#463). Everything recall measures was readable only by running
+  `packages/daemon/scripts/stats.ts` and reading a wall of monospace text. The
+  map's view switch now carries a fifth entry, Telemetry, that renders the
+  same series over the user's own event logs: recall quality (hit bands,
+  surfaced → loaded → acted on, follow-through and rank of loaded hints, hint
+  source split), the complete context tax (#457 ledger by lane / tool payload
+  / presentation, tokens per day, top sessions, and the archival-candidate
+  list with the #354 directive/fact split so a working rule never reads as
+  waste), latency per lane and per day (median and p95), the evidence gate
+  (§18.2 / C-085 acceptance criteria as progress, decision mix, divergence vs
+  legacy on fused runs only) and the session-start block per part (#462).
+  Every section names its gaps instead of drawing through them: unknown-size
+  rows are a lower bound, starts without `hint_tokens_by_part` are counted
+  separately, memories whose type predates `hinted_types` stay unverified.
+  Served by a new loopback-only, `ui.enabled`-gated `GET /ui/telemetry?days=N`
+  that opens only the day files inside the window and clamps the window to
+  the log retention. Local only — nothing is uploaded or aggregated. No new
+  instrumentation; `stats-governor.ts` moved from `scripts/` to `src/` so the
+  daemon and the CLI report share one acceptance rule.
+
 - **The context tax is now measured end to end — one ledger for hook
   injections and tool payloads** (#457). Two official views answered "how much
   context does Recall add" with different numerators: `Net-context-ROI` counted
@@ -83,6 +104,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   carrying the canonical hash; the plugin dir now also carries the four
   reference files so every pointer resolves. `npm run skill:build` regenerates,
   every daemon build runs it, and a test fails on a stale or hand-edited copy.
+
+### Changed
+
+- **The assertion lane's hint is a statement about the environment, not three
+  commands** (#384). It read "Do NOT assert numbers … Check the candidates
+  below … write that you do not know instead of guessing" — an instruction in
+  context has to be noticed, accepted and turned into output, and a
+  prohibition names the very move it forbids. The block now states the facts:
+  for a claim like this, model memory is not a source; the numbers come from
+  the vault; a claim the vault does not answer is unknown and goes out as
+  unknown; the candidates follow. Same trigger, same candidates, same floor.
+  Re-measured on the #252 harness (one-memory vault, opus, trigger-form
+  prompt): the previous wording stood at 7/7 with no invented figure, so the
+  comparison can only rule out a regression, not show a gain.
 
 ### Changed
 

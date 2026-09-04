@@ -4,7 +4,9 @@
  * WARUM EIGENES MODUL. `stats.ts` ruft sein `main()` auf Modulebene — wer es
  * importiert, startet den Report. Testbar wird die Rechnung nur, wenn sie
  * daneben liegt. Deshalb hier: Zahlen rein, Zahlen raus, kein `console.log`.
- * Gedruckt wird in `stats.ts`.
+ * Gedruckt wird in `stats.ts`; seit #463 rechnet auch der Telemetry-Tab der
+ * UI (`telemetry-report.ts`) mit denselben Funktionen — deshalb liegt das
+ * Modul in `src/` und nicht mehr in `scripts/`.
  */
 
 /** Ein geladenes Log-Ereignis. Strukturgleich mit `AnyEvent` in `stats.ts` —
