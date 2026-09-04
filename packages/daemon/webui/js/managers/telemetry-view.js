@@ -157,7 +157,7 @@ function renderOverview(r) {
     fig("events", fmt(r.window.events), `${r.window.files} day file${r.window.files === 1 ? "" : "s"}`),
     fig("context tokens", fmt(r.contextTax.totalTokens), r.contextTax.totalUnknown > 0 ? `lower bound · ${fmt(r.contextTax.totalUnknown)} unknown` : `${fmt(r.contextTax.emissions)} emissions · ${r.contextTax.estimator}`),
     fig("hook calls", fmt(q.hookCalls.calls), `${pct(q.hookCalls.withHints, q.hookCalls.calls)} with hints`),
-    fig("loads from a hint", pct(q.followThrough.fromHint, q.followThrough.loads), `${fmt(q.followThrough.fromHint)} of ${fmt(q.followThrough.loads)} loads`),
+    fig("explicit hint loads", pct(q.followThrough.fromHint, q.followThrough.loads), `${fmt(q.followThrough.fromHint)} of ${fmt(q.followThrough.loads)} load_memory calls`),
     fig("use-rate", pct(acted, loaded), `acted on / loaded (${fmt(loaded)} loaded)`, acted > 0),
     fig("evidence gate", gate, ev ? `${fmt(ev.shadow.decisions + ev.live.decisions)} decisions` : "—", gate === "live"),
   );
@@ -185,7 +185,7 @@ function renderQuality(q, t) {
 
   return section(
     "Recall quality",
-    "Do the hints the hooks surface get loaded, and do loaded hints change the next tool input?",
+    "Which surfaced hints caused an explicit load_memory call, and did those loaded hints change the next tool input?",
     h(
       "div",
       { class: "tv-cols" },
@@ -194,12 +194,12 @@ function renderQuality(q, t) {
         null,
         h3("Hit bands — surfaced → loaded → acted on"),
         bands.some((b) => b.surfaced + b.loaded > 0)
-          ? table(["band", "", "surfaced", "loaded", "loaded/surf.", "acted", "use-rate"], bandRows)
+          ? table(["band", "", "surfaced", "loaded", "load lower bound", "acted", "use-rate"], bandRows)
           : empty("no hook recalls with hits in this window"),
-        note("Use-rate is acted on / loaded — the honest rate. Acted on / surfaced is diluted by repeat surfacing of the same hint."),
+        note("Loaded / surfaced is only a lower bound on follow-through: a client can apply an injected hint without calling load_memory, and that path is not observable. Use-rate describes the explicit-load population only (acted on / loaded)."),
         q.directLoads > 0 ? note(`${fmt(q.directLoads)} direct load(s) without a preceding hint are excluded from every band quota (#77).`) : null,
         h3("By hint source"),
-        table(["source", "surfaced", "loaded", "loaded/surf.", "acted", "use-rate"], srcRows),
+        table(["source", "surfaced", "loaded", "load lower bound", "acted", "use-rate"], srcRows),
       ),
       h(
         "div",

@@ -239,7 +239,8 @@ function summarizeFollowThrough(events: AnyEvent[]): void {
     if (r > 0) rankCounts.set(r, (rankCounts.get(r) ?? 0) + 1);
   }
 
-  console.log(`\n## Follow-through  (did hook hints actually get loaded?)`);
+  console.log(`\n## Follow-through  (explicit load_memory only — lower bound)`);
+  console.log(`  A hint can be applied without load_memory; that path is not observable here.`);
   console.log(`  load_memory total:                ${loads.length}`);
   console.log(`  load_memory triggered by a hint:  ${fromHook.length}  (${pct(fromHook.length, loads.length)})`);
   console.log(`  hook_recalls that produced ≥1 load: ${distinctHookRecallsConsumed.size} of ${hookRecalls.length}  (${pct(distinctHookRecallsConsumed.size, hookRecalls.length)})`);
@@ -302,6 +303,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
   }
 
   console.log(`\n## USE-rate  (did loaded hints affect the next tool input?)`);
+  console.log(`  loaded/surfaced is a LOWER BOUND on follow-through: applied hints without load_memory are invisible.`);
   for (const band of bands) {
     const s = surfaced.get(band) ?? 0;
     const l = loaded.get(band) ?? 0;
@@ -310,7 +312,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
     // verwässert); acted_on/loaded ist die EHRLICHE USE-rate, die die
     // Header-Frage „haben geladene Hints den nächsten Input beeinflusst?"
     // beantwortet — sonst liest man pct(a,s)≈0 als „wirkt nicht".
-    console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)}  (${pct(a, l)} of loaded · ${pct(a, s)} of surfaced)`);
+    console.log(`  ${band.padEnd(11)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)} lower bound)  acted_on ${a.toString().padStart(4)}  (${pct(a, l)} of loaded · ${pct(a, s)} of surfaced)`);
   }
   if (directLoads > 0) {
     console.log(`  (excluded: ${directLoads} direct load(s) with no preceding hint — not part of any band quota)`);
@@ -339,7 +341,7 @@ function summarizeUseRate(events: AnyEvent[]): void {
   for (const src of ["bash-tripwire", "write-edit"] as const) {
     const s = hintsBySource[src];
     const [l, a] = epBySource[src];
-    console.log(`    ${src.padEnd(14)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
+    console.log(`    ${src.padEnd(14)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)} lower bound)  acted_on ${a.toString().padStart(4)} (${pct(a, s)})`);
   }
 
   // #263/§17.4 Punkt 5: „Auswertung getrennt nach Client, Hook-Quelle und
@@ -409,7 +411,7 @@ function printDimensionSplit(
     const l = loaded.get(key) ?? 0;
     const a = acted.get(key) ?? 0;
     console.log(
-      `    ${key.padEnd(14)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)})  acted_on ${a.toString().padStart(4)}  (${pct(a, l)} of loaded)`,
+      `    ${key.padEnd(14)} surfaced ${s.toString().padStart(4)}  loaded ${l.toString().padStart(4)} (${pct(l, s)} lower bound)  acted_on ${a.toString().padStart(4)}  (${pct(a, l)} of loaded)`,
     );
   }
 }
