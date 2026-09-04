@@ -185,23 +185,25 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "frontmatter. This is YOUR long-term memory — save autonomously " +
       "when a memory-worthy moment occurs, do not wait to be asked.\n" +
       "\n" +
-      "STRONG SIGNALS — save without confirmation, then 1-line ack:\n" +
+      "STRONG SIGNALS — save without confirmation, then 1-line ack. " +
+      "The cues below are EXAMPLES in whatever language the user writes: " +
+      "match the situation, not the sample words (#476).\n" +
       "- User expresses repetition/frustration about a recurring issue " +
-      "  ('wieder', 'schon wieder', 'wie oft', emphatic caps) → lesson, " +
-      "  emotion:'frustration', salience:0.8\n" +
-      "- User states an explicit durable rule ('immer X', 'nie Y', 'bei " +
-      "  diesem Projekt nutzen wir Z') → preference / workflow\n" +
+      "  ('again', 'wieder', 'снова', 'how often', emphatic caps in any " +
+      "  script) → lesson, emotion:'frustration', salience:0.8\n" +
+      "- User states an explicit durable rule ('always X', 'never Y', " +
+      "  'on this project we use Z') → preference / workflow\n" +
       "- User corrects a recurring tendency in your behavior → " +
       "  meta-working\n" +
       "- An architectural decision is finalized after weighing options " +
       "  → decision\n" +
-      "- User confirms a workflow ('lass uns das immer so machen') → " +
+      "- User confirms a workflow ('let's always do it this way') → " +
       "  workflow\n" +
       "- A bug got fixed after >2 iterations with non-obvious root " +
       "  cause → lesson (capture the FAILED PATH too, not just the fix), " +
       "  emotion:'success', salience:0.7\n" +
-      "- User marks something as important ('das ist wichtig', 'merk dir " +
-      "  das gut') → salience:0.9 on the memory you save\n" +
+      "- User marks something as important ('this is important', " +
+      "  'remember that') → salience:0.9 on the memory you save\n" +
       "\n" +
       "VALENCE (#217): salience/emotion mark how emotionally charged the " +
       "capture moment was — high salience ages slower and may rank higher. " +
@@ -209,7 +211,7 @@ export const MEMORY_TOOL_DEFS: ToolDef[] = [
       "importance; never invent them. Omit both for routine saves.\n" +
       "\n" +
       "ANTI-SIGNALS — do NOT save:\n" +
-      "- One-off task descriptions ('baue mir bitte X') — that's a " +
+      "- One-off task descriptions ('please build me X') — that's a " +
       "  task, not a memory\n" +
       "- Speculation, 'maybe' statements, tentative ideas\n" +
       "- Anything derivable from code/git/CLAUDE.md\n" +

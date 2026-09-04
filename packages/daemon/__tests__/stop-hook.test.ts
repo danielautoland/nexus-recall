@@ -111,6 +111,72 @@ describe("stop-hook: detectFrustration", () => {
   });
 });
 
+describe("stop-hook: #476 the lane fires for non-German users too", () => {
+  it("fires on English frustration words", () => {
+    const turns: TranscriptTurn[] = [
+      userTurn("this is broken again"),
+      assistantTurn("sorry"),
+      userTurn("again the same thing"),
+      userTurn("how often do we have to do this"),
+      userTurn("damn, again"),
+    ];
+    const s = detectFrustration(turns);
+    assert.ok(s, "English frustration must fire");
+    assert.equal(s!.heuristic, "frustration-density");
+  });
+
+  it("fires on Russian frustration words", () => {
+    const turns: TranscriptTurn[] = [
+      userTurn("снова не работает"),
+      assistantTurn("извини"),
+      userTurn("опять то же самое"),
+      userTurn("сколько раз можно"),
+      userTurn("опять сломалось"),
+    ];
+    const s = detectFrustration(turns);
+    assert.ok(s, "Russian frustration must fire");
+    assert.equal(s!.heuristic, "frustration-density");
+  });
+
+  it("counts Cyrillic CAPS as a cue — the Latin-only regex never could", () => {
+    const turns: TranscriptTurn[] = [
+      userTurn("опять ОШИБКА"),
+      userTurn("снова ПРОБЛЕМА"),
+    ];
+    // 2 frustration words + 2 qualifying CAPS tokens = 4 cues, threshold met
+    // only if the CAPS tokens are recognised at all.
+    assert.ok(detectFrustration(turns), "Cyrillic CAPS must count as cues");
+  });
+
+  it("fires on English and Russian decision cues", () => {
+    assert.ok(detectArchitectureDecision([userTurn("ok then, let's go with Drizzle")]));
+    assert.ok(detectArchitectureDecision([userTurn("we'll go with MapKit")]));
+    assert.ok(detectArchitectureDecision([userTurn("decided: we keep the daemon")]));
+    assert.ok(detectArchitectureDecision([userTurn("решено, берём Drizzle")]));
+    assert.ok(detectArchitectureDecision([userTurn("остановимся на этом варианте")]));
+  });
+
+  it("still does not fire on neutral chatter in any language", () => {
+    assert.equal(detectArchitectureDecision([userTurn("let us look at it tomorrow")]), null);
+    assert.equal(detectArchitectureDecision([userTurn("посмотрим завтра")]), null);
+    assert.equal(detectFrustration([userTurn("run the tests"), userTurn("запусти тесты")]), null);
+  });
+
+  it("does not match a cue inside a longer word", () => {
+    // "again" inside "against", "wieder" inside "wiederholen" — the Unicode
+    // lookarounds replace \b, which could not do this for Cyrillic at all.
+    assert.equal(
+      detectFrustration([
+        userTurn("weighing this against that"),
+        userTurn("weighing this against that"),
+        userTurn("weighing this against that"),
+        userTurn("weighing this against that"),
+      ]),
+      null,
+    );
+  });
+});
+
 describe("stop-hook: detectFeatureCompletion", () => {
   it("fires on user 'git commit' + >=5 source tokens existing in repo (#48 B)", () => {
     const turns: TranscriptTurn[] = [

@@ -13,15 +13,16 @@
  *
  * Heuristics:
  *   1. Frustration-Density   — >=4 cues AND >=2 explicit frustration words
- *      (`wieder/schon wieder/wie oft/fuck/verdammt/scheisse`) in the last 10
- *      user turns. CAPS words count as cues only when they are >=5 chars or
+ *      (German, English and Russian cue lists, #476) in the last 10 user
+ *      turns. CAPS words count as cues only when they are >=5 chars or
  *      repeated in a turn AND not a technical acronym (SKILL/JSON/…); CAPS
- *      alone never triggers.
+ *      alone never triggers. Case and word boundaries are Unicode-aware, so
+ *      Cyrillic counts the same way Latin does.
  *   2. Feature-Completion    — `git commit` mentioned in a USER turn + >=5
  *      distinct repo-relative source-file tokens, at least one of which exists
  *      under the session cwd.
- *   3. Architecture-Decision — `ok dann | lass uns | entschieden | final |
- *      gehen wir mit` in the last 5 user turns.
+ *   3. Architecture-Decision — a decision cue from the German, English or
+ *      Russian list in the last 5 user turns.
  *
  * Output: ALWAYS `{}` (#48 — suggestions go to the pending file, which the
  * next SessionStart injects silently). The lane still returns that document
@@ -402,14 +403,27 @@ function evaluateHeuristics(turns: TranscriptTurn[], deps: HeuristicDeps = {}): 
   return suggestions;
 }
 
-// Explicit frustration words. "schon wieder" is matched before plain "wieder"
-// so the same span is not double-counted; the global flag counts occurrences.
-const FRUST_WORD_RE = /\b(?:schon\s+wieder|wieder|wie\s+oft|verdammt|fuck|schei(?:ss|ß)e)\b/gi;
-// Letter runs incl. German Umlauts/ß. We intentionally do NOT use `\b` here:
-// JS word boundaries treat Ä/Ö/Ü as non-word chars, so `\b[A-ZÄÖÜ]+\b` would
-// mangle CAPS words that start with an Umlaut (ÄRGER → "RGER", ÜBER → no match).
-const WORD_TOKEN_RE = /[A-Za-zÄÖÜäöüß]+/g;
-const ALL_CAPS_RE = /^[A-ZÄÖÜ]{4,}$/;
+// Explicit frustration words, per language (#476). The retrieval side of
+// recall is script-neutral; this lane was not, so for a user who does not
+// write German it could not fire at all. Longer variants come first so the
+// same span is not double-counted; the global flag counts occurrences.
+//
+// `\b` is unusable here: JS word boundaries are defined over [A-Za-z0-9_], so
+// `\bснова\b` never matches and `\bÄRGER\b` matches in the wrong places. The
+// Unicode letter lookarounds below are the same idea, correct for every script.
+const FRUST_WORDS = [
+  // de
+  "schon\\s+wieder", "wieder", "wie\\s+oft", "verdammt", "schei(?:ss|ß)e",
+  // en
+  "yet\\s+again", "again", "how\\s+(?:often|many\\s+times)", "damn", "fuck", "shit",
+  // ru
+  "снова", "опять", "сколько\\s+раз", "ч[её]рт", "бл(?:ин|ять)",
+];
+const FRUST_WORD_RE = new RegExp(`(?<!\\p{L})(?:${FRUST_WORDS.join("|")})(?!\\p{L})`, "giu");
+// Letter runs in any script (Latin incl. Umlauts, Cyrillic, …) and all-caps
+// tokens by Unicode case, not by Latin alphabet.
+const WORD_TOKEN_RE = /\p{L}+/gu;
+const ALL_CAPS_RE = /^\p{Lu}{4,}$/u;
 
 // Technical all-caps acronyms that routinely appear in tool output, file paths
 // and doc discussions — never a frustration signal on their own.
@@ -541,13 +555,21 @@ function detectFeatureCompletion(turns: TranscriptTurn[], deps: HeuristicDeps = 
   };
 }
 
-const DECISION_PATTERNS: RegExp[] = [
-  /\bok dann\b/i,
-  /\blass uns\b/i,
-  /\bentschieden\b/i,
-  /\bfinal\b/i,
-  /\bgehen wir mit\b/i,
+// Decision cues, per language (#476) — same boundary reasoning as FRUST_WORDS.
+const DECISION_WORDS = [
+  // de
+  "ok\\s+dann", "lass\\s+uns", "entschieden", "gehen\\s+wir\\s+mit",
+  // en
+  "ok(?:ay)?\\s+then", "let['\u2019]?s\\s+(?:go\\s+with|use)", "we(?:['\u2019]ll|\\s+will)\\s+go\\s+with",
+  "decided", "settled\\s+on",
+  // ru
+  "решено", "остановимся\\s+на", "договорились",
+  // language-neutral
+  "final",
 ];
+const DECISION_PATTERNS: RegExp[] = DECISION_WORDS.map(
+  (w) => new RegExp(`(?<!\\p{L})(?:${w})(?!\\p{L})`, "iu"),
+);
 
 function detectArchitectureDecision(turns: TranscriptTurn[]): SaveSuggestion | null {
   const userTurns = turns.filter((t) => t.role === "user").slice(-DECISION_WINDOW_TURNS);

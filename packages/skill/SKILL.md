@@ -1,6 +1,6 @@
 ---
 name: bastra-recall
-description: Persistent external brain for ChatGPT, Codex, Claude, and other MCP clients — documents (PDFs, contracts, scans with OCR), personal facts (appointments, decisions, items, amounts), AND code lessons / preferences / project topology. USE PROACTIVELY in three modes. (1) RECALL — whenever the user asks about anything from their past, vault, projects, or personal life, INCLUDING direct retrieval phrasings like "find...", "where is...", "when was...", "how much was...", "do I have a ...", "such mal meinen ...". Call bastra-recall (recall + find_document) BEFORE conversation_search, before web_search, before any other lookup tool. (2) CAPTURE — when the user expresses frustration about a recurring issue ("wieder", "schon wieder", "wie oft", emphatic caps), states an explicit durable rule ("immer X", "nie Y", "bei diesem Projekt …"), corrects a recurring tendency in your behavior, finalizes an architectural decision after weighing options, confirms a workflow ("lass uns das immer so machen"), or completes a coherent feature / multi-file refactor / sub-system milestone (save the file map as project-fact). (3) APPLY — at session start, before writing/editing code, before a new coding block in an area you haven't touched this session (recall the topology map first), and before giving multi-step plans. Tools: recall, load_memory, save_memory, find_document, read_document.
+description: Persistent external brain for ChatGPT, Codex, Claude, and other MCP clients — documents (PDFs, contracts, scans with OCR), personal facts (appointments, decisions, items, amounts), AND code lessons / preferences / project topology. USE PROACTIVELY in three modes. (1) RECALL — whenever the user asks about anything from their past, vault, projects, or personal life, INCLUDING direct retrieval phrasings like "find...", "where is...", "when was...", "how much was...", "do I have a ...", "such mal meinen ...". Call bastra-recall (recall + find_document) BEFORE conversation_search, before web_search, before any other lookup tool. (2) CAPTURE — when the user expresses frustration about a recurring issue (in any language: "again", "wieder", "снова", "how often", emphatic caps in any script), states an explicit durable rule ("always X", "never Y", "on this project we …"), corrects a recurring tendency in your behavior, finalizes an architectural decision after weighing options, confirms a workflow ("let's always do it this way"), or completes a coherent feature / multi-file refactor / sub-system milestone (save the file map as project-fact). (3) APPLY — at session start, before writing/editing code, before a new coding block in an area you haven't touched this session (recall the topology map first), and before giving multi-step plans. Tools: recall, load_memory, save_memory, find_document, read_document.
 ---
 
 # bastra-recall — autonomous teammate memory
@@ -53,15 +53,17 @@ Skipping straight to `conversation_search` or `web_search` on a "find my …" qu
 
 ### STRONG signals — fire `save_memory` immediately, then a one-line ack
 
-| Signal | German cue | Memory `type` |
+The cue column holds **examples, not a word list** — the user may write in any language, and the signal is the situation, not the sample phrase (#476).
+
+| Signal | Cue (examples) | Memory `type` |
 |---|---|---|
-| User-frustration about a recurring issue | "wieder", "schon wieder", "wie oft", CAPS | `lesson` + `emotion: frustration`, `salience: 0.8` |
-| Explicit durable rule | "immer X", "nie Y", "bei diesem Projekt nutzen wir Z" | `preference` / `workflow` |
-| Correction of a recurring tendency | "du denkst zu kompliziert bei CSS", "halt einfacher" | `meta-working` |
-| Architectural decision finalized after weighing options | "ok, dann nehmen wir Drizzle" | `decision` |
-| Workflow confirmation | "super, lass uns das immer so machen" | `workflow` |
+| User-frustration about a recurring issue | "again", "wieder", "снова", "how often", emphatic CAPS in any script | `lesson` + `emotion: frustration`, `salience: 0.8` |
+| Explicit durable rule | "always X", "never Y", "on this project we use Z" | `preference` / `workflow` |
+| Correction of a recurring tendency | "you overcomplicate CSS", "keep it simpler" | `meta-working` |
+| Architectural decision finalized after weighing options | "ok then, we take Drizzle" | `decision` |
+| Workflow confirmation | "let's always do it this way" | `workflow` |
 | Bug fixed after >2 iterations with non-obvious root cause | — | `lesson` (capture the FAILED PATH too) + `emotion: success`, `salience: 0.7` |
-| User marks something as important | "das ist wichtig", "merk dir das gut" | `salience: 0.9` |
+| User marks something as important | "this is important", "remember that" | `salience: 0.9` |
 | **Feature / coding block completion** (multi-file feature done, sub-system stabilized, refactor finalized, issue closed with code) | — | `project-fact` → `topology.md` |
 | **Substantive exchange with a person/contributor** (Discord / dev.to / GitHub — not one-liners) | — | identity → `taxonomy.md`, content → `project-fact` |
 
