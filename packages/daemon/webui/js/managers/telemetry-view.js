@@ -284,6 +284,53 @@ function renderContextTax(c) {
   );
 }
 
+/** Two bars per day: what the lanes emitted, and the part a session budget would have cut. */
+function budgetDaily(daily) {
+  const svg = s("svg", { class: "tv-chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+  const max = Math.max(1, ...daily.map((d) => d.tokens));
+  const innerW = W - PAD.l - PAD.r;
+  const innerH = H - PAD.t - PAD.b;
+  const bw = innerW / daily.length;
+  const x = (i) => PAD.l + i * bw;
+  const yOf = (v) => innerH * (v / max);
+  const base = H - PAD.b;
+  yAxis(max, "").forEach((e) => svg.append(e));
+  daily.forEach((d, i) => {
+    const g = s("g", null);
+    g.append(s("title", null, `${d.day}: emitted ${fmt(d.tokens)} · would be trimmed ${fmt(d.tokensTrimmed)} in ${d.wouldDrop} emission(s) · ${d.sessionsAffected} session(s) affected`));
+    g.append(s("rect", { class: "tools", x: x(i) + bw * 0.15, y: base - yOf(d.tokens), width: bw * 0.7, height: yOf(d.tokens) }));
+    g.append(s("rect", { class: "lanes", x: x(i) + bw * 0.15, y: base - yOf(d.tokensTrimmed), width: bw * 0.7, height: yOf(d.tokensTrimmed) }));
+    svg.append(g);
+  });
+  dayTicks(daily.map((d) => d.day), x, bw).forEach((e) => svg.append(e));
+  return svg;
+}
+
+function renderBudgetShadow(b) {
+  const title = "Context budget — shadow";
+  const question = "What would one cumulative budget per session, across all six lanes, have trimmed? Nothing is trimmed yet — the decision is only logged.";
+  if (!b) {
+    return section(title, question, empty("no budget_shadow events in this window — the shadow ledger records from the first lane call after the daemon that carries it"));
+  }
+  const maxT = Math.max(1, ...b.byLane.map((r) => r.tokens));
+  const rows = b.byLane.map((r) =>
+    h("tr", null, td(r.lane), barCell(r.tokensTrimmed, maxT), td(fmt(r.tokens)), td(fmt(r.emissions), "dim"), td(fmt(r.wouldDrop), r.wouldDrop > 0 ? null : "dim"), td(fmt(r.tokensTrimmed), r.tokensTrimmed > 0 ? "ok" : "dim"), td(pct(r.tokensTrimmed, r.tokens), "dim")),
+  );
+  return section(
+    title,
+    question,
+    h("div", { class: "tv-verdict" }, `shadow budget ${fmt(b.budget)} tokens per session · ${fmt(b.sessionsAffected)} of ${fmt(b.sessions)} session(s) would have been touched · ${fmt(b.tokensTrimmed)} of ${fmt(b.tokens)} tokens (${pct(b.tokensTrimmed, b.tokens)}) would not have been injected`),
+    h("div", { class: "tv-legend" }, h("span", { class: "tools" }, "emitted by the lanes"), h("span", null, "would have been trimmed")),
+    b.daily.length ? budgetDaily(b.daily) : null,
+    h3("By lane"),
+    table(["lane", "", "tokens", "emissions", "would drop", "tokens trimmed", "share"], rows),
+    b.firstOverAtEmission !== null ? note(`In affected sessions the budget was first exceeded at emission ${fmt(b.firstOverAtEmission)} (median).`) : null,
+    b.budgets.length > 1 ? note(`The budget changed inside this window (${b.budgets.map(fmt).join(" → ")} tokens) — rows before the change were decided against the older value.`, true) : null,
+    note("Granularity is one decision per emission, like the what-if in stats.ts: a block that no longer fits falls whole. The live governor will decide per entry, so this is an upper bound on what a budget touches."),
+    note("The ledger lives in the daemon's memory and counts from the first lane call; a daemon restart starts every running session at zero. `clear` resets a session, `compact` and `resume` do not."),
+  );
+}
+
 function renderLatency(l) {
   const max = Math.max(1, ...l.lanes.map((r) => r.p95));
   const rows = l.lanes.map((r) => h("tr", null, td(r.lane), barCell(r.median, max), td(ms(r.median)), td(ms(r.p95), "dim"), td(fmt(r.n), "dim")));
@@ -431,6 +478,7 @@ export function createTelemetryView() {
           renderOverview(r),
           renderQuality(r.quality, r.thresholds),
           renderContextTax(r.contextTax),
+          renderBudgetShadow(r.budgetShadow),
           renderLatency(r.latency),
           renderEvidence(r.evidence),
           renderSessionStart(r.sessionStart),

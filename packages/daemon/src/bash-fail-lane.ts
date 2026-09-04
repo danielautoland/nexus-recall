@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { recordBudgetShadow } from "./session-budget.js";
 import { reportHinted } from "./hook-hinted.js";
 import { postLane } from "./thin-client.js";
 import { isUnfused, type HookRecallHit, type HookRecallResponse } from "./hook-recall-response.js";
@@ -235,6 +236,9 @@ export async function runBashFailLane(payload: BashFailPayload, selfBaseUrl: str
     }
   }
 
+  // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den
+  // Governor-Entscheid loggen — nichts wird gekürzt.
+  recordBudgetShadow(typeof payload.session_id === "string" ? payload.session_id : null, "bash_fail_hook_call", hintTokensEst);
   await writeTelemetry({
     session_id: typeof payload.session_id === "string" ? payload.session_id : null,
     exit_code: exitCode,

@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { recordBudgetShadow } from "./session-budget.js";
 import { reportHinted } from "./hook-hinted.js";
 import { hookClient } from "./hook-surface.js";
 import {
@@ -338,6 +339,9 @@ export async function runTodoLane(
     }
   }
 
+  // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den
+  // Governor-Entscheid loggen — nichts wird gekürzt.
+  recordBudgetShadow(payload.session_id ?? null, "todo_hook_call", hintTokensEst);
   await writeTelemetry({
     session_id: payload.session_id ?? null,
     topic: extraction.topics.join(",") || null,

@@ -44,6 +44,7 @@ import { envFirst, envInt } from "./env.js";
 import { effectiveUpdateMode, getDocsLanguage, getDocsMode, getPrimaryLanguage } from "./settings.js";
 import { formatDokuBlock } from "./doku-block.js";
 import { defaultLogDir } from "./telemetry.js";
+import { recordBudgetShadow, resetBudgetOnSource } from "./session-budget.js";
 import { spawnStagedUpdate, stagedToday, markStagedToday } from "./update-check.js";
 import { formatBlockedUpdate, readBlockedUpdate } from "./update-blocked.js";
 import { pendingPatchNotice } from "./patch-registry.js";
@@ -91,6 +92,10 @@ export async function runSessionLane(
   // window go — it was the only thing covering this case, and it paid for that
   // coverage with a re-injection into every session that merely ran long.
   // "startup" is a fresh id and needs nothing; best-effort, never blocking.
+  // #458 (shadow): nur `clear` beginnt einen neuen Kontext — compact und
+  // resume lassen den bisher injizierten Kontext im Transkript stehen, also
+  // bleibt auch das Sitzungsbudget stehen.
+  resetBudgetOnSource(payload.session_id, payload.source);
   if (payload.source === "compact" || payload.source === "clear" || payload.source === "resume") {
     try {
       await clearShown(payload.session_id ?? "");
@@ -503,6 +508,9 @@ export async function runSessionLane(
     });
   }
 
+  // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den
+  // Governor-Entscheid loggen — nichts wird gekürzt.
+  recordBudgetShadow(payload.session_id ?? null, "session_hook_call", Math.ceil(injected.length / 4), { source: payload.source ?? null });
   await writeTelemetry({
     session_id: payload.session_id ?? null,
     source: payload.source ?? null,

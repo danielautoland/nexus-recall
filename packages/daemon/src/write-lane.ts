@@ -27,6 +27,7 @@ import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE } from "./band-wording.js";
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { recordBudgetShadow } from "./session-budget.js";
 import { applyLaneScopeFilter, projectConfidence, projectForFilter } from "./scope-filter.js";
 import { fileSizeNote } from "./file-size-check.js";
 import { memoryLocationNote } from "./memory-location.js";
@@ -342,6 +343,9 @@ export async function runWriteLane(
     void cleanupOldStates().catch(() => {});
   }
 
+  // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den
+  // Governor-Entscheid loggen — nichts wird gekürzt.
+  recordBudgetShadow(sessionId || null, "hook_call", hintTokensEst);
   await writeTelemetry({
     session_id: sessionId || null,
     tool_name: toolName,

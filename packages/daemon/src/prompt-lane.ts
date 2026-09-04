@@ -38,6 +38,7 @@ import { applyLaneScopeFilter, projectConfidence, projectForFilter, type ScopeFi
 
 import { envFirst, envInt } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
+import { recordBudgetShadow } from "./session-budget.js";
 import { claudeSessionPidFrom, sessionFeedPath, STATUSLINE_DIR } from "./statusline-session.js";
 import { idleStatuslineState } from "./statusline-feed.js";
 import { reportHinted } from "./hook-hinted.js";
@@ -657,6 +658,9 @@ export async function runPromptLane(
     await reportHinted(selfBaseUrl, injectedIds);
   }
 
+  // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den
+  // Governor-Entscheid loggen — nichts wird gekürzt.
+  recordBudgetShadow(payload.session_id ?? null, "prompt_hook_call", blocks.length === 0 ? 0 : Math.ceil(blocks.join("\n").length / 4));
   await writeTelemetry({
     session_id: payload.session_id ?? null,
     detected_mode: detectedMode,
@@ -744,12 +748,17 @@ export function formatHintBlock(
     // #252: the failure mode is asserting a measured number from model memory
     // while the vault holds it. Naming the alternative — say you don't know —
     // matters as much as the candidates; a hint block alone invites a guess.
+    // #384: stated as a fact about the environment, not as three commands. An
+    // instruction in context is unexecuted potential that must be noticed,
+    // accepted and turned into output — it can die at each step; a prohibition
+    // invites the violation it names. A fact about where the numbers live and
+    // what an unanswered claim IS does neither.
     sections.push(
       `The prompt asks for text that makes a CLAIM — outbound writing, or a statement about this project's measured state. ` +
-        `Do NOT assert numbers, measurements, dates or project history from model memory. ` +
-        `Check the candidates below (and recall again with the specific claim if none fits); ` +
-        `if the vault does not answer it, write that you do not know instead of guessing. ` +
-        `Pre-recalled candidates for this prompt:`,
+        `For claims like this, model memory is not a source: the numbers, measurements, dates and project history ` +
+        `come from the vault, and a claim the vault does not answer is unknown — it goes out as "unknown", not as a figure. ` +
+        `The candidates below are what the vault holds for this prompt; if none carries the claim, a recall with ` +
+        `the specific claim is the remaining source. Pre-recalled candidates for this prompt:`,
     );
   } else if (!unfused) {
     sections.push(

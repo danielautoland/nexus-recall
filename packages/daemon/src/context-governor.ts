@@ -50,6 +50,17 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/**
+ * DIE Budgetregel — an einer Stelle, weil sie an zwei gebraucht wird: hier im
+ * Entscheid je Eintrag und im Sitzungs-Ledger (#458, `session-budget.ts`), das
+ * dieselbe Frage über Lanes hinweg stellt. `0` heißt unbegrenzt. Was nicht
+ * mehr hineinpasst, fällt ganz — gekürzt wird nichts, ein halber Beleg ist
+ * keiner.
+ */
+export function fitsBudget(spent: number, cost: number, budget: number): boolean {
+  return budget <= 0 || spent + cost <= budget;
+}
+
 export interface GovernorBudget {
   /** Obergrenze des injizierten Kontexts in geschätzten Token. `0` = keine. */
   tokens?: number;
@@ -172,7 +183,7 @@ export function governContext(
       continue;
     }
     const cost = estimateTokens(it.text);
-    if (tokenBudget > 0 && spent + cost > tokenBudget) {
+    if (!fitsBudget(spent, cost, tokenBudget)) {
       dropped.push({ id: it.id, reason: "token_budget" });
       continue;
     }

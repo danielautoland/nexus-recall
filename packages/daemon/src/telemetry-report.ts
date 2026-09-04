@@ -363,6 +363,86 @@ export function summarizeContextTax(events: ReportEvent[]): ContextTaxSection {
   };
 }
 
+// ─── Sitzungsbudget im Schatten (#458) ───────────────────────────
+
+export interface BudgetShadowSection {
+  /** Die Budgethöhe der jüngsten Entscheidung im Fenster; 0 = unbegrenzt. */
+  budget: number;
+  /** Verschiedene Budgethöhen im Fenster — mehr als eine heißt: der Wert wurde umgestellt. */
+  budgets: number[];
+  emissions: number;
+  tokens: number;
+  sessions: number;
+  /** Sitzungen mit mindestens einer Emission, die nicht mehr gepasst hätte. */
+  sessionsAffected: number;
+  /** Emissionen, die im Schatten gefallen wären, und ihre Tokens. */
+  wouldDrop: number;
+  tokensTrimmed: number;
+  byLane: Array<{ lane: string; emissions: number; tokens: number; wouldDrop: number; tokensTrimmed: number }>;
+  daily: Array<{ day: string; tokens: number; tokensTrimmed: number; wouldDrop: number; sessionsAffected: number }>;
+  /** Wievielte Emission einer Sitzung zuerst nicht mehr passte — Median über die betroffenen Sitzungen. */
+  firstOverAtEmission: number | null;
+}
+
+export function summarizeBudgetShadow(events: ReportEvent[]): BudgetShadowSection | null {
+  const rows = events.filter((e) => e.kind === "budget_shadow");
+  if (rows.length === 0) return null;
+  const budgets = new Set<number>();
+  const sessions = new Set<string>();
+  const affected = new Set<string>();
+  const byLane = new Map<string, { emissions: number; tokens: number; wouldDrop: number; tokensTrimmed: number }>();
+  const perDay = new Map<string, { tokens: number; tokensTrimmed: number; wouldDrop: number; affected: Set<string> }>();
+  const firstOver: number[] = [];
+  let tokens = 0;
+  let wouldDrop = 0;
+  let tokensTrimmed = 0;
+  let latest: ReportEvent | null = null;
+  for (const e of rows) {
+    const t = num(e.tokens) ?? 0;
+    const lane = String(e.lane ?? "unknown");
+    const sid = String(e.session_id ?? "");
+    const drop = e.would_drop === true;
+    const b = num(e.budget);
+    if (b !== null) budgets.add(b);
+    if (!latest || String(e.ts) > String(latest.ts)) latest = e;
+    sessions.add(sid);
+    tokens += t;
+    const l = byLane.get(lane) ?? { emissions: 0, tokens: 0, wouldDrop: 0, tokensTrimmed: 0 };
+    l.emissions++;
+    l.tokens += t;
+    const d = perDay.get(day(e)) ?? { tokens: 0, tokensTrimmed: 0, wouldDrop: 0, affected: new Set<string>() };
+    d.tokens += t;
+    if (drop) {
+      wouldDrop++;
+      tokensTrimmed += t;
+      affected.add(sid);
+      l.wouldDrop++;
+      l.tokensTrimmed += t;
+      d.wouldDrop++;
+      d.tokensTrimmed += t;
+      d.affected.add(sid);
+      if (e.first_over === true) firstOver.push(num(e.emission_index) ?? 0);
+    }
+    byLane.set(lane, l);
+    perDay.set(day(e), d);
+  }
+  return {
+    budget: num(latest?.budget) ?? 0,
+    budgets: [...budgets].sort((a, b) => a - b),
+    emissions: rows.length,
+    tokens,
+    sessions: sessions.size,
+    sessionsAffected: affected.size,
+    wouldDrop,
+    tokensTrimmed,
+    byLane: HOOK_LANE_KINDS.filter((k) => byLane.has(k)).map((lane) => ({ lane, ...byLane.get(lane)! })),
+    daily: [...perDay]
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([d, r]) => ({ day: d, tokens: r.tokens, tokensTrimmed: r.tokensTrimmed, wouldDrop: r.wouldDrop, sessionsAffected: r.affected.size })),
+    firstOverAtEmission: firstOver.length ? median(firstOver) : null,
+  };
+}
+
 // ─── Latenz ──────────────────────────────────────────────────────
 
 export interface LatencyRow {
@@ -589,6 +669,8 @@ export interface TelemetryReport {
   thresholds: ReportThresholds;
   quality: QualitySection;
   contextTax: ContextTaxSection;
+  /** #458: das Sitzungsbudget im Schatten — null, solange kein Ereignis vorliegt. */
+  budgetShadow: BudgetShadowSection | null;
   latency: LatencySection;
   evidence: EvidenceSection | null;
   sessionStart: SessionStartSection;
@@ -607,6 +689,7 @@ export function buildTelemetryReport(
     thresholds: t,
     quality: summarizeQuality(events, t),
     contextTax: summarizeContextTax(events),
+    budgetShadow: summarizeBudgetShadow(events),
     latency: summarizeLatency(events),
     evidence: summarizeEvidence(events, t),
     sessionStart: summarizeSessionStart(events),
