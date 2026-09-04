@@ -108,7 +108,8 @@ import {
   resolveCorsOrigin,
   gateApiRequest,
 } from "./http-auth.js";
-import { handleHookAct, handleHookRecall } from "./http-hook-routes.js";
+import { handleHookRecall } from "./http-hook-routes.js";
+import { handleHookAct } from "./http-hook-act.js";
 import { dispatchApi } from "./http-api-routes.js";
 import { dispatchUiRoutes } from "./http-ui-routes.js";
 
@@ -747,4 +748,3 @@ function closeServer(server: Server): Promise<void> {
     server.close(() => resolve());
   });
 }
-

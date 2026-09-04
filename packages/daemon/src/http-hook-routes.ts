@@ -1,6 +1,5 @@
 /**
- * Handlers for the loopback-only hook endpoints /hook/recall (JSON + SSE) and
- * /hook/act — the highest-volume recall surface and its act-signal companion.
+ * Handler for the loopback-only /hook/recall endpoint (JSON + SSE).
  * Routing stays in http.ts; the handler logic lives here.
  * Split out of http.ts (file-size convention).
  */
@@ -34,51 +33,6 @@ import {
 } from "./http-util.js";
 
 // ─── /hook/act handler (#144) ────────────────────────────────────
-
-export function handleHookAct(req: IncomingMessage, res: ServerResponse, telemetry: Telemetry): void {
-  readJsonBody(req, MAX_BODY_BYTES)
-    .then(async (body) => {
-      const excerpt = typeof body.tool_input_excerpt === "string"
-        ? body.tool_input_excerpt.slice(0, 4096)
-        : "";
-      if (!excerpt) {
-        sendJson(res, 400, { error: "tool_input_excerpt is required" });
-        return;
-      }
-      const toolName = typeof body.tool_name === "string" ? body.tool_name : null;
-      const sessionId = typeof body.session_id === "string" ? body.session_id : null;
-      const exitCode = typeof body.exit_code === "number" ? body.exit_code : null;
-
-      const episodes = telemetry.matchLoadedMemories({
-        tool_name: toolName,
-        tool_input_excerpt: excerpt,
-        session_id: sessionId,
-        // High-frequency signal: only MATCHING episodes close; an unrelated
-        // command must not kill an open episode with acted_on=false.
-        closeOnMiss: false,
-      });
-      for (const episode of episodes) {
-        fireAndForget(telemetry.logRecallEpisode(episode));
-      }
-      fireAndForget(
-        telemetry.logHookAct({
-          tool_name: toolName,
-          excerpt_chars: excerpt.length,
-          matched_episodes: episodes.length,
-          exit_code: exitCode,
-          // Claude-Session-id ins Event — ohne sie stempelt der Sink seine
-          // Boot-UUID und der Transcript-Join ist unmöglich (Audit 2026-07-10).
-          ...(sessionId ? { session_id: sessionId } : {}),
-          // #263: Hinweise auf die Oberfläche. Ungeprüft weitergereicht — die
-          // Allowlist und das Session-Pseudonym entstehen in der Telemetrie.
-          client: body.client,
-          hook_source: body.hook_source,
-        }),
-      );
-      sendJson(res, 200, { matched: episodes.length });
-    })
-    .catch(() => sendJson(res, 400, { error: "invalid JSON body" }));
-}
 
 // ─── /hook/recall handler ────────────────────────────────────────
 

@@ -34,9 +34,9 @@ import {
   type StageListener,
 } from "@bastra-recall/core";
 import * as path from "node:path";
-import { Telemetry, logDirFor } from "./telemetry.js";
+import { logDirFor } from "./telemetry.js";
+import { createDaemonTelemetry } from "./telemetry-setup.js";
 import { startHttpServer } from "./http.js";
-import { recordUsage } from "./usage-sidecar.js";
 import { loadCuratorState } from "./curator.js";
 import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
@@ -227,11 +227,7 @@ async function main(): Promise<void> {
   // Lifecycle-Events darüber loggen. Der onUsage-Sink speist den Per-Memory-
   // Usage-Sidecar (#154) — fire-and-forget, ein kaputter Sidecar darf keinen
   // Tool-Call brechen (Contract in usage-sidecar.ts).
-  const telemetry = new Telemetry({
-    onUsage: (events) => {
-      void recordUsage(VAULT_PATH!, events);
-    },
-  });
+  const telemetry = createDaemonTelemetry(VAULT_PATH!);
 
   // #267: Die Armzuweisung der §17.4-Experimente. Ohne registrierte
   // Konfiguration bleibt jedes Ereignis `unassigned` — die Spalte existiert
