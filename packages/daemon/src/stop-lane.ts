@@ -18,9 +18,15 @@
  *      repeated in a turn AND not a technical acronym (SKILL/JSON/…); CAPS
  *      alone never triggers. Case and word boundaries are Unicode-aware, so
  *      Cyrillic counts the same way Latin does.
- *   2. Feature-Completion    — `git commit` mentioned in a USER turn + >=5
- *      distinct repo-relative source-file tokens, at least one of which exists
- *      under the session cwd.
+ *   2. Feature-Completion    — a commit signal + >=5 distinct repo-relative
+ *      source-file tokens, at least one of which exists under the session
+ *      cwd. Three things count as the signal, whoever typed the commit:
+ *      `git commit` in a USER turn, `git commit` in a shell command the
+ *      agent ran (tool_use input / Codex function_call), or git's own
+ *      "[branch sha] subject" line in a TOOL turn. Until 05.09.2026 only the
+ *      first counted — for every user whose agent commits, the heuristic
+ *      could structurally never fire (the #476 pattern, scope-bound instead
+ *      of language-bound).
  *   3. Architecture-Decision — a decision cue from the German, English or
  *      Russian list in the last 5 user turns.
  *
@@ -72,6 +78,10 @@ export interface ClaudeStopPayload {
 interface TranscriptTurn {
   role: "user" | "assistant" | "system" | string;
   content: string;
+  /** Shell commands the agent ran from this turn (tool_use input.command /
+   *  Codex function_call arguments). Kept apart from `content` so prose that
+   *  merely TALKS about a command never counts as running it. */
+  commands?: string[];
 }
 
 type Heuristic = "frustration-density" | "feature-completion" | "architecture-decision";
@@ -334,6 +344,14 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
         });
         continue;
       }
+      // Codex: `{type:"function_call", name:"shell", arguments:"{\"command\":[…]}"}`.
+      // A separate item, not part of an assistant message — attach it to the
+      // preceding assistant turn so it neither inflates the turn window nor
+      // feeds file-token scanning.
+      if (p.type === "function_call") {
+        attachCommands(out, codexCallCommands(p));
+        continue;
+      }
     }
     const directRole = obj.role;
     const directContent = obj.content;
@@ -345,7 +363,10 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
     if (msg && typeof msg === "object") {
       const m = msg as Record<string, unknown>;
       const role = typeof m.role === "string" ? m.role : "unknown";
-      out.push({ role: effectiveRole(role, m.content), content: scrubTurnContent(stringifyContent(m.content)) });
+      const turn: TranscriptTurn = { role: effectiveRole(role, m.content), content: scrubTurnContent(stringifyContent(m.content)) };
+      const commands = toolUseCommands(m.content);
+      if (commands.length > 0) turn.commands = commands;
+      out.push(turn);
       continue;
     }
     if (typeof obj.text === "string") {
@@ -353,6 +374,45 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
     }
   }
   return out;
+}
+
+/** Claude Code: tool_use blocks live inside the assistant message content;
+ *  a shell call carries its command line in `input.command`. */
+function toolUseCommands(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const c of content) {
+    if (!c || typeof c !== "object") continue;
+    const b = c as Record<string, unknown>;
+    if (b.type !== "tool_use" || !b.input || typeof b.input !== "object") continue;
+    const cmd = (b.input as Record<string, unknown>).command;
+    if (typeof cmd === "string" && cmd.trim()) out.push(cmd);
+  }
+  return out;
+}
+
+/** Codex: `arguments` is a JSON string; `command` is a string or an argv array. */
+function codexCallCommands(p: Record<string, unknown>): string[] {
+  if (typeof p.arguments !== "string") return [];
+  try {
+    const args = JSON.parse(p.arguments) as Record<string, unknown>;
+    const cmd = args.command;
+    if (typeof cmd === "string" && cmd.trim()) return [cmd];
+    if (Array.isArray(cmd)) return [cmd.filter((x) => typeof x === "string").join(" ")];
+  } catch {
+    /* not JSON — no command */
+  }
+  return [];
+}
+
+function attachCommands(out: TranscriptTurn[], commands: string[]): void {
+  if (commands.length === 0) return;
+  const last = out[out.length - 1];
+  if (last && last.role === "assistant") {
+    last.commands = [...(last.commands ?? []), ...commands];
+  } else {
+    out.push({ role: "assistant", content: "", commands });
+  }
 }
 
 // #149: our own hook injections (<recall-hints>, <session-context>, …) quote
@@ -517,11 +577,24 @@ function isRepoRelativeSourceToken(token: string): boolean {
   return false;
 }
 
+// Git's own success line: "[main abc1234] subject", "[feat/x (root-commit) 0f1e2d3] …".
+const COMMIT_OUTPUT_RE = /^\[[^\]\n]+? (?:\(root-commit\) )?[0-9a-f]{7,40}\] /m;
+const GIT_COMMIT_RE = /\bgit\s+commit\b/i;
+
+/** The commit signal, whoever typed it: the user says so, the agent RAN it
+ *  (a command, never prose — assistant text talking about a commit does not
+ *  count), or git reported one in a tool turn. */
+function commitSignal(turns: TranscriptTurn[]): boolean {
+  for (const t of turns) {
+    if (t.role === "user" && GIT_COMMIT_RE.test(t.content)) return true;
+    if (t.commands?.some((c) => GIT_COMMIT_RE.test(c))) return true;
+    if (t.role === "tool" && COMMIT_OUTPUT_RE.test(t.content)) return true;
+  }
+  return false;
+}
+
 function detectFeatureCompletion(turns: TranscriptTurn[], deps: HeuristicDeps = {}): SaveSuggestion | null {
-  // "git commit" must come from a USER turn — not assistant text, tool output,
-  // shell output or quoted code. A user confirming the commit is the signal.
-  const userText = turns.filter((t) => t.role === "user").map((t) => t.content).join("\n");
-  if (!/\bgit\s+commit\b/i.test(userText)) return null;
+  if (!commitSignal(turns)) return null;
 
   // File tokens may appear anywhere (the assistant's edits carry the real
   // paths) but are filtered down to repo-relative source files.

@@ -210,6 +210,57 @@ describe("stop-hook: detectFeatureCompletion", () => {
     assert.equal(detectFeatureCompletion(turns, ALL_EXIST), null);
   });
 
+  it("fires when the AGENT ran git commit as a tool command (#48 B, scope fix 05.09.)", () => {
+    const turns: TranscriptTurn[] = [
+      userTurn("bitte fertig machen"),
+      { role: "assistant", content: FIVE_SOURCE_FILES, commands: ["git add -A && git commit -q -m 'feat: x'"] },
+    ];
+    const s = detectFeatureCompletion(turns, ALL_EXIST);
+    assert.ok(s, "an agent-run commit is a commit");
+    assert.equal(s!.heuristic, "feature-completion");
+  });
+
+  it("fires on git's own commit line in a tool result (user ran it via ! or a shell)", () => {
+    const turns: TranscriptTurn[] = [
+      assistantTurn(FIVE_SOURCE_FILES),
+      { role: "tool", content: "[main 8a465e8] fix(taxonomy): treat person memories as drift coverage\n 2 files changed, 42 insertions(+)" },
+    ];
+    assert.ok(detectFeatureCompletion(turns, ALL_EXIST));
+  });
+
+  it("does not treat a tool result that merely quotes 'git commit' as a commit", () => {
+    const turns: TranscriptTurn[] = [
+      assistantTurn(FIVE_SOURCE_FILES),
+      { role: "tool", content: "usage: git commit [-a] [-m <msg>]\nnothing to commit, working tree clean" },
+    ];
+    assert.equal(detectFeatureCompletion(turns, ALL_EXIST), null);
+  });
+
+  it("normalizeTurns lifts tool_use commands (Claude) and function_call commands (Codex) onto the turn", () => {
+    const claude = normalizeTurns([
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "committing" },
+            { type: "tool_use", name: "Bash", input: { command: "git commit -m 'x'", description: "commit" } },
+          ],
+        },
+      },
+    ]);
+    assert.equal(claude.length, 1);
+    assert.equal(claude[0].content, "committing", "tool_use input never leaks into prose");
+    assert.deepEqual(claude[0].commands, ["git commit -m 'x'"]);
+
+    const codex = normalizeTurns([
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] } },
+      { type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["git", "commit", "-m", "y"] }) } },
+    ]);
+    assert.equal(codex.length, 1, "the call attaches to the preceding assistant turn");
+    assert.deepEqual(codex[0].commands, ["git commit -m y"]);
+  });
+
   it("does not fire without enough source tokens", () => {
     const turns: TranscriptTurn[] = [
       userTurn("git commit gemacht"),
