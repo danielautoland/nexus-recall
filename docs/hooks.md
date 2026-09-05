@@ -298,7 +298,7 @@ with no taxonomy convention covering it, and surfaces at most two clusters as a
 suggestion only, the agent decides.
 
 Budget 1000 ms. Telemetry: `save_eval_call` with `heuristic, suggested_count,
-drift_clusters, turn_count, latency_ms_total`.
+drift_clusters, drift_keys, turn_count, latency_ms_total`.
 
 ### Taxonomy injection (session hook, #66)
 
@@ -371,7 +371,7 @@ new MCP tool):
 | `BASTRA_TELEMETRY`            | `on`             | `off` to disable JSONL telemetry writes                       |
 | `BASTRA_LOG_PATH`             | `~/.bastra/logs` | Telemetry log directory                                       |
 | `BASTRA_DRIFT_WINDOW_DAYS`    | `14`             | Drift detector: how far back "recent memories" reaches        |
-| `BASTRA_DRIFT_MIN_CLUSTER`    | `3`              | Drift detector: distinct memories before a cluster is flagged |
+| `BASTRA_DRIFT_MIN_CLUSTER`    | `8`              | Drift detector: distinct memories before a cluster is flagged |
 | `BASTRA_REFLEX`               | `on`             | `off` disables the reflex lane (#217)                         |
 | `BASTRA_REFLEX_MAX_PER_TURN`  | `2`              | Reflex injection budget per prompt (clamp 1–5)                |
 | `BASTRA_REFLEX_PROMOTION_MIN` | `3`              | Acted-on recalls (30d) before the curator proposes a reflex promotion |

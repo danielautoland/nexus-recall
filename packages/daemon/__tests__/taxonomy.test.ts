@@ -21,6 +21,9 @@ import { Telemetry } from "../src/telemetry.js";
 import { saveMemoryHandler, type ToolDeps } from "../src/tool-handlers.js";
 import { listConventions, detectTaxonomyDrift } from "../src/taxonomy.js";
 
+// Die Fixtures unten bauen Dreiergruppen; der Produktions-Default liegt bei 8.
+process.env.BASTRA_DRIFT_MIN_CLUSTER = "3";
+
 function memoryFile(opts: {
   id: string;
   title: string;

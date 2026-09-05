@@ -137,6 +137,7 @@ export async function runStopLane(
     heuristic: suggestions.map((s) => s.heuristic).join(",") || null,
     suggested_count: suggestions.length,
     drift_clusters: drift.length,
+    drift_keys: drift.map((c) => `${c.key}:${c.count}`),
     turn_count: turns.length,
     latency_ms_total: totalMs,
   });
@@ -634,6 +635,8 @@ interface StopHookTelemetry {
   heuristic: string | null;
   suggested_count: number;
   drift_clusters: number;
+  /** "<key>:<count>" per flagged cluster — lets the threshold be judged from the log. */
+  drift_keys: string[];
   turn_count: number;
   latency_ms_total: number;
 }

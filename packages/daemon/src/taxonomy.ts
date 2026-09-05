@@ -100,7 +100,10 @@ function isPersonMemory(tags: string[], topicPath: string[]): boolean {
  *   - Schlüssel-Kandidaten pro Memory: jeder Tag plus jedes
  *     topic_path-Segment AB Index 1 (Segment 0 ist fast immer der Projekt-/
  *     Scope-Name — der hat mit memories/projects/<scope>/ schon eine Heimat).
- *   - Cluster ab BASTRA_DRIFT_MIN_CLUSTER (Default 3) distinkten Memories.
+ *   - Cluster ab BASTRA_DRIFT_MIN_CLUSTER (Default 8) distinkten Memories.
+ *     Bis 05.09.2026 war der Default 3 — damit schob der Detektor nach
+ *     jeder etablierten Konvention sofort das nächstkleinere Cluster nach,
+ *     bis hinunter zu Dreiergruppen, die keine Konvention wert sind.
  *   - Abgedeckt = eine Konvention (scope=taxonomy) erwähnt den Schlüssel in
  *     tags, topic_path oder Titel — dann ist das Cluster gelernt und still.
  *   - Scope-Namen selbst, Memory-Typen, systemvergebene Tags (product-doc)
@@ -109,7 +112,7 @@ function isPersonMemory(tags: string[], topicPath: string[]): boolean {
  */
 export function detectTaxonomyDrift(vault: Vault, now: number = Date.now()): DriftCluster[] {
   const windowDays = envInt("BASTRA_DRIFT_WINDOW_DAYS", 14);
-  const minCluster = envInt("BASTRA_DRIFT_MIN_CLUSTER", 3);
+  const minCluster = envInt("BASTRA_DRIFT_MIN_CLUSTER", 8);
   const cutoff = now - windowDays * 86_400_000;
 
   const all = vault.list();
