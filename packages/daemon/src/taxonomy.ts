@@ -72,7 +72,14 @@ const NOISE_KEYS = new Set([
   "bookmark",
   "doc",
   "convention",
+  // Vom Daemon selbst vergeben (save_product_doc), nicht vom Autor gewählt.
+  "product-doc",
 ]);
+
+/** Versions-/Meilenstein-Tags (v0.9, v1.0, v0.8.6) sind Zeitmarken, keine
+ *  Themen: jeder Release bringt ein neues, das wochenlang ein Cluster
+ *  bildet und dann stirbt. Eine Konvention pro Version wäre absurd. */
+const VERSION_TAG = /^v\d+\.\d+(?:\.\d+)?$/;
 
 function norm(s: string): string {
   return s.trim().toLowerCase();
@@ -96,7 +103,8 @@ function isPersonMemory(tags: string[], topicPath: string[]): boolean {
  *   - Cluster ab BASTRA_DRIFT_MIN_CLUSTER (Default 3) distinkten Memories.
  *   - Abgedeckt = eine Konvention (scope=taxonomy) erwähnt den Schlüssel in
  *     tags, topic_path oder Titel — dann ist das Cluster gelernt und still.
- *   - Scope-Namen selbst und Memory-Typen sind nie Schlüssel (Rauschen).
+ *   - Scope-Namen selbst, Memory-Typen, systemvergebene Tags (product-doc)
+ *     und Versions-Tags (v1.0, v0.8.6) sind nie Schlüssel (Rauschen).
  *   - Maximal 2 Vorschläge, größtes Cluster zuerst.
  */
 export function detectTaxonomyDrift(vault: Vault, now: number = Date.now()): DriftCluster[] {
@@ -147,7 +155,7 @@ export function detectTaxonomyDrift(vault: Vault, now: number = Date.now()): Dri
     }
     for (const [key, kind] of candidates) {
       if (key.length < 3) continue;
-      if (NOISE_KEYS.has(key) || scopeNames.has(key) || covered.has(key)) continue;
+      if (NOISE_KEYS.has(key) || VERSION_TAG.test(key) || scopeNames.has(key) || covered.has(key)) continue;
       let entry = clusters.get(key);
       if (!entry) {
         entry = { kind, ids: new Set() };

@@ -188,6 +188,26 @@ test("drift: stale memories and structural keys never cluster", async () => {
   }
 });
 
+test("drift: version tags and system-assigned product-doc never cluster", async () => {
+  const { vault, close } = await makeVault([
+    { rel: "v1.md", content: memoryFile({ id: "v1", title: "v1", scope: "proj", tags: ["v1.0", "product-doc"] }) },
+    { rel: "v2.md", content: memoryFile({ id: "v2", title: "v2", scope: "proj", tags: ["v1.0", "product-doc"] }) },
+    { rel: "v3.md", content: memoryFile({ id: "v3", title: "v3", scope: "proj", tags: ["v1.0", "product-doc"] }) },
+    { rel: "w1.md", content: memoryFile({ id: "w1", title: "w1", scope: "proj", tags: ["v0.8.6", "V0.9"] }) },
+    { rel: "w2.md", content: memoryFile({ id: "w2", title: "w2", scope: "proj", tags: ["v0.8.6", "V0.9"] }) },
+    { rel: "w3.md", content: memoryFile({ id: "w3", title: "w3", scope: "proj", tags: ["v0.8.6", "V0.9"] }) },
+    // Kein Versions-Tag: "v1" (kein Punkt) und "vault" bleiben Kandidaten.
+    { rel: "n1.md", content: memoryFile({ id: "n1", title: "n1", scope: "proj", tags: ["vault"] }) },
+    { rel: "n2.md", content: memoryFile({ id: "n2", title: "n2", scope: "proj", tags: ["vault"] }) },
+    { rel: "n3.md", content: memoryFile({ id: "n3", title: "n3", scope: "proj", tags: ["vault"] }) },
+  ]);
+  try {
+    assert.deepEqual(detectTaxonomyDrift(vault).map((c) => c.key), ["vault"]);
+  } finally {
+    await close();
+  }
+});
+
 // ── folder-Routing + Re-Filing ───────────────────────────────────────
 
 async function makeDeps(): Promise<{ deps: ToolDeps; dir: string; close: () => Promise<void> }> {
