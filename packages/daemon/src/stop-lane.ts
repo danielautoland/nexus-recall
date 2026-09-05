@@ -170,6 +170,8 @@ function formatDriftBlock(clusters: DriftCluster[]): string {
     `save_memory with scope='taxonomy', tag 'convention', body = the rule ` +
     `(folder, topic_path shape, tags, body shape, one example) — then re-file ` +
     `the members (overwrite=true + the convention's folder). ` +
+    `Put every key the convention covers into its tags — the detector reads ` +
+    `tags, topic_path and title, never the body. ` +
     `Suggestion only: weigh it, ask the user if unsure, never bulk-move silently.\n` +
     `</taxonomy-drift>`
   );
