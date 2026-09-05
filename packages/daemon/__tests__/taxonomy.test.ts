@@ -147,6 +147,29 @@ test("drift: a covering convention silences the cluster", async () => {
   }
 });
 
+test("drift: a person memory covers its own handle as cluster key", async () => {
+  const { vault, close } = await makeVault([
+    // Das Personen-Memory selbst: Tag person, topic_path [people, <handle>].
+    {
+      rel: "memories/people/zzallirog.md",
+      content: memoryFile({ id: "zzallirog", title: "zzallirog peer", scope: "proj", tags: ["person"], topicPath: ["people", "zzallirog"] }),
+    },
+    // Drei Memories, die per topic_path auf die Person verweisen.
+    { rel: "a.md", content: memoryFile({ id: "a", title: "thread a", scope: "proj", tags: ["thread"], topicPath: ["proj", "zzallirog"] }) },
+    { rel: "b.md", content: memoryFile({ id: "b", title: "thread b", scope: "proj", tags: ["thread"], topicPath: ["proj", "zzallirog"] }) },
+    { rel: "c.md", content: memoryFile({ id: "c", title: "thread c", scope: "proj", tags: ["thread", "zzallirog"], topicPath: ["proj", "zzallirog"] }) },
+  ]);
+  try {
+    const keys = detectTaxonomyDrift(vault).map((c) => c.key);
+    assert.ok(!keys.includes("zzallirog"), `person handle must be covered, got ${keys.join(",")}`);
+    // Der Tag `person` selbst bleibt ohne Konvention ein Kandidat — aber hier
+    // trägt ihn nur ein Memory, also kein Cluster. `thread` (3x) feuert.
+    assert.deepEqual(keys, ["thread"]);
+  } finally {
+    await close();
+  }
+});
+
 test("drift: stale memories and structural keys never cluster", async () => {
   const { vault, close } = await makeVault([
     // Alt: außerhalb des Fensters — zählt nicht.

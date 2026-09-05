@@ -78,6 +78,12 @@ function norm(s: string): string {
   return s.trim().toLowerCase();
 }
 
+const PEOPLE_TOPIC_ROOT = "people";
+
+function isPersonMemory(tags: string[], topicPath: string[]): boolean {
+  return tags.some((t) => norm(t) === "person") || norm(topicPath[0] ?? "") === PEOPLE_TOPIC_ROOT;
+}
+
 /**
  * Wiederkehrende Cluster ohne Konvention finden.
  *
@@ -109,6 +115,19 @@ export function detectTaxonomyDrift(vault: Vault, now: number = Date.now()): Dri
     for (const w of c.fm.title.toLowerCase().split(/[^a-zäöüß0-9_-]+/u)) {
       if (w.length >= 3) covered.add(w);
     }
+  }
+
+  // Personen-Memories (Konvention: ein Memory pro Person, Tag `person`,
+  // topic_path [people, <handle>]) decken ihren Handle mit ab: andere
+  // Memories tragen den Handle als topic_path-Segment oder Tag, um auf die
+  // Person zu verweisen — das ist kein heimatloses Cluster, die Heimat ist
+  // das Personen-Memory selbst. Sonst müsste jede Person einzeln in eine
+  // Konvention geschrieben werden.
+  for (const m of all) {
+    if (m.fm.obsolete || !isPersonMemory(m.fm.tags, m.fm.topic_path)) continue;
+    covered.add(norm(m.fm.id));
+    const handle = m.fm.topic_path[1];
+    if (typeof handle === "string") covered.add(norm(handle));
   }
 
   // Scope-Namen sind strukturell, keine Drift-Kandidaten.
