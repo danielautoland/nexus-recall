@@ -13,6 +13,7 @@
  * always matches the validator; this constant is the fallback when the daemon
  * isn't reachable yet.
  */
+import { requiredFieldsOf } from "./call-corruption.js";
 import { MEMORY_TOOL_DEFS } from "./tool-handlers.js";
 import { documentTools } from "./documents-handler.js";
 import { documentWriteTools } from "./documents-write-handler.js";
@@ -24,3 +25,20 @@ export const ALL_TOOL_DEFS = [
   ...documentWriteTools,
   ...productDocTools,
 ];
+
+/**
+ * #482: what each tool needs, resolved ONCE at module load — the corrupted-
+ * arguments check runs on every tool call, so it must not rebuild anything.
+ * Derived from the definitions above rather than a hand-kept constant, so a
+ * new tool is covered the moment it is declared.
+ */
+export const TOOL_ARG_EXPECTATIONS: ReadonlyMap<string, { required: readonly string[]; readOnly: boolean }> =
+  new Map(
+    ALL_TOOL_DEFS.map((def) => [
+      def.name,
+      {
+        required: requiredFieldsOf(def),
+        readOnly: (def as { annotations?: { readOnlyHint?: boolean } }).annotations?.readOnlyHint === true,
+      },
+    ]),
+  );

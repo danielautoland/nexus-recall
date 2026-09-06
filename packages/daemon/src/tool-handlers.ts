@@ -31,7 +31,7 @@ import type { ToolDeps } from "./tool-deps.js";
 import { vaultLocator } from "./vault-locator.js";
 import { scoreSaveQuality, GENERIC_TRIGGER_WORDS, type SaveQualityResult } from "./save-quality.js";
 import { MEMORY_TOOL_DEFS } from "./tool-defs-memory.js";
-import { detectSaveCallCorruption, saveCallCorruptionMessage } from "./save-call-corruption.js";
+import { callCorruptionMessage, detectCallCorruption, requiredFieldsOf } from "./call-corruption.js";
 
 // Re-exported so the 18 existing importers keep their import path.
 export type { ToolDeps };
@@ -352,8 +352,15 @@ export async function saveMemoryHandler(
   // the first multiline value. That is terminal immediately: retrying the same
   // generated call cannot recreate fields that never crossed the MCP boundary,
   // and it must not poison the ordinary save-failure counter.
-  const corruption = detectSaveCallCorruption(rawArgs);
-  if (corruption) throw new Error(saveCallCorruptionMessage(corruption));
+  // #482: the shared detector, fed from save_memory's own schema rather than a
+  // hand-kept constant. The boundary (dispatchApi / the stdio CallTool handler)
+  // runs the same check for every tool; this one stays so a direct handler call
+  // gets the same answer.
+  const corruption = detectCallCorruption(
+    rawArgs,
+    requiredFieldsOf(MEMORY_TOOL_DEFS.find((def) => def.name === "save_memory")),
+  );
+  if (corruption) throw new Error(callCorruptionMessage("save_memory", corruption));
   let result: SaveMemoryResult | ClaimGateResult;
   try {
     result = await saveMemoryInner(deps, rawArgs);
