@@ -22,7 +22,7 @@ import { type SupportedLanguage } from "./learned-recall/language.js";
 import { isWeakResult, isNoHome, decideHits, type RecallDecisionHit } from "@bastra-recall/core";
 import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
-import { suppressRepeatedUnused } from "./hint-suppression.js";
+import { hintSuppressionMode, suppressRepeatedUnused } from "./hint-suppression.js";
 import { mergeHookRecallHits } from "./hook-recall-merge.js";
 import {
   MAX_BODY_BYTES,
@@ -454,14 +454,20 @@ export async function runHookRecall(
       const totalLatencyMs = Date.now() - t0;
       // #479: automatic hook hints get a version-local circuit breaker. Manual
       // recall is untouched; directives/reflexes are exempt inside the helper.
-      const usageSuppression = suppressRepeatedUnused(
-        hits,
-        (id) => vault.get(id),
-        usageForShadow(vault.root),
-        undefined,
-        (hit) => Math.ceil(JSON.stringify(toLeanHit(hit)).length / 4),
-      );
-      hits = usageSuppression.kept;
+      // #484: `shadow` (default) counts what the breaker WOULD remove and
+      // removes nothing; only `live` applies the cut. `off` skips the pass
+      // entirely, so no would-be list is written either.
+      const suppressionMode = hintSuppressionMode();
+      const usageSuppression = suppressionMode === "off"
+        ? { kept: hits, suppressed: [] }
+        : suppressRepeatedUnused(
+          hits,
+          (id) => vault.get(id),
+          usageForShadow(vault.root),
+          undefined,
+          (hit) => Math.ceil(JSON.stringify(toLeanHit(hit)).length / 4),
+        );
+      if (suppressionMode === "live") hits = usageSuppression.kept;
       const usageSuppressedTokensEst = usageSuppression.suppressed.reduce((n, s) => n + s.tokens_est, 0);
       const recallId = telemetry.newRecallId();
       telemetry.recordHookHints(recallId, hits);
@@ -607,6 +613,11 @@ export async function runHookRecall(
           })),
           usage_suppressed: usageSuppression.suppressed.length > 0 ? usageSuppression.suppressed : undefined,
           usage_suppressed_tokens_est: usageSuppression.suppressed.length > 0 ? usageSuppressedTokensEst : undefined,
+          // Without the mode a report cannot tell the live history (up to
+          // 2026-09-06) from the shadow counts after it — both write the same
+          // `usage_suppressed` list, only one of them acted on it.
+          usage_suppressed_mode:
+            usageSuppression.suppressed.length > 0 && suppressionMode !== "off" ? suppressionMode : undefined,
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,

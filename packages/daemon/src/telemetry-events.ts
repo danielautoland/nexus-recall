@@ -531,6 +531,10 @@ export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   }>;
   /** Sum of the lean-hit token estimates above (chars/4). */
   usage_suppressed_tokens_est?: number;
+  /** #484: whether the list above was actually removed (`live`) or only
+   *  counted (`shadow`). Absent on events written before the mode existed —
+   *  those are live by definition. */
+  usage_suppressed_mode?: "shadow" | "live";
   latency_ms_recall: number;
   latency_ms_total: number;
   /** Pro-Stage-Timings (#38). Optional — alte Hook-Events ohne Stage-
