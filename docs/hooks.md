@@ -268,9 +268,10 @@ top_score, status` (hook side) and dimensioned `hook_act` with `tool_name,
 excerpt_chars, matched_episodes, exit_code`, plus `client`, `hook_source` and
 the pseudonymous experiment session (daemon side).
 
-### `bastra-recall-stop-hook` (#35, opt-in)
+### `bastra-recall-stop-hook` (#35, default on)
 
-Fires on `Stop` when explicitly installed via `--with-stop-hook`. Reads the last ~30 transcript turns (from
+Fires on `Stop` by default; opt out during installation with `--no-stop-hook`
+(`--with-stop-hook` remains as a compatibility alias). Reads the last ~30 transcript turns (from
 `payload.transcript_path` or inline `payload.transcript`) and evaluates
 three heuristics:
 
