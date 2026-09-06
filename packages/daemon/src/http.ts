@@ -168,6 +168,26 @@ export interface HttpHandle {
 }
 
 /**
+ * #483 review find: may this process give up when the port is taken?
+ *
+ * Only when nothing else depends on it staying alive. `dist/index.js` is two
+ * surfaces in one file (`packages/daemon/README.md:21`): the shared daemon the
+ * forwarder spawns, AND the standalone stdio MCP server a single client starts
+ * for itself. The second one talks over stdin, not over 6723 — exiting there
+ * would take a working MCP session down over a port it never needed.
+ *
+ * The two are distinguishable at fd 0. The forwarder spawns the shared daemon
+ * with `stdio: "ignore"` (`forwarder-daemon-client.ts:52-56`) and launchd hands
+ * it /dev/null — a character device either way. A stdio MCP client connects a
+ * pipe, and a human running it in a terminal gets a TTY. Both mean: someone is
+ * attached, keep running.
+ */
+export function mayExitOnBusyPort(stdin: { isTTY?: boolean; isPipe: boolean }): boolean {
+  if (stdin.isTTY) return false;
+  return !stdin.isPipe;
+}
+
+/**
  * #483: is the daemon port free? Asked BEFORE the vault, the embedding index
  * and the Ollama prewarm come up, so the loser of a start race exits before it
  * duplicates any of them. A plain TCP bind is enough — we only need to know

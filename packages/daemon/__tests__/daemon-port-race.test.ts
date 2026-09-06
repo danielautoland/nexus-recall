@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Vault, SearchIndex } from "@bastra-recall/core";
 
-import { probeDaemonPort, startHttpServer } from "../src/http.js";
+import { mayExitOnBusyPort, probeDaemonPort, startHttpServer } from "../src/http.js";
 import { Telemetry } from "../src/telemetry.js";
 
 /** An occupied port, and the free port number it leaves behind on close. */
@@ -149,4 +149,35 @@ test("the port probe stays above the vault and embedding lifecycle", async () =>
     /HTTP_DISABLED/,
     "the probe must stay guarded by HTTP_DISABLED (BASTRA_HTTP=off)",
   );
+});
+
+/**
+ * Review find (Vera, 06.09.): `dist/index.js` is ALSO the documented standalone
+ * stdio MCP surface (`packages/daemon/README.md:21`). The first version of this
+ * fix exited that process too, over a port its client never used — a working
+ * MCP session died because something else held 6723.
+ */
+test("a stdio MCP client keeps the process alive on a busy port", () => {
+  // What a stdio MCP client connects: a pipe on fd 0.
+  assert.equal(mayExitOnBusyPort({ isPipe: true }), false);
+  // A socket, same thing.
+  assert.equal(mayExitOnBusyPort({ isPipe: true, isTTY: false }), false);
+  // A human running it in a terminal.
+  assert.equal(mayExitOnBusyPort({ isPipe: false, isTTY: true }), false);
+});
+
+test("the shared daemon may exit — nobody is on its stdin", () => {
+  // The forwarder spawns with stdio: "ignore" (forwarder-daemon-client.ts:52-56)
+  // and launchd hands it /dev/null: a character device, neither pipe nor TTY.
+  assert.equal(mayExitOnBusyPort({ isPipe: false, isTTY: false }), true);
+  assert.equal(mayExitOnBusyPort({ isPipe: false }), true);
+});
+
+test("both exit paths are guarded by that decision, not by the probe alone", async () => {
+  const src = await readFile(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
+  const exits = src.split("\n").filter((l) => l.includes("MAY_EXIT_ON_BUSY_PORT") && l.includes("if ("));
+  assert.equal(exits.length, 2, "the early probe and the post-listen loss must both be guarded");
+  for (const line of exits) {
+    assert.match(line, /MAY_EXIT_ON_BUSY_PORT/);
+  }
 });

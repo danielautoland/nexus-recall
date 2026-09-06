@@ -36,7 +36,7 @@ import {
 import * as path from "node:path";
 import { logDirFor } from "./telemetry.js";
 import { createDaemonTelemetry } from "./telemetry-setup.js";
-import { probeDaemonPort, startHttpServer } from "./http.js";
+import { mayExitOnBusyPort, probeDaemonPort, startHttpServer } from "./http.js";
 import { loadCuratorState } from "./curator.js";
 import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
@@ -47,7 +47,7 @@ import { bridgesPath } from "./cli/bridges.js";
 import { BridgePool } from "./learned-recall/bridges.js";
 import { isSupportedLanguage, type SupportedLanguage } from "./learned-recall/language.js";
 import { ollamaChat } from "./learned-recall/reranker.js";
-import { existsSync } from "node:fs";
+import { existsSync, fstatSync } from "node:fs";
 import {
   recallHandler,
   loadMemoryHandler,
@@ -98,6 +98,20 @@ const HTTP_PORT = (() => {
   return Number.isFinite(p) ? p : DEFAULT_HTTP_PORT;
 })();
 
+/** #483 review find (Vera): fd 0 says whether a stdio MCP client is attached —
+ *  see `mayExitOnBusyPort`. A pipe or socket means it is, /dev/null means this
+ *  is the shared daemon and the port is the whole point of it. */
+function stdinState(): { isTTY?: boolean; isPipe: boolean } {
+  try {
+    const st = fstatSync(0);
+    return { isTTY: process.stdin.isTTY === true, isPipe: st.isFIFO() || st.isSocket() };
+  } catch {
+    // No fd 0 at all — nobody is attached.
+    return { isPipe: false };
+  }
+}
+const MAY_EXIT_ON_BUSY_PORT = mayExitOnBusyPort(stdinState());
+
 // ── CLI delegation guard ─────────────────────────────────────────────────────
 // This module is the DAEMON entry — the forwarder starts it as `node index.js`
 // with no CLI command. But package-manager bin resolution (npx / npm exec) can
@@ -133,7 +147,7 @@ async function main(): Promise<void> {
   // index and the Ollama prewarm start, because the loser used to run all
   // three a second time against the same vault. `BASTRA_HTTP=off` is a
   // deliberate no-server mode and must never be probed away.
-  if (!HTTP_DISABLED && (await probeDaemonPort(HTTP_PORT)) === "in-use") {
+  if (!HTTP_DISABLED && MAY_EXIT_ON_BUSY_PORT && (await probeDaemonPort(HTTP_PORT)) === "in-use") {
     console.error(
       `[bastra-recall] port ${HTTP_PORT} is already in use — exiting; if another bastra-recall daemon owns it, the forwarder will use that one.`,
     );
@@ -487,7 +501,7 @@ async function main(): Promise<void> {
   // listen() runs, so a second process can still slip in during that window.
   // It loses here instead — and stops, rather than staying up as a second
   // watcher on the same vault.
-  if (httpHandle.addressInUse) {
+  if (httpHandle.addressInUse && MAY_EXIT_ON_BUSY_PORT) {
     console.error(
       `[bastra-recall] lost port ${HTTP_PORT} while starting up — exiting; if another bastra-recall daemon owns it, the forwarder will use that one.`,
     );
