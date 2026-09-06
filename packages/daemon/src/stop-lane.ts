@@ -22,7 +22,7 @@
  *      source-file tokens, at least one of which exists under the session
  *      cwd. Three things count as the signal, whoever typed the commit:
  *      `git commit` in a USER turn, `git commit` in a shell command the
- *      agent ran (tool_use input / Codex function_call), or git's own
+ *      agent ran (Claude tool_use / Codex function_call or custom_tool_call), or git's own
  *      "[branch sha] subject" line in a TOOL turn. Until 05.09.2026 only the
  *      first counted — for every user whose agent commits, the heuristic
  *      could structurally never fire (the #476 pattern, scope-bound instead
@@ -57,6 +57,11 @@ import { envFirst } from "./env.js";
 import { defaultLogDir } from "./telemetry.js";
 import { writePendingSuggestion } from "./pending-suggestions.js";
 import { getDocsMode, type DocsMode } from "./settings.js";
+import {
+  claudeToolUseCommands,
+  codexCustomExecCommands,
+  codexFunctionCallCommands,
+} from "./stop-lane-command-input.js";
 
 // 0.1.0 = unchanged event contract; the lane moved, the shape did not (#369).
 const HOOK_VERSION = "0.1.0";
@@ -349,7 +354,15 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
       // preceding assistant turn so it neither inflates the turn window nor
       // feeds file-token scanning.
       if (p.type === "function_call") {
-        attachCommands(out, codexCallCommands(p));
+        attachCommands(out, codexFunctionCallCommands(p));
+        continue;
+      }
+      // Current Codex desktop rollouts use a free-form `custom_tool_call`
+      // named `exec`; the input is JavaScript which calls tools.exec_command
+      // with a `cmd` property. Keep this additive because the rollout format
+      // is explicitly unstable and older function_call rows still exist.
+      if (p.type === "custom_tool_call") {
+        attachCommands(out, codexCustomExecCommands(p));
         continue;
       }
     }
@@ -364,7 +377,7 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
       const m = msg as Record<string, unknown>;
       const role = typeof m.role === "string" ? m.role : "unknown";
       const turn: TranscriptTurn = { role: effectiveRole(role, m.content), content: scrubTurnContent(stringifyContent(m.content)) };
-      const commands = toolUseCommands(m.content);
+      const commands = claudeToolUseCommands(m.content);
       if (commands.length > 0) turn.commands = commands;
       out.push(turn);
       continue;
@@ -374,35 +387,6 @@ function normalizeTurns(items: unknown[]): TranscriptTurn[] {
     }
   }
   return out;
-}
-
-/** Claude Code: tool_use blocks live inside the assistant message content;
- *  a shell call carries its command line in `input.command`. */
-function toolUseCommands(content: unknown): string[] {
-  if (!Array.isArray(content)) return [];
-  const out: string[] = [];
-  for (const c of content) {
-    if (!c || typeof c !== "object") continue;
-    const b = c as Record<string, unknown>;
-    if (b.type !== "tool_use" || !b.input || typeof b.input !== "object") continue;
-    const cmd = (b.input as Record<string, unknown>).command;
-    if (typeof cmd === "string" && cmd.trim()) out.push(cmd);
-  }
-  return out;
-}
-
-/** Codex: `arguments` is a JSON string; `command` is a string or an argv array. */
-function codexCallCommands(p: Record<string, unknown>): string[] {
-  if (typeof p.arguments !== "string") return [];
-  try {
-    const args = JSON.parse(p.arguments) as Record<string, unknown>;
-    const cmd = args.command;
-    if (typeof cmd === "string" && cmd.trim()) return [cmd];
-    if (Array.isArray(cmd)) return [cmd.filter((x) => typeof x === "string").join(" ")];
-  } catch {
-    /* not JSON — no command */
-  }
-  return [];
 }
 
 function attachCommands(out: TranscriptTurn[], commands: string[]): void {

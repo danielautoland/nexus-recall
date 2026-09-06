@@ -236,7 +236,7 @@ describe("stop-hook: detectFeatureCompletion", () => {
     assert.equal(detectFeatureCompletion(turns, ALL_EXIST), null);
   });
 
-  it("normalizeTurns lifts tool_use commands (Claude) and function_call commands (Codex) onto the turn", () => {
+  it("normalizeTurns lifts Claude and old/current Codex shell calls onto the turn", () => {
     const claude = normalizeTurns([
       {
         type: "assistant",
@@ -259,6 +259,35 @@ describe("stop-hook: detectFeatureCompletion", () => {
     ]);
     assert.equal(codex.length, 1, "the call attaches to the preceding assistant turn");
     assert.deepEqual(codex[0].commands, ["git commit -m y"]);
+
+    const currentCodex = normalizeTurns([
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] } },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          input: 'const r = await tools.exec_command({ cmd: "git add -A && git commit -m current" });',
+        },
+      },
+    ]);
+    assert.equal(currentCodex.length, 1, "the current custom call also attaches to the preceding assistant turn");
+    assert.deepEqual(currentCodex[0].commands, ["git add -A && git commit -m current"]);
+  });
+
+  it("does not lift git-commit prose from a current Codex custom tool call", () => {
+    const turns = normalizeTurns([
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: FIVE_SOURCE_FILES }] } },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          input: 'text("I might run git commit later");',
+        },
+      },
+    ]);
+    assert.equal(detectFeatureCompletion(turns, ALL_EXIST), null);
   });
 
   it("does not fire without enough source tokens", () => {

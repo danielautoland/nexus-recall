@@ -102,6 +102,24 @@ describe("stop-lane: who says it vs. what happened", () => {
     assert.equal(fired, !BINDING["feature-completion"].humanBound, BINDING["feature-completion"].why);
   });
 
+  it("feature-completion: the current Codex custom_tool_call is also an agent-run commit", () => {
+    const turns = normalizeTurns([
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "ok" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: EDITED }] } },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          input: 'const r = await tools.exec_command({ cmd: "git add -A && git commit -m codex" });',
+        },
+      },
+    ]);
+    assert.ok(!turns.some((t) => t.role === "user" && /commit/i.test(t.content)), "fixture: no user turn mentions a commit");
+    const fired = detectFeatureCompletion(turns, ALL_EXIST) !== null;
+    assert.equal(fired, !BINDING["feature-completion"].humanBound, BINDING["feature-completion"].why);
+  });
+
   it("the table covers every heuristic evaluateHeuristics knows", () => {
     // Eine neue Heuristik ohne Eintrag hier hat ihre Bindung nicht erklärt.
     // Ein Transkript, das alle drei bekannten Signale trägt, liefert alle

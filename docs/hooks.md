@@ -283,8 +283,8 @@ three heuristics:
 2. **feature-completion** — a commit signal + ≥ 5 distinct repo-relative
    source-file tokens, at least one of which exists under the session cwd →
    suggests a `project-fact` save. The signal is any of: `git commit` in a
-   **user** turn, `git commit` in a shell command the **agent ran** (tool_use
-   input / Codex function_call — never assistant prose), or git's own
+   **user** turn, `git commit` in a shell command the **agent ran** (Claude
+   tool_use or Codex function_call/custom_tool_call — never assistant prose), or git's own
    `[branch sha] subject` line in a tool result. Home/URL paths and
    non-source files (`.json`, `.yaml`, …) are filtered out.
 3. **architecture-decision** — `ok dann | lass uns | entschieden | final |
