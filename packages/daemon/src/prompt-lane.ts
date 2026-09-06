@@ -655,7 +655,7 @@ export async function runPromptLane(
     ...(recallBlock ? recallHits.map((h) => h.id) : []),
   ];
   if (injectedIds.length > 0) {
-    await reportHinted(selfBaseUrl, injectedIds);
+    await reportHinted(selfBaseUrl, injectedIds, payload.session_id ?? null);
   }
 
   // #458 (shadow): den fertigen Block ans Sitzungsbudget anrechnen und den

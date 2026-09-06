@@ -23,6 +23,7 @@ export type TelemetryEvent =
   | HookReflexEvent
   | HookActEvent
   | RecallEpisodeEvent
+  | HintFollowedShadowEvent
   | IdScanEvent
   | MutationIncidentEvent
   | EvidenceDecisionEvent
@@ -285,6 +286,40 @@ export interface RecallEpisodeEvent extends BaseEvent {
   acted_on: boolean;
   match_strength: number;
   tool_name: string | null;
+}
+
+/**
+ * #478 Part 2 / #484 shadow: did an injected hint get FOLLOWED without ever
+ * being loaded? `acted_on` can only ever answer that for an explicit
+ * `load_memory` — the breaker in `hint-suppression.ts:93` therefore treats an
+ * unobservable signal as evidence of worthlessness.
+ *
+ * Deliberately its OWN kind rather than a field on `RecallEpisodeEvent`:
+ * `telemetry-report.ts:184-188` counts every surfaced episode as `loaded`, so
+ * emitting these as episodes would inflate the USE rate — a measurement that
+ * changes the numbers it measures. Nothing reads this kind yet; it is a
+ * parallel count for the 10.09. evaluation.
+ *
+ * NO recall_id, score or band: `hookHints` keeps one slot per memory id and
+ * the newest recall overwrites it, so any provenance here would be the wrong
+ * recall's as often as not (review finds, Vera 06.09.). The question — was an
+ * injected hint followed — needs none of it.
+ *
+ * READ IT AS AN UPPER BOUND. A hint is injected BECAUSE it fits the context,
+ * so its words are more likely to appear in the next tool input anyway. Where
+ * `loaded` is a lower bound for "used", this is a ceiling.
+ */
+export interface HintFollowedShadowEvent extends BaseEvent {
+  kind: "hint_followed_shadow";
+  memory_id: string;
+  turn_id: string;
+  turn_source: TurnSource;
+  /** Same threshold as `acted_on` (>= 2) so both numbers stay comparable. */
+  followed: boolean;
+  match_strength: number;
+  tool_name: string | null;
+  /** ms between the hint being injected and this tool input. */
+  age_ms: number;
 }
 
 export interface SaveMemoryEvent extends BaseEvent {

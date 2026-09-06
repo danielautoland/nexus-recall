@@ -335,7 +335,7 @@ export async function runTodoLane(
       recordSourceEmit(state, BACKOFF_SOURCE, filtered.map((h) => h.id), consumed);
       await saveSessionState(sessionId, state);
       // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-      await reportHinted(url, filtered.map((h) => h.id));
+      await reportHinted(url, filtered.map((h) => h.id), payload.session_id ?? null);
     }
   }
 

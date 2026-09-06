@@ -82,6 +82,13 @@ interface LoadedMemoryTrace {
   surfaced: boolean;
   ts: number;
   closed: boolean;
+  /** #478 Part 2: this entry came from an INJECTED hint, not from a
+   *  `load_memory`. It never produces a `recall_episode` and never feeds
+   *  `acted_on` — see `recordSurfacedHints`. */
+  hint_only?: boolean;
+  /** Which session was shown this hint. Only set for `hint_only` entries: a
+   *  load in ANOTHER session must not clear this one's measurement window. */
+  hint_session_id?: string;
 }
 
 // Fenster, in dem ein geladenes Memory für eine acted_on-Episode offen
@@ -269,6 +276,79 @@ export class Telemetry {
   }
 
   /**
+   * #478 Part 2, shadow only: open an act-detection window for hints that were
+   * INJECTED, so a hint that gets followed without ever being loaded stops
+   * being invisible. Fed from POST /hook/hinted alongside `recordSurfacedUsage`.
+   *
+   * WHY HERE AND NOT AT `recordHookHints`: that one holds the engine's raw
+   * top-k and runs in the SAME call as `matchLoadedMemories`
+   * (`http-hook-routes.ts:473-479`) — an entry opened there would be matched
+   * against the very tool input that produced it, which measures the retrieval
+   * similarity a second time rather than any use. `/hook/hinted` arrives after
+   * that call, so the earliest thing an entry here can match is the NEXT tool
+   * input. That separation is the whole point.
+   *
+   * No `emitUsage({kind: "loaded"})`: being shown is not a load, and the
+   * suppression breaker's `used` condition must not move (#484).
+   */
+  recordSurfacedHints(
+    hints: Array<{ memory_id: string; distinctive_tokens: string[] }>,
+    session_id: string | null,
+  ): void {
+    if (hints.length === 0) return;
+    // Review find (Vera, 06.09.): without a session id `currentTurn` produces
+    // an `inferred` turn, and the session lock further down
+    // (`turn_source === "session"`) then does not apply — a command from a
+    // PARALLEL session could close this window and be counted as this
+    // session's hint being followed. Enforced here rather than at the caller
+    // so no future lane can reintroduce it. A missing number beats a number
+    // about the wrong session.
+    if (!session_id) return;
+    const turn = this.currentTurn(session_id);
+    // Second review find (Vera, 06.09.): a session id is not enough.
+    // `currentTurn` falls back to `latestTurn` as an INFERRED turn when no
+    // `rotateTurn` has happened for this session yet (SessionStart, or right
+    // after a daemon restart) — and the session lock in `matchLoadedMemories`
+    // only applies to `turn_source === "session"`. An inferred entry is
+    // closable by a parallel session, so it must not exist.
+    if (turn.turn_source !== "session") return;
+    const now = Date.now();
+    this.loadedMemories = this.loadedMemories.filter(
+      (entry) => !entry.closed && now - entry.ts <= ACTED_ON_WINDOW_MS,
+    );
+    for (const hint of hints) {
+      const tokens = new Set(hint.distinctive_tokens);
+      // Same gate as the load path: without distinctive tokens there is
+      // nothing an act could match against.
+      if (tokens.size === 0) continue;
+      // NO recall provenance on purpose (review finds 3 and 4, Vera 06.09.):
+      // `hookHints` holds ONE slot per memory_id, overwritten by the newest
+      // recall — across sessions and across overlapping tool calls within one
+      // session. Attaching it would stamp this event with another recall's id,
+      // score and band. Carrying it correctly would mean threading the
+      // recall_id through `/hook/hinted`, and three of the six lanes
+      // (bash-pre, bash-fail, session) never hold one — a field that is right
+      // half the time is worse than no field. The question this measures is
+      // "was an injected hint followed", which needs none of it.
+      this.loadedMemories.push({
+        memory_id: hint.memory_id,
+        distinctive_tokens: tokens,
+        turn_id: turn.turn_id,
+        turn_source: turn.turn_source,
+        recall_id: null,
+        surfaced_score: null,
+        band: bandForScore(null),
+        surfaced: true,
+        ts: now,
+        closed: false,
+        hint_only: true,
+        hint_session_id: session_id,
+      });
+    }
+    this.scheduleFlush();
+  }
+
+  /**
    * Returns the recall_id + rank if this id was hinted in the last
    * HOOK_HINT_WINDOW_MS. Lazy-evicts the entry on miss.
    */
@@ -351,6 +431,34 @@ export class Telemetry {
     // engagement and the curator would demote actively-loaded memories with
     // no reactivation path (review find 2026-07-03).
     this.emitUsage([{ id: payload.memory_id, kind: "loaded" }]);
+    // #478 Part 2 review find (Vera, 06.09.): a hint that gets LOADED leaves
+    // the shadow population — its open `hint_only` entry would otherwise
+    // survive alongside the real one and let the same act report "followed
+    // without ever being loaded" about a memory that was loaded. Dropped
+    // silently: the load is the stronger signal and is recorded as a
+    // recall_episode.
+    //
+    // BEFORE the token gate below (second review find): a memory whose BODY
+    // has no distinctive tokens returns early, while its title and summary may
+    // well have opened a hint window. Leaving the removal behind that gate
+    // would keep exactly those in the shadow count.
+    // Scoped to the loading session (third review find): A and B can both be
+    // shown m1; A loading it says nothing about whether B followed its own
+    // hint without loading. Clearing globally would silently shrink B's count.
+    //
+    // EXCEPT when the load carries no session (fourth review find): the
+    // standalone stdio surface calls `loadMemoryHandler` without one
+    // (`index.ts:578-580`), and that same client's hook DID open a window
+    // under a real session id. Not knowing which, the only honest move is to
+    // drop every open window for this memory — the load happened, so none of
+    // them may still claim "followed without ever being loaded".
+    const loadingSession = payload.session_id ?? null;
+    this.loadedMemories = this.loadedMemories.filter(
+      (entry) =>
+        !(entry.hint_only
+          && entry.memory_id === payload.memory_id
+          && (loadingSession === null || entry.hint_session_id === loadingSession)),
+    );
     if (tokens.size === 0) return;
     const turn = this.currentTurn(payload.session_id ?? null);
     const now = Date.now();
@@ -403,6 +511,27 @@ export class Telemetry {
       }
       if (!closeOnMiss && matchStrength < 2) continue; // stays open (#144)
       entry.closed = true;
+      // #478 Part 2: an injected-but-never-loaded hint is counted in its OWN
+      // event kind. It must not become a `recall_episode` — the report counts
+      // every surfaced episode as `loaded` (`telemetry-report.ts:184-188`), so
+      // emitting one here would inflate the USE rate this is meant to measure.
+      // And no `acted_on` usage either: `hint-suppression.ts:93` reads that,
+      // and Package 2 delivers a number, not a behaviour change.
+      if (entry.hint_only) {
+        void this.write({
+          kind: "hint_followed_shadow",
+          ts: new Date().toISOString(),
+          session_id: this.sessionId,
+          memory_id: entry.memory_id,
+          turn_id: entry.turn_id,
+          turn_source: entry.turn_source,
+          followed: matchStrength >= 2,
+          match_strength: matchStrength,
+          tool_name: payload.tool_name,
+          age_ms: now - entry.ts,
+        });
+        continue;
+      }
       episodes.push({
         turn_id: entry.turn_id,
         turn_source: entry.turn_source,

@@ -59,7 +59,7 @@
  */
 import { createServer, type Server } from "node:http";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
-import { buildGraph, buildSemanticLayout, type SemanticLayout } from "@bastra-recall/core";
+import { buildGraph, buildSemanticLayout, truncateSummaryTo, type SemanticLayout } from "@bastra-recall/core";
 import type {
   Vault,
   SearchIndex,
@@ -76,7 +76,7 @@ import { dispatchLaneRoutes } from "./http-lane-routes.js";
 import { computeHeat, computeReach, readUsage } from "./usage-sidecar.js";
 import { buildHealthPayload } from "./http-health.js";
 import { createStalenessMonitor, defaultStalenessIo } from "./code-staleness.js";
-import { type ToolDeps } from "./tool-handlers.js";
+import { distinctiveTokensForActedOn, type ToolDeps } from "./tool-handlers.js";
 import { getUpdateState } from "./update-check.js";
 import { handleHookCare } from "./webui.js";
 import { type ChatFn } from "./webui-chat.js";
@@ -467,6 +467,46 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
             ? ((body as { ids: unknown[] }).ids.filter((x) => typeof x === "string") as string[])
             : [];
           telemetry.recordSurfacedUsage(ids);
+          // #478 Part 2 (shadow): open an act-detection window for what was
+          // actually injected.
+          //
+          // TWO REVIEW FINDS SHAPE THIS (Vera, 06.09.):
+          //
+          // 1. Tokens come from what the model SAW. The lanes print
+          //    `id (type): summary` (`write-lane.ts:384-391`) or
+          //    `id (type/scope): summary` (`session-lane.ts:653-659`) — the ID
+          //    and the truncated summary, never the body and never the title.
+          //    Matching the body would score a hint as followed on words
+          //    nobody read; matching the title would do the same for a title
+          //    that is not on screen. The id is split on its slug separators
+          //    first: `distinctiveTokensForActedOn` keeps `a-b` as one token
+          //    (`save-similarity.ts` tokenizer), so a reader typing the words
+          //    of the id they just saw would otherwise never match. `type` and
+          //    `scope` stay out on purpose — they are rubrics, and counting a
+          //    later command that merely says "lesson" would be a false
+          //    positive by construction.
+          //
+          // 2. No session id, no window. Without it the entry lands on an
+          //    `inferred` turn, where the session lock in `matchLoadedMemories`
+          //    does not apply and a command from a PARALLEL session can close
+          //    it. A missing number beats a number about the wrong session.
+          //    `recordSurfacedUsage` above is unaffected — it never needed one.
+          const hintedSession =
+            typeof (body as { session_id?: unknown })?.session_id === "string"
+              && (body as { session_id: string }).session_id.length > 0
+              ? (body as { session_id: string }).session_id
+              : null;
+          if (hintedSession) {
+            telemetry.recordSurfacedHints(
+              ids.flatMap((id) => {
+                const memory = vault.get(id);
+                if (!memory) return [];
+                const shown = `${id.replace(/[-_]+/g, " ")} ${truncateSummaryTo(String(memory.fm.summary ?? ""), 160)}`;
+                return [{ memory_id: id, distinctive_tokens: distinctiveTokensForActedOn(shown) }];
+              }),
+              hintedSession,
+            );
+          }
           sendJson(res, 200, { ok: true, counted: ids.length });
         })
         .catch(() => sendJson(res, 400, { error: "invalid body" }));

@@ -374,7 +374,7 @@ export async function runWriteLane(
     error: errMsg,
   });
   // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-  await reportHinted(selfBaseUrl, hintedIds);
+  await reportHinted(selfBaseUrl, hintedIds, payload.session_id ?? null);
 
   return stdout;
 }

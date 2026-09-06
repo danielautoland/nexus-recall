@@ -548,7 +548,7 @@ export async function runSessionLane(
     error: errMsg,
   });
   // Usage sidecar (#154): only what was ACTUALLY injected counts as surfaced.
-  await reportHinted(url, top.map((h) => h.id));
+  await reportHinted(url, top.map((h) => h.id), payload.session_id ?? null);
   return out;
 }
 
