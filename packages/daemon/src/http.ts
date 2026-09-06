@@ -58,7 +58,7 @@
  *     Origin erlaubt ist).
  */
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { buildGraph, buildSemanticLayout, type SemanticLayout } from "@bastra-recall/core";
 import type {
   Vault,
@@ -162,6 +162,31 @@ export interface HttpOptions {
 export interface HttpHandle {
   port: number | null;
   close: () => Promise<void>;
+  /** #483: true when the port was already taken. The caller is then NOT the
+   *  daemon and must not keep running background work — see index.ts. */
+  addressInUse?: boolean;
+}
+
+/**
+ * #483: is the daemon port free? Asked BEFORE the vault, the embedding index
+ * and the Ollama prewarm come up, so the loser of a start race exits before it
+ * duplicates any of them. A plain TCP bind is enough — we only need to know
+ * whether someone holds the port, not who.
+ *
+ * The probe closes immediately, so a race window of milliseconds remains until
+ * the real listen(); `startHttpServer` reports EADDRINUSE via `addressInUse`
+ * for that case.
+ */
+export async function probeDaemonPort(port: number): Promise<"free" | "in-use"> {
+  return new Promise((resolve) => {
+    const probe = createNetServer();
+    probe.once("error", (err: NodeJS.ErrnoException) => {
+      resolve(err.code === "EADDRINUSE" ? "in-use" : "free");
+    });
+    probe.listen(port, "127.0.0.1", () => {
+      probe.close(() => resolve("free"));
+    });
+  });
 }
 
 export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
@@ -711,13 +736,15 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     const onError = (err: NodeJS.ErrnoException): void => {
       if (err.code === "EADDRINUSE") {
         console.error(
-          `[bastra-recall] http: port ${port} already in use — assuming another bastra-recall daemon owns it. Hooks will reach that one.`,
+          `[bastra-recall] http: port ${port} already in use — if another bastra-recall daemon owns it, hooks will reach that one.`,
         );
         server.removeAllListeners("error");
         server.removeAllListeners("listening");
         resolve({
           port: null,
           close: async () => undefined,
+          // #483: the caller decides — it must stop, not continue headless.
+          addressInUse: true,
         });
         return;
       }

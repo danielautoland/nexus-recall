@@ -36,7 +36,7 @@ import {
 import * as path from "node:path";
 import { logDirFor } from "./telemetry.js";
 import { createDaemonTelemetry } from "./telemetry-setup.js";
-import { startHttpServer } from "./http.js";
+import { probeDaemonPort, startHttpServer } from "./http.js";
 import { loadCuratorState } from "./curator.js";
 import { wireBootObservers } from "./boot-observers.js";
 import { startBackgroundJobs } from "./daemon-jobs.js";
@@ -90,6 +90,13 @@ import { spawnSync } from "node:child_process";
 const DOCUMENT_WRITE_ENABLED = envFirst("BASTRA_DOCUMENT_WRITE", "NEXUS_DOCUMENT_WRITE") === "1";
 
 const DEFAULT_HTTP_PORT = 6723;
+// One truth for the port, read twice: once by the #483 bind probe at the very
+// top of main(), once by the real listen() further down.
+const HTTP_DISABLED = envFirst("BASTRA_HTTP", "NEXUS_HTTP") === "off";
+const HTTP_PORT = (() => {
+  const p = envInt("BASTRA_HTTP_PORT", DEFAULT_HTTP_PORT, "NEXUS_HTTP_PORT");
+  return Number.isFinite(p) ? p : DEFAULT_HTTP_PORT;
+})();
 
 // ── CLI delegation guard ─────────────────────────────────────────────────────
 // This module is the DAEMON entry — the forwarder starts it as `node index.js`
@@ -121,6 +128,18 @@ if (!VAULT_PATH) {
 }
 
 async function main(): Promise<void> {
+  // #483: losing the port means "I am not the daemon" — not "carry on as a
+  // headless worker". Asked here, before the vault watcher, the embedding
+  // index and the Ollama prewarm start, because the loser used to run all
+  // three a second time against the same vault. `BASTRA_HTTP=off` is a
+  // deliberate no-server mode and must never be probed away.
+  if (!HTTP_DISABLED && (await probeDaemonPort(HTTP_PORT)) === "in-use") {
+    console.error(
+      `[bastra-recall] port ${HTTP_PORT} is already in use — exiting; if another bastra-recall daemon owns it, the forwarder will use that one.`,
+    );
+    process.exit(0);
+  }
+
   const vault = new Vault(VAULT_PATH!);
   const { loaded, skipped } = await vault.init();
   console.error(
@@ -434,12 +453,11 @@ async function main(): Promise<void> {
     lastActivityMs = Date.now();
   };
 
-  const httpPort = envInt("BASTRA_HTTP_PORT", DEFAULT_HTTP_PORT, "NEXUS_HTTP_PORT");
   const httpHandle =
-    envFirst("BASTRA_HTTP", "NEXUS_HTTP") === "off"
+    HTTP_DISABLED
       ? { port: null, close: async () => undefined }
       : await startHttpServer({
-          port: Number.isFinite(httpPort) ? httpPort : DEFAULT_HTTP_PORT,
+          port: HTTP_PORT,
           vault,
           search,
           telemetry,
@@ -464,6 +482,17 @@ async function main(): Promise<void> {
             : null,
           curator: { vaultRoot: VAULT_PATH!, vault, setDemotions: (ids) => search.setDemotions(ids) },
         });
+
+  // #483: the probe at the top of main() closes its socket before the real
+  // listen() runs, so a second process can still slip in during that window.
+  // It loses here instead — and stops, rather than staying up as a second
+  // watcher on the same vault.
+  if (httpHandle.addressInUse) {
+    console.error(
+      `[bastra-recall] lost port ${HTTP_PORT} while starting up — exiting; if another bastra-recall daemon owns it, the forwarder will use that one.`,
+    );
+    process.exit(0);
+  }
 
   const server = new Server(
     { name: "bastra-recall", version: DAEMON_VERSION },
