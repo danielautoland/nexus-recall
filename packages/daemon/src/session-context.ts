@@ -110,6 +110,12 @@ export async function handleSessionContextPost(
       evidenceGateEnabled: toolDeps.evidenceGateEnabled,
     },
     cross_project: b.cross_project === true,
+    // Die Deadline des dichten Arms reist mit dem Aufruf, nicht mit dem
+    // Endpunkt: Nur die SessionStart-Lane schickt sie, und nur sie bekommt
+    // damit mehr als die hookweiten 150 ms. Ungesetzt bleibt alles wie bisher.
+    ...(typeof b.vector_deadline_ms === "number"
+      ? { vector_deadline_ms: b.vector_deadline_ms }
+      : {}),
     caps: {
       ...(num(caps.pinned) !== undefined ? { pinned: num(caps.pinned) } : {}),
       ...(num(caps.hints) !== undefined ? { hints: num(caps.hints) } : {}),

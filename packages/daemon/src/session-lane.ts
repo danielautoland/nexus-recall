@@ -61,6 +61,30 @@ import {
 const HOOK_TIMEOUT_MS = envInt("BASTRA_HOOK_TIMEOUT_MS", 500, "NEXUS_HOOK_TIMEOUT_MS");
 const HOOK_VERSION = "0.3.0";
 const SCORE_FLOOR = 30;
+
+/**
+ * Deadline des dichten Arms für DIESE Lane, in ms (Daniel, 07.09.2026).
+ *
+ * Der hookweite Default liegt bei 150 ms (`http-hook-routes.ts`,
+ * `BASTRA_VECTOR_DEADLINE_MS`) und ist auf die Prompt-Lane zugeschnitten, die
+ * einen Prewarmer vor sich hat. Der SessionStart hat keinen: der erste Embed
+ * läuft auf kaltem Modell und braucht gemessene ~160-180 ms, weshalb 46 % der
+ * Session-Recalls (55 von 119, Logs 06.-07.09.2026) einarmig als rohes BM25
+ * zurückkamen. 300 ms decken den kalten Fall ab und bleiben im
+ * Lane-Timeout von 500 ms (`HOOK_TIMEOUT_MS`), das hier die tatsächliche
+ * Wanduhr ist.
+ *
+ * Ausdrücklich nur hier gesetzt und nicht am Endpunkt-Default: die
+ * Prompt-Lane, der Bash-Pfad und der hooklose GET-Weg behalten ihre 150 ms.
+ *
+ * Und ausdrücklich OHNE Env-Schalter (Veras Gegenreview): Die 300 sind eine
+ * getroffene Entscheidung, kein Vorschlag. Als `envInt(...)` hätte eine
+ * geerbte Dienstkonfiguration sie still auf 150 zurückgedreht — jeder
+ * SessionStart hätte wieder die alte Deadline geschickt, und keine Zeile in
+ * der Telemetrie hätte gesagt, dass die Entscheidung gar nicht wirkt. Wer sie
+ * ändern will, ändert diese Zahl.
+ */
+const SESSION_VECTOR_DEADLINE_MS = 300;
 const MUST_LOAD_SCORE = 100;
 const TOTAL_HINTS_CAP = 7;
 
@@ -160,6 +184,9 @@ export async function runSessionLane(
           // eigene Vorgaben (4 Konventionen, 5 Floors), und ein Umzug ohne
           // diese Zeilen wäre eine stille Produktänderung. `0` = ungekappt.
           caps: { conventions: 6, pinned: 0 },
+          // Siehe SESSION_VECTOR_DEADLINE_MS: die Lane kauft ihrem dichten Arm
+          // mehr Zeit als der Hook-Default, und zwar nur für sich.
+          vector_deadline_ms: SESSION_VECTOR_DEADLINE_MS,
           budget: { time_ms: remainingMs },
         },
         remainingMs,
@@ -192,6 +219,22 @@ export async function runSessionLane(
   // score ≥100", obwohl genau ein Pfad lief.
   const unfused = responses.some((r) => r.resp !== null && isUnfused(r.resp));
   const merged = mergeSessionHits(responses, unfused, SCORE_FLOOR);
+
+  // Deep-Dive 07.09.2026: Ein einarmiger SessionStart stand in der Telemetrie
+  // als schlichtes `ok`. Das war nicht falsch, es beschrieb nur etwas anderes:
+  // `status` sagt, ob die ANTWORT ankam, nicht ob sie vollständig war. Deshalb
+  // bleibt `status` unverändert — jede bestehende Auswertung zählt weiter
+  // dasselbe — und daneben stehen die zwei Felder, die die Antwort selbst
+  // beschreiben: WARUM ein Arm fehlte und OB die Zahlen auf der fusionierten
+  // Skala liegen. Die zweite Frage ist nicht aus der ersten ableitbar: ohne
+  // Embeddings läuft die Suche einarmig, ohne dass ein Arm ausgefallen wäre,
+  // und dann gibt es keinen `degraded`-Grund zu melden.
+  //
+  // Bis zu drei Recalls stehen hier nebeneinander; gemeldet wird der erste
+  // Grund, den einer von ihnen nennt. Der Block wird als Ganzes injiziert und
+  // `unfused` gilt ohnehin fail-closed für den ganzen Block.
+  const degradedReason =
+    responses.find((r) => typeof r.resp?.degraded === "string")?.resp?.degraded ?? null;
 
   // #265: Die sechs Seitenabrufe hängen an keiner Recall-AUSGABE — nur daran,
   // DASS der Daemon antwortet. Sequenziell summierten sich ihre Budgets auf bis
@@ -528,6 +571,8 @@ export async function runSessionLane(
     pinned_count: pinned.length,
     top_score: top[0]?.score ?? null,
     latency_ms_total: Date.now() - startedAt,
+    degraded_reason: degradedReason,
+    score_unfused: unfused,
     hint_tokens_est: Math.ceil(injected.length / 4),
     // #462: dieselbe Schätzung je Teil. Nichts injiziert = alle Teile 0.
     hint_tokens_by_part: tokensByPart(
@@ -728,6 +773,15 @@ interface SessionHookTelemetry {
   hinted_types: string[];
   status: "ok" | "no-hits" | "daemon-unreachable" | "timeout" | "error";
   error: string | null;
+  /** #342/Deep-Dive 07.09.2026: welcher Arm ausgefallen ist — `vector-arm-timeout`
+   *  oder `vector-arm-empty`. `null` heißt „keiner ist ausgefallen", NICHT
+   *  „fusioniert": dafür ist `score_unfused` da. Fehlt auf Zeilen davor. */
+  degraded_reason: string | null;
+  /** Lagen die servierten Scores auf der rohen BM25-Skala statt auf der
+   *  fusionierten? Derselbe fail-closed berechnete Wert, mit dem die Lane den
+   *  Block bandet — die Telemetrie soll denselben Satz erzählen wie der Text,
+   *  den der Nutzer sieht. */
+  score_unfused: boolean;
 }
 
 export const SESSION_CONTEXT_PARTS = [

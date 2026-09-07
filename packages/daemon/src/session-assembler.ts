@@ -192,6 +192,18 @@ export interface AssembleOptions {
    * Entscheidung (offener Punkt zu #265, vermutlich mit #264).
    */
   hookRecall?: HookRecallDeps;
+  /**
+   * Deadline des dichten Arms in ms, pro Aufruf (`vector_deadline_ms`).
+   *
+   * Fehlt das Feld, gilt der hookweite Default (`BASTRA_VECTOR_DEADLINE_MS`,
+   * 150) — die Prompt-Lane und der GET-Weg bleiben damit unangetastet. Gesetzt
+   * wird es nur von der SessionStart-Lane: der Deep-Dive vom 07.09.2026 hat
+   * gemessen, dass 46 % ihrer Recalls bei 150 ms einarmig zurückkommen, weil
+   * der erste Embed auf kaltem Modell ~160-180 ms braucht und diese Route
+   * keinen Prewarmer hat. Nur wirksam auf dem `hookRecall`-Weg — der GET-Weg
+   * fährt `recallHandler`, der die Deadline nicht kennt.
+   */
+  vector_deadline_ms?: number;
   /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
    *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
    *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
@@ -345,6 +357,9 @@ export async function assembleSessionSections(
           // unten — es ist dieselbe Oberfläche, nur die andere Pipeline.
           client: opts.client,
           hook_source: "session-context",
+          ...(opts.vector_deadline_ms !== undefined
+            ? { vector_deadline_ms: opts.vector_deadline_ms }
+            : {}),
         },
         query,
         startedAt,
