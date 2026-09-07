@@ -15,8 +15,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Vault } from "@bastra-recall/core";
 import type { ToolDeps } from "./tool-handlers.js";
 import { sendJsonPlain } from "./webui.js";
-import { detectProject } from "@bastra-recall/core/topics";
 import { MAX_BODY_BYTES, readJsonBody } from "./http-util.js";
+import { projectForLane } from "./scope-filter.js";
 import {
   assembleSessionSections,
   renderSessionContext,
@@ -84,7 +84,9 @@ export async function handleSessionContextPost(
     typeof b.project === "string" && b.project.length > 0
       ? b.project
       : typeof b.cwd === "string"
-        ? detectProject(b.cwd)
+        ? // §20.5: dieselbe Konfidenz-Regel wie die Lanes — eine geratene
+          // Erkennung (`~/.buzz` → ".buzz") ist kein Projekt.
+          projectForLane(b.cwd)
         : null;
   const budget = (b.budget ?? {}) as Record<string, unknown>;
   const caps = (b.caps ?? {}) as Record<string, unknown>;

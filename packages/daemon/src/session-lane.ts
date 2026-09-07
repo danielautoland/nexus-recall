@@ -10,7 +10,7 @@
  *
  * Pipeline:
  *   payload (Claude-Code SessionStart)
- *     → detectProject(cwd)
+ *     → projectForLane(cwd)  (geraten = kein Projekt, §20.5)
  *     → 3 scope-filtered self-calls to /hook/recall
  *         · scope=user-preference  k=3   query="session-start preferences"
  *         · scope=<project>        k=3   query="<project> active context"
@@ -32,8 +32,8 @@
  */
 // #305: subpath leafs, never the core barrel — measured +40ms of process
 // start against +0.8ms for the three leafs, on a fresh spawn per event.
-import { detectProject } from "@bastra-recall/core/topics";
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
+import { projectForLane } from "./scope-filter.js";
 import { bandHits, requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE } from "./band-wording.js";
 import { isUnfused } from "./hook-recall-response.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
@@ -104,7 +104,12 @@ export async function runSessionLane(
     }
   }
 
-  const project = detectProject(payload.cwd ?? process.cwd());
+  // §20.5: Eine geratene Erkennung ist kein Projekt. `detectProject()` machte
+  // aus einem cwd ohne `.git` und ohne Container-Segment — `~/.buzz` — das
+  // Projekt ".buzz" und die Lane fragte Kandidaten dafür ab und schrieb es als
+  // `project=` in den Block. `projectForLane` liefert dort null: keine
+  // Projekt-Query, kein Projekt-Attribut.
+  const project = projectForLane(payload.cwd ?? process.cwd());
   // The self-call target is passed in by the route (this server's own
   // address), not read from the environment: the lane IS the daemon.
   const url = selfBaseUrl;
