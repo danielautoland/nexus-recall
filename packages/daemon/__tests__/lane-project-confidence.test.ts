@@ -9,8 +9,9 @@
  * daraufhin Kandidaten für ein Projekt ".buzz" ab und schrieb `project=".buzz"`
  * in den ausgelieferten Kontextblock; die Prompt-Lane schickte denselben Namen
  * als `project` an `/hook/recall`. Die Write-Lane hatte diese Regel über
- * `projectForFilter()` schon (`write-lane-project-confidence.test.ts`), die
- * anderen nie.
+ * `projectForFilter()` schon (`write-lane-project-confidence.test.ts`) — aber
+ * nur für den FILTER: ihre Query und ihr Hint-Block trugen den geratenen Namen
+ * weiter. Die anderen drei hatten die Regel nirgends.
  *
  * Jetzt entscheidet `projectForLane()`: `git-root`/`root-match` bleiben, was
  * sie waren, `fallback` ist kein Projekt.
@@ -20,8 +21,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Vault } from "@bastra-recall/core";
+import type { ToolDeps } from "../src/tool-handlers.js";
 import { runSessionLane } from "../src/session-lane.js";
 import { runPromptLane } from "../src/prompt-lane.js";
+import { runWriteLane } from "../src/write-lane.js";
+import { runTodoLane } from "../src/todo-lane.js";
+import { handleSessionContextPost } from "../src/session-context.js";
 
 /** Ein cwd ohne `.git` und ohne Container-Segment — der Fall aus dem Befund.
  *  Der Pfad existiert absichtlich nicht: die Erkennung ist reine Pfadarbeit
@@ -137,6 +146,11 @@ const SESSION_BODIES = {
   "/hook/hinted": "{}",
 };
 
+const WRITE_BODIES = {
+  "/hook/recall": RECALL_BODY,
+  "/hook/hinted": "{}",
+};
+
 const PROMPT_BODIES = {
   "/hook/recall": RECALL_BODY,
   "/hook/reflex": JSON.stringify({ hits: [] }),
@@ -224,4 +238,145 @@ test("Prompt-Lane mit erkanntem Projekt (root-match): unverändert", async () =>
     assert.ok(recall, "die Lane fragt /hook/recall");
     assert.equal(recall.body.project, "bastra-recall");
   });
+});
+
+async function runWrite(cwd: string, base: string): Promise<string> {
+  return withEnv({ BASTRA_TELEMETRY: "off" }, () =>
+    runWriteLane(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Edit",
+        session_id: `proj-conf-write-${cwd}-${Date.now()}`,
+        cwd,
+        tool_input: {
+          file_path: `${cwd}/src/recall.ts`,
+          old_string: "const recall = 1;",
+          new_string: "const recall = 2;",
+        },
+      },
+      base,
+    ),
+  );
+}
+
+test("Write-Lane mit geratenem Projekt: kein project-Attribut, kein Projekt im Recall", async () => {
+  await withDaemon(WRITE_BODIES, async (base, seen) => {
+    const ctx = context(await runWrite(GUESSED_CWD, base));
+
+    assert.ok(ctx.includes("<recall-hints"), "der Block wird überhaupt gerendert");
+    assert.doesNotMatch(ctx, /project="/, "kein Projekt-Attribut auf einem geratenen Namen");
+    assert.doesNotMatch(ctx, /\.buzz/, "der geratene Name taucht nirgends im Block auf");
+
+    const recall = seen.find((s) => s.path === "/hook/recall");
+    assert.ok(recall, "die Lane fragt /hook/recall");
+    assert.equal(recall.body.project ?? null, null, "kein geratenes Projekt im Recall-Body");
+  });
+});
+
+test("Write-Lane mit erkanntem Projekt (root-match): unverändert", async () => {
+  await withDaemon(WRITE_BODIES, async (base, seen) => {
+    const ctx = context(await runWrite(DETECTED_CWD, base));
+
+    assert.match(ctx, /project="bastra-recall"/, "die echte Erkennung trägt weiter ihr Attribut");
+    const recall = seen.find((s) => s.path === "/hook/recall");
+    assert.ok(recall);
+    assert.equal(recall.body.project, "bastra-recall");
+  });
+});
+
+/** Drei zusammenhängende Todos — die Todo-Lane verwirft alles darunter als
+ *  `low-confidence`, bevor sie das Projekt überhaupt anfasst. */
+const TODOS = {
+  todos: [
+    { content: "Migrate the auth middleware to the new session store", status: "pending" },
+    { content: "Write regression tests for the session store migration", status: "pending" },
+    { content: "Update the deployment notes for the session store", status: "pending" },
+  ],
+};
+
+async function runTodo(cwd: string, base: string): Promise<string> {
+  return withEnv({ BASTRA_TELEMETRY: "off" }, () =>
+    runTodoLane(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "TodoWrite",
+        session_id: `proj-conf-todo-${cwd}-${Date.now()}`,
+        cwd,
+        tool_input: TODOS,
+      },
+      base,
+    ),
+  );
+}
+
+test("Todo-Lane mit geratenem Projekt: kein project-Attribut, kein Projekt im Recall", async () => {
+  await withDaemon(WRITE_BODIES, async (base, seen) => {
+    const ctx = context(await runTodo(GUESSED_CWD, base));
+
+    assert.ok(ctx.includes("<recall-hints"), "der Block wird überhaupt gerendert");
+    assert.doesNotMatch(ctx, /project="/, "kein Projekt-Attribut auf einem geratenen Namen");
+    assert.doesNotMatch(ctx, /\.buzz/, "der geratene Name taucht nirgends im Block auf");
+
+    const recall = seen.find((s) => s.path === "/hook/recall");
+    assert.ok(recall, "die Lane fragt /hook/recall");
+    assert.equal(recall.body.project ?? null, null, "kein geratenes Projekt im Recall-Body");
+  });
+});
+
+test("Todo-Lane mit erkanntem Projekt (root-match): unverändert", async () => {
+  await withDaemon(WRITE_BODIES, async (base, seen) => {
+    const ctx = context(await runTodo(DETECTED_CWD, base));
+
+    assert.match(ctx, /project="bastra-recall"/, "die echte Erkennung trägt weiter ihr Attribut");
+    const recall = seen.find((s) => s.path === "/hook/recall");
+    assert.ok(recall);
+    assert.equal(recall.body.project, "bastra-recall");
+  });
+});
+
+/**
+ * Die HTTP-Route `POST /hook/session-context` löst das Projekt selbst auf,
+ * wenn der Aufrufer nur ein `cwd` schickt (hooklose Clients, MCP-Forwarder).
+ * Sie antwortet mit dem aufgelösten Namen im Feld `project` — genau darauf
+ * prüft dieser Test, weil der gerenderte Block bei einem Fake-Vault ohnehin
+ * leer bliebe und ein geratenes Projekt dort nicht sichtbar würde.
+ */
+async function postSessionContextRoute(
+  body: Record<string, unknown>,
+): Promise<{ project: unknown; context: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "bastra-proj-conf-"));
+  const vault = { size: () => 0, get: () => undefined, list: () => [] } as unknown as Vault;
+  const server: Server = createServer((req, res) => {
+    void handleSessionContextPost(req, res, { vaultPath: dir } as unknown as ToolDeps, vault);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/hook/session-context`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await resp.json()) as { project: unknown; context: string };
+    return json;
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("POST /hook/session-context mit geratenem cwd: project null, kein .buzz im Block", async () => {
+  const { project, context: ctx } = await postSessionContextRoute({ cwd: GUESSED_CWD });
+  assert.equal(project, null, "die Route übernimmt den geratenen Namen nicht");
+  assert.doesNotMatch(ctx, /\.buzz/);
+});
+
+test("POST /hook/session-context mit erkanntem cwd (root-match): unverändert", async () => {
+  const { project } = await postSessionContextRoute({ cwd: DETECTED_CWD });
+  assert.equal(project, "bastra-recall");
+});
+
+test("POST /hook/session-context: ein ausdrücklich mitgeschicktes Projekt gewinnt weiter", async () => {
+  const { project } = await postSessionContextRoute({ cwd: GUESSED_CWD, project: "bastra-recall" });
+  assert.equal(project, "bastra-recall", "der explizite Wert wird nicht von der cwd-Auflösung überschrieben");
 });
