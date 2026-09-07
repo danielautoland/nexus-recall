@@ -224,6 +224,13 @@ export async function runHookRecall(
       // deadline for nothing — 15 of 19 MCP recalls on 20.08. came back
       // BM25-only because a 3-query batch (#351) serialises on one Ollama.
       const vectorDeadlineMs = clampInt(body.vector_deadline_ms, 50, 10_000, hookVectorDeadlineMs());
+      // Dieselbe Regel wie bei der Deadline eine Zeile darüber: Das Budget, gegen
+      // das der Schatten-Router rechnet, gehört zum AUFRUF, nicht zum Endpunkt.
+      // Die 200 sind die Wanduhr der Prompt-Lane; die SessionStart-Lane hat ihre
+      // eigene (`HOOK_TIMEOUT_MS`, 500) und schickt sie mit. Ohne das würde der
+      // Schatten für sie eine Grenze prüfen, unter der sie gar nicht läuft.
+      // `0` heißt weiterhin „kein Budget" (siehe `lexicalFitsBudget`).
+      const budgetMs = clampInt(body.hook_budget_ms, 0, 10_000, hookBudgetMs());
 
       const stageTimings: NonNullable<Parameters<Telemetry["logHookRecall"]>[0]["recall_stages"]> = {};
       // #342: why the hit list came back one-armed, if it did. Recorded rather
@@ -447,7 +454,7 @@ export async function runHookRecall(
           ? routeRetrieval({
               uniqueTerms: stageTimings.terms_unique,
               denseAvailable: search.hasEmbeddings() && !embeddingDegradedAtRecall,
-              budgetMs: hookBudgetMs(),
+              budgetMs,
               denseReservedMs: vectorDeadlineMs,
             })
           : undefined;

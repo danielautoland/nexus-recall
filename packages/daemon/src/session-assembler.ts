@@ -204,6 +204,17 @@ export interface AssembleOptions {
    * fährt `recallHandler`, der die Deadline nicht kennt.
    */
   vector_deadline_ms?: number;
+  /**
+   * Das Budget, gegen das der Schatten-Router seine Kostenschätzung hält, in ms
+   * (`hook_budget_ms`).
+   *
+   * Fehlt das Feld, gilt der hookweite Wert (`BASTRA_HOOK_BUDGET_MS`, 200).
+   * Gesetzt wird es nur von der SessionStart-Lane, die eine andere Wanduhr hat
+   * als die Prompt-Lane. Rein diagnostisch: der Wert erreicht `routeRetrieval`
+   * und von dort ausschließlich das `shadow_route`-Telemetriefeld — kein
+   * Timeout, kein Abbruch, keine Trefferauswahl (#362 Phase 2 ist Schatten).
+   */
+  hook_budget_ms?: number;
   /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
    *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
    *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
@@ -360,6 +371,7 @@ export async function assembleSessionSections(
           ...(opts.vector_deadline_ms !== undefined
             ? { vector_deadline_ms: opts.vector_deadline_ms }
             : {}),
+          ...(opts.hook_budget_ms !== undefined ? { hook_budget_ms: opts.hook_budget_ms } : {}),
         },
         query,
         startedAt,

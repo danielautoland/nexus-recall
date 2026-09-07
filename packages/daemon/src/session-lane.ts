@@ -70,21 +70,47 @@ const SCORE_FLOOR = 30;
  * einen Prewarmer vor sich hat. Der SessionStart hat keinen: der erste Embed
  * läuft auf kaltem Modell und braucht gemessene ~160-180 ms, weshalb 46 % der
  * Session-Recalls (55 von 119, Logs 06.-07.09.2026) einarmig als rohes BM25
- * zurückkamen. 300 ms decken den kalten Fall ab und bleiben im
- * Lane-Timeout von 500 ms (`HOOK_TIMEOUT_MS`), das hier die tatsächliche
- * Wanduhr ist.
+ * zurückkamen.
+ *
+ * Die Zahl ist 350 und nicht 300, weil 300 den schlimmsten gemessenen Fall
+ * noch verfehlt: Nach einem vollständigen `ollama stop embeddinggemma` — das
+ * Modell also nicht bloß unbenutzt, sondern aus dem Speicher geworfen —
+ * brauchte der erste Embed am 07.09.2026 gemessene 313 und 327 ms
+ * (`vector_search_ms` zweier Recalls desselben SessionStarts). 350 deckt auch
+ * diesen Fall und bleibt im Lane-Timeout von 500 ms (`HOOK_TIMEOUT_MS`), das
+ * hier die tatsächliche Wanduhr ist.
  *
  * Ausdrücklich nur hier gesetzt und nicht am Endpunkt-Default: die
  * Prompt-Lane, der Bash-Pfad und der hooklose GET-Weg behalten ihre 150 ms.
  *
- * Und ausdrücklich OHNE Env-Schalter (Veras Gegenreview): Die 300 sind eine
+ * Und ausdrücklich OHNE Env-Schalter (Veras Gegenreview): Die Zahl ist eine
  * getroffene Entscheidung, kein Vorschlag. Als `envInt(...)` hätte eine
  * geerbte Dienstkonfiguration sie still auf 150 zurückgedreht — jeder
  * SessionStart hätte wieder die alte Deadline geschickt, und keine Zeile in
  * der Telemetrie hätte gesagt, dass die Entscheidung gar nicht wirkt. Wer sie
  * ändern will, ändert diese Zahl.
  */
-const SESSION_VECTOR_DEADLINE_MS = 300;
+const SESSION_VECTOR_DEADLINE_MS = 350;
+
+/**
+ * Das Budget, gegen das der Schatten-Router für DIESE Lane rechnet, in ms
+ * (Daniel, 07.09.2026, unter der Auflage „macht nichts langsamer").
+ *
+ * `BASTRA_HOOK_BUDGET_MS` (200, `http-hook-routes.ts`) ist die Wanduhr der
+ * Prompt-Lane. Diese Lane hat eine andere: `HOOK_TIMEOUT_MS` = 500. Mit 350 ms
+ * Reserve für den dichten Arm rechnet `lexicalFitsBudget` gegen die 200 immer
+ * falsch (`max(lexikalisch, 350) + 7 > 200`) — die Schattenspalte stünde ab
+ * sofort konstant auf `dense-primary` und würde für diese Lane nichts mehr
+ * messen. Gegen 500 misst sie wieder die Termkosten, die sie messen soll.
+ *
+ * Der Wert ist rein diagnostisch: Er erreicht `routeRetrieval` und von dort
+ * ausschließlich das `shadow_route`-Feld der Telemetrie. Kein Timeout, kein
+ * Abbruch, keine Trefferauswahl hängt daran (#362 Phase 2 ist Schatten,
+ * gegengeprüft von Vera am 07.09.2026).
+ *
+ * Fest verdrahtet wie die 350 darüber, aus demselben Grund.
+ */
+const SESSION_HOOK_BUDGET_MS = 500;
 const MUST_LOAD_SCORE = 100;
 const TOTAL_HINTS_CAP = 7;
 
@@ -187,6 +213,9 @@ export async function runSessionLane(
           // Siehe SESSION_VECTOR_DEADLINE_MS: die Lane kauft ihrem dichten Arm
           // mehr Zeit als der Hook-Default, und zwar nur für sich.
           vector_deadline_ms: SESSION_VECTOR_DEADLINE_MS,
+          // Siehe SESSION_HOOK_BUDGET_MS: der Schatten-Router soll gegen die
+          // Wanduhr DIESER Lane rechnen, nicht gegen die der Prompt-Lane.
+          hook_budget_ms: SESSION_HOOK_BUDGET_MS,
           budget: { time_ms: remainingMs },
         },
         remainingMs,
