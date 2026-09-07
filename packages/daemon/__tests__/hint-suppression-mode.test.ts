@@ -78,7 +78,8 @@ async function daemon(t: { after: (fn: () => unknown) => void }, mode: string | 
   const prevLog = process.env.BASTRA_LOG_PATH;
   const prevMode = process.env.BASTRA_HINT_SUPPRESS;
   process.env.BASTRA_LOG_PATH = logDir;
-  const telemetry = new Telemetry();
+  const usage: Array<{ id: string; kind: string }> = [];
+  const telemetry = new Telemetry({ onUsage: (events) => usage.push(...events) });
   if (prevLog === undefined) delete process.env.BASTRA_LOG_PATH;
   else process.env.BASTRA_LOG_PATH = prevLog;
   if (mode === undefined) delete process.env.BASTRA_HINT_SUPPRESS;
@@ -109,7 +110,7 @@ async function daemon(t: { after: (fn: () => unknown) => void }, mode: string | 
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     await rm(logDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
-  return { port: handle.port!, logDir };
+  return { port: handle.port!, logDir, telemetry, usage };
 }
 
 test("Voreinstellung: der Treffer bleibt in der Antwort, das Event zählt ihn als hätte-entfernt", async (t) => {
@@ -125,6 +126,27 @@ test("Voreinstellung: der Treffer bleibt in der Antwort, das Event zählt ihn al
   assert.equal(event.usage_suppressed_mode, "shadow", "ein Report muss Schatten von Wirkbetrieb trennen können");
   assert.equal(typeof event.usage_suppressed_tokens_est, "number");
   assert.equal(event.hit_count, 1, "die gezählte Ausspielung ist die tatsächliche");
+});
+
+test("#484: a followed-without-load shadow signal cannot unsuppress a live candidate", async (t) => {
+  const d = await daemon(t, undefined);
+  d.telemetry.rotateTurn("followed-without-load");
+  assert.equal((await httpPost(d.port, "/hook/hinted", { ids: ["a"], session_id: "followed-without-load" })).status, 200);
+  d.telemetry.matchLoadedMemories({
+    tool_name: "Edit",
+    tool_input_excerpt: "apply the deployment strategie now",
+    session_id: "followed-without-load",
+  });
+  assert.deepEqual(
+    d.usage.filter((entry) => entry.kind === "loaded" || entry.kind === "acted_on"),
+    [],
+    "the shadow observation must not write the usage signals the breaker reads",
+  );
+
+  const res = await httpPost(d.port, "/hook/recall", { query: "deployen", k: 5 });
+  assert.deepEqual((res.json.hits as { id: string }[]).map((hit) => hit.id), ["a"], "shadow mode still returns the candidate");
+  const [event] = await readHookRecall(d.logDir);
+  assert.deepEqual((event.usage_suppressed as { id: string }[]).map((entry) => entry.id), ["a"], "the candidate remains unused to the breaker until an explicit load");
 });
 
 test("live: dieselbe Liste, aber der Treffer verlässt die Antwort", async (t) => {
