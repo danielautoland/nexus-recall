@@ -50,6 +50,7 @@
  * decision undone, with extra compute); keep the model permanently resident
  * (`keep_alive: -1`, 673MB held for as long as the daemon lives).
  */
+import { PROVIDER_COLD_LOAD_MS } from "@bastra-recall/core";
 
 /**
  * How long after the last successful embed the model still counts as resident.
@@ -128,6 +129,53 @@ export interface ResidencyReading {
   estimated: boolean;
 }
 
+/**
+ * Was der eine Warmup-Embed über den Ladevorgang berichtet hat (#495).
+ *
+ * Der Befund, der dieses Objekt erzwingt: #494 hat den kalten SessionStart
+ * lexikalisch gemacht — richtig fürs Verhalten, aber damit wandert der
+ * Kaltstart aus dem dichten Arm in den Warmup, und der Warmup war der eine
+ * Pfad, der ihn NICHT aufzeichnete (`embed()` statt `embedWithMeta()`, also
+ * Ollamas `load_duration` weggeworfen, und `noteLoaded(null)` als Meldung).
+ * Isoliert gemessen 08.09.2026: ein nachweislich kalter Embed brauchte
+ * 524,709 ms, und in der Telemetrie stand nirgends ein `provider_load_ms`.
+ * Tor 3 aus #492 zählt genau diese Kaltstarts — die Optimierung aus #494 und
+ * das Torkriterium hoben sich gegenseitig auf.
+ *
+ * `void` als Rückgabe bleibt zulässig und heißt „dieser Warmup-Pfad kann
+ * nichts über einen Ladevorgang sagen" (Provider ohne `embedWithMeta`) — nicht
+ * „es gab keinen".
+ */
+export interface WarmupLoad {
+  /** Ollamas `load_duration` in ms, `null` wenn der Provider keine meldet. */
+  loadMs: number | null;
+}
+
+/**
+ * Das Settle EINES Warmups (#495) — die Zeile, die den vom Warmup
+ * verschluckten Kaltstart sichtbar macht.
+ *
+ * Eigene Meldung statt eines Feldes an `ollama_lifecycle`: Diese Zeile
+ * entsteht bei jedem der drei Auslöser, nicht nur beim Boot, und sie trägt die
+ * Korrelation zum Sitzungsstart, den sie bedient.
+ */
+export interface WarmupSettle {
+  trigger: WarmupTrigger;
+  /** `false` = der Warmup-Embed ist gescheitert. */
+  ok: boolean;
+  /** Wanduhr des Warmup-Embeds, ab `ensureWarm()`. */
+  durationMs: number;
+  /** ROH, wie überall auf diesem Pfad — die Schwelle bleibt nachziehbar. */
+  providerLoadMs: number | null;
+  /** `providerLoadMs >= PROVIDER_COLD_LOAD_MS` — die Größe, die Tor 3 zählt. */
+  coldStartObserved: boolean;
+  /** Die Residenz, die VOR dem Warmup galt — der Grund, warum er lief. */
+  residencyBefore: Residency;
+  /** Der Sitzungsstart, neben dem dieser Warmup läuft (#493-Klammer). Nur der
+   *  `session`-Auslöser kennt ihn. */
+  sessionStartCallId?: string;
+}
+
 /** What `ensureWarm()` decided. */
 export type WarmupOutcome =
   | "fired"
@@ -171,10 +219,22 @@ export interface WarmupCoordinator {
    * 8-Minuten-Fenster deshalb widersprechen konnte.
    */
   noteUnloaded: () => void;
-  /** Start a warm-up unless one is running, the model is warm, or there is
-   *  nothing to warm. Never awaited, never throws. #494: THE one boundary —
-   *  every warm-up path in the daemon goes through this call, boot included. */
-  ensureWarm: (trigger?: WarmupTrigger) => WarmupOutcome;
+  /**
+   * Start a warm-up unless one is running, the model is warm, or there is
+   * nothing to warm. Never awaited, never throws. #494: THE one boundary —
+   * every warm-up path in the daemon goes through this call, boot included.
+   *
+   * #495: Was NICHT durch diese Grenze läuft, und bewusst nicht: der Backfill
+   * (`EmbeddingIndex.start()` → `provider.embed()`, `embeddings.ts`). Das hier
+   * ist ein WARMUP-Singleflight, kein Provider-Singleflight. Der Backfill ist
+   * echte Arbeit mit eigenem Nebenläufigkeitslimit (`EMBED_MAX_INFLIGHT`) und
+   * eigenem Ergebnis — ihn hier hineinzuziehen hieße, Batches zu verwerfen,
+   * weil gerade ein Wärmeembed fliegt, oder umgekehrt einen Warmup auf einen
+   * minutenlangen Backfill warten zu lassen. Seine Last ist trotzdem sichtbar:
+   * der Nebenläufigkeitszähler aus #493 sitzt am Providerrand und zählt ihn
+   * mit. Wer diese Entscheidung ändern will, ändert sie hier.
+   */
+  ensureWarm: (trigger?: WarmupTrigger, sessionStartCallId?: string) => WarmupOutcome;
   /**
    * #494: Der Flug, der gerade in der Luft ist — `true`, wenn der Embed
    * durchkam, sonst `false`. `null`, wenn keiner läuft.
@@ -189,7 +249,7 @@ export interface WarmupCoordinator {
    * not known to be resident, kick the shared warm-up off BESIDE the recall.
    * One call so the lane cannot ask and then forget to act on the answer.
    */
-  onSessionContact: () => Residency;
+  onSessionContact: (sessionStartCallId?: string) => Residency;
 }
 
 export interface WarmupOptions {
@@ -221,12 +281,21 @@ export interface WarmupOptions {
   /** `embIdx().runtimeHealth().lastOkAt` — the last successful provider call,
    *  or null when none has happened in this process. */
   lastOkAt: () => number | null;
-  /** The one small embed. Its promise is never awaited by any lane. */
-  warm: () => Promise<unknown>;
+  /**
+   * The one small embed. Its promise is never awaited by any lane.
+   *
+   * #495: Es meldet, was der Provider über den Ladevorgang gesagt hat
+   * ({@link WarmupLoad}). Ohne diese Rückgabe war der vom Warmup
+   * verschluckte Kaltstart unsichtbar — siehe dort.
+   */
+  warm: () => Promise<WarmupLoad | void>;
   /** Injected clock — residency and in-flight are tested hermetically. */
   now?: () => number;
   /** Debug sink for a failed warm call. Absent = swallowed silently. */
   onError?: (err: unknown) => void;
+  /** #495: Wohin das Settle des Warmups geht. Absent = niemand hört zu (Tests,
+   *  Telemetrie aus). Darf nicht werfen. */
+  onSettle?: (settle: WarmupSettle) => void;
 }
 
 /** Build the daemon's single warm-up coordinator. */
@@ -285,7 +354,10 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
   // ganze Antwort.
   let flight: Promise<boolean> | null = null;
 
-  const ensureWarm = (trigger: WarmupTrigger = "session"): WarmupOutcome => {
+  const ensureWarm = (
+    trigger: WarmupTrigger = "session",
+    sessionStartCallId?: string,
+  ): WarmupOutcome => {
     // Asked first, like in the prewarmer: "there is nothing here to warm" is a
     // different event from "the arm is down", and the two must stay apart.
     if (opts.hostedProvider?.() === true) return "skipped-hosted";
@@ -297,26 +369,51 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
     // The point of the whole file: five sessions starting at once share ONE
     // load. The flag is set before the call and cleared when it settles.
     if (inFlight) return "skipped-in-flight";
-    if (residency() === "warm") return "skipped-warm";
+    const residencyBefore = residency();
+    if (residencyBefore === "warm") return "skipped-warm";
 
     inFlight = true;
+    const startedAt = now();
     const done = (): void => {
       inFlight = false;
       flight = null;
     };
+    // #495: Ein Settle darf den Warmup nie zum Absturz bringen — es ist eine
+    // Beobachtung über ihn, kein Teil von ihm.
+    const settle = (ok: boolean, loadMs: number | null): void => {
+      try {
+        opts.onSettle?.({
+          trigger,
+          ok,
+          durationMs: now() - startedAt,
+          providerLoadMs: loadMs,
+          coldStartObserved: loadMs !== null && loadMs >= PROVIDER_COLD_LOAD_MS,
+          residencyBefore,
+          ...(sessionStartCallId ? { sessionStartCallId } : {}),
+        });
+      } catch (err) {
+        opts.onError?.(err);
+      }
+    };
     try {
       flight = Promise.resolve(opts.warm()).then(
-        () => {
+        (load) => {
           done();
+          // #495: Die Ladezeit, die der Provider für DIESEN Call gemeldet hat.
+          // Sie macht aus `noteLoaded` eine Grundwahrheit (`provider-load`)
+          // statt der schwächeren Aussage „ein Embed ist durchgelaufen".
+          const loadMs = load && typeof load.loadMs === "number" ? load.loadMs : null;
           // #493: Der erfolgreiche Warmup schreibt in den gemeinsamen Zustand.
           // Bis hierher tat er das NICHT: Er geht am Index vorbei, also blieb
           // `lastOkAt` unberührt und ein frisch gewärmtes Modell las `unknown`.
-          noteLoaded(null);
+          noteLoaded(loadMs);
+          settle(true, loadMs);
           return true;
         },
         (err) => {
           done();
           opts.onError?.(err);
+          settle(false, null);
           return false;
         },
       );
@@ -325,6 +422,7 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
       // not leave the coordinator wedged as permanently in-flight.
       done();
       opts.onError?.(err);
+      settle(false, null);
     }
     return "fired";
   };
@@ -336,13 +434,17 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
     noteUnloaded,
     ensureWarm,
     warming: () => flight,
-    onSessionContact: () => {
+    onSessionContact: (sessionStartCallId?: string) => {
       const state = residency();
       // Warm needs nothing, hosted has nothing to warm. Everything else gets
       // the load started NEXT TO the session-start recall instead of inside
       // it — the lane answers lexically meanwhile and is fused from its second
       // recall on.
-      if (state === "cold" || state === "unknown") ensureWarm("session");
+      // #495: Die Klammer des Sitzungsstarts geht MIT. Seit #494 verschluckt
+      // genau dieser Warmup den Kaltstart, den der dichte Arm nicht mehr
+      // bezahlt — ohne die Korrelation ließe sich sein Settle nicht dem Start
+      // zuordnen, der ihn ausgelöst hat.
+      if (state === "cold" || state === "unknown") ensureWarm("session", sessionStartCallId);
       return state;
     },
   };

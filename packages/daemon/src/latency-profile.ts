@@ -146,7 +146,27 @@ const MAX_PROFILES = 8;
  *  nichts. Beim sauberen Herunterfahren erzwingt `flush()` den letzten. */
 const PERSIST_DEBOUNCE_MS = 5_000;
 
-const FILE_VERSION = 1;
+/**
+ * Die Version der Profildatei. Ein Loader, der eine andere Zahl liest, verwirft
+ * die Datei und fängt leer an.
+ *
+ * 1 → 2 (#495): NICHT weil sich das Format geändert hat, sondern weil sich die
+ * BEDEUTUNG der Stichproben geändert hat. #493 hat die Fehler-, Residenz- und
+ * Nebenläufigkeitssemantik ersetzt: Ein Providerfehler war vorher eine
+ * Latenzstichprobe, die Residenz war eine Schätzung, die den Warmup nicht sah,
+ * und die Nebenläufigkeit zählte wartende Aufrufer statt Providerarbeit. Am
+ * Livegerät gemessen (08.09.2026) stammten 36 von 40 Stichproben aus dieser
+ * alten Semantik und hätten in dünnen Eimern bis zum 13.09. überlebt — das
+ * „neue" Messfenster für #492 hätte aus dem alten gelernt.
+ *
+ * Version statt Zeit-Cutoff, weil eine Version genau das aussagt, was hier gilt
+ * („diese Zahlen wurden anders erhoben"), keine Uhr braucht und keine
+ * Cutoff-Konstante hinterlässt, die in einem halben Jahr niemand mehr deuten
+ * kann. Der Preis ist ehrlich: Auch die wenigen Stichproben NACH #493 gehen
+ * mit. Vier Stichproben sind kein Verlust, gegen den sich eine Sonderregel
+ * lohnt.
+ */
+const FILE_VERSION = 2;
 
 /**
  * Längenband der Eingabe. Die Grenzen liegen dort, wo die Lanes liegen:

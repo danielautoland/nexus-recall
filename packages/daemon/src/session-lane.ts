@@ -165,6 +165,18 @@ export async function runSessionLane(
 
   if (payload.hook_event_name !== "SessionStart") return "{}";
 
+  // #493: Die Klammer um die (bis zu drei) Recalls DIESES Sitzungsstarts. Ein
+  // Start feuert mehrere korrelierte Recalls; ohne die Klammer ist „20
+  // Kaltstarts" nicht von „7 Kaltstarts × 3 Recalls" zu unterscheiden. Die
+  // `session_id` leistet das nicht: Sie überlebt compact/clear/resume und
+  // damit beliebig viele Starts.
+  //
+  // #495: Steht VOR dem Sitzungskontakt, weil der Warmup sie mitbekommt —
+  // seit #494 verschluckt genau er den Kaltstart, den der dichte Arm nicht
+  // mehr bezahlt, und sein Settle muss dem Start zuzuordnen sein, der ihn
+  // ausgelöst hat.
+  const sessionStartCallId = randomUUID();
+
   // #490: DER erste Sitzungskontakt. Ein Aufruf, zwei Wirkungen: Er sagt, ob
   // das Modell im Speicher liegt, und startet — wenn nicht — den gemeinsamen
   // Ladevorgang NEBEN diesem Recall statt darin. Mehrere gleichzeitig
@@ -172,16 +184,10 @@ export async function runSessionLane(
   // In-Flight-Flag), sonst bekäme eine kalte Maschine einen Embed-Sturm genau
   // dann, wenn sie am langsamsten ist. Kein Await: Die Lane wartet nie auf ein
   // Modell-Laden (#490, ausdrücklich abgelehnt).
-  const residency: Residency | null = warmup?.onSessionContact() ?? null;
+  const residency: Residency | null = warmup?.onSessionContact(sessionStartCallId) ?? null;
   // #493: Woher diese Antwort stammt und ob sie geschätzt ist. Tor 3 aus #492
   // zählt echte Kaltstarts und darf auf geschätzten Zeilen nicht zählen.
   const residencyReading = warmup?.residencyDetail() ?? null;
-  // #493: Die Klammer um die (bis zu drei) Recalls DIESES Sitzungsstarts. Ein
-  // Start feuert mehrere korrelierte Recalls; ohne die Klammer ist „20
-  // Kaltstarts" nicht von „7 Kaltstarts × 3 Recalls" zu unterscheiden. Die
-  // `session_id` leistet das nicht: Sie überlebt compact/clear/resume und
-  // damit beliebig viele Starts.
-  const sessionStartCallId = randomUUID();
   // „Unbekannt" zählt wie kalt: Ohne einen einzigen erfolgreichen Embed in
   // diesem Prozess ist die einzige sichere Annahme die teure.
   const denseCold = residency === "cold" || residency === "unknown";

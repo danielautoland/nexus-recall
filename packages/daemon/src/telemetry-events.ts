@@ -7,6 +7,11 @@
 import type { SalienceShadow } from "./salience-shadow.js";
 import type { TrustShadow } from "./trust-shadow.js";
 import type { TelemetryDimensions } from "./telemetry-dimensions.js";
+import type {
+  OllamaLifecycleEvent,
+  WarmupSettleEvent,
+  VectorLateSettleEvent,
+} from "./telemetry-events-embedding.js";
 
 // Nur die Events, die DIESE Klasse via write() schreibt. Die Hook-CLIs
 // (hook_call, session_hook_call, prompt_hook_call, bash_hook_call,
@@ -28,6 +33,7 @@ export type TelemetryEvent =
   | MutationIncidentEvent
   | EvidenceDecisionEvent
   | OllamaLifecycleEvent
+  | WarmupSettleEvent
   | VectorLateSettleEvent
   | ReadDocumentEvent;
 
@@ -587,9 +593,20 @@ export interface DeadlineShadowRow {
   /** Die echte Gesamtzeit — nur wenn der Arm im Aufruf settelte. Beim
    *  aufgegebenen Arm steht sie in `vector_late_settle` (#489). */
   actual_settle_ms?: number;
+  /**
+   * #495: Hätte das Profil überhaupt einen dichten Arm GESTARTET?
+   *
+   * `false` = nein (`predicted_deadline_ms: 0`, seit #494 die ehrliche Antwort
+   * unter der Mindestfrist). Dann gibt es auch keinen `shadow_timeout`: Ein
+   * übersprungener Arm ist kein gerissener. Ohne diese Trennung meldete der
+   * Schatten bei `cap_reason: "lane-too-short"` einen Timeout, sobald 1 ms
+   * gewartet wurde, und Kriterium 4 aus #492 verglich Skips mit Timeouts.
+   */
+  shadow_would_run: boolean;
   /** Hätte die GELERNTE Frist gehalten? `true` = sie wäre gerissen. Zusammen
    *  mit `timed_out` ist das der direkte Vergleich der beiden Timeout-Quoten,
-   *  den Kriterium 4 aus #492 verlangt. */
+   *  den Kriterium 4 aus #492 verlangt. Fehlt, wenn `shadow_would_run` falsch
+   *  ist. */
   shadow_timeout?: boolean;
   /**
    * #493: Wie der dichte Arm ausgegangen ist.
@@ -868,98 +885,11 @@ export interface HookReflexEvent extends BaseEvent {
   latency_ms: number;
 }
 
-/**
- * Ollama-Modell-Lifecycle (#109): prewarm (Boot-Wakeup) und idle-unload.
- * Aus den Paaren prewarm→unload lässt sich die RAM-Residenz des Embedding-
- * Modells schätzen — die Messgröße hinter dem #78-Energie-Design.
- */
-export interface OllamaLifecycleEvent extends Omit<BaseEvent, "session_id"> {
-  kind: "ollama_lifecycle";
-  /**
-   * #363: immer `null` — und das ist die Aussage, nicht ein fehlendes Feld.
-   * Beide Emitter laufen ohne jede Claude-Session: der prewarm im Boot-Pfad
-   * (index.ts), der unload auf einem 60-s-Timer (daemon-jobs.ts). Vorher
-   * stempelte der Sink hier seine Boot-UUID; die sah in `events-*.jsonl` wie
-   * eine Session aus und war der Grund, dass "4 Sessions" am 22.08. in
-   * Wahrheit 4 Daemon-Starts waren.
-   */
-  session_id: null;
-  /**
-   * #363: die Daemon-Boot-id, jetzt unter dem Namen, der sie beschreibt.
-   * Nötig, weil das prewarm→unload-Pairing (siehe Doc-Kommentar oben) sonst
-   * mit dem session_id-Feld verschwinden würde — die id war echt, nur falsch
-   * beschriftet. Identisch mit `Telemetry.runId()` / `AuditEntry.session_id`.
-   */
-  run_id: string;
-  action: "prewarm" | "unload";
-  model: string;
-  ok: boolean;
-  /** Beim unload: Alter des letzten erfolgreichen Embeds (ms); sonst null. */
-  last_embed_age_ms: number | null;
-  /** Provider-Calls (query + backfill batches) seit Daemon-Boot. */
-  embed_calls_since_boot: number | null;
-}
-
-/**
- * #489 — das ECHTE Settle eines aufgegebenen dichten Arms.
- *
- * `abandonAfter` bricht nicht ab: Der Embed läuft nach dem Aufgeben weiter und
- * wärmt das Modell für den nächsten Aufruf. Bisher wurde sein Ende nirgends
- * notiert — die Stage endete an der Deadline, und eine Verteilung aus solchen
- * Werten lernt genau die Grenze, die schon gilt (`session-context` las p95
- * 312 ms gegen eine 350-ms-Deadline: keine Verteilung, eine Wand).
- *
- * EIGENE Zeile statt eines Feldes am `hook_recall`: Der Wert trifft ein,
- * nachdem der Recall beantwortet und sein Event geschrieben ist. Ein Feld, das
- * nachträglich in ein schon geschriebenes Event mutiert, wäre ein Rennen. Der
- * Join läuft über `recall_id`.
- *
- * `late: true` steht redundant an jeder Zeile, weil das die eine Eigenschaft
- * ist, die ein Leser nie übersehen darf: Diese Latenz hat NIEMAND bezahlt.
- */
-export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
-  kind: "vector_late_settle";
-  /** Der Recall, dessen dichter Arm aufgegeben wurde — Join-Schlüssel zum
-   *  `hook_recall`-Event mit derselben `recall_id`. */
-  recall_id: string;
-  /** Die Frist, an der aufgegeben wurde. */
-  deadline_ms: number;
-  /** Was der Aufrufer tatsächlich gewartet hat (≈ `deadline_ms`) — mitgeführt,
-   *  damit die Zeile ohne Join lesbar ist. */
-  wait_ms: number;
-  /** Wie lange der Arm wirklich brauchte, ab demselben Nullpunkt wie `wait_ms`. */
-  settle_ms: number;
-  /** `false` = der Arm scheiterte am Ende doch. Dann ist `settle_ms` die Zeit
-   *  bis zum Fehler, kein Latenzwert für eine Deadline-Rechnung. */
-  settled: boolean;
-  late: true;
-  /**
-   * #491: die Prognose des gelernten Profils für denselben Arm, mitgeführt
-   * statt nur über `recall_id` joinbar. Diese Zeile IST die Wirklichkeit des
-   * aufgegebenen Arms — sie muss allein beantworten können, ob die gelernte
-   * Frist gehalten hätte. Fehlt, wenn kein Schattenprofil aktiv war.
-   */
-  predicted_deadline_ms?: number;
-  cap_reason?: "profile-empty" | "lane-wall-clock" | "lane-too-short" | "floor" | "max-deadline" | "none";
-  residency?: "warm" | "cold" | "unknown" | "hosted";
-  /** `true` = auch die gelernte Frist wäre gerissen (`settle_ms` über ihr). */
-  shadow_timeout?: boolean;
-  /**
-   * #493: das ERGEBNIS des aufgegebenen Arms, nicht nur seine Laufzeit.
-   *
-   * Kriterium 4 aus #492 rechnet die kontrafaktische Fusionsrate: Hätte eine
-   * längere Frist diesen Recall fusioniert? Die Laufzeit allein beantwortet
-   * das nicht — ein Arm, der spät mit `empty` oder `error` settelt, hätte
-   * auch mit jeder Frist nichts beigetragen.
-   */
-  provider_outcome?: "hits" | "empty" | "error";
-  vector_hit_count?: number;
-  cold_start_observed?: boolean;
-  provider_load_ms?: number;
-  residency_source?: "unload-observed" | "provider-load" | "warm-up" | "last-ok" | "hosted" | "none";
-  residency_estimated?: boolean;
-  /** #493: Gruppierung mehrerer Recalls EINES Sitzungsstarts — siehe
-   *  `HookRecallEvent.session_start_call_id`. */
-  session_start_call_id?: string;
-  host_profile_id?: string;
-}
+// #495: Die Zeilen des Embedding-Pfades stehen seit dem Herausschneiden in
+// `telemetry-events-embedding.ts` (Datei lag über der 800-Zeilen-Grenze). Der
+// Re-Export hält jeden bestehenden Importpfad gültig.
+export type {
+  OllamaLifecycleEvent,
+  WarmupSettleEvent,
+  VectorLateSettleEvent,
+} from "./telemetry-events-embedding.js";

@@ -183,6 +183,10 @@ function startOllamaUnload(deps: BackgroundJobDeps): void {
           action: "unload",
           model: ollama.model,
           ok,
+          // #495: Beim Unload gibt es nur zwei Ausgänge — er lief oder er
+          // scheiterte. Das Feld steht trotzdem, damit ein Leser nicht je
+          // nach `action` die Semantik wechseln muss.
+          outcome: ok ? "fired" : "failed",
           last_embed_age_ms: Date.now() - lastUse,
           embed_calls_since_boot: deps.embIdx()?.providerCallCount() ?? null,
         });

@@ -684,7 +684,17 @@ export async function runHookRecall(
                   residency: deadlineShadowRow.residency,
                   residency_source: deadlineShadowRow.residency_source,
                   residency_estimated: deadlineShadowRow.residency_estimated,
-                  shadow_timeout: sample.settle_ms > deadlineShadowRow.predicted_deadline_ms,
+                  shadow_would_run: deadlineShadowRow.shadow_would_run,
+                  // #495: Nur ein Arm, den das Profil überhaupt gestartet
+                  // hätte, kann seine Frist reißen. Bei einer Prognose von 0
+                  // (`lane-too-short`) ist die Antwort „kein dichter Arm",
+                  // nicht „Timeout nach 0 ms".
+                  ...(deadlineShadowRow.shadow_would_run
+                    ? {
+                        shadow_timeout:
+                          sample.settle_ms > deadlineShadowRow.predicted_deadline_ms,
+                      }
+                    : {}),
                 }
               : {}),
             ...(hookSessionId ? { session_id: hookSessionId } : {}),

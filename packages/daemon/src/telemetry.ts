@@ -44,6 +44,7 @@ import type {
   EvidenceDecisionEvent,
   MutationIncidentEvent,
   OllamaLifecycleEvent,
+  WarmupSettleEvent,
   VectorLateSettleEvent,
   RecallBand,
   TurnSource,
@@ -829,6 +830,27 @@ export class Telemetry {
       // stattdessen eine Session, die nie existierte. Die Boot-id bleibt
       // erhalten, aber als run_id: nur so bleibt das prewarm→unload-Pairing
       // über Daemon-Starts hinweg auswertbar (#109).
+      session_id: null,
+      run_id: this.sessionId,
+      ...payload,
+    });
+  }
+
+  /**
+   * #495 — das Settle eines Warmups, mit seinem Ladevorgang.
+   *
+   * Wie `logOllamaLifecycle` ohne Session: Ein Warmup gehört keiner
+   * Claude-Session. Die Zuordnung zum Sitzungsstart, der ihn ausgelöst hat,
+   * leistet `session_start_call_id` im Payload — nicht die Boot-UUID, die hier
+   * eine Session behaupten würde, die es nicht gibt (#363).
+   */
+  async logWarmupSettle(
+    payload: Omit<WarmupSettleEvent, "kind" | "ts" | "session_id" | "run_id">,
+  ): Promise<void> {
+    if (!this.enabled) return;
+    await this.write({
+      kind: "warmup_settle",
+      ts: new Date().toISOString(),
       session_id: null,
       run_id: this.sessionId,
       ...payload,

@@ -351,10 +351,41 @@ async function main(): Promise<void> {
     // Deliberately not an Ollama /api/ps probe.
     lastOkAt: () => embIdxForHealth?.runtimeHealth().lastOkAt ?? null,
     warm: async () => {
-      await guardedProvider?.embed(["warm"]);
+      // #495: `embedWithMeta` wo der Provider es kann — genau wie der dichte
+      // Arm es seit #493 tut. Mit `embed()` wurde Ollamas `load_duration`
+      // weggeworfen, und seit #494 ist DAS der Pfad, der den Kaltstart trägt:
+      // Der kalte SessionStart antwortet lexikalisch, der Ladevorgang passiert
+      // hier. Isoliert gemessen (08.09.2026, zweites Ollama, Modell nicht
+      // resident) verschwand ein 524,709-ms-Kaltstart spurlos, und Tor 3 aus
+      // #492 zählte ihn nicht.
+      if (!guardedProvider) return;
+      if (guardedProvider.embedWithMeta) {
+        const meta = await guardedProvider.embedWithMeta(["warm"]);
+        return { loadMs: meta.loadMs };
+      }
+      await guardedProvider.embed(["warm"]);
+      // Kein `embedWithMeta` heißt „dieser Provider kann nichts über einen
+      // Ladevorgang sagen" — nicht „es gab keinen".
+      return;
     },
     onError: () => {
       // Silent by design, same as the prewarm below.
+    },
+    // #495: Jeder Warmup schreibt seine eigene Zeile — mit Ladezeit,
+    // Kaltstartflag, Auslöser und, wo vorhanden, der Klammer des
+    // Sitzungsstarts, der ihn ausgelöst hat.
+    onSettle: (s) => {
+      void telemetry.logWarmupSettle({
+        trigger: s.trigger,
+        model: ollama?.model ?? rawProvider?.id ?? null,
+        ok: s.ok,
+        duration_ms: Math.round(s.durationMs),
+        provider_load_ms: s.providerLoadMs,
+        cold_start_observed: s.coldStartObserved,
+        residency_before: s.residencyBefore,
+        ...(s.sessionStartCallId ? { session_start_call_id: s.sessionStartCallId } : {}),
+        host_profile_id: hostProfileId(),
+      });
     },
   });
   if (rawProvider && embeddingBreaker) {
@@ -403,9 +434,15 @@ async function main(): Promise<void> {
         const outcome = warmupEmbedding.ensureWarm("boot");
         // Der einzige Aufrufer, der auf einen Warmup wartet — für diese
         // Lifecycle-Zeile, nicht für eine Antwort an einen Nutzer.
-        const ok = outcome === "fired" ? ((await warmupEmbedding.warming()) ?? false) : false;
+        const fired = outcome === "fired" ? ((await warmupEmbedding.warming()) ?? false) : false;
+        // #495: Der Ausgang und die Fehlerfrage sind zwei verschiedene Dinge.
+        // `skipped-warm` und `skipped-in-flight` sind der Singleflight aus
+        // #494 bei der Arbeit — nichts ist gescheitert, und `ok: false` ließ
+        // sie wie ein kaputtes Prewarm aussehen.
+        const lifecycleOutcome = outcome === "fired" ? (fired ? "fired" : "failed") : outcome;
+        const ok = lifecycleOutcome !== "failed";
         console.error(
-          `[bastra-recall] ollama prewarm: ${ollama.model} ${ok ? "loaded" : `not warmed (${outcome})`}`,
+          `[bastra-recall] ollama prewarm: ${ollama.model} ${fired ? "loaded" : `not warmed (${outcome})`}`,
         );
         // #493: Ein geglücktes Prewarm ist ein BEOBACHTETER Ladevorgang. Die
         // Residenz las nach dem Boot sonst `unknown`, obwohl das Modell
@@ -416,6 +453,7 @@ async function main(): Promise<void> {
           action: "prewarm",
           model: ollama.model,
           ok,
+          outcome: lifecycleOutcome,
           last_embed_age_ms: null,
           embed_calls_since_boot: embIdx.providerCallCount(),
         });

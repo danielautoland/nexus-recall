@@ -521,6 +521,15 @@ export class EmbeddingIndex {
         if (toEmbed.length === 0) continue;
 
         const texts = toEmbed.map(({ m }) => buildEmbedText(m));
+        // #495: Dieser Call läuft BEWUSST nicht durch den Warmup-Singleflight
+        // aus #494. Der ist ein Warmup-Singleflight, kein Provider-
+        // Singleflight: Der Backfill ist echte Arbeit mit eigenem Ergebnis und
+        // eigenem Limit (`this.inFlight` gegen EMBED_MAX_INFLIGHT), und ihn in
+        // jene Grenze zu ziehen hieße, Batches zu verwerfen, weil gerade ein
+        // Wärmeembed fliegt. Seine Last bleibt sichtbar: Der
+        // Nebenläufigkeitszähler aus #493 sitzt am Providerrand im Daemon und
+        // zählt ihn mit. Die Entscheidung steht bei `ensureWarm`
+        // (daemon/embedding-warmup.ts).
         this.inFlight++;
         const batchPromise = (async () => {
           try {

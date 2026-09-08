@@ -69,6 +69,20 @@ export interface ObserveShadowInput {
   spentBeforeRecallMs: number;
   /** Die Wanduhr der Lane. `0` = keine. */
   budgetMs: number;
+  /**
+   * WOHER die Wanduhr kommt (#493). `caller` = der Aufrufer hat sein echtes
+   * Restbudget geschickt; `endpoint-default` = er hat keines geschickt und die
+   * Route hat ihre eigene Zahl eingesetzt.
+   *
+   * #495 — AUSWERTUNGSREGEL für das Fenster aus #492: MCP-Zeilen mit
+   * `endpoint-default` gehören nicht in die Auswertung. Der Forwarder schickt
+   * sein Budget seit #493 (`mcp-forwarder.ts`), aber langlebige
+   * Forwarder-Prozesse überleben jeden Daemon-Neustart (das Stale-Forwarder-
+   * Muster aus #132) — am 08.09.2026 liefen vier davon, bis zu 8 Tage alt, und
+   * schrieben weiter `lane_budget_ms: 200, budget_source: endpoint-default`.
+   * Solche Zeilen sind gegen die Wanduhr einer FREMDEN Lane geschattet und
+   * beantworten Kriterium 4 nicht. Die Regel steht auch als Kommentar an #492.
+   */
   budgetSource: "caller" | "endpoint-default";
   /** Die Frist, die tatsächlich galt. */
   deadlineMs: number;
@@ -100,11 +114,21 @@ export function observeDeadlineShadow(input: ObserveShadowInput): DeadlineShadow
   // #493: Der Provider hat für diesen Call geladen — das ist die einzige
   // Grundwahrheit über die Residenz, die es auf diesem Pfad gibt, und sie
   // gehört in den gemeinsamen Lifecycle-Zustand, nicht nur in eine Logzeile.
-  if (report?.cold_start_observed) shadow.observeLoad(report.provider_load_ms);
+  //
+  // #495: JEDER berichtete Ladewert, nicht nur der kalte. Ollama meldet
+  // `load_duration` auch auf einem längst residenten Modell (warm gemessen
+  // 0,7–2,9 ms), und dieser Wert IST der Beleg „das Modell war eben noch im
+  // Speicher". Die Bedingung auf `cold_start_observed` warf ihn weg, weshalb
+  // die Zeilen live weiterhin `residency_source: last-ok, estimated: true`
+  // trugen — eine Schätzung neben einer vorhandenen Messung.
+  if (report && report.provider_load_ms !== null) shadow.observeLoad(report.provider_load_ms);
 
   // Ein Arm, der gesettelt IST, ist seine eigene Gesamtzeit; nur der
   // aufgegebene braucht die späte Stichprobe (#489), und die trifft später
   // ein. Gelernt wird ausschließlich ein Arm mit echten Treffern.
+  // #495: Ein übersprungener Arm ist kein Timeout — siehe `shadow_would_run`
+  // unten.
+  const shadowWouldRun = derived.predicted_deadline_ms > 0;
   const settledInCall = !input.timedOut;
   if (settledInCall && isLatencySample(report)) {
     shadow.profile.record({
@@ -147,7 +171,14 @@ export function observeDeadlineShadow(input: ObserveShadowInput): DeadlineShadow
     // sie in der `vector_late_settle`-Zeile mit derselben `recall_id` — dort
     // trägt sie dieselbe Prognose noch einmal, damit die Auswertung ohne Join
     // auskommt.
-    ...(settledInCall
+    // #495: Hätte das Profil überhaupt einen dichten Arm gestartet? Eine
+    // Prognose von 0 ist ein SKIP (`cap_reason: "lane-too-short"`, seit #494
+    // die ehrliche Antwort unter der Mindestfrist) und keine Frist von null
+    // Millisekunden. Ohne dieses Feld meldete der Schatten für einen
+    // übersprungenen Arm einen Timeout, sobald auch nur 1 ms gewartet wurde —
+    // und Kriterium 4 aus #492 zählte Skips als Fristverletzungen.
+    shadow_would_run: shadowWouldRun,
+    ...(settledInCall && shadowWouldRun
       ? {
           actual_settle_ms: input.vectorMs,
           // Hätte die GELERNTE Frist gehalten? Sie läuft ab demselben Nullpunkt
@@ -155,7 +186,9 @@ export function observeDeadlineShadow(input: ObserveShadowInput): DeadlineShadow
           // Timeout-Quote, gegen die Kriterium 4 aus #492 die feste Zahl prüft.
           shadow_timeout: input.waitMs > derived.predicted_deadline_ms,
         }
-      : {}),
+      : settledInCall
+        ? { actual_settle_ms: input.vectorMs }
+        : {}),
   };
 }
 
@@ -178,7 +211,11 @@ export function recordLateSettleSample(
   row: DeadlineShadowRow,
   sample: LateSettleSample,
 ): void {
-  if (sample.cold_start_observed) shadow.observeLoad(sample.provider_load_ms ?? null);
+  // #495: wie oben — jeder berichtete Ladewert ist Grundwahrheit über die
+  // Residenz, auch der warme.
+  if (sample.provider_load_ms !== undefined && sample.provider_load_ms !== null) {
+    shadow.observeLoad(sample.provider_load_ms);
+  }
   // `outcome` fehlt auf Armen, deren Aufrufer keinen Beschreiber mitgab; dann
   // bleibt `settled` die einzige Aussage, und ein gescheiterter Arm ist
   // weiterhin keine Latenz.
