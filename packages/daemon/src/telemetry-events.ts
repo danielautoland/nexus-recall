@@ -533,6 +533,57 @@ export interface HookActEvent extends BaseEvent, DimensionedEvent {
 }
 
 /** Recall served from the HTTP /hook/recall endpoint (server-side view). */
+/**
+ * #491 — Prognose gegen Wirklichkeit für den dichten Arm, pro Recall.
+ *
+ * Reine Beobachtung. Die Felder sind so gewählt, dass die Auswertung am
+ * 13.09.2026 (#492) ohne Nacharbeit läuft: Jede Zeile trägt die Prognose, die
+ * Zahl die galt, die Dimension in der sie stand, den Deckelungsgrund und —
+ * sobald sie feststeht — die Wirklichkeit.
+ */
+export interface DeadlineShadowRow {
+  /** `provider:model`, für das dieses Profil gilt. Ein Modellwechsel startet
+   *  ein frisches; der Schlüssel ist die Stelle, an der man das sieht. */
+  profile_key: string;
+  /** Die Frist, die das gelernte Profil gesetzt hätte, ab dem `await`. */
+  predicted_deadline_ms: number;
+  /** Die Frist, die tatsächlich galt. */
+  deadline_ms: number;
+  /** Warum die Prognose so aussieht — insbesondere, ob die Wanduhr der Lane
+   *  sie gedeckelt hat (`lane-wall-clock`) oder das Profil noch leer war
+   *  (`profile-empty`, also einmal lexikalisch). */
+  cap_reason: "profile-empty" | "lane-wall-clock" | "floor" | "none";
+  /** Stand die Zahl auf dem genauen Dimensions-Eimer oder auf dem ganzen
+   *  Profil? Eine grobe Prognose darf nicht wie eine feine aussehen. */
+  basis: "bucket" | "profile-wide" | "empty";
+  /** Wieviele Stichproben sie trägt. */
+  samples: number;
+  /** Das p95 der GESAMTZEIT (Abfeuern → echtes Settle), aus dem sie stammt. */
+  expected_total_ms?: number;
+  /** Der Dimensions-Eimer: `residenz|längenband|nebenläufigkeit`. */
+  bucket: string;
+  /** Residenz beim Abfeuern, aus dem Warmup-Koordinator (#490). */
+  residency: "warm" | "cold" | "unknown" | "hosted";
+  /** Dichte Arme in Flug, inklusive dieses. */
+  concurrency: number;
+  /** Zeichen der Query, die der dichte Arm bekam (ungekappt). */
+  query_chars: number;
+  /** Was der Arm im Schatten von BM25 schon verbraucht hatte
+   *  (`vector_search_ms − vector_wait_ms`, #489). */
+  overlap_ms: number;
+  /** Die Wanduhr der Lane, gegen die gedeckelt wurde. `0` = kein Budget. */
+  lane_budget_ms: number;
+  /** Ist der Arm an der TATSÄCHLICH geltenden Frist gescheitert? */
+  timed_out: boolean;
+  /** Die echte Gesamtzeit — nur wenn der Arm im Aufruf settelte. Beim
+   *  aufgegebenen Arm steht sie in `vector_late_settle` (#489). */
+  actual_settle_ms?: number;
+  /** Hätte die GELERNTE Frist gehalten? `true` = sie wäre gerissen. Zusammen
+   *  mit `timed_out` ist das der direkte Vergleich der beiden Timeout-Quoten,
+   *  den Kriterium 4 aus #492 verlangt. */
+  shadow_timeout?: boolean;
+}
+
 export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   kind: "hook_recall";
   recall_id: string;
@@ -698,6 +749,27 @@ export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   /** #342: which leg dropped out — `vector-arm-timeout` (missed its per-arm
    *  deadline) or `vector-arm-empty` (had nothing to say). See the hook event. */
   degraded_reason?: string;
+  /**
+   * #491 — die SCHATTENSPALTE des gelernten Latenzprofils.
+   *
+   * Was hier steht, hat auf diesen Recall nichts bewirkt: `deadline_ms` ist die
+   * Zahl, die tatsächlich galt (150 / 350 / 1500, von Hand getippt),
+   * `predicted_deadline_ms` die, die ein aus dieser Maschine gelerntes Profil
+   * gesagt hätte. Der Sinn der Spalte ist, dass sie nichts tut — sie sagt vor
+   * dem Scharfschalten (#492), ob die gelernte Zahl die feste schlägt oder
+   * mindestens hält.
+   *
+   * Die fünf Torbedingungen aus #492 lesen sich direkt hieraus: Anzahl der
+   * Zeilen pro Lane (`dimensions.hook_source`), `residency: "cold"` für die
+   * Kaltstarts, `predicted_deadline_ms` gegen `actual_settle_ms` für die
+   * Timeout-Quote, `cap_reason` für die Deckelung, `profile_key` für eine
+   * zweite Maschine.
+   *
+   * Fehlt bei einem Recall ohne dichten Arm, bei offenem Breaker und bei einem
+   * Cache-Hit — überall dort gab es keinen Arm, über den etwas zu prognostizieren
+   * gewesen wäre.
+   */
+  deadline_shadow?: DeadlineShadowRow;
   /** #217: would-be re-ranking under the salience multiplier (shadow mode). */
   salience_shadow?: SalienceShadow;
   /** #160: same projection for the usage-driven trust multiplier. Present on
@@ -789,4 +861,15 @@ export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
    *  bis zum Fehler, kein Latenzwert für eine Deadline-Rechnung. */
   settled: boolean;
   late: true;
+  /**
+   * #491: die Prognose des gelernten Profils für denselben Arm, mitgeführt
+   * statt nur über `recall_id` joinbar. Diese Zeile IST die Wirklichkeit des
+   * aufgegebenen Arms — sie muss allein beantworten können, ob die gelernte
+   * Frist gehalten hätte. Fehlt, wenn kein Schattenprofil aktiv war.
+   */
+  predicted_deadline_ms?: number;
+  cap_reason?: "profile-empty" | "lane-wall-clock" | "floor" | "none";
+  residency?: "warm" | "cold" | "unknown" | "hosted";
+  /** `true` = auch die gelernte Frist wäre gerissen (`settle_ms` über ihr). */
+  shadow_timeout?: boolean;
 }

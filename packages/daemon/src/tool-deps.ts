@@ -11,6 +11,7 @@ import type { BridgePool } from "./learned-recall/bridges.js";
 import type { SupportedLanguage } from "./learned-recall/language.js";
 import type { Prewarmer } from "./embedding-prewarm.js";
 import type { WarmupCoordinator } from "./embedding-warmup.js";
+import type { DeadlineShadow } from "./latency-profile.js";
 
 export interface ToolDeps {
   vault: Vault;
@@ -48,6 +49,12 @@ export interface ToolDeps {
    *  through the same object, so both triggers share one in-flight warm-up.
    *  Absent = no embedding provider. */
   warmupEmbedding?: WarmupCoordinator;
+  /** #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Die
+   *  Recall-Pipeline rechnet damit neben jedem Aufruf die Frist aus, die ein
+   *  aus dieser Maschine gelerntes Profil gesetzt hätte, und protokolliert sie
+   *  neben der, die tatsächlich galt. Ändert nichts — das Scharfschalten ist
+   *  #492. Absent = kein Provider, also nichts zu prognostizieren. */
+  deadlineShadow?: DeadlineShadow;
   /** #231 (language-first recall): the user's primary authoring language
    *  (settings `language.primary`), resolved once at daemon startup like
    *  `sharedRecallLang`. When set and ≠ "en", scoreSaveQuality advises when a

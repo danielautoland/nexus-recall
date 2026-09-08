@@ -108,6 +108,11 @@ export async function handleSessionContextPost(
       sharedRecallLang: toolDeps.sharedRecallLang,
       embeddingDegraded: toolDeps.embeddingDegraded,
       evidenceGateEnabled: toolDeps.evidenceGateEnabled,
+      // #491: Der Schatten gehört AUCH auf diesen Weg — die SessionStart-Lane
+      // ist die mit dem echten Fristendruck (BM25 kostet dort 10 ms, die
+      // Wartezeit IST der dichte Arm) und damit die, für die eine gelernte
+      // Zahl überhaupt etwas ändern würde.
+      deadlineShadow: toolDeps.deadlineShadow,
     },
     cross_project: b.cross_project === true,
     // Die Deadline des dichten Arms reist mit dem Aufruf, nicht mit dem

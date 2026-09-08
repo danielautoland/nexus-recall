@@ -85,6 +85,7 @@ import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { createEmbeddingPrewarmer } from "./embedding-prewarm.js";
 import { createEmbeddingWarmup } from "./embedding-warmup.js";
+import { createLatencyProfile, type DeadlineShadow } from "./latency-profile.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
 
@@ -446,6 +447,27 @@ async function main(): Promise<void> {
     },
   });
 
+  // #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Es rechnet
+  // neben jedem Recall die Frist aus, die es gesetzt HÄTTE, und protokolliert
+  // sie neben der, die tatsächlich galt — die festen 150/350/1500 ms bleiben
+  // unangetastet, bis das Zeit-Tor aus #492 geöffnet ist.
+  //
+  // Geschlüsselt auf `rawProvider.id` (`ollama-embeddinggemma`,
+  // `openai-text-embedding-3-small`) — dieselbe Kennung, an der schon
+  // Vektor-Persistenz und Embed-Cache invalidieren. Ein Modellwechsel findet
+  // seinen Schlüssel leer vor und erbt nichts.
+  const latencyProfile = createLatencyProfile();
+  // Beim Boot einmal gelesen, damit das Profil einen Neustart überlebt. Ein
+  // Fehlschlag ist ein leeres Profil, kein Bootfehler.
+  await latencyProfile.load().catch(() => {});
+  const deadlineShadow: DeadlineShadow = {
+    key: () => rawProvider?.id ?? null,
+    // Die Residenz kommt aus dem Warmup-Koordinator (#490) und nirgendwo
+    // sonst — eine zweite Quelle dafür wäre eine zweite Wahrheit.
+    residency: () => warmupEmbedding.residency(),
+    profile: latencyProfile,
+  };
+
   const prewarmEmbedding = createEmbeddingPrewarmer({
     // `ollama` is set exactly when the resolved provider is an Ollama one —
     // the only case with a model that goes cold and that our per-request
@@ -493,6 +515,9 @@ async function main(): Promise<void> {
     // #490: the session lane asks this for residency and lets it start the
     // load beside the session-start recall.
     warmupEmbedding,
+    // #491: shadow only — computed and logged next to the fixed deadline, and
+    // it decides nothing until #492's time gate opens.
+    deadlineShadow,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
@@ -764,6 +789,10 @@ async function main(): Promise<void> {
     // running backfill that is the whole batch, not just the last second —
     // and the telemetry join-store buffers events the same way.
     await embIdxForHealth?.stop().catch(() => {});
+    // #491: dasselbe Argument wie beim Embedding-Index eine Zeile darüber —
+    // das Profil schreibt entprellt, und ein glatter Exit hätte die
+    // Stichproben der letzten Sekunden verworfen.
+    await latencyProfile.flush().catch(() => {});
     await telemetry.flushNow().catch(() => {});
     await httpHandle.close();
     await server.close();

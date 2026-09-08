@@ -25,6 +25,7 @@ import { tokenizeWithIdentifiers } from "@bastra-recall/core";
 import { armsOf, SCORE_VERSION } from "./score-space.js";
 import { hintSuppressionMode, suppressRepeatedUnused } from "./hint-suppression.js";
 import { mergeHookRecallHits } from "./hook-recall-merge.js";
+import { type DeadlineShadow } from "./latency-profile.js";
 import {
   MAX_BODY_BYTES,
   clampInt,
@@ -82,6 +83,9 @@ export function handleHookRecall(
   sharedRecallLang?: SupportedLanguage | null,
   embeddingDegraded?: () => boolean,
   evidenceGateEnabled?: () => boolean,
+  /** #491: das Latenzprofil im Schatten. Fehlt es, wird nichts gelernt und
+   *  nichts protokolliert — die Antwort ist in beiden Fällen dieselbe. */
+  deadlineShadow?: DeadlineShadow,
 ): void {
   // SSE-Branch (#38): wenn der Caller `Accept: text/event-stream`
   // sendet, streamen wir Stages live. Default-JSON-Response bleibt
@@ -112,7 +116,7 @@ export function handleHookRecall(
         body,
         query,
         t0,
-        { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded, evidenceGateEnabled },
+        { vault, search, telemetry, learnedBridges, sharedRecallLang, embeddingDegraded, evidenceGateEnabled, deadlineShadow },
         wantsSse
           ? (s: RecallStage) => {
               // Nur Stop- + cache.hit + done-Events streamen (Start-Events
@@ -175,6 +179,13 @@ export interface HookRecallDeps {
    *  die Naht existiert, weil sich der fail-open-Pfad sonst nicht prüfen lässt
    *  — ein Defekt, der nur in echt auftritt, ist kein geprüfter Defekt. */
   decideFn?: typeof decideHits;
+  /**
+   * #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Fehlt es,
+   * wird nichts gelernt und nichts protokolliert — an der Antwort ändert sich
+   * so oder so nichts. Ein Bündel statt dreier Getter, weil Schlüssel, Residenz
+   * und Profil nur gemeinsam eine Prognose ergeben.
+   */
+  deadlineShadow?: DeadlineShadow;
 }
 
 /**
@@ -345,27 +356,51 @@ export async function runHookRecall(
         lateSettleSeen = sample;
       };
       const onVectorLateSettle = (sample: LateSettleSample): void => emitLateSettle(sample);
-      let hits = search.hasEmbeddings()
-        ? await search.recallHybrid(expansion.query, {
-            authored_query: query,
-            k,
-            scope,
-            type,
-            expand_hops,
-            onStage,
-            onCandidatePool: onQueryCandidatePool,
-            vector_deadline_ms: vectorDeadlineMs,
-            onVectorLateSettle,
-          })
-        : search.recall(expansion.query, {
-            authored_query: query,
-            k,
-            scope,
-            type,
-            expand_hops,
-            onStage,
-            onCandidatePool: onQueryCandidatePool,
-          });
+      // #491: der Schatten. Er greift nur, wo es überhaupt einen dichten Arm
+      // gibt, den er beschreiben könnte — kein Provider oder ein offener
+      // Breaker (#165) heißt: kein Arm, keine Prognose, keine Stichprobe. Ein
+      // vom Breaker übersprungener Arm antwortet in ~0 ms, und diese Null als
+      // Latenz zu lernen wäre schlimmer als gar nicht zu lernen.
+      const shadowKey =
+        search.hasEmbeddings() && !embeddingDegradedAtRecall
+          ? (deps.deadlineShadow?.key() ?? null)
+          : null;
+      const shadow = shadowKey ? deps.deadlineShadow! : null;
+      // Vor dem Abfeuern gelesen, nicht danach: Ein Arm, der das Modell selbst
+      // lädt, macht es warm — die Residenz NACH dem Aufruf beschriebe die
+      // Maschine, die er hinterlassen hat, nicht die, auf die er traf.
+      const shadowResidency = shadow?.residency() ?? null;
+      const shadowConcurrency = shadow ? shadow.profile.beginArm() : 0;
+      let hits: Awaited<ReturnType<typeof search.recallHybrid>>;
+      try {
+        hits = search.hasEmbeddings()
+          ? await search.recallHybrid(expansion.query, {
+              authored_query: query,
+              k,
+              scope,
+              type,
+              expand_hops,
+              onStage,
+              onCandidatePool: onQueryCandidatePool,
+              vector_deadline_ms: vectorDeadlineMs,
+              onVectorLateSettle,
+            })
+          : search.recall(expansion.query, {
+              authored_query: query,
+              k,
+              scope,
+              type,
+              expand_hops,
+              onStage,
+              onCandidatePool: onQueryCandidatePool,
+            });
+      } finally {
+        // Der Zähler beschreibt die Sicht des AUFRUFERS: Ab hier wartet er
+        // nicht mehr, auch wenn der aufgegebene Arm weiterläuft. `finally`,
+        // damit ein geworfener Recall den Zähler nicht dauerhaft anhebt und
+        // jeden folgenden Aufruf in einen zu hohen Nebenläufigkeits-Eimer legt.
+        shadow?.profile.endArm();
+      }
 
       // #342/P0: Lief für DIESE Anfrage eine echte Fusion? Direkt hier
       // festgehalten, weil der Content-Recall gleich seinen eigenen
@@ -485,6 +520,82 @@ export async function runHookRecall(
             })
           : undefined;
       const totalLatencyMs = Date.now() - t0;
+      // #491: Die Prognose gegen die Wirklichkeit — SCHATTEN, es ändert sich
+      // nichts. `vectorDeadlineMs` (150/350/1500) hat oben gegolten und gilt
+      // weiter; hier steht daneben, was ein gelerntes Profil gesagt hätte.
+      //
+      // Gerechnet wird an der Stelle, an der das Warten beginnt: NACH BM25.
+      // Der Überlapp ist genau die Differenz der beiden #489-Zahlen — die
+      // Spanne ab Abfeuern minus die Wartezeit ab dem `await` ist das, was der
+      // Arm im Schatten von BM25 schon verbraucht hatte. Gemessen 06.–08.09.
+      // ist das in der Prompt-Lane praktisch alles (vector p50 336 ms,
+      // Wartezeit p50 5 ms) und in der Session-Lane fast nichts (BM25 10 ms).
+      const shadowVectorMs = stageTimings.vector_search_ms;
+      const shadowWaitMs = stageTimings.vector_wait_ms;
+      let deadlineShadowRow: NonNullable<Parameters<Telemetry["logHookRecall"]>[0]["deadline_shadow"]> | undefined;
+      if (shadow && shadowResidency && shadowVectorMs !== undefined && shadowWaitMs !== undefined) {
+        const overlapMs = Math.max(0, shadowVectorMs - shadowWaitMs);
+        // Was die Lane an ihrer Wanduhr bis zum Beginn des Wartens verbraucht
+        // hatte. `budgetMs` ist die Wanduhr, die der AUFRUF mitbringt —
+        // SessionStart 500, Prompt-Lane 200; `0` heißt „kein Budget" (der
+        // offline-Aufrufer ohne Frist) und deckelt dann auch nicht.
+        const spentMs = tRecall0 - t0 + overlapMs;
+        const derived = shadow.profile.derive({
+          key: shadowKey!,
+          residency: shadowResidency,
+          // Die Länge, die der DICHTE Arm bekommen hat: die brückenerweiterte,
+          // ungekappte Query (#362 kappt nur den lexikalischen Arm).
+          queryChars: expansion.query.length,
+          concurrency: shadowConcurrency,
+          overlapMs,
+          laneRemainingMs: budgetMs > 0 ? budgetMs - spentMs : Infinity,
+        });
+        const timedOut = degradedReason === "vector-arm-timeout";
+        // Ein Arm, der gesettelt ist, IST seine eigene Gesamtzeit — die Spanne
+        // ab Abfeuern endet dann am Settle. Nur der aufgegebene Arm braucht die
+        // späte Stichprobe (#489), und die trifft erst nach dieser Zeile ein.
+        // Ein Fehler ist keine Latenz und wird nicht gelernt.
+        const settledInCall = !timedOut && degradedReason !== "vector-arm-error";
+        if (settledInCall) {
+          shadow.profile.record({
+            key: shadowKey!,
+            residency: shadowResidency,
+            queryChars: expansion.query.length,
+            concurrency: shadowConcurrency,
+            totalMs: shadowVectorMs,
+          });
+        }
+        deadlineShadowRow = {
+          profile_key: shadowKey!,
+          predicted_deadline_ms: derived.predicted_deadline_ms,
+          deadline_ms: vectorDeadlineMs,
+          cap_reason: derived.cap_reason,
+          basis: derived.basis,
+          samples: derived.samples,
+          expected_total_ms: derived.expected_total_ms ?? undefined,
+          bucket: derived.bucket,
+          residency: shadowResidency,
+          concurrency: shadowConcurrency,
+          query_chars: expansion.query.length,
+          overlap_ms: overlapMs,
+          lane_budget_ms: budgetMs,
+          timed_out: timedOut,
+          // Die Wirklichkeit, sofern sie schon feststeht. Beim aufgegebenen Arm
+          // steht sie in der `vector_late_settle`-Zeile mit derselben
+          // `recall_id` — dort trägt sie dieselbe Prognose noch einmal, damit
+          // die Auswertung am 13.09. ohne Join auskommt.
+          ...(settledInCall
+            ? {
+                actual_settle_ms: shadowVectorMs,
+                // Hätte die GELERNTE Frist gehalten? Sie läuft ab demselben
+                // Nullpunkt wie die Wartezeit, also ist der Vergleich genau
+                // dieser. Das ist die Timeout-Quote, gegen die Kriterium 4 aus
+                // #492 die feste Zahl prüft.
+                shadow_timeout: shadowWaitMs > derived.predicted_deadline_ms,
+              }
+            : {}),
+        };
+      }
       // #479: automatic hook hints get a version-local circuit breaker. Manual
       // recall is untouched; directives/reflexes are exempt inside the helper.
       // #484: `shadow` (default) counts what the breaker WOULD remove and
@@ -508,6 +619,25 @@ export async function runHookRecall(
       // geschrieben werden. Ein Sample, das schon eingetroffen ist, wird
       // nachgeholt.
       emitLateSettle = (sample: LateSettleSample): void => {
+        // #491: Genau hier lernt das Profil den kalten Schwanz. Der Wert kommt
+        // aus dem weiterlaufenden Arm, den niemand bezahlt hat — die einzige
+        // Zahl, die sagt, wie lange der Arm WIRKLICH gebraucht hätte. Ohne sie
+        // lernte das Profil aus lauter Deadlines die Deadline nach.
+        //
+        // Gelernt wird die GESAMTZEIT, also Überlapp + Settle: `settle_ms` misst
+        // ab dem `await`, `vector_search_ms` misst ab dem Abfeuern, und nur die
+        // längere der beiden Spannen ist mit einer gesettelten Stichprobe
+        // vergleichbar. Ein gescheiterter Arm (`settled: false`) ist kein
+        // Latenzwert und geht nicht ein.
+        if (sample.settled && deadlineShadowRow && shadow && shadowResidency) {
+          shadow.profile.record({
+            key: shadowKey!,
+            residency: shadowResidency,
+            queryChars: expansion.query.length,
+            concurrency: shadowConcurrency,
+            totalMs: deadlineShadowRow.overlap_ms + sample.settle_ms,
+          });
+        }
         fireAndForget(
           telemetry.logVectorLateSettle({
             recall_id: recallId,
@@ -515,6 +645,18 @@ export async function runHookRecall(
             wait_ms: stageTimings.vector_wait_ms ?? 0,
             settle_ms: sample.settle_ms,
             settled: sample.settled,
+            // #491: Die Prognose reist mit, statt nur über `recall_id`
+            // joinbar zu sein. Diese Zeile IST die Wirklichkeit für den
+            // aufgegebenen Arm; sie muss die Frage „hätte die gelernte Frist
+            // gehalten?" allein beantworten können.
+            ...(deadlineShadowRow
+              ? {
+                  predicted_deadline_ms: deadlineShadowRow.predicted_deadline_ms,
+                  cap_reason: deadlineShadowRow.cap_reason,
+                  residency: deadlineShadowRow.residency,
+                  shadow_timeout: sample.settle_ms > deadlineShadowRow.predicted_deadline_ms,
+                }
+              : {}),
             ...(hookSessionId ? { session_id: hookSessionId } : {}),
             client: body.client,
             hook_source: body.hook_source,
@@ -672,6 +814,9 @@ export async function runHookRecall(
           latency_ms_recall: recallLatencyMs,
           latency_ms_total: totalLatencyMs,
           recall_stages: stageTimings,
+          // #491: Prognose neben der Zahl, die tatsächlich galt. Reiner
+          // Schatten — an dieser Antwort hat sie nichts geändert.
+          deadline_shadow: deadlineShadowRow,
           // #362 Phase 0: nur melden, wenn überhaupt spürbar blockiert wurde —
           // eine 0 in jedem Event wäre Rauschen, das die Auswertung verwässert.
           // Hat die Sonde überhaupt getickt? Wenn nicht, lief alles synchron und
