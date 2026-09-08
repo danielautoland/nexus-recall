@@ -205,6 +205,16 @@ export interface AssembleOptions {
    */
   vector_deadline_ms?: number;
   /**
+   * #494: Ohne dichten Arm erheben (`lexical_only`).
+   *
+   * Gesetzt vom SessionStart auf einem Modell, das NICHT im Speicher liegt.
+   * Vorher schickte er dort eine 50-ms-Frist — ein Embed, der sicher aufgegeben
+   * wird, dreimal parallel, neben dem Warmup, der daneben ohnehin läuft. Der
+   * Verzicht ist billiger und liefert dasselbe Ergebnis. Schlägt
+   * `vector_deadline_ms`: Wo kein Arm läuft, gibt es keine Frist zu setzen.
+   */
+  lexical_only?: boolean;
+  /**
    * Das Budget, gegen das der Schatten-Router seine Kostenschätzung hält, in ms
    * (`hook_budget_ms`).
    *
@@ -381,6 +391,9 @@ export async function assembleSessionSections(
           ...(opts.vector_deadline_ms !== undefined
             ? { vector_deadline_ms: opts.vector_deadline_ms }
             : {}),
+          // #494: siehe `lexical_only` oben — der Verzicht reist bis an die
+          // Pipeline durch, sonst führe hier doch ein dichter Arm.
+          ...(opts.lexical_only ? { lexical_only: true } : {}),
           ...(opts.hook_budget_ms !== undefined ? { hook_budget_ms: opts.hook_budget_ms } : {}),
           // #493: siehe `session_start_call_id` oben.
           ...(opts.session_start_call_id ? { session_start_call_id: opts.session_start_call_id } : {}),

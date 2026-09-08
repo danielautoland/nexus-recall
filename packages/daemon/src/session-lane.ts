@@ -116,25 +116,28 @@ const SESSION_VECTOR_DEADLINE_MS = 350;
 const SESSION_HOOK_BUDGET_MS = 500;
 
 /**
- * Die Deadline des dichten Arms, wenn das Modell NICHT im Speicher liegt
- * (#490). 50 ms ist die Untergrenze, die `http-hook-routes.ts` überhaupt
- * durchlässt — also „so kurz wie erlaubt".
+ * Was diese Lane tut, wenn das Modell NICHT im Speicher liegt: GAR KEINEN
+ * dichten Arm starten (#494).
  *
- * Die 350 ms darüber sind für ein WARMES Modell bemessen (33-54 ms gemessen am
+ * Die 350 ms oben sind für ein WARMES Modell bemessen (33-54 ms gemessen am
  * 08.09.2026). Ein kaltes braucht 585 ms und reißt sie sicher; sie warm-blind
- * trotzdem zu verwarten heißt, 350 ms der 500-ms-Wanduhr zu verbrennen und am
- * Ende dasselbe einarmige Ergebnis zu liefern. Also gar nicht erst warten: Der
- * Arm wird nach 50 ms aufgegeben, die Lane antwortet lexikalisch und sagt das
- * im Block (`unfusedHeadline(..., "cold-model")`).
+ * trotzdem zu verwarten hieße, 350 ms der 500-ms-Wanduhr zu verbrennen und am
+ * Ende dasselbe einarmige Ergebnis zu liefern.
  *
- * Und das Aufgeben ist hier die halbe Lösung, kein Verlust: `abandonAfter`
- * bricht NICHT ab (deadline.ts). Der aufgegebene Embed lädt das Modell fertig
- * — zusammen mit dem Warmup, den der Koordinator daneben startet. Ab dem
- * zweiten Recall derselben Sitzung ist fusioniert.
+ * #490 zog daraus die halbe Konsequenz — 50 ms statt 350 — und konnte nicht
+ * mehr: `search.ts` lag damals bei #489, also gab es keinen Weg, den Arm
+ * abzuwählen. Als EINZIGER aufgegebener Embed wäre das sogar nützlich gewesen,
+ * denn `abandonAfter` bricht nicht ab (deadline.ts): Der aufgegebene Call lädt
+ * das Modell zu Ende. Nur ist er hier nicht einzeln — dieser Sitzungsstart
+ * feuert bis zu DREI Recalls parallel, und der Koordinator startet daneben
+ * ohnehin den Warmup, der genau dasselbe Modell lädt. Vier Embeds für einen
+ * Ladevorgang.
  *
- * Fest verdrahtet wie die beiden Konstanten darüber, aus demselben Grund.
+ * Also: `lexical_only`. Der Warmup lädt (einmal, singleflight, #494), die Lane
+ * antwortet sofort lexikalisch und sagt im Block ehrlich, warum
+ * (`unfusedHeadline(..., "cold-model")`). Ab dem zweiten Recall derselben
+ * Sitzung ist fusioniert — unverändert die Zusage aus #490.
  */
-const COLD_VECTOR_DEADLINE_MS = 50;
 const MUST_LOAD_SCORE = 100;
 const TOTAL_HINTS_CAP = 7;
 
@@ -259,10 +262,12 @@ export async function runSessionLane(
           // diese Zeilen wäre eine stille Produktänderung. `0` = ungekappt.
           caps: { conventions: 6, pinned: 0 },
           // Siehe SESSION_VECTOR_DEADLINE_MS: die Lane kauft ihrem dichten Arm
-          // mehr Zeit als der Hook-Default, und zwar nur für sich. #490: aber
-          // nur, wenn das Modell überhaupt im Speicher liegt — auf einem
-          // kalten wären die 350 ms sicher verbrannt (COLD_VECTOR_DEADLINE_MS).
-          vector_deadline_ms: denseCold ? COLD_VECTOR_DEADLINE_MS : SESSION_VECTOR_DEADLINE_MS,
+          // mehr Zeit als der Hook-Default, und zwar nur für sich. #494: aber
+          // nur, wenn das Modell im Speicher liegt — sonst läuft gar kein
+          // dichter Arm und es gibt keine Frist zu setzen (`lexical_only`).
+          ...(denseCold
+            ? { lexical_only: true }
+            : { vector_deadline_ms: SESSION_VECTOR_DEADLINE_MS }),
           // Siehe SESSION_HOOK_BUDGET_MS: der Schatten-Router soll gegen die
           // Wanduhr DIESER Lane rechnen, nicht gegen die der Prompt-Lane.
           hook_budget_ms: SESSION_HOOK_BUDGET_MS,

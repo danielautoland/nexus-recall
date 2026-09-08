@@ -12,9 +12,18 @@
  *
  * This module is the third trigger, and it is what makes all three ONE thing:
  *
- *   · daemon boot            — `prewarmOllamaModel` (#78), already there
+ *   · daemon boot            — #78's prewarm, routed through here since #494
  *   · `UserPromptSubmit`     — the prewarmer (#361), already there
  *   · first session contact  — new, and the reason this file exists
+ *
+ * #494: „all three ONE thing" was a claim, not a fact, until the boot path
+ * joined. It fired `prewarmOllamaModel()` — its own HTTP call, past the
+ * coordinator, past the breaker, past the concurrency counter — so a fresh
+ * daemon plus a session start could hit a cold Ollama with the boot warm-up,
+ * the coordinated warm-up and up to three dense arms at once: five embeds
+ * where the design promised one, at exactly the moment the machine is
+ * slowest. There is now exactly ONE way to warm this model, and it is
+ * {@link WarmupCoordinator.ensureWarm}.
  *
  * Two properties the lane cannot get from the prewarmer:
  *
@@ -127,6 +136,20 @@ export type WarmupOutcome =
   | "skipped-no-provider"
   | "skipped-hosted";
 
+/**
+ * WER wärmt (#494). The singleflight, the hosted check and the breaker apply to
+ * all three alike; the trigger changes exactly one question.
+ *
+ * `boot` asks {@link WarmupOptions.providerAvailable} instead of
+ * {@link WarmupOptions.denseArmAvailable}, because at boot the vector index is
+ * still loading (`search.hasEmbeddings()` is false for the first seconds) and
+ * that was never a reason not to load the model — #78's prewarm exists
+ * precisely to cover those seconds. Every other trigger keeps asking the
+ * question the recall path asks: warming a model no recall can use is one
+ * embed for nothing.
+ */
+export type WarmupTrigger = "boot" | "turn" | "session";
+
 export interface WarmupCoordinator {
   /** Free residency answer for a caller about to spend a deadline on it. */
   residency: () => Residency;
@@ -149,8 +172,18 @@ export interface WarmupCoordinator {
    */
   noteUnloaded: () => void;
   /** Start a warm-up unless one is running, the model is warm, or there is
-   *  nothing to warm. Never awaited, never throws. */
-  ensureWarm: () => WarmupOutcome;
+   *  nothing to warm. Never awaited, never throws. #494: THE one boundary —
+   *  every warm-up path in the daemon goes through this call, boot included. */
+  ensureWarm: (trigger?: WarmupTrigger) => WarmupOutcome;
+  /**
+   * #494: Der Flug, der gerade in der Luft ist — `true`, wenn der Embed
+   * durchkam, sonst `false`. `null`, wenn keiner läuft.
+   *
+   * Genau EIN Aufrufer wartet darauf: der Boot-Pfad, für seine
+   * `ollama_lifecycle`-Zeile. Keine Lane wartet je auf ein Modell-Laden
+   * (#490, ausdrücklich abgelehnt) — sie liest die Residenz und antwortet.
+   */
+  warming: () => Promise<boolean> | null;
   /**
    * The session lane's single call: report residency AND, when the model is
    * not known to be resident, kick the shared warm-up off BESIDE the recall.
@@ -167,6 +200,17 @@ export interface WarmupOptions {
    * breaker's single probe.
    */
   denseArmAvailable: () => boolean;
+  /**
+   * #494: Dieselbe Frage OHNE den Vektorindex — nur, ob der Provider
+   * ansprechbar ist (Breaker nicht offen).
+   *
+   * Nur der `boot`-Trigger fragt sie, und nur weil er der einzige ist, der vor
+   * `embIdx.start()` läuft: `search.hasEmbeddings()` ist in den ersten
+   * Sekunden nach dem Boot falsch, und ein Boot-Warmup, der daran scheitert,
+   * hätte #78 stillschweigend abgeschafft. Fehlt der Getter, gilt
+   * {@link denseArmAvailable} auch für den Boot.
+   */
+  providerAvailable?: () => boolean;
   /**
    * Is the active provider a HOSTED one? Then there is no model of ours to be
    * cold and nothing to warm — inherited from `PrewarmOptions.hostedProvider`
@@ -236,11 +280,20 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
     unloadedAt = now();
   };
 
-  const ensureWarm = (): WarmupOutcome => {
+  // #494: Der laufende Flug, beobachtbar. Nur der Boot-Pfad liest ihn (siehe
+  // `warming`); für alles andere IST der Rückgabewert von `ensureWarm` die
+  // ganze Antwort.
+  let flight: Promise<boolean> | null = null;
+
+  const ensureWarm = (trigger: WarmupTrigger = "session"): WarmupOutcome => {
     // Asked first, like in the prewarmer: "there is nothing here to warm" is a
     // different event from "the arm is down", and the two must stay apart.
     if (opts.hostedProvider?.() === true) return "skipped-hosted";
-    if (!opts.denseArmAvailable()) return "skipped-no-provider";
+    // #494: Der Boot fragt nur nach dem Provider, alle anderen nach dem
+    // dichten Arm — siehe {@link WarmupTrigger}.
+    const available =
+      trigger === "boot" ? (opts.providerAvailable ?? opts.denseArmAvailable) : opts.denseArmAvailable;
+    if (!available()) return "skipped-no-provider";
     // The point of the whole file: five sessions starting at once share ONE
     // load. The flag is set before the call and cleared when it settles.
     if (inFlight) return "skipped-in-flight";
@@ -249,19 +302,22 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
     inFlight = true;
     const done = (): void => {
       inFlight = false;
+      flight = null;
     };
     try {
-      void Promise.resolve(opts.warm()).then(
+      flight = Promise.resolve(opts.warm()).then(
         () => {
           done();
           // #493: Der erfolgreiche Warmup schreibt in den gemeinsamen Zustand.
           // Bis hierher tat er das NICHT: Er geht am Index vorbei, also blieb
           // `lastOkAt` unberührt und ein frisch gewärmtes Modell las `unknown`.
           noteLoaded(null);
+          return true;
         },
         (err) => {
           done();
           opts.onError?.(err);
+          return false;
         },
       );
     } catch (err) {
@@ -279,13 +335,14 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
     noteLoaded,
     noteUnloaded,
     ensureWarm,
+    warming: () => flight,
     onSessionContact: () => {
       const state = residency();
       // Warm needs nothing, hosted has nothing to warm. Everything else gets
       // the load started NEXT TO the session-start recall instead of inside
       // it — the lane answers lexically meanwhile and is fused from its second
       // recall on.
-      if (state === "cold" || state === "unknown") ensureWarm();
+      if (state === "cold" || state === "unknown") ensureWarm("session");
       return state;
     },
   };

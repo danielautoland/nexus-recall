@@ -168,12 +168,22 @@ test("#491: die Ableitung rechnet nach BM25 und wird von der Wanduhr der Lane ge
   assert.equal(sessionLane.predicted_deadline_ms, 490);
   assert.equal(sessionLane.cap_reason, "lane-wall-clock");
 
-  // Auch eine Wanduhr unter der Endpunkt-Untergrenze fällt nicht darunter —
-  // eine Frist, die `http-hook-routes.ts` gar nicht annähme, könnte #492 nicht
-  // scharf schalten.
+  // #494: UMGEDREHT. Diese Zusicherung stand hier andersherum — 5 ms Restbudget
+  // ergaben eine Frist von 50 —, und sie war falsch: Eine Deadline, die
+  // zehnmal so lang ist wie die Wanduhr, die sie decken soll, ist keine
+  // Deadline. Solange das Profil nur im Schatten rechnet, ist das folgenlos;
+  // ab #492 entscheidet es, und dann wäre es ein Vertragsbruch. Unter der
+  // Mindestfrist ist die Antwort deshalb KEIN dichter Arm, und der Grund steht
+  // in der Telemetriezeile.
   const fastNichts = profil.derive(ableitung(10, 5));
-  assert.equal(fastNichts.predicted_deadline_ms, MIN_DEADLINE_MS);
-  assert.equal(fastNichts.cap_reason, "lane-wall-clock");
+  assert.equal(fastNichts.predicted_deadline_ms, 0, "kein Arm, keine Frist");
+  assert.equal(fastNichts.cap_reason, "lane-too-short");
+
+  // Genau AUF der Mindestfrist läuft er noch — die Grenze ist die Zahl, die
+  // `http-hook-routes.ts` gerade noch annimmt.
+  const genauAufDerGrenze = profil.derive(ableitung(10, MIN_DEADLINE_MS));
+  assert.equal(genauAufDerGrenze.predicted_deadline_ms, MIN_DEADLINE_MS);
+  assert.equal(genauAufDerGrenze.cap_reason, "lane-wall-clock");
 
   // Ein Profil, das weniger will als die Untergrenze, sagt das ebenfalls.
   const schnell = createLatencyProfile({ path: `${path}.2`, now: uhr().now });

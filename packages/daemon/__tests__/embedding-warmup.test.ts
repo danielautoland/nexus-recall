@@ -6,9 +6,10 @@
  *  1. EIN Warmup, egal wie viele Sitzungen gleichzeitig starten. Ohne das
  *     bekommt eine kalte Maschine einen Embed-Sturm genau dann, wenn sie am
  *     langsamsten ist.
- *  2. Ein SessionStart auf kaltem Modell antwortet SOFORT lexikalisch — 50 ms
- *     Deadline statt 350 —, sagt das im Block ehrlich („not in memory", nicht
- *     „semantic search is off") und lässt den Ladevorgang daneben laufen.
+ *  2. Ein SessionStart auf kaltem Modell antwortet SOFORT lexikalisch — seit
+ *     #494 OHNE dichten Arm (`lexical_only`) statt mit einer 50-ms-Frist —,
+ *     sagt das im Block ehrlich („not in memory", nicht „semantic search is
+ *     off") und lässt den Ladevorgang daneben laufen.
  *  3. Ein gehosteter Provider feuert gar nichts.
  *
  * Hermetisch: injizierte Uhr, kein Provider, kein Schlaf (Muster aus
@@ -245,7 +246,12 @@ test("#490: ein kalter SessionStart antwortet lexikalisch im Budget, benennt es 
       );
       const elapsed = Date.now() - t0;
 
-      assert.equal(bodies[0].vector_deadline_ms, 50, "auf kaltem Modell wird nicht 350 ms gewartet");
+      // #494: UMGEDREHT gegenüber #490. Dort stand hier eine 50-ms-Frist —
+      // ein Embed, der sicher aufgegeben wird, dreimal parallel, neben dem
+      // Warmup, der dasselbe Modell ohnehin lädt. Jetzt läuft gar kein
+      // dichter Arm.
+      assert.equal(bodies[0].lexical_only, true, "auf kaltem Modell läuft kein dichter Arm");
+      assert.equal(bodies[0].vector_deadline_ms, undefined, "wo kein Arm läuft, gibt es keine Frist");
       assert.equal(bodies[0].hook_budget_ms, 500, "das Schattenbudget bleibt die Wanduhr dieser Lane");
       assert.ok(elapsed < 500, `die Lane bleibt in ihrer Wanduhr (${elapsed} ms)`);
       assert.equal(w.calls(), 1, "der Ladevorgang läuft NEBEN dem Recall an");

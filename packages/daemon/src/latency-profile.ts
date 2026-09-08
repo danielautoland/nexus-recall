@@ -195,6 +195,14 @@ export function bucketKey(
  *                       Kalibrierung.
  *   `lane-wall-clock` — die Lane hatte weniger Wanduhr übrig als das Profil
  *                       wollte. Die Wanduhr ist ein Vertrag, keine Schätzung.
+ *   `lane-too-short`  — die Lane hatte weniger als die Mindestfrist übrig.
+ *                       Antwort: KEIN dichter Arm, `predicted_deadline_ms: 0`.
+ *                       Bis #494 gab die Ableitung hier trotzdem 50 zurück und
+ *                       ein Test schrieb das fest — im Schatten folgenlos, ab
+ *                       #492 ein Vertragsbruch: eine Frist, die länger ist als
+ *                       die Wanduhr, die sie decken soll, ist keine Frist. Und
+ *                       unterhalb der Mindestfrist ist die richtige Antwort
+ *                       nicht eine kürzere Deadline, sondern gar keine.
  *   `floor`           — das Profil wollte weniger als die 50 ms, die der
  *                       Endpunkt zulässt.
  *   `none`            — ungedeckelt, die Zahl kommt direkt aus dem Profil.
@@ -207,12 +215,14 @@ export function bucketKey(
 export type CapReason =
   | "profile-empty"
   | "lane-wall-clock"
+  | "lane-too-short"
   | "floor"
   | "max-deadline"
   | "none";
 
 export interface DerivedDeadline {
-  /** Die Zahl, die gegolten HÄTTE. Ändert in diesem Auftrag nichts. */
+  /** Die Zahl, die gegolten HÄTTE. Ändert in diesem Auftrag nichts. `0` heißt
+   *  KEIN dichter Arm — siehe `lane-too-short` in {@link CapReason}. */
   predicted_deadline_ms: number;
   cap_reason: CapReason;
   /** Auf welcher Ebene des hierarchischen Rückfalls die Zahl steht (siehe
@@ -458,6 +468,11 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
 
     derive(input: DeriveInput): DerivedDeadline {
       const bk = bucketKey(input.residency, input.queryChars, input.concurrency);
+      // #494: Unter der Mindestfrist gibt es keinen Arm — siehe
+      // `lane-too-short` in {@link CapReason}. Einmal oben festgestellt, weil
+      // beide Ausgänge unten (leeres Profil und die Deckelung) daran hängen.
+      const laneTooShort =
+        Number.isFinite(input.laneRemainingMs) && input.laneRemainingMs < MIN_DEADLINE_MS;
       const buckets = profiles.get(input.key);
       let values = fresh(buckets?.get(bk));
       let basis: DerivedDeadline["basis"] = "bucket";
@@ -488,8 +503,10 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
         // ist genau das — der Arm wird sofort aufgegeben, läuft aber weiter und
         // liefert die erste Stichprobe.
         return {
-          predicted_deadline_ms: MIN_DEADLINE_MS,
-          cap_reason: "profile-empty",
+          // #494: Auch der Kaltstart, der seine eigene Kalibrierung bezahlt,
+          // braucht dafür Wanduhr. Ist keine mehr da, ist er kein Arm.
+          predicted_deadline_ms: laneTooShort ? 0 : MIN_DEADLINE_MS,
+          cap_reason: laneTooShort ? "lane-too-short" : "profile-empty",
           basis: "empty",
           samples: 0,
           expected_total_ms: null,
@@ -514,12 +531,19 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
         cap = "floor";
       }
       // Die Wanduhr der Lane deckelt HART und zuletzt: Sie ist ein Vertrag
-      // (SessionStart 500 ms, Prompt-Lane 200 ms), keine Schätzung. Auch der
-      // Boden bleibt darunter erhalten — eine Deadline unter 50 ms nähme der
-      // Endpunkt gar nicht an, und eine, die er nicht annimmt, kann #492 nicht
-      // scharf schalten.
-      if (Number.isFinite(input.laneRemainingMs) && predicted > input.laneRemainingMs) {
-        predicted = Math.max(MIN_DEADLINE_MS, Math.floor(input.laneRemainingMs));
+      // (SessionStart 500 ms, Prompt-Lane 200 ms), keine Schätzung.
+      //
+      // #494: Und HART heißt jetzt hart. Bis hierher stand hier
+      // `Math.max(MIN_DEADLINE_MS, …)` — bei 5 ms Restbudget kam also 50
+      // heraus, eine Frist, die zehnmal so lang war wie die Wanduhr, die sie
+      // decken sollte. Im Schatten folgenlos, nach #492 ein Vertragsbruch.
+      // Unterhalb der Mindestfrist ist die Antwort kein kürzerer Arm, sondern
+      // keiner: der Endpunkt nähme eine Frist unter 50 ms ohnehin nicht an.
+      if (laneTooShort) {
+        predicted = 0;
+        cap = "lane-too-short";
+      } else if (Number.isFinite(input.laneRemainingMs) && predicted > input.laneRemainingMs) {
+        predicted = Math.floor(input.laneRemainingMs);
         cap = "lane-wall-clock";
       }
       return {

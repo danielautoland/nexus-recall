@@ -81,7 +81,6 @@ import { envFirst, envInt, envFloat, envBool } from "./env.js";
 import { startBackgroundCheck } from "./update-check.js";
 import { DAEMON_VERSION } from "./version.js";
 import { writeSharedVaultSize } from "./statusline-session.js";
-import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { createEmbeddingPrewarmer } from "./embedding-prewarm.js";
 import { createEmbeddingWarmup } from "./embedding-warmup.js";
@@ -311,13 +310,6 @@ async function main(): Promise<void> {
   // Beim Boot einmal gelesen, damit das Profil einen Neustart überlebt. Ein
   // Fehlschlag ist ein leeres Profil, kein Bootfehler.
   await latencyProfile.load().catch(() => {});
-  // #493: Der Warmup-Koordinator entsteht erst weiter unten, das Boot-Prewarm
-  // aber schon hier — und ein erfolgreiches Prewarm IST der erste Beleg dafür,
-  // dass das Modell im Speicher liegt. Über diese Weiche kommt er dort an, ohne
-  // dass die Reihenfolge der beiden Blöcke sich ändern müsste.
-  let onModelLoaded: ((loadMs: number | null) => void) | null = null;
-  const noteModelLoaded = (loadMs: number | null): void => onModelLoaded?.(loadMs);
-
   const { provider: rawProvider, status: embeddingStatus, ollama } = await resolveEmbedding();
   console.error(embeddingStatusLine(embeddingStatus));
   // Für /health (#92): Runtime-Health des Index, nicht nur die Boot-Config.
@@ -331,6 +323,40 @@ async function main(): Promise<void> {
   // reach it. Null with embeddings off — the prewarm then reports
   // "skipped-no-provider" instead of silently not existing.
   let guardedProvider: EmbeddingProvider | null = null;
+  // #490: the shared warm-up. One object per provider+model — the daemon
+  // resolves exactly one provider, so this process-wide instance IS the
+  // per-model one. It owns two things no single trigger can own: the residency
+  // answer the session lane asks for instead of racing blind, and the
+  // in-flight flag that makes several sessions starting at once share ONE
+  // load instead of hitting a cold machine with an embed storm.
+  //
+  // #494: Und es steht JETZT hier, vor dem Embedding-Block, weil der
+  // Boot-Warmup darin liegt und seit #494 durch dieselbe Grenze läuft wie die
+  // beiden anderen Auslöser. Vorher entstand der Koordinator darunter, das
+  // Boot-Prewarm feuerte seinen eigenen HTTP-Call, und die Zusage „ein Warmup"
+  // galt für alles außer dem ersten. Die Getter lesen `guardedProvider` und
+  // `embIdxForHealth` erst beim Aufruf, also stört die frühere Zeile nichts.
+  const warmupEmbedding = createEmbeddingWarmup({
+    // `ollama` is set exactly when the resolved provider is an Ollama one —
+    // the only case with a model that goes cold and that our per-request
+    // keep_alive (#78) governs. A hosted API keeps no model of ours resident,
+    // so warming it is one egress request for nothing.
+    hostedProvider: () => rawProvider !== null && ollama === undefined,
+    denseArmAvailable: () => search.hasEmbeddings() && embeddingBreaker?.state(Date.now()) !== "open",
+    // #494: Der Boot fragt nur den Breaker. `embIdx.start()` läuft daneben und
+    // ist in den ersten Sekunden nicht fertig — daran zu scheitern hieße, #78
+    // stillschweigend abzuschaffen.
+    providerAvailable: () => guardedProvider !== null && embeddingBreaker?.state(Date.now()) !== "open",
+    // Provider-agnostic and free (#490): the last successful provider call.
+    // Deliberately not an Ollama /api/ps probe.
+    lastOkAt: () => embIdxForHealth?.runtimeHealth().lastOkAt ?? null,
+    warm: async () => {
+      await guardedProvider?.embed(["warm"]);
+    },
+    onError: () => {
+      // Silent by design, same as the prewarm below.
+    },
+  });
   if (rawProvider && embeddingBreaker) {
     // #493: Der Nebenläufigkeitszähler liegt am Providerrand, INNERHALB des
     // Breakers — ein Call, den der Breaker gar nicht durchlässt, beschäftigt
@@ -366,12 +392,26 @@ async function main(): Promise<void> {
         if (auto.started || auto.detail === "already running") {
           embeddingBreaker.reset();
         }
-        const ok = await prewarmOllamaModel(ollama.baseURL, ollama.model, ollama.keepAlive);
-        // #493: Ein geglücktes Prewarm ist ein BEOBACHTETER Ladevorgang. Ohne
-        // diese Meldung las die Residenz nach dem Boot `unknown`, obwohl das
-        // Modell nachweislich im Speicher lag — das Prewarm geht am
-        // Embedding-Index vorbei und rührte `lastOkAt` deshalb nie an.
-        if (ok) noteModelLoaded(null);
+        // #494: DURCH den Koordinator, nicht daran vorbei. Bis hierher war das
+        // ein eigener `POST /api/embed` (`prewarmOllamaModel`) — außerhalb der
+        // Singleflight-Grenze, außerhalb des Breakers und außerhalb des
+        // Nebenläufigkeitszählers aus #493. Ein frischer Daemon plus ein
+        // SessionStart konnte damit fünf gleichzeitige Embeds auslösen. Jetzt
+        // ist der Boot einer von drei Auslösern derselben einen Grenze: Läuft
+        // schon ein Warmup, fällt er darauf; sonst startet er ihn, und der
+        // SessionStart daneben fällt seinerseits darauf.
+        const outcome = warmupEmbedding.ensureWarm("boot");
+        // Der einzige Aufrufer, der auf einen Warmup wartet — für diese
+        // Lifecycle-Zeile, nicht für eine Antwort an einen Nutzer.
+        const ok = outcome === "fired" ? ((await warmupEmbedding.warming()) ?? false) : false;
+        console.error(
+          `[bastra-recall] ollama prewarm: ${ollama.model} ${ok ? "loaded" : `not warmed (${outcome})`}`,
+        );
+        // #493: Ein geglücktes Prewarm ist ein BEOBACHTETER Ladevorgang. Die
+        // Residenz las nach dem Boot sonst `unknown`, obwohl das Modell
+        // nachweislich im Speicher lag. Seit #494 meldet das der Koordinator
+        // selbst (`noteLoaded` im Settle von `ensureWarm`), also steht hier
+        // keine zweite Meldung mehr.
         void telemetry.logOllamaLifecycle({
           action: "prewarm",
           model: ollama.model,
@@ -463,32 +503,7 @@ async function main(): Promise<void> {
   // half-open probe) — the same boundary every other embed crosses. And
   // availability is asked exactly as the recall path asks it: an attached
   // embedding index, and a breaker that is not open (half-open passes).
-  // #490: the shared warm-up. One object per provider+model — the daemon
-  // resolves exactly one provider, so this process-wide instance IS the
-  // per-model one. It owns two things no single trigger can own: the residency
-  // answer the session lane asks for instead of racing blind, and the
-  // in-flight flag that makes several sessions starting at once share ONE
-  // load instead of hitting a cold machine with an embed storm.
-  const warmupEmbedding = createEmbeddingWarmup({
-    // `ollama` is set exactly when the resolved provider is an Ollama one —
-    // the only case with a model that goes cold and that our per-request
-    // keep_alive (#78) governs. A hosted API keeps no model of ours resident,
-    // so warming it is one egress request for nothing.
-    hostedProvider: () => rawProvider !== null && ollama === undefined,
-    denseArmAvailable: () => search.hasEmbeddings() && embeddingBreaker?.state(Date.now()) !== "open",
-    // Provider-agnostic and free (#490): the last successful provider call.
-    // Deliberately not an Ollama /api/ps probe.
-    lastOkAt: () => embIdxForHealth?.runtimeHealth().lastOkAt ?? null,
-    warm: async () => {
-      await guardedProvider?.embed(["warm"]);
-    },
-    onError: () => {
-      // Silent by design, same as the prewarm below.
-    },
-  });
-  // #493: Ab hier kann das Boot-Prewarm seinen Ladevorgang melden (siehe die
-  // Weiche oben).
-  onModelLoaded = (loadMs) => warmupEmbedding.noteLoaded(loadMs);
+  // Der Koordinator dazu steht seit #494 oben, vor dem Embedding-Block.
 
   // #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Es rechnet
   // neben jedem Recall die Frist aus, die es gesetzt HÄTTE, und protokolliert
@@ -530,7 +545,7 @@ async function main(): Promise<void> {
     // only assume it, and it will not start a second load while one is
     // already in flight for another session.
     warm: async () => {
-      warmupEmbedding.ensureWarm();
+      warmupEmbedding.ensureWarm("turn");
     },
     onError: () => {
       // Silent by design: the prewarm is an optimisation, and a provider that

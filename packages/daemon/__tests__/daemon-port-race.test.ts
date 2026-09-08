@@ -130,14 +130,17 @@ test("the port probe stays above the vault and embedding lifecycle", async () =>
   const vault = src.indexOf("new Vault(VAULT_PATH!)");
   const init = src.indexOf("vault.init()");
   const watching = src.indexOf("vault.startWatching()");
-  const prewarm = src.indexOf("prewarmOllamaModel(");
+  // #494: Das Boot-Prewarm heißt jetzt so — es läuft seit #494 durch dieselbe
+  // Singleflight-Grenze wie die beiden anderen Warmup-Auslöser, statt einen
+  // eigenen HTTP-Call zu feuern.
+  const prewarm = src.indexOf('ensureWarm("boot")');
 
   assert.ok(probe > 0, "the early bind probe is gone from index.ts");
   for (const [name, at] of [
     ["new Vault", vault],
     ["vault.init", init],
     ["vault.startWatching", watching],
-    ["prewarmOllamaModel", prewarm],
+    ["the boot warm-up", prewarm],
   ] as const) {
     assert.ok(at > 0, `${name} not found in index.ts — update this test`);
     assert.ok(probe < at, `the #483 probe must run before ${name}, not after it`);

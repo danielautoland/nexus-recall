@@ -551,8 +551,10 @@ export interface DeadlineShadowRow {
   deadline_ms: number;
   /** Warum die Prognose so aussieht — insbesondere, ob die Wanduhr der Lane
    *  sie gedeckelt hat (`lane-wall-clock`) oder das Profil noch leer war
-   *  (`profile-empty`, also einmal lexikalisch). */
-  cap_reason: "profile-empty" | "lane-wall-clock" | "floor" | "max-deadline" | "none";
+   *  (`profile-empty`, also einmal lexikalisch). #494: `lane-too-short` heißt
+   *  `predicted_deadline_ms: 0` — unter der Mindestfrist läuft KEIN dichter
+   *  Arm, statt einer Frist, die länger wäre als die Wanduhr. */
+  cap_reason: "profile-empty" | "lane-wall-clock" | "lane-too-short" | "floor" | "max-deadline" | "none";
   /**
    * Auf welcher Ebene des hierarchischen Rückfalls die Zahl steht — eine grobe
    * Prognose darf nicht wie eine feine aussehen.
@@ -811,6 +813,15 @@ export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
    *  deadline) or `vector-arm-empty` (had nothing to say). See the hook event. */
   degraded_reason?: string;
   /**
+   * #494: Der Aufrufer hat den dichten Arm ABGEWÄHLT — kein Embed, kein
+   * Timeout, keine Latenzstichprobe. Ausdrücklich verschieden von
+   * `degraded_reason` (ein Arm ist ausgefallen) und von seiner Abwesenheit auf
+   * einer Maschine ohne Embeddings (es gibt gar keinen Arm). Ohne die
+   * Unterscheidung zählte die Auswertung zu #492 Kaltstarts, die nie gemessen
+   * wurden. Gesetzt vom kalten SessionStart (`session-lane.ts`).
+   */
+  lexical_only?: boolean;
+  /**
    * #491 — die SCHATTENSPALTE des gelernten Latenzprofils.
    *
    * Was hier steht, hat auf diesen Recall nichts bewirkt: `deadline_ms` ist die
@@ -929,7 +940,7 @@ export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
    * Frist gehalten hätte. Fehlt, wenn kein Schattenprofil aktiv war.
    */
   predicted_deadline_ms?: number;
-  cap_reason?: "profile-empty" | "lane-wall-clock" | "floor" | "max-deadline" | "none";
+  cap_reason?: "profile-empty" | "lane-wall-clock" | "lane-too-short" | "floor" | "max-deadline" | "none";
   residency?: "warm" | "cold" | "unknown" | "hosted";
   /** `true` = auch die gelernte Frist wäre gerissen (`settle_ms` über ihr). */
   shadow_timeout?: boolean;

@@ -121,6 +121,9 @@ export async function handleSessionContextPost(
     ...(typeof b.vector_deadline_ms === "number"
       ? { vector_deadline_ms: b.vector_deadline_ms }
       : {}),
+    // #494: Der Verzicht auf den dichten Arm reist genauso mit dem Aufruf.
+    // Nur der SessionStart auf kaltem Modell setzt ihn.
+    ...(b.lexical_only === true ? { lexical_only: true } : {}),
     // Dasselbe für das Schatten-Budget: reist mit dem Aufruf, nicht mit dem
     // Endpunkt. Ungesetzt bleibt es bei den hookweiten 200.
     ...(typeof b.hook_budget_ms === "number" ? { hook_budget_ms: b.hook_budget_ms } : {}),

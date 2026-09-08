@@ -242,6 +242,23 @@ export async function runHookRecall(
       // deadline for nothing — 15 of 19 MCP recalls on 20.08. came back
       // BM25-only because a 3-query batch (#351) serialises on one Ollama.
       const vectorDeadlineMs = clampInt(body.vector_deadline_ms, 50, 10_000, hookVectorDeadlineMs());
+      /**
+       * #494: Der Aufrufer verzichtet auf den dichten Arm — GAR KEIN Embed,
+       * nicht bloß eine kurze Frist.
+       *
+       * #490 wollte genau das und konnte es nicht bauen (`search.ts` lag
+       * damals bei #489), also bekam der kalte SessionStart 50 ms statt eines
+       * Verzichts. Als EINZIGER aufgegebener Embed, der das Modell nebenbei
+       * wärmt, wäre das vertretbar gewesen; neben einem eigenen Warmup und
+       * drei parallelen Session-Recalls ist es redundante Last, aufgebracht
+       * genau dann, wenn die Maschine am langsamsten ist.
+       *
+       * Die Antwort ist ehrlich einarmig (`score_kind: "bm25"`, `unfused`) —
+       * aber ohne `degraded`: Es ist kein Arm ausgefallen, es war keiner
+       * vorgesehen. Wer den Verzicht ausgelöst hat, sagt der Aufrufer in
+       * seinem eigenen Block (die SessionStart-Lane: „not in memory").
+       */
+      const lexicalOnly = body.lexical_only === true;
       // Dieselbe Regel wie bei der Deadline eine Zeile darüber: Das Budget, gegen
       // das der Schatten-Router rechnet, gehört zum AUFRUF, nicht zum Endpunkt.
       // Die 200 sind die Wanduhr der Prompt-Lane; die SessionStart-Lane hat ihre
@@ -399,8 +416,12 @@ export async function runHookRecall(
       // Breaker (#165) heißt: kein Arm, keine Prognose, keine Stichprobe. Ein
       // vom Breaker übersprungener Arm antwortet in ~0 ms, und diese Null als
       // Latenz zu lernen wäre schlimmer als gar nicht zu lernen.
+      // #494: Ein `lexical_only`-Recall feuert keinen Arm, also gibt es auch
+      // nichts zu prognostizieren. Ohne diese Zeile stünde eine Schattenzeile
+      // ohne Messung in der Auswertung, und das Zeit-Tor am 13.09. sähe einen
+      // Kaltstart, der nie stattgefunden hat.
       const shadowKey =
-        search.hasEmbeddings() && !embeddingDegradedAtRecall
+        search.hasEmbeddings() && !embeddingDegradedAtRecall && !lexicalOnly
           ? (deps.deadlineShadow?.key() ?? null)
           : null;
       const shadow = shadowKey ? deps.deadlineShadow! : null;
@@ -416,7 +437,9 @@ export async function runHookRecall(
       const shadowConcurrency = shadow ? shadow.profile.inFlight() + 1 : 0;
       let hits: Awaited<ReturnType<typeof search.recallHybrid>>;
       {
-        hits = search.hasEmbeddings()
+        // #494: `lexicalOnly` schlägt `hasEmbeddings()` — der Verzicht ist eine
+        // Entscheidung des Aufrufers und keine Eigenschaft der Maschine.
+        hits = search.hasEmbeddings() && !lexicalOnly
           ? await search.recallHybrid(expansion.query, {
               authored_query: query,
               k,
@@ -442,8 +465,11 @@ export async function runHookRecall(
       // #342/P0: Lief für DIESE Anfrage eine echte Fusion? Direkt hier
       // festgehalten, weil der Content-Recall gleich seinen eigenen
       // Degradations-Grund bekommt und die beiden nicht vermischt werden dürfen.
+      // #494: Ein `lexical_only`-Lauf ist nie fusioniert — es lief nur ein Arm,
+      // also sind die Zahlen rohes BM25 und die 30/100-Bänder beschreiben sie
+      // nicht (#302). Dass niemand ausgefallen ist, ändert daran nichts.
       const promptFused =
-        search.hasEmbeddings() && !embeddingDegradedAtRecall && degradedReason === undefined;
+        search.hasEmbeddings() && !embeddingDegradedAtRecall && !lexicalOnly && degradedReason === undefined;
 
       const contentQuery = typeof body.tool_input_excerpt === "string"
         ? body.tool_input_excerpt.trim().slice(0, 4096)
@@ -478,7 +504,11 @@ export async function runHookRecall(
               contentDegradedReason = st.meta.degraded;
             }
           };
-          const contentHits = search.hasEmbeddings()
+          // #494: Derselbe Verzicht wie oben. Ein Content-Recall mit dichtem
+          // Arm neben einem Prompt-Recall ohne wäre genau die Last, die
+          // `lexical_only` vermeiden soll — und das Merge-Gate darunter würde
+          // ihn wegen des Skalenbruchs ohnehin verwerfen.
+          const contentHits = search.hasEmbeddings() && !lexicalOnly
             ? await search.recallHybrid(contentQuery, {
                 k,
                 scope,
@@ -876,6 +906,11 @@ export async function runHookRecall(
           embedding_degraded: embeddingDegradedAtRecall ? true : undefined,
           // #342: which arm dropped out, if one did.
           degraded_reason: degradedReason,
+          // #494: Dieser Recall hat den dichten Arm ABGEWÄHLT. Ohne die Spalte
+          // wäre er von einem Recall auf einer Maschine ohne Embeddings nicht
+          // zu unterscheiden — und die Auswertung zu #492 würde einen
+          // Kaltstart zählen, der nie gemessen wurde.
+          lexical_only: lexicalOnly ? true : undefined,
           // #217: would-be Salience-Reihenfolge (shadow-only).
           salience_shadow: computeSalienceShadow(
             hits,
