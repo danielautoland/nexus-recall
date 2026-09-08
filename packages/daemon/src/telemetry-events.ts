@@ -552,10 +552,17 @@ export interface DeadlineShadowRow {
   /** Warum die Prognose so aussieht — insbesondere, ob die Wanduhr der Lane
    *  sie gedeckelt hat (`lane-wall-clock`) oder das Profil noch leer war
    *  (`profile-empty`, also einmal lexikalisch). */
-  cap_reason: "profile-empty" | "lane-wall-clock" | "floor" | "none";
-  /** Stand die Zahl auf dem genauen Dimensions-Eimer oder auf dem ganzen
-   *  Profil? Eine grobe Prognose darf nicht wie eine feine aussehen. */
-  basis: "bucket" | "profile-wide" | "empty";
+  cap_reason: "profile-empty" | "lane-wall-clock" | "floor" | "max-deadline" | "none";
+  /**
+   * Auf welcher Ebene des hierarchischen Rückfalls die Zahl steht — eine grobe
+   * Prognose darf nicht wie eine feine aussehen.
+   *
+   * `profile-wide` steht nur auf Zeilen VOR #493: Damals griff der Rückfall
+   * über alle Eimer des Profils und damit über die Residenzgrenze, wodurch die
+   * ersten kalten Stichproben das warme ~70-ms-Profil erbten. Solche Zeilen
+   * gehören aus einer Kaltstart-Auswertung heraus.
+   */
+  basis: "bucket" | "length-wide" | "residency-wide" | "profile-wide" | "empty";
   /** Wieviele Stichproben sie trägt. */
   samples: number;
   /** Das p95 der GESAMTZEIT (Abfeuern → echtes Settle), aus dem sie stammt. */
@@ -582,11 +589,65 @@ export interface DeadlineShadowRow {
    *  mit `timed_out` ist das der direkte Vergleich der beiden Timeout-Quoten,
    *  den Kriterium 4 aus #492 verlangt. */
   shadow_timeout?: boolean;
+  /**
+   * #493: Wie der dichte Arm ausgegangen ist.
+   *
+   * `hits` ist die EINZIGE Latenzstichprobe. Vorher fing `EmbeddingIndex
+   * .search()` jeden Providerfehler ab und gab `[]` zurück; für `abandonAfter`
+   * war das ein `settled: true`, also lernte das Profil die Dauer eines
+   * HTTP 500 als „normalen dichten Arm". Fehlt auf Zeilen vor #493 und beim
+   * aufgegebenen Arm — dessen Ausgang steht in `vector_late_settle`.
+   */
+  provider_outcome?: "hits" | "empty" | "error";
+  /** Rohe Treffer des Providers, VOR dem Vault-Filter. Die gefilterte Zahl
+   *  bleibt `recall_stages`-seitig, wo sie immer stand. */
+  vector_hit_count?: number;
+  /** GRUNDWAHRHEIT für Tor 3 aus #492: Der Provider hat für diesen Call ein
+   *  Modell geladen (Ollama `load_duration`). Ohne dieses Feld musste „echter
+   *  Kaltstart" aus Zeitstempeln erschlossen werden. */
+  cold_start_observed?: boolean;
+  /** Die gemeldete Ladezeit, roh in ms — damit die Kaltstartschwelle
+   *  (`PROVIDER_COLD_LOAD_MS`) aus den Daten selbst nachgezogen werden kann. */
+  provider_load_ms?: number;
+  /** #493: Woher die Residenz stammt und ob sie geschätzt ist. Tor 3 darf auf
+   *  geschätzten Zeilen nicht zählen. */
+  residency_source?: "unload-observed" | "provider-load" | "warm-up" | "last-ok" | "hosted" | "none";
+  residency_estimated?: boolean;
+  /**
+   * #493: Woher `lane_budget_ms` kommt.
+   *
+   * Live belegt: Die MCP-Lane wurde gegen eine fremde Wanduhr geschattet —
+   * der Forwarder schickte kein `hook_budget_ms`, die Route fiel auf die 200
+   * der Prompt-Lane zurück, und ein gesunder 400-ms-Arm las
+   * `cap_reason: floor` gegen ein Budget, das für ihn nie galt. Seit #493
+   * schickt jede Lane ihre eigene Zahl, und diese Spalte sagt, ob das
+   * geschehen ist.
+   */
+  budget_source?: "caller" | "endpoint-default";
+  /** #493: die datensparsame Kennung dieses Hosts (`host-profile.ts`) — Tor 5
+   *  aus #492 fragt nach einer zweiten Maschine, und zusammengeführte Logs
+   *  konnten Hosts vorher nicht auseinanderhalten. */
+  host_profile_id?: string;
 }
 
 export interface HookRecallEvent extends BaseEvent, DimensionedEvent {
   kind: "hook_recall";
   recall_id: string;
+  /**
+   * #493: Die Klammer um die Recalls EINES Sitzungsstarts.
+   *
+   * Ein SessionStart feuert bis zu drei korrelierte Recalls (user-preference,
+   * all-projects, Projekt-Scope) — jeder mit eigener `recall_id` und, auf
+   * einem kalten Modell, jeder mit eigenem Kaltstart-Verdacht. Ohne diese
+   * Klammer ist „20 Kaltstarts" (Tor 3 aus #492) nicht von „7 Kaltstarts × 3
+   * Recalls" zu unterscheiden, und die `session_id` hilft nicht: Sie ist über
+   * die ganze Sitzung dieselbe, also über beliebig viele Starts hinweg
+   * (compact/clear/resume behalten sie).
+   *
+   * Fehlt auf jedem Recall, der nicht aus einem Sitzungsstart kommt — und auf
+   * Zeilen vor #493.
+   */
+  session_start_call_id?: string;
   /**
    * #305/#361: der Turn, in dem dieser Recall lief — und woher die Zuordnung
    * stammt.
@@ -868,8 +929,26 @@ export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
    * Frist gehalten hätte. Fehlt, wenn kein Schattenprofil aktiv war.
    */
   predicted_deadline_ms?: number;
-  cap_reason?: "profile-empty" | "lane-wall-clock" | "floor" | "none";
+  cap_reason?: "profile-empty" | "lane-wall-clock" | "floor" | "max-deadline" | "none";
   residency?: "warm" | "cold" | "unknown" | "hosted";
   /** `true` = auch die gelernte Frist wäre gerissen (`settle_ms` über ihr). */
   shadow_timeout?: boolean;
+  /**
+   * #493: das ERGEBNIS des aufgegebenen Arms, nicht nur seine Laufzeit.
+   *
+   * Kriterium 4 aus #492 rechnet die kontrafaktische Fusionsrate: Hätte eine
+   * längere Frist diesen Recall fusioniert? Die Laufzeit allein beantwortet
+   * das nicht — ein Arm, der spät mit `empty` oder `error` settelt, hätte
+   * auch mit jeder Frist nichts beigetragen.
+   */
+  provider_outcome?: "hits" | "empty" | "error";
+  vector_hit_count?: number;
+  cold_start_observed?: boolean;
+  provider_load_ms?: number;
+  residency_source?: "unload-observed" | "provider-load" | "warm-up" | "last-ok" | "hosted" | "none";
+  residency_estimated?: boolean;
+  /** #493: Gruppierung mehrerer Recalls EINES Sitzungsstarts — siehe
+   *  `HookRecallEvent.session_start_call_id`. */
+  session_start_call_id?: string;
+  host_profile_id?: string;
 }

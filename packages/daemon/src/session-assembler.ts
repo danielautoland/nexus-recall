@@ -215,6 +215,16 @@ export interface AssembleOptions {
    * Timeout, kein Abbruch, keine Trefferauswahl (#362 Phase 2 ist Schatten).
    */
   hook_budget_ms?: number;
+  /**
+   * #493: Die Klammer um die (bis zu drei) Recalls EINES Sitzungsstarts.
+   *
+   * Sie reist bis auf jedes `hook_recall`-Event durch. Ohne sie ist „20
+   * Kaltstarts" (Tor 3 aus #492) nicht von „7 Kaltstarts × 3 Recalls" zu
+   * unterscheiden, und die `session_id` beantwortet die Frage nicht: Sie
+   * bleibt über compact/clear/resume dieselbe, also über beliebig viele
+   * Starts hinweg.
+   */
+  session_start_call_id?: string | null;
   /** #263: Wer fragt. Der Endpunkt weist sich als eigene Hook-Quelle aus,
    *  sonst wären seine Recalls von denen des Forwarders nicht zu trennen.
    *  `unknown`, weil der Wert aus einem Request-Body kommt — normalisiert wird
@@ -372,6 +382,8 @@ export async function assembleSessionSections(
             ? { vector_deadline_ms: opts.vector_deadline_ms }
             : {}),
           ...(opts.hook_budget_ms !== undefined ? { hook_budget_ms: opts.hook_budget_ms } : {}),
+          // #493: siehe `session_start_call_id` oben.
+          ...(opts.session_start_call_id ? { session_start_call_id: opts.session_start_call_id } : {}),
         },
         query,
         startedAt,

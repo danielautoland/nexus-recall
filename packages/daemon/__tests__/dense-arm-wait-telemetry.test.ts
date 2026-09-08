@@ -80,8 +80,20 @@ function spaeterArm() {
   return {
     size: () => 1,
     runtimeHealth: () => ({ errorCount: 0 }),
-    search: () =>
-      new Promise((resolve) => setTimeout(() => resolve([{ id: "a", score: 0.9 }]), ANTWORT_NACH_MS)),
+    // #493: der strukturierte Ausgang des Arms.
+    searchDetailed: () =>
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              outcome: "hits",
+              hits: [{ id: "a", score: 0.9 }],
+              providerLoadMs: null,
+              coldStartObserved: false,
+            }),
+          ANTWORT_NACH_MS,
+        ),
+      ),
   } as never;
 }
 

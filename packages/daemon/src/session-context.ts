@@ -124,6 +124,11 @@ export async function handleSessionContextPost(
     // Dasselbe für das Schatten-Budget: reist mit dem Aufruf, nicht mit dem
     // Endpunkt. Ungesetzt bleibt es bei den hookweiten 200.
     ...(typeof b.hook_budget_ms === "number" ? { hook_budget_ms: b.hook_budget_ms } : {}),
+    // #493: Die Gruppierung eines Sitzungsstarts reist mit dem Aufruf bis auf
+    // jedes einzelne `hook_recall`-Event.
+    ...(typeof b.session_start_call_id === "string"
+      ? { session_start_call_id: b.session_start_call_id }
+      : {}),
     caps: {
       ...(num(caps.pinned) !== undefined ? { pinned: num(caps.pinned) } : {}),
       ...(num(caps.hints) !== undefined ? { hints: num(caps.hints) } : {}),

@@ -68,6 +68,7 @@ import {
   API_TOKEN,
   SPAWN_ENABLED,
   REQUEST_TIMEOUT_MS,
+  FORWARDER_HOOK_BUDGET_MS,
   fetchWithTimeout,
   holdForDaemon,
   primeDaemon,
@@ -580,6 +581,14 @@ async function callRecallStreaming(
   // the dense arm room. At the hook default (150ms) a 3-query batch (#351)
   // serialised on one Ollama and 15 of 19 MCP recalls came back BM25-only.
   body.vector_deadline_ms = MCP_VECTOR_DEADLINE_MS;
+  // #493: Die eigene Wanduhr, statt stillschweigend die einer fremden Lane zu
+  // erben. Ohne dieses Feld fiel die Route auf `BASTRA_HOOK_BUDGET_MS` zurück
+  // — die 200 ms der Prompt-Lane — und die Schattenzeilen der MCP-Lane lasen
+  // live `deadline_ms 1500, lane_budget_ms 200, cap_reason floor`: ein
+  // gesunder 400-ms-Arm, gemessen an einer Grenze, die für ihn nie galt.
+  //
+  // Die Zahl selbst steht bei ihrem Ursprung (`FORWARDER_HOOK_BUDGET_MS`).
+  body.hook_budget_ms = FORWARDER_HOOK_BUDGET_MS;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

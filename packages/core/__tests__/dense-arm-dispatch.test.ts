@@ -97,12 +97,21 @@ function embeddingsUeberNetz(port: number, antwortNachMs: number | "never", agen
   return {
     size: () => 1,
     runtimeHealth: () => ({ errorCount: 0 }),
-    search: () =>
+    // #493: Der Recall fragt den strukturierten Ausgang ab — ein Provider-
+    // fehler ist seither kein leeres Ergebnis mehr, sondern ein eigener Fall.
+    searchDetailed: () =>
       new Promise((resolve, reject) => {
         get({ host: "127.0.0.1", port, path: `/?ms=${antwortNachMs}`, ...(agent ? { agent } : {}) }, (res) => {
           let roh = "";
           res.on("data", (c) => (roh += c));
-          res.on("end", () => resolve(JSON.parse(roh)));
+          res.on("end", () =>
+            resolve({
+              outcome: "hits",
+              hits: JSON.parse(roh),
+              providerLoadMs: null,
+              coldStartObserved: false,
+            }),
+          );
         }).on("error", reject);
       }),
   } as never;

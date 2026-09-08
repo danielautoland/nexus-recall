@@ -53,7 +53,9 @@ import { clearShown } from "./session-state.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
 import { hookClient } from "./hook-surface.js";
-import type { Residency, WarmupCoordinator } from "./embedding-warmup.js";
+import type { Residency, ResidencySource, WarmupCoordinator } from "./embedding-warmup.js";
+// #493: die datensparsame Kennung dieses Hosts — Tor 5 aus #492.
+import { hostProfileId } from "./host-profile.js";
 import {
   postSessionContext, probeHealth,
   type ConventionLean, type RecallHit, type RecallResponse, type SessionContextResponse,
@@ -168,6 +170,15 @@ export async function runSessionLane(
   // dann, wenn sie am langsamsten ist. Kein Await: Die Lane wartet nie auf ein
   // Modell-Laden (#490, ausdrücklich abgelehnt).
   const residency: Residency | null = warmup?.onSessionContact() ?? null;
+  // #493: Woher diese Antwort stammt und ob sie geschätzt ist. Tor 3 aus #492
+  // zählt echte Kaltstarts und darf auf geschätzten Zeilen nicht zählen.
+  const residencyReading = warmup?.residencyDetail() ?? null;
+  // #493: Die Klammer um die (bis zu drei) Recalls DIESES Sitzungsstarts. Ein
+  // Start feuert mehrere korrelierte Recalls; ohne die Klammer ist „20
+  // Kaltstarts" nicht von „7 Kaltstarts × 3 Recalls" zu unterscheiden. Die
+  // `session_id` leistet das nicht: Sie überlebt compact/clear/resume und
+  // damit beliebig viele Starts.
+  const sessionStartCallId = randomUUID();
   // „Unbekannt" zählt wie kalt: Ohne einen einzigen erfolgreichen Embed in
   // diesem Prozess ist die einzige sichere Annahme die teure.
   const denseCold = residency === "cold" || residency === "unknown";
@@ -255,6 +266,8 @@ export async function runSessionLane(
           // Siehe SESSION_HOOK_BUDGET_MS: der Schatten-Router soll gegen die
           // Wanduhr DIESER Lane rechnen, nicht gegen die der Prompt-Lane.
           hook_budget_ms: SESSION_HOOK_BUDGET_MS,
+          // #493: siehe `sessionStartCallId` oben.
+          session_start_call_id: sessionStartCallId,
           budget: { time_ms: remainingMs },
         },
         remainingMs,
@@ -647,6 +660,10 @@ export async function runSessionLane(
     degraded_reason: degradedReason,
     score_unfused: unfused,
     embedding_residency: residency,
+    embedding_residency_source: residencyReading?.source ?? null,
+    embedding_residency_estimated: residencyReading?.estimated ?? null,
+    session_start_call_id: sessionStartCallId,
+    host_profile_id: hostProfileId(),
     hint_tokens_est: Math.ceil(injected.length / 4),
     // #462: dieselbe Schätzung je Teil. Nichts injiziert = alle Teile 0.
     hint_tokens_by_part: tokensByPart(
@@ -864,6 +881,15 @@ interface SessionHookTelemetry {
    *  und der Warmup lief daneben an. `null` = kein Koordinator (keine
    *  Embeddings). Fehlt auf Zeilen vor #490. */
   embedding_residency: Residency | null;
+  /** #493: Woher die Residenz stammt und ob sie geschätzt ist — siehe
+   *  `ResidencyReading`. `null` = kein Koordinator. Fehlt auf Zeilen davor. */
+  embedding_residency_source: ResidencySource | null;
+  embedding_residency_estimated: boolean | null;
+  /** #493: Die Klammer, unter der die `hook_recall`-Events DIESES Starts
+   *  stehen. Verbindet dieses Ereignis mit seinen Teil-Recalls. */
+  session_start_call_id: string;
+  /** #493: die datensparsame Kennung dieses Hosts — Tor 5 aus #492. */
+  host_profile_id: string;
 }
 
 export const SESSION_CONTEXT_PARTS = [

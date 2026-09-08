@@ -85,7 +85,9 @@ import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { createEmbeddingPrewarmer } from "./embedding-prewarm.js";
 import { createEmbeddingWarmup } from "./embedding-warmup.js";
-import { createLatencyProfile, type DeadlineShadow } from "./latency-profile.js";
+import { countingProvider, createLatencyProfile, type DeadlineShadow } from "./latency-profile.js";
+// #493: die datensparsame Kennung dieses Hosts — Tor 5 aus #492.
+import { hostProfileId } from "./host-profile.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
 
@@ -293,6 +295,29 @@ async function main(): Promise<void> {
     /* kein State = keine Demotions */
   }
 
+  // #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Es rechnet
+  // neben jedem Recall die Frist aus, die es gesetzt HÄTTE, und protokolliert
+  // sie neben der, die tatsächlich galt — die festen 150/350/1500 ms bleiben
+  // unangetastet, bis das Zeit-Tor aus #492 geöffnet ist.
+  //
+  // Geschlüsselt auf `rawProvider.id` (`ollama-embeddinggemma`,
+  // `openai-text-embedding-3-small`) — dieselbe Kennung, an der schon
+  // Vektor-Persistenz und Embed-Cache invalidieren. Ein Modellwechsel findet
+  // seinen Schlüssel leer vor und erbt nichts.
+  //
+  // #493: VOR dem Provider aufgebaut, weil der Nebenläufigkeitszähler jetzt am
+  // Providerrand sitzt (`countingProvider` unten) statt im Recall-Pfad.
+  const latencyProfile = createLatencyProfile();
+  // Beim Boot einmal gelesen, damit das Profil einen Neustart überlebt. Ein
+  // Fehlschlag ist ein leeres Profil, kein Bootfehler.
+  await latencyProfile.load().catch(() => {});
+  // #493: Der Warmup-Koordinator entsteht erst weiter unten, das Boot-Prewarm
+  // aber schon hier — und ein erfolgreiches Prewarm IST der erste Beleg dafür,
+  // dass das Modell im Speicher liegt. Über diese Weiche kommt er dort an, ohne
+  // dass die Reihenfolge der beiden Blöcke sich ändern müsste.
+  let onModelLoaded: ((loadMs: number | null) => void) | null = null;
+  const noteModelLoaded = (loadMs: number | null): void => onModelLoaded?.(loadMs);
+
   const { provider: rawProvider, status: embeddingStatus, ollama } = await resolveEmbedding();
   console.error(embeddingStatusLine(embeddingStatus));
   // Für /health (#92): Runtime-Health des Index, nicht nur die Boot-Config.
@@ -307,7 +332,17 @@ async function main(): Promise<void> {
   // "skipped-no-provider" instead of silently not existing.
   let guardedProvider: EmbeddingProvider | null = null;
   if (rawProvider && embeddingBreaker) {
-    const provider = new BreakerGuardedProvider(rawProvider, embeddingBreaker);
+    // #493: Der Nebenläufigkeitszähler liegt am Providerrand, INNERHALB des
+    // Breakers — ein Call, den der Breaker gar nicht durchlässt, beschäftigt
+    // den Provider nicht. Hier kommt alles durch, was ihn wirklich beschäftigt:
+    // der dichte Arm jeder Lane, der Content-Recall, die Backfill-Batches und
+    // der Warmup. Vorher zählte der Recall-Pfad die wartenden Aufrufer, ließ
+    // beim Timeout los, während der Embed weiterlief, und sah von den anderen
+    // dreien nichts.
+    const provider = new BreakerGuardedProvider(
+      countingProvider(rawProvider, latencyProfile),
+      embeddingBreaker,
+    );
     guardedProvider = provider;
     const persistPath = path.join(VAULT_PATH!, ".bastra", "embeddings.json");
     const embIdx = new EmbeddingIndex(vault, provider, persistPath);
@@ -332,6 +367,11 @@ async function main(): Promise<void> {
           embeddingBreaker.reset();
         }
         const ok = await prewarmOllamaModel(ollama.baseURL, ollama.model, ollama.keepAlive);
+        // #493: Ein geglücktes Prewarm ist ein BEOBACHTETER Ladevorgang. Ohne
+        // diese Meldung las die Residenz nach dem Boot `unknown`, obwohl das
+        // Modell nachweislich im Speicher lag — das Prewarm geht am
+        // Embedding-Index vorbei und rührte `lastOkAt` deshalb nie an.
+        if (ok) noteModelLoaded(null);
         void telemetry.logOllamaLifecycle({
           action: "prewarm",
           model: ollama.model,
@@ -446,6 +486,9 @@ async function main(): Promise<void> {
       // Silent by design, same as the prewarm below.
     },
   });
+  // #493: Ab hier kann das Boot-Prewarm seinen Ladevorgang melden (siehe die
+  // Weiche oben).
+  onModelLoaded = (loadMs) => warmupEmbedding.noteLoaded(loadMs);
 
   // #491: das gelernte Latenzprofil des dichten Arms, im SCHATTEN. Es rechnet
   // neben jedem Recall die Frist aus, die es gesetzt HÄTTE, und protokolliert
@@ -456,15 +499,20 @@ async function main(): Promise<void> {
   // `openai-text-embedding-3-small`) — dieselbe Kennung, an der schon
   // Vektor-Persistenz und Embed-Cache invalidieren. Ein Modellwechsel findet
   // seinen Schlüssel leer vor und erbt nichts.
-  const latencyProfile = createLatencyProfile();
-  // Beim Boot einmal gelesen, damit das Profil einen Neustart überlebt. Ein
-  // Fehlschlag ist ein leeres Profil, kein Bootfehler.
-  await latencyProfile.load().catch(() => {});
   const deadlineShadow: DeadlineShadow = {
     key: () => rawProvider?.id ?? null,
     // Die Residenz kommt aus dem Warmup-Koordinator (#490) und nirgendwo
-    // sonst — eine zweite Quelle dafür wäre eine zweite Wahrheit.
-    residency: () => warmupEmbedding.residency(),
+    // sonst — eine zweite Quelle dafür wäre eine zweite Wahrheit. #493: mit
+    // ihrer Herkunft, damit die Auswertung Grundwahrheit von Schätzung trennen
+    // kann.
+    residency: () => warmupEmbedding.residencyDetail(),
+    // #493: Der Provider hat für einen Call geladen (Ollama `load_duration`) —
+    // die einzige Grundwahrheit über die Residenz, die dieser Pfad hat. Sie
+    // geht in denselben Lifecycle-Zustand wie Warmups und Unloads.
+    observeLoad: (loadMs) => warmupEmbedding.noteLoaded(loadMs),
+    // #493: Tor 5 aus #492 fragt nach einer zweiten Maschine. Gesalzener Hash,
+    // Salt bleibt lokal — kein Hostname, kein Nutzername (`host-profile.ts`).
+    hostProfileId,
     profile: latencyProfile,
   };
 
@@ -820,6 +868,10 @@ async function main(): Promise<void> {
     },
     ollama: ollama ? { baseURL: ollama.baseURL, model: ollama.model } : null,
     embIdx: () => embIdxForHealth,
+    // #493: Der Idle-Unload ist die einzige Stelle, an der wir das Modell
+    // selbst aus dem Speicher werfen — also die einzige, die Grundwahrheit
+    // darüber hat. Sie geht in denselben Lifecycle-Zustand wie Warmups.
+    onModelUnloaded: () => warmupEmbedding.noteUnloaded(),
   });
 }
 

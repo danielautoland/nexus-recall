@@ -51,7 +51,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Residency } from "./embedding-warmup.js";
+import type { EmbeddingProvider } from "@bastra-recall/core";
+import type { Residency, ResidencyReading } from "./embedding-warmup.js";
 
 /**
  * Die Untergrenze, die `http-hook-routes.ts` überhaupt durchlässt (`clampInt(…,
@@ -60,8 +61,30 @@ import type { Residency } from "./embedding-warmup.js";
  * prognostiziert er etwas, das #492 gar nicht scharf schalten könnte.
  */
 export const MIN_DEADLINE_MS = 50;
-/** Obergrenze desselben Clamps. */
+/**
+ * Obergrenze desselben Clamps — die größte Frist, die der Endpunkt annimmt.
+ *
+ * #493: Das ist eine Grenze für die ANWENDBARE FRIST und ausdrücklich keine
+ * für die Messung. Bis hierher tat sie beides: `record()` verwarf jedes Settle
+ * über 10 s, also verschwand auf genau der schwachen Hardware, für die diese
+ * ganze Kette existiert, ein echter 12-Sekunden-Kaltlauf spurlos aus dem
+ * Datensatz — und das Profil sah eine Maschine, die es nicht gibt. Die
+ * Speichergrenze steht jetzt getrennt daneben ({@link SAMPLE_MAX_MS}), und
+ * eine Prognose, die über diese Zahl hinauswollte, sagt das als
+ * `cap_reason: "max-deadline"` statt sie stillschweigend zu kappen.
+ */
 export const MAX_DEADLINE_MS = 10_000;
+
+/**
+ * Die SPEICHERGRENZE einer Stichprobe (#493).
+ *
+ * Zwei Minuten. Darüber ist kein Embed mehr langsam, sondern hängt — ein
+ * Provider, der nach zwei Minuten noch nicht geantwortet hat, beschreibt einen
+ * Ausfall und keine Latenzverteilung. Alles darunter wird aufgezeichnet, auch
+ * wenn es weit über jeder Frist liegt, die je gelten könnte: Ein 12-Sekunden-
+ * Kaltstart IST die Messung, um die es geht.
+ */
+export const SAMPLE_MAX_MS = 120_000;
 
 /**
  * Wie viele Stichproben ein Eimer hält. Das gleitende Fenster IST diese Grenze:
@@ -86,14 +109,27 @@ const SAMPLES_PER_BUCKET = 32;
 export const SAMPLE_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
 /**
- * Ab wann ein Eimer für sich allein spricht. Darunter wird über ALLE Eimer
- * desselben Profils gerechnet.
+ * Ab wann ein Eimer für sich allein spricht. Darunter wird gröber gerechnet —
+ * aber NIEMALS über die Residenzgrenze hinweg (#493).
  *
- * Ohne diese Rückfallebene wäre jeder der 48 Eimer (4 Residenzen × 4
+ * Ohne eine Rückfallebene wäre jeder der 48 Eimer (4 Residenzen × 4
  * Längenbänder × 3 Nebenläufigkeiten) einzeln kalt zu starten — 48 lexikalische
- * Antworten für eine Maschine, die längst weiß, wie schnell ihr Modell ist. Die
- * gröbere Zahl ist schlechter als die feine, aber ungleich besser als keine;
- * `basis` sagt in der Telemetrie, welche von beiden gegolten hat.
+ * Antworten für eine Maschine, die längst weiß, wie schnell ihr Modell ist.
+ *
+ * DER DEFEKT, den #493 hier behebt: Der Rückfall ging über ALLE Eimer des
+ * Profils, also auch über die Residenzgrenze. Die ersten kalten Stichproben
+ * erbten damit das warme Profil — gemessen liegen die beiden zwei
+ * Größenordnungen auseinander (33–54 ms warm gegen 585 ms nach vollständigem
+ * Unload, 08.09.2026). Eine Prognose von ~70 ms für einen kalten Arm ist
+ * SCHLECHTER als gar keine, weil sie wie eine Antwort aussieht. Der Rückfall
+ * ist deshalb hierarchisch und endet an der Residenz:
+ *
+ *   1. der genaue Eimer
+ *   2. dieselbe Residenz, dasselbe Längenband, jede Nebenläufigkeit
+ *   3. dieselbe Residenz, jedes Längenband
+ *   4. nichts — ein leerer Eimer ist ehrlicher als ein geborgter
+ *
+ * `basis` sagt in der Telemetrie, welche Ebene gegolten hat.
  */
 const MIN_BUCKET_SAMPLES = 5;
 
@@ -162,16 +198,28 @@ export function bucketKey(
  *   `floor`           — das Profil wollte weniger als die 50 ms, die der
  *                       Endpunkt zulässt.
  *   `none`            — ungedeckelt, die Zahl kommt direkt aus dem Profil.
+ *   `max-deadline`    — das Profil wollte mehr als die größte Frist, die der
+ *                       Endpunkt annimmt (10 s). Die Stichprobe dahinter ist
+ *                       aufgezeichnet und gültig; nur ANWENDEN ließe sie sich
+ *                       nicht. Genau diese beiden Dinge waren vor #493 eine
+ *                       Zahl.
  */
-export type CapReason = "profile-empty" | "lane-wall-clock" | "floor" | "none";
+export type CapReason =
+  | "profile-empty"
+  | "lane-wall-clock"
+  | "floor"
+  | "max-deadline"
+  | "none";
 
 export interface DerivedDeadline {
   /** Die Zahl, die gegolten HÄTTE. Ändert in diesem Auftrag nichts. */
   predicted_deadline_ms: number;
   cap_reason: CapReason;
-  /** Stand die Zahl auf dem genauen Eimer, auf dem ganzen Profil, oder auf
-   *  nichts? Ohne das Feld sähe eine grobe Prognose aus wie eine feine. */
-  basis: "bucket" | "profile-wide" | "empty";
+  /** Auf welcher Ebene des hierarchischen Rückfalls die Zahl steht (siehe
+   *  {@link MIN_BUCKET_SAMPLES}). Ohne das Feld sähe eine grobe Prognose aus
+   *  wie eine feine — und `profile-wide` gibt es seit #493 nicht mehr, weil es
+   *  die Residenzgrenze überschritt. */
+  basis: "bucket" | "length-wide" | "residency-wide" | "empty";
   /** Wie viele Stichproben sie trägt. */
   samples: number;
   /** Das p95 der Gesamtzeit, aus dem sie abgeleitet wurde. */
@@ -232,12 +280,21 @@ export interface LatencyProfile {
   record: (input: RecordInput) => void;
   /** Die Zahl, die gegolten hätte. Reine Rechnung, kein Nebeneffekt. */
   derive: (input: DeriveInput) => DerivedDeadline;
-  /** Ein dichter Arm wird abgefeuert. Liefert die Nebenläufigkeit inklusive
-   *  seiner selbst — genau die Zahl, unter der er später einsortiert wird. */
-  beginArm: () => number;
-  /** Der Arm ist beantwortet oder aufgegeben (nicht: gesettelt — der Aufrufer
-   *  wartet ab hier nicht mehr, und um seine Sicht geht es). */
-  endArm: () => void;
+  /**
+   * Ein PROVIDER-CALL beginnt. Gegenstück: {@link endProviderCall}.
+   *
+   * #493: Vorher zählte dieser Zähler die wartenden AUFRUFER — er fiel beim
+   * Timeout, während der Embed weiterlief, und Warmups, Backfill-Batches und
+   * der Content-Recall zählten gar nicht mit. Arm B wurde damit als
+   * „Nebenläufigkeit 1" verbucht, während Ollama noch am aufgegebenen Arm A
+   * arbeitete. Gemessen wird jetzt, was den Provider tatsächlich beschäftigt:
+   * beide Seiten sitzen am Providerrand (`index.ts`), also zählt jeder Embed
+   * und jeder wird beim ECHTEN Settle wieder freigegeben.
+   */
+  beginProviderCall: () => void;
+  endProviderCall: () => void;
+  /** Providercalls, die gerade laufen. */
+  inFlight: () => number;
   /** Erzwingt den ausstehenden Schreibvorgang. */
   flush: () => Promise<void>;
   /** Nur für Tests und `/health`: wie viele Stichproben ein Schlüssel trägt. */
@@ -382,10 +439,12 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
 
     record(input: RecordInput): void {
       if (!input.key) return;
-      // Eine negative oder absurde Dauer ist keine Messung. Die Obergrenze ist
-      // dieselbe, die `abandonAfter` als Timer überhaupt zulässt.
+      // Eine negative oder absurde Dauer ist keine Messung. #493: Die Grenze
+      // ist die SPEICHERGRENZE und nicht mehr die größte anwendbare Frist —
+      // ein echter 12-Sekunden-Kaltlauf gehört in den Datensatz, auch wenn ihn
+      // nie eine Deadline abdecken könnte.
       if (!Number.isFinite(input.totalMs) || input.totalMs < 0) return;
-      if (input.totalMs > MAX_DEADLINE_MS) return;
+      if (input.totalMs > SAMPLE_MAX_MS) return;
       const buckets = bucketsFor(input.key);
       const bk = bucketKey(input.residency, input.queryChars, input.concurrency);
       const samples = buckets.get(bk) ?? [];
@@ -400,17 +459,28 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
     derive(input: DeriveInput): DerivedDeadline {
       const bk = bucketKey(input.residency, input.queryChars, input.concurrency);
       const buckets = profiles.get(input.key);
-      const exact = fresh(buckets?.get(bk));
-      let values = exact;
+      let values = fresh(buckets?.get(bk));
       let basis: DerivedDeadline["basis"] = "bucket";
       if (values.length < MIN_BUCKET_SAMPLES && buckets) {
-        // Rückfall auf das ganze Profil (siehe MIN_BUCKET_SAMPLES): gröber,
-        // aber es gibt überhaupt eine Zahl.
-        const wide: number[] = [];
-        for (const samples of buckets.values()) wide.push(...fresh(samples));
-        if (wide.length > values.length) {
-          values = wide;
-          basis = "profile-wide";
+        // Der hierarchische Rückfall (siehe MIN_BUCKET_SAMPLES). Beide Ebenen
+        // filtern über das Präfix des Eimerschlüssels, und beide Präfixe
+        // beginnen mit der Residenz — die Grenze wird deshalb strukturell nie
+        // überschritten, nicht bloß per Konvention.
+        const lengthPrefix = `${input.residency}|${lengthBucket(input.queryChars)}|`;
+        const residencyPrefix = `${input.residency}|`;
+        for (const [prefix, level] of [
+          [lengthPrefix, "length-wide"],
+          [residencyPrefix, "residency-wide"],
+        ] as const) {
+          const wide: number[] = [];
+          for (const [key, samples] of buckets) {
+            if (key.startsWith(prefix)) wide.push(...fresh(samples));
+          }
+          if (wide.length > values.length) {
+            values = wide;
+            basis = level;
+          }
+          if (values.length >= MIN_BUCKET_SAMPLES) break;
         }
       }
       if (values.length === 0) {
@@ -435,6 +505,10 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
       const raw = Math.ceil(expected - overlap);
       let predicted = Math.min(raw, MAX_DEADLINE_MS);
       let cap: CapReason = "none";
+      // #493: Die Obergrenze sagt jetzt, dass sie gegriffen hat. Vorher war
+      // sie stumm und dieselbe Zahl warf gleichzeitig die Stichprobe weg — ein
+      // 12-Sekunden-Kaltlauf war dadurch doppelt unsichtbar.
+      if (raw > MAX_DEADLINE_MS) cap = "max-deadline";
       if (predicted < MIN_DEADLINE_MS) {
         predicted = MIN_DEADLINE_MS;
         cap = "floor";
@@ -458,13 +532,16 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
       };
     },
 
-    beginArm(): number {
+    beginProviderCall(): void {
       inFlight++;
-      return inFlight;
     },
 
-    endArm(): void {
+    endProviderCall(): void {
       if (inFlight > 0) inFlight--;
+    },
+
+    inFlight(): number {
+      return inFlight;
     },
 
     async flush(): Promise<void> {
@@ -495,7 +572,51 @@ export interface DeadlineShadow {
   /** `provider:model` des aktiven Providers, `null` ohne dichten Arm. */
   key: () => string | null;
   /** Die Residenz — aus dem Warmup-Koordinator (#490), nicht aus einer zweiten
-   *  Quelle. */
-  residency: () => Residency;
+   *  Quelle. #493: mit ihrer Herkunft, damit die Auswertung Grundwahrheit von
+   *  Schätzung trennen kann. */
+  residency: () => ResidencyReading;
+  /** #493: Der Provider hat für diesen Call ein Modell geladen. Geht an den
+   *  Warmup-Koordinator, der den gemeinsamen Lifecycle-Zustand hält — die
+   *  Route kennt ihn nicht und soll ihn nicht kennen müssen. */
+  observeLoad: (loadMs: number | null) => void;
+  /** #493: die Kennung dieses Hosts, für Tor 5 aus #492. */
+  hostProfileId: () => string;
   profile: LatencyProfile;
+}
+
+/**
+ * #493: Der Providerrand, an dem die Nebenläufigkeit gezählt wird.
+ *
+ * Hier und nicht im Recall-Pfad, weil hier ALLES durchkommt, was den Provider
+ * beschäftigt: der dichte Arm einer Lane, der Content-Recall, die
+ * Backfill-Batches und der Warmup. Und weil erst hier das ECHTE Settle liegt —
+ * ein Aufrufer, der seinen Arm aufgibt, beendet die Arbeit des Providers
+ * nicht (`abandonAfter` bricht nicht ab).
+ *
+ * Der Wrapper liegt INNERHALB des Breakers (`index.ts`): Ein Call, den der
+ * Breaker gar nicht erst durchlässt, beschäftigt den Provider nicht.
+ */
+export function countingProvider(
+  inner: EmbeddingProvider,
+  profile: LatencyProfile,
+): EmbeddingProvider {
+  const count = async <T>(texts: string[], run: () => Promise<T>): Promise<T> => {
+    // Ein leerer Batch geht ohne Providerkontakt zurück (siehe
+    // `BreakerGuardedProvider`) — er ist keine Providerarbeit.
+    if (texts.length === 0) return run();
+    profile.beginProviderCall();
+    try {
+      return await run();
+    } finally {
+      profile.endProviderCall();
+    }
+  };
+  return {
+    id: inner.id,
+    dim: inner.dim,
+    embed: (texts) => count(texts, () => inner.embed(texts)),
+    ...(inner.embedWithMeta
+      ? { embedWithMeta: (texts: string[]) => count(texts, () => inner.embedWithMeta!(texts)) }
+      : {}),
+  };
 }

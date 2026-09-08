@@ -957,18 +957,16 @@ export class SearchIndex {
     // — measured on a real 514-memory vault: 95.3% of scoped queries lost
     // in-scope candidates, and the smallest scopes lost a third of theirs.
     const filtered = opts.scope != null || opts.type != null || !opts.allow_private;
-    // #365/4: `EmbeddingIndex.search()` fängt JEDEN Provider-Fehler ab und
-    // returnt `[]` — byte-identisch zu „dieser Vault hat keine Vektoren".
-    // Diskriminiert wird über `runtimeHealth().errorCount`, der ausschließlich
-    // in `markProviderError()` hochzählt. NICHT über `lastErrorAt`: der hat
-    // ms-Auflösung, und zwei Fehler in derselben Millisekunde (zwei Lanes an
-    // demselben toten Ollama) sind darüber nicht trennbar — der zweite Leser
-    // sähe seinen eigenen Fehler als „stand schon vorher da" und würde die
-    // einarmige Antwort cachen. Zwei Property-Reads um den ohnehin
-    // vorhandenen await — kein zusätzlicher Call, kein I/O.
-    const errBefore = this.embeddings.runtimeHealth().errorCount;
+    // #365/4 hat den Provider-Fehler über `runtimeHealth().errorCount` um den
+    // `await` herum erschlossen, weil `EmbeddingIndex.search()` jeden Fehler
+    // abfing und `[]` zurückgab — byte-identisch zu „dieser Vault hat keine
+    // Vektoren". #493 hat den Ausgang STRUKTURIERT gemacht (`searchDetailed`),
+    // also steht er jetzt direkt am Ergebnis statt aus einem Zählerdelta
+    // erschlossen zu werden. Das war nicht nur unschön: `abandonAfter` sah in
+    // der aufgelösten Fehler-Promise ein `settled: true`, und das Latenzprofil
+    // (#491) lernte die Dauer des Fehlers als gültige Stichprobe.
     const tVec = stage.start("vector.search");
-    const vectorArm = this.embeddings.search(query, filtered ? 1000 : 100);
+    const vectorArm = this.embeddings.searchDetailed(query, filtered ? 1000 : 100);
 
     // #305: EIN Durchlauf des Event Loops, bevor der lexikalische Arm ihn
     // synchron belegt.
@@ -1053,16 +1051,24 @@ export class SearchIndex {
       vectorArm,
       opts.vector_deadline_ms ?? 0,
       opts.onVectorLateSettle,
+      // #493: Der späte Arm meldet sein ERGEBNIS mit, nicht nur seine Laufzeit
+      // — ohne das kann Kriterium 4 aus #492 die kontrafaktische Fusionsrate
+      // nicht rechnen (ein Arm, der spät mit `empty` settelt, hätte auch mit
+      // längerer Frist nichts fusioniert).
+      (r) => ({
+        outcome: r.outcome,
+        hit_count: r.hits.length,
+        provider_load_ms: r.providerLoadMs,
+        cold_start_observed: r.coldStartObserved,
+      }),
     );
     const vectorWaitMs = Date.now() - tVecWait;
     const vectorArmTimedOut = vecOrTimeout === null;
-    const errAfter = this.embeddings.runtimeHealth().errorCount;
-    // Ein gewachsener Zähler heißt: über diesem await ist mindestens ein
-    // Provider-Call gescheitert. Beim Timeout ist der Arm noch in-flight, der
-    // Fehler gehört dann nicht zu diesem Ergebnis — `vectorArmTimedOut` hat
-    // deshalb Vorrang.
-    const vectorArmErrored = !vectorArmTimedOut && errAfter > errBefore;
-    const vec = vecOrTimeout ?? [];
+    // #493: der Ausgang, wie der Provider ihn berichtet — nicht mehr aus einem
+    // Fehlerzähler-Delta erschlossen. Beim Timeout ist der Arm noch in Flug und
+    // hat noch gar keinen Ausgang; die späte Stichprobe trägt ihn nach.
+    const vectorArmErrored = vecOrTimeout?.outcome === "error";
+    const vec = vecOrTimeout?.hits ?? [];
     const vectorTop = vec
       .map((h) => ({ hit: h, mem: this.vault.get(h.id) }))
       .filter(({ mem }) => {
@@ -1095,6 +1101,19 @@ export class SearchIndex {
       // Ohne dieses Bit ist eine Wartezeit auf der Deadline nicht von einem Arm
       // zu unterscheiden, der zufällig genau dort fertig wurde.
       timed_out: vectorArmTimedOut,
+      // #493: der strukturierte Ausgang, für den Schatten in
+      // `http-hook-routes.ts`. `provider_hit_count` sind die ROHEN Treffer des
+      // Providers vor dem Vault-Filter — `vector_hit_count` darüber bleibt die
+      // gefilterte Zahl, die diese Stage seit jeher meldet, damit keine
+      // laufende Auswertung ihre Bedeutung wechselt.
+      ...(vecOrTimeout
+        ? {
+            provider_outcome: vecOrTimeout.outcome,
+            provider_hit_count: vecOrTimeout.hits.length,
+            provider_load_ms: vecOrTimeout.providerLoadMs,
+            cold_start_observed: vecOrTimeout.coldStartObserved,
+          }
+        : {}),
     });
 
     // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF

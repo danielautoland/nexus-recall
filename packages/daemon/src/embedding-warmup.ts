@@ -59,6 +59,13 @@
  * Hardcoded, not an env switch, for the reason given at
  * `SESSION_VECTOR_DEADLINE_MS` (session-lane.ts): an inherited service config
  * could silently turn the decision off and no telemetry line would say so.
+ *
+ * #493: Das Fenster ist seither die LETZTE Instanz, nicht die einzige. Ein
+ * beobachteter Unload (`noteUnloaded`) und ein beobachteter Ladevorgang
+ * (`noteLoaded`) schlagen es, weil sie Messungen sind und es eine Schätzung
+ * ist — der Idle-Unload ist konfigurierbar (`BASTRA_OLLAMA_IDLE_UNLOAD_MS`)
+ * und `keep_alive` auch, also konnte diese Zahl beiden widersprechen. Wo das
+ * Fenster trotzdem entscheidet, sagt `ResidencyReading.estimated` es.
  */
 export const RESIDENT_WINDOW_MS = 8 * 60_000;
 
@@ -72,6 +79,46 @@ export const RESIDENT_WINDOW_MS = 8 * 60_000;
  */
 export type Residency = "warm" | "cold" | "unknown" | "hosted";
 
+/**
+ * WOHER die Residenzantwort stammt (#493).
+ *
+ * Der Befund, der dieses Feld erzwingt: Tor 3 aus #492 zählt „20 echte
+ * Kaltstarts" und stützte sich dafür auf ein Feld, das eine SCHÄTZUNG war und
+ * dazu noch eine falsche. Ein erfolgreicher Warmup ging am Provider vorbei
+ * (`guardedProvider.embed(["warm"])` statt über den Index), also aktualisierte
+ * er `lastOkAt` gar nicht — ein frisch gewärmtes Modell las `unknown`. Und
+ * umgekehrt las ein extern entladenes Modell minutenlang `warm`, weil das
+ * 8-Minuten-Fenster von keinem Unload etwas wusste.
+ *
+ * Jetzt schreiben Warmups und Unloads in DENSELBEN Zustand, und die Quelle
+ * steht in der Telemetrie:
+ *
+ *   `unload-observed` — GRUNDWAHRHEIT. Wir haben das Modell selbst entladen.
+ *   `provider-load`   — GRUNDWAHRHEIT. Der Provider hat für einen Call ein
+ *                       Modell geladen (Ollama `load_duration`).
+ *   `warm-up`         — ein Warmup dieses Prozesses ist erfolgreich gelaufen.
+ *   `last-ok`         — geschätzt, aus dem Alter des letzten erfolgreichen
+ *                       Provider-Calls gegen {@link RESIDENT_WINDOW_MS}.
+ *   `hosted`          — es gibt kein Modell von uns, das kalt werden könnte.
+ *   `none`            — noch keinerlei Beleg (`unknown`).
+ */
+export type ResidencySource =
+  | "unload-observed"
+  | "provider-load"
+  | "warm-up"
+  | "last-ok"
+  | "hosted"
+  | "none";
+
+/** Residenz plus die Frage, ob sie gemessen oder geschätzt ist. */
+export interface ResidencyReading {
+  state: Residency;
+  source: ResidencySource;
+  /** `true` = aus dem 8-Minuten-Fenster erschlossen, nicht beobachtet. Tor 3
+   *  aus #492 darf auf geschätzten Zeilen nicht zählen. */
+  estimated: boolean;
+}
+
 /** What `ensureWarm()` decided. */
 export type WarmupOutcome =
   | "fired"
@@ -83,6 +130,24 @@ export type WarmupOutcome =
 export interface WarmupCoordinator {
   /** Free residency answer for a caller about to spend a deadline on it. */
   residency: () => Residency;
+  /** #493: dieselbe Antwort mit ihrer Herkunft — für die Telemetrie, die
+   *  Grundwahrheit von Schätzung trennen muss. */
+  residencyDetail: () => ResidencyReading;
+  /**
+   * #493: Das Modell ist JETZT geladen — Grundwahrheit, kein Zeitfenster.
+   *
+   * Zwei Melder: der erfolgreiche Warmup dieses Prozesses (der sonst spurlos
+   * bliebe, weil er am Index vorbeigeht) und ein Provider, der für seinen Call
+   * eine Ladezeit berichtet hat (Ollama `load_duration`). `loadMs` ist genau
+   * diese Angabe, `null` wenn es keine gibt.
+   */
+  noteLoaded: (loadMs?: number | null) => void;
+  /**
+   * #493: Das Modell hat den Speicher verlassen — Grundwahrheit. Gemeldet vom
+   * Idle-Unload (`daemon-jobs.ts`), dessen Frist konfigurierbar ist und dem
+   * 8-Minuten-Fenster deshalb widersprechen konnte.
+   */
+  noteUnloaded: () => void;
   /** Start a warm-up unless one is running, the model is warm, or there is
    *  nothing to warm. Never awaited, never throws. */
   ensureWarm: () => WarmupOutcome;
@@ -124,12 +189,51 @@ export interface WarmupOptions {
 export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
   const now = opts.now ?? Date.now;
   let inFlight = false;
+  // #493: DER gemeinsame Lifecycle-Zustand. Vorher gab es ihn nicht — es gab
+  // eine Ableitung aus `lastOkAt`, die den Warmup nicht sah und den Unload
+  // nicht sah. Beide Zeitstempel sind Beobachtungen, keine Schätzungen; die
+  // jüngere gewinnt.
+  let loadedAt: number | null = null;
+  let loadedSource: "warm-up" | "provider-load" | null = null;
+  let unloadedAt: number | null = null;
 
-  const residency = (): Residency => {
-    if (opts.hostedProvider?.() === true) return "hosted";
-    const last = opts.lastOkAt();
-    if (last === null) return "unknown";
-    return now() - last < RESIDENT_WINDOW_MS ? "warm" : "cold";
+  const residencyDetail = (): ResidencyReading => {
+    if (opts.hostedProvider?.() === true) {
+      return { state: "hosted", source: "hosted", estimated: false };
+    }
+    const lastOk = opts.lastOkAt();
+    // Der jüngste Beleg dafür, dass das Modell im Speicher IST.
+    const lastResident = Math.max(loadedAt ?? -1, lastOk ?? -1);
+    if (unloadedAt !== null && unloadedAt >= lastResident) {
+      // Wir haben selbst entladen und seither nichts Gegenteiliges gesehen.
+      return { state: "cold", source: "unload-observed", estimated: false };
+    }
+    if (lastResident < 0) return { state: "unknown", source: "none", estimated: false };
+    // Auch ein beobachteter Ladevorgang altert: „vor 20 Minuten geladen"
+    // belegt nicht, dass es jetzt noch da ist. Jenseits des Fensters steht die
+    // Antwort deshalb immer auf der Schätzung, nie auf der alten Beobachtung.
+    if (now() - lastResident >= RESIDENT_WINDOW_MS) {
+      return { state: "cold", source: "last-ok", estimated: true };
+    }
+    const observed = loadedSource !== null && loadedAt !== null && loadedAt >= (lastOk ?? -1);
+    return {
+      state: "warm",
+      source: observed ? loadedSource! : "last-ok",
+      estimated: !observed,
+    };
+  };
+
+  const residency = (): Residency => residencyDetail().state;
+
+  const noteLoaded = (loadMs?: number | null): void => {
+    loadedAt = now();
+    // Ein Provider, der eine Ladezeit gemeldet hat, ist die stärkere Aussage:
+    // Er hat GERADE geladen. Ein Warmup sagt nur „ein Embed ist durchgelaufen".
+    loadedSource = typeof loadMs === "number" ? "provider-load" : "warm-up";
+  };
+
+  const noteUnloaded = (): void => {
+    unloadedAt = now();
   };
 
   const ensureWarm = (): WarmupOutcome => {
@@ -147,10 +251,19 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
       inFlight = false;
     };
     try {
-      void Promise.resolve(opts.warm()).then(done, (err) => {
-        done();
-        opts.onError?.(err);
-      });
+      void Promise.resolve(opts.warm()).then(
+        () => {
+          done();
+          // #493: Der erfolgreiche Warmup schreibt in den gemeinsamen Zustand.
+          // Bis hierher tat er das NICHT: Er geht am Index vorbei, also blieb
+          // `lastOkAt` unberührt und ein frisch gewärmtes Modell las `unknown`.
+          noteLoaded(null);
+        },
+        (err) => {
+          done();
+          opts.onError?.(err);
+        },
+      );
     } catch (err) {
       // A `warm` that throws synchronously (misconfigured provider URL) must
       // not leave the coordinator wedged as permanently in-flight.
@@ -162,6 +275,9 @@ export function createEmbeddingWarmup(opts: WarmupOptions): WarmupCoordinator {
 
   return {
     residency,
+    residencyDetail,
+    noteLoaded,
+    noteUnloaded,
     ensureWarm,
     onSessionContact: () => {
       const state = residency();

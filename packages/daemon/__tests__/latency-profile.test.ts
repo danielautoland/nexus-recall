@@ -34,8 +34,10 @@ import { Telemetry } from "../src/telemetry.js";
 import { startHttpServer } from "../src/http.js";
 import {
   createLatencyProfile,
+  MAX_DEADLINE_MS,
   MIN_DEADLINE_MS,
   SAMPLE_MAX_AGE_MS,
+  SAMPLE_MAX_MS,
   type DeadlineShadow,
 } from "../src/latency-profile.js";
 
@@ -208,7 +210,7 @@ test("#491: ein leeres Profil antwortet GENAU EINMAL lexikalisch — der aufgege
   assert.equal(zweite.predicted_deadline_ms, 585, "und es ist die, die der Kaltstart bezahlt hat");
 });
 
-test("#491: ein noch dünner Eimer fällt auf das ganze Profil zurück, statt 48-mal kalt zu starten", async (t) => {
+test("#491/#493: ein dünner Eimer fällt gröber zurück — aber nur INNERHALB seiner Residenz", async (t) => {
   const path = await profilPfad(t);
   const profil = createLatencyProfile({ path, now: uhr().now });
   for (let i = 0; i < 20; i++) profil.record(stichprobe(100));
@@ -216,9 +218,66 @@ test("#491: ein noch dünner Eimer fällt auf das ganze Profil zurück, statt 48
   // Dieselbe Maschine, dieselbe Residenz — nur eine lange Query, wie sie die
   // Prompt-Lane schickt (p50 3671 Zeichen). Dieser Eimer ist leer.
   const langeQuery = profil.derive({ ...ableitung(), queryChars: 3671 });
-  assert.equal(langeQuery.basis, "profile-wide", "gröber, aber es gibt überhaupt eine Zahl");
+  assert.equal(langeQuery.basis, "residency-wide", "gröber, aber es gibt überhaupt eine Zahl");
   assert.equal(langeQuery.samples, 20);
   assert.equal(langeQuery.bucket, "warm|m|1", "und der Eimer, in dem der Aufruf lag, steht trotzdem da");
+});
+
+test("#493: ein KALTER Eimer borgt nicht vom warmen — ein leerer Eimer ist ehrlicher als ein geborgter", async (t) => {
+  const path = await profilPfad(t);
+  const profil = createLatencyProfile({ path, now: uhr().now });
+  // Ein volles warmes Profil über alle drei Dimensionen, wie es nach ein paar
+  // Stunden Betrieb aussieht: 33-54 ms, gemessen 08.09.2026.
+  for (const chars of [40, 512, 2000, 5000]) {
+    for (const nebenlaeufig of [1, 2, 5]) {
+      for (let i = 0; i < 10; i++) {
+        profil.record({ ...stichprobe(70), queryChars: chars, concurrency: nebenlaeufig });
+      }
+    }
+  }
+  assert.ok(profil.sampleCount(KEY) >= 100);
+
+  // Der erste kalte Arm dieser Maschine. Vor #493 erbte er das warme
+  // ~70-ms-Profil und sah damit aus wie eine Antwort — bei einem gemessenen
+  // Kaltstart von 585 ms.
+  const kalt = profil.derive({ ...ableitung(), residency: "cold" });
+  assert.equal(kalt.basis, "empty", "nichts geborgt");
+  assert.equal(kalt.cap_reason, "profile-empty");
+  assert.equal(kalt.samples, 0);
+  assert.equal(kalt.expected_total_ms, null);
+
+  // Und `unknown` ist eine eigene Residenz, also ebenfalls kein Erbe.
+  assert.equal(profil.derive({ ...ableitung(), residency: "unknown" }).basis, "empty");
+
+  // Sobald es kalte Stichproben gibt, spricht der kalte Eimer für sich — und
+  // zwar mit SEINEN Zahlen, nicht mit den warmen.
+  for (let i = 0; i < 6; i++) profil.record({ ...stichprobe(585), residency: "cold" });
+  const jetzt = profil.derive({ ...ableitung(), residency: "cold" });
+  assert.equal(jetzt.basis, "bucket");
+  assert.equal(jetzt.predicted_deadline_ms, 585);
+});
+
+test("#493: die Verwurfsgrenze ist keine Latenzobergrenze mehr — ein 12-Sekunden-Settle bleibt erhalten", async (t) => {
+  const path = await profilPfad(t);
+  const profil = createLatencyProfile({ path, now: uhr().now });
+  // Genau der Fall aus #493: schwache Hardware, echter Kaltlauf über 10 s. Er
+  // wurde vorher verworfen, weil dieselbe Zahl Speichergrenze UND größte
+  // anwendbare Frist war.
+  for (let i = 0; i < 6; i++) profil.record({ ...stichprobe(12_000), residency: "cold" });
+  assert.equal(profil.sampleCount(KEY), 6, "die Messung ist im Datensatz");
+
+  const abgeleitet = profil.derive({ ...ableitung(), residency: "cold" });
+  assert.equal(abgeleitet.expected_total_ms, 12_000, "und das Profil kennt sie");
+  assert.equal(
+    abgeleitet.predicted_deadline_ms,
+    MAX_DEADLINE_MS,
+    "anwenden lässt sie sich nicht — der Endpunkt nimmt höchstens 10 s",
+  );
+  assert.equal(abgeleitet.cap_reason, "max-deadline", "und die Zeile sagt, dass gedeckelt wurde");
+
+  // Ein hängender Provider ist weiterhin keine Messung.
+  profil.record({ ...stichprobe(SAMPLE_MAX_MS + 1), residency: "cold" });
+  assert.equal(profil.sampleCount(KEY), 6);
 });
 
 // ── 5. Die Alterung ────────────────────────────────────────────
@@ -326,8 +385,21 @@ function spaeterArm() {
   return {
     size: () => 1,
     runtimeHealth: () => ({ errorCount: 0 }),
-    search: () =>
-      new Promise((resolve) => setTimeout(() => resolve([{ id: "a", score: 0.9 }]), ANTWORT_NACH_MS)),
+    // #493: der strukturierte Ausgang — nur ein Arm mit echten Treffern ist
+    // eine Latenzstichprobe.
+    searchDetailed: () =>
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              outcome: "hits",
+              hits: [{ id: "a", score: 0.9 }],
+              providerLoadMs: null,
+              coldStartObserved: false,
+            }),
+          ANTWORT_NACH_MS,
+        ),
+      ),
   } as never;
 }
 
@@ -351,7 +423,9 @@ test("#491: die Schattenspalte kommt in der Telemetrie an — Prognose, Wirklich
   const deadlineShadow: DeadlineShadow = {
     key: () => KEY,
     // Der Fall, um den sich der ganze Entwurf dreht (#490/#492 Kriterium 3).
-    residency: () => "cold",
+    residency: () => ({ state: "cold", source: "unload-observed", estimated: false }),
+    observeLoad: () => {},
+    hostProfileId: () => "testhost00000000",
     profile: profil,
   };
   const handle = await startHttpServer({
