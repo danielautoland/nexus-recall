@@ -36,7 +36,7 @@ import {
 import * as path from "node:path";
 import { logDirFor } from "./telemetry.js";
 import { createDaemonTelemetry } from "./telemetry-setup.js";
-import { assertCallNotCorrupted } from "./call-corruption.js";
+import { recoverCallArguments } from "./call-corruption.js";
 import { TOOL_ARG_EXPECTATIONS } from "./tool-defs.js";
 import { mayExitOnBusyPort, probeDaemonPort, startHttpServer } from "./http.js";
 import { loadCuratorState } from "./curator.js";
@@ -534,12 +534,14 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     markActivity();
-    const { name, arguments: args } = req.params;
+    const { name, arguments: rawArgs } = req.params;
 
     // #482: same check as the REST boundary — the standalone stdio surface is
     // the other place tool arguments arrive, and the client bug does not care
     // which transport it corrupts.
-    assertCallNotCorrupted(name, args, TOOL_ARG_EXPECTATIONS);
+    const args = recoverCallArguments(name, rawArgs, TOOL_ARG_EXPECTATIONS) as
+      | Record<string, unknown>
+      | undefined;
 
     if (name === "recall") {
       try {

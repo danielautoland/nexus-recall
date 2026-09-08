@@ -17,6 +17,8 @@ import {
   assertCallNotCorrupted,
   callCorruptionMessage,
   detectCallCorruption,
+  recoverCallArguments,
+  repairCallCorruption,
   requiredFieldsOf,
 } from "../src/call-corruption.js";
 import { TOOL_ARG_EXPECTATIONS } from "../src/tool-defs.js";
@@ -134,4 +136,102 @@ test("requiredFieldsOf survives a definition without a schema", () => {
   assert.deepEqual(requiredFieldsOf(undefined), []);
   assert.deepEqual(requiredFieldsOf({ inputSchema: {} }), []);
   assert.deepEqual(requiredFieldsOf({ inputSchema: { required: ["a", 2, "b"] } }), ["a", "b"]);
+});
+
+/**
+ * 08.09.2026 — the case that cost a save. Only `body` was swallowed; every
+ * other required field arrived as proper JSON, so the `>= 2` rule never fired
+ * and Zod answered with one anonymous "received undefined". The model retried
+ * three times, hit the failure cap and reported the loss to the user.
+ *
+ * The shape below is the real one from that call: the summary ends, its own
+ * closing tag follows, then the client's `<parameter name="body">` opener with
+ * the full body behind it — and no closing tag at all.
+ */
+const SWALLOWED_BODY = {
+  title: "Daniels Bewerbungs-Engpass",
+  type: "user-preference",
+  scope: "user-preference",
+  summary:
+    "Befund aus 43 geprüften Firmen: KEINE verlangt ein Studium.</summary>\n" +
+    '<parameter name="body">Breite Arbeitgeberrecherche am 08.09.2026.\n\n' +
+    "**Der zentrale Befund:** Kein Kandidat verlangte ein Studium.",
+  topic_path: ["user-preference", "bewerbung"],
+  tags: ["bewerbung"],
+  recall_when: ["Bewerbung vorbereiten"],
+};
+
+const SAVE_REQUIRED = TOOL_ARG_EXPECTATIONS.get("save_memory")!.required;
+
+test("a single swallowed field is detected when it arrives in the explicit wrapper", () => {
+  const corruption = detectCallCorruption(SWALLOWED_BODY, SAVE_REQUIRED);
+  assert.deepEqual(corruption?.swallowed, ["body"]);
+  assert.deepEqual(corruption?.missing, ["body"]);
+  assert.equal(corruption?.container, "summary");
+});
+
+test("and the swallowed body is recovered whole, with the summary trimmed back", () => {
+  const corruption = detectCallCorruption(SWALLOWED_BODY, SAVE_REQUIRED)!;
+  const repaired = repairCallCorruption(SWALLOWED_BODY, corruption)!;
+  assert.equal(repaired.summary, "Befund aus 43 geprüften Firmen: KEINE verlangt ein Studium.");
+  assert.equal(
+    repaired.body,
+    "Breite Arbeitgeberrecherche am 08.09.2026.\n\n**Der zentrale Befund:** Kein Kandidat verlangte ein Studium.",
+  );
+  // Fields that arrived correctly are untouched.
+  assert.deepEqual(repaired.tags, ["bewerbung"]);
+  assert.deepEqual(repaired.topic_path, ["user-preference", "bewerbung"]);
+});
+
+test("the boundary hands the repaired arguments on instead of throwing", () => {
+  const seen: string[] = [];
+  const out = recoverCallArguments("save_memory", SWALLOWED_BODY, TOOL_ARG_EXPECTATIONS, (tool, c) =>
+    seen.push(`${tool}:${c.swallowed.join(",")}`),
+  ) as Record<string, unknown>;
+  assert.equal(typeof out.body, "string");
+  assert.deepEqual(seen, ["save_memory:body"], "a repair is reported, never silent");
+});
+
+test("several swallowed fields are split at the block boundaries, lists stay lists", () => {
+  const args = {
+    title: "T",
+    type: "lesson",
+    scope: "s",
+    summary:
+      'S.</summary>\n<parameter name="body">B1\nB2</parameter>\n' +
+      '<parameter name="tags">["a","b"]</parameter>\n' +
+      '<parameter name="topic_path">["x"]</parameter>\n' +
+      '<parameter name="recall_when">["wenn X"]</parameter>',
+  };
+  const corruption = detectCallCorruption(args, SAVE_REQUIRED)!;
+  const repaired = repairCallCorruption(args, corruption)!;
+  assert.equal(repaired.summary, "S.");
+  assert.equal(repaired.body, "B1\nB2");
+  assert.deepEqual(repaired.tags, ["a", "b"]);
+  assert.deepEqual(repaired.topic_path, ["x"]);
+  assert.deepEqual(repaired.recall_when, ["wenn X"]);
+});
+
+test("a half-repair is no repair — the honest diagnosis still wins", () => {
+  // The opener is there, the content behind it is not: nothing to recover.
+  const args = {
+    title: "T",
+    type: "lesson",
+    scope: "s",
+    summary: 'S.</summary>\n<parameter name="body">',
+    topic_path: ["x"],
+    tags: ["a"],
+    recall_when: ["w"],
+  };
+  const corruption = detectCallCorruption(args, SAVE_REQUIRED)!;
+  assert.equal(repairCallCorruption(args, corruption), null, "an empty body is not a recovery");
+  assert.throws(
+    () => recoverCallArguments("save_memory", args, TOOL_ARG_EXPECTATIONS, () => undefined),
+    /NOTHING WAS SAVED/,
+  );
+});
+
+test("a clean call passes through the boundary unchanged", () => {
+  const clean = { query: "was ist der stand", k: 3 };
+  assert.equal(recoverCallArguments("recall", clean, TOOL_ARG_EXPECTATIONS, () => undefined), clean);
 });
