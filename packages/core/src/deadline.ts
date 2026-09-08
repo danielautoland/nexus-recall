@@ -31,9 +31,36 @@
  */
 const MAX_DEADLINE_MS = 10_000;
 
-export async function abandonAfter<T>(p: Promise<T>, deadlineMs: number): Promise<T | null> {
+/**
+ * Die SPÄTE Stichprobe eines aufgegebenen Arms (#489).
+ *
+ * `settle_ms` misst ab dem Eintritt in `abandonAfter` — also ab dem echten
+ * Warten des Aufrufers, derselbe Nullpunkt wie die Wartezeit, die er bezahlt
+ * hat. Nur so sind die beiden Zahlen vergleichbar: „er wartete 150 ms, fertig
+ * war der Arm nach 420 ms".
+ *
+ * Diese Zahl hat NIEMAND bezahlt. Sie trifft ein, nachdem der Aufruf längst
+ * beantwortet ist, und darf deshalb nie in eine Wartezeit-Verteilung
+ * einfließen — deshalb ein eigener Kanal statt eines nachträglich geänderten
+ * Messwerts.
+ */
+export interface LateSettleSample {
+  /** Dauer bis zum echten Settle, ab dem `await` in `abandonAfter`. */
+  settle_ms: number;
+  /** `true` = der Arm lieferte am Ende doch ein Ergebnis, `false` = er
+   *  scheiterte. Ein Fehler nach dem Aufgeben ist kein Latenzwert — ein Leser
+   *  muss ihn aussortieren können. */
+  settled: boolean;
+}
+
+export async function abandonAfter<T>(
+  p: Promise<T>,
+  deadlineMs: number,
+  onLateSettle?: (sample: LateSettleSample) => void,
+): Promise<T | null> {
   if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) return p;
   const clampedMs = Math.min(deadlineMs, MAX_DEADLINE_MS);
+  const startedAt = Date.now();
 
   // The loser of this race is still live. Without this handler, a later
   // rejection on an abandoned arm would surface as an unhandled rejection —
@@ -50,7 +77,37 @@ export async function abandonAfter<T>(p: Promise<T>, deadlineMs: number): Promis
   });
 
   try {
-    return await Promise.race([p, expiry]);
+    const winner = await Promise.race([p, expiry]);
+    // #489: Nur der aufgegebene Arm hat eine späte Stichprobe. Bis hierher ist
+    // `vector.search` die einzige Zahl des dichten Arms gewesen — und beim
+    // Timeout stand dort die Deadline, nicht das Settle. Eine Verteilung aus
+    // solchen Werten lernt die Grenze, die schon gilt.
+    //
+    // Die Fortsetzung hängt an der WEITERLAUFENDEN Promise (siehe oben: wir
+    // brechen bewusst nicht ab). Sie hält den Prozess nicht offen — eine
+    // Fortsetzung an einer Promise ist kein Handle; offen hält ihn allein die
+    // Arbeit dahinter, die ohnehin schon lief. Ein neuer Timer entsteht hier
+    // NICHT; der einzige der Funktion wird im `finally` gelöscht.
+    //
+    // Zwei getrennte Handler statt `finally`: Der Fehlerfall muss als solcher
+    // gemeldet werden. Der `p.catch()` oben schluckt die Ablehnung weiterhin,
+    // diese Kette fügt keine unbehandelte hinzu — und ein werfender Listener
+    // wird hier abgefangen, sonst würde genau er die unbehandelte Ablehnung
+    // erzeugen, die der Handler oben verhindern soll.
+    if (winner === null && onLateSettle) {
+      const report = (settled: boolean): void => {
+        try {
+          onLateSettle({ settle_ms: Date.now() - startedAt, settled });
+        } catch {
+          /* Telemetrie darf einen aufgegebenen Arm nie zum Absturz bringen */
+        }
+      };
+      p.then(
+        () => report(true),
+        () => report(false),
+      );
+    }
+    return winner;
   } finally {
     if (timer) clearTimeout(timer);
   }

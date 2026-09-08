@@ -5,6 +5,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+  LateSettleSample,
   Vault,
   SearchIndex,
   RecallStage,
@@ -257,6 +258,14 @@ export async function runHookRecall(
           stageTimings.cache_hit = true;
           return;
         }
+        // #489: Die Wartezeit reitet auf der vector-Stage mit — `durationMs`
+        // bleibt die alte, überlappende Spanne, `wait_ms` ist das, was der
+        // Aufrufer wirklich gewartet hat. Beide Zahlen nebeneinander sind der
+        // ganze Punkt: Ohne sie las die Prompt-Lane 82,6 % gerissene Deadlines,
+        // wo 14 von 323 Aufrufen ihre Frist rissen.
+        if (s.name === "vector.search" && typeof s.meta?.wait_ms === "number") {
+          stageTimings.vector_wait_ms = s.meta.wait_ms;
+        }
         if (s.durationMs === undefined) return;
         switch (s.name) {
           case "query.parse": stageTimings.query_parse_ms = s.durationMs; break;
@@ -320,6 +329,22 @@ export async function runHookRecall(
       // beschreibt, der tatsächlich serviert wird (siehe recallHandler).
       const embeddingDegradedAtRecall =
         search.hasEmbeddings() && (embeddingDegraded?.() ?? false);
+      // #489: Das echte Ende eines aufgegebenen Arms. Feuert erst, wenn der
+      // weiterlaufende Embed fertig ist — da ist die Antwort längst raus und
+      // das `hook_recall`-Event geschrieben, deshalb eine eigene Zeile mit
+      // derselben `recall_id`. Ohne sie steht beim Timeout nur die Deadline in
+      // der Telemetrie, und ein Lerner (#491) lernt aus lauter Deadlines die
+      // Deadline, die schon gilt.
+      //
+      // Gepuffert, weil die `recall_id` erst NACH dem Recall gezogen wird
+      // (`telemetry.newRecallId()` unten) — ein Arm, der eine Millisekunde nach
+      // seiner Frist fertig wird, käme sonst vor ihr an. Der Puffer ist genau
+      // ein Sample: pro Recall gibt es einen dichten Arm.
+      let lateSettleSeen: LateSettleSample | null = null;
+      let emitLateSettle = (sample: LateSettleSample): void => {
+        lateSettleSeen = sample;
+      };
+      const onVectorLateSettle = (sample: LateSettleSample): void => emitLateSettle(sample);
       let hits = search.hasEmbeddings()
         ? await search.recallHybrid(expansion.query, {
             authored_query: query,
@@ -330,6 +355,7 @@ export async function runHookRecall(
             onStage,
             onCandidatePool: onQueryCandidatePool,
             vector_deadline_ms: vectorDeadlineMs,
+            onVectorLateSettle,
           })
         : search.recall(expansion.query, {
             authored_query: query,
@@ -478,6 +504,24 @@ export async function runHookRecall(
       const usageSuppressedTokensEst = usageSuppression.suppressed.reduce((n, s) => n + s.tokens_est, 0);
       const recallId = telemetry.newRecallId();
       telemetry.recordHookHints(recallId, hits);
+      // #489: Ab hier ist die `recall_id` bekannt — die späte Stichprobe kann
+      // geschrieben werden. Ein Sample, das schon eingetroffen ist, wird
+      // nachgeholt.
+      emitLateSettle = (sample: LateSettleSample): void => {
+        fireAndForget(
+          telemetry.logVectorLateSettle({
+            recall_id: recallId,
+            deadline_ms: vectorDeadlineMs,
+            wait_ms: stageTimings.vector_wait_ms ?? 0,
+            settle_ms: sample.settle_ms,
+            settled: sample.settled,
+            ...(hookSessionId ? { session_id: hookSessionId } : {}),
+            client: body.client,
+            hook_source: body.hook_source,
+          }),
+        );
+      };
+      if (lateSettleSeen) emitLateSettle(lateSettleSeen);
 
       const toolInputExcerpt = typeof body.tool_input_excerpt === "string"
         ? body.tool_input_excerpt.slice(0, 4096)

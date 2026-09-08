@@ -9,7 +9,7 @@ import { DocFreqMiniSearch } from "./doc-freq-index.js";
 import { rareTermFuzzy } from "./bm25-expansion.js";
 import { groupQueryTerms, groupedTokenize } from "./bm25-grouping.js";
 import { capBm25Query } from "./bm25-query-cap.js";
-import { abandonAfter } from "./deadline.js";
+import { abandonAfter, type LateSettleSample } from "./deadline.js";
 import { scopeEquals } from "./scope.js";
 import type { CueProjection } from "./cue-sidecar.js";
 
@@ -364,6 +364,20 @@ export interface RecallOptions {
    * Unset or 0 = wait indefinitely, the pre-#342 behaviour.
    */
   vector_deadline_ms?: number;
+  /**
+   * #489: Die SPÄTE Stichprobe eines aufgegebenen dichten Arms. Feuert nur nach
+   * einem Timeout, und erst wenn der weiterlaufende Arm wirklich fertig ist —
+   * also nachdem `recallHybrid` längst zurückgekehrt ist.
+   *
+   * Warum ein eigener Kanal und keine Stage: Der Wert kommt NACH `done` an. Ein
+   * Stage-Event danach würde einen bereits geschlossenen Fortschrittsstrom
+   * bedienen und der Banter-Engine einen Schritt nach dem Ende melden. Er ist
+   * auch keine Wartezeit — niemand hat sie bezahlt (siehe `LateSettleSample`).
+   *
+   * Null-Overhead, wenn nicht gesetzt: ohne Listener hängt `abandonAfter` gar
+   * keine Fortsetzung an.
+   */
+  onVectorLateSettle?: (sample: LateSettleSample) => void;
   /**
    * #362: Zeichen-Budget für die Query des LEXIKALISCHEN Arms. Unset/`0` =
    * Cap AUS (Default, siehe `bm25Query()` unten für die Begründung). Nur ein
@@ -1027,7 +1041,20 @@ export class SearchIndex {
     // call that gave up on it, so the NEXT call is warm. Cancelling here would
     // re-pay the cold load every single time.
     // #466: Der Timer startet HIER, beim echten Warten (siehe oben).
-    const vecOrTimeout = await abandonAfter(vectorArm, opts.vector_deadline_ms ?? 0);
+    // #489: Die Wanduhr des Aufrufers. `vector.search` misst ab dem Abfeuern und
+    // überlappt damit BM25 — gemessen 06.–08.09. ist dieser Überlapp in der
+    // Prompt-Lane praktisch alles: vector p50 336 ms gegen bm25 p50 329 ms, echte
+    // Wartezeit 5 ms. Wer die alte Zahl als Wartezeit las, sah 82,6 % gerissene
+    // Deadlines, wo in Wahrheit 14 von 323 Aufrufen ihre Frist rissen. Ab hier
+    // gibt es beide Größen nebeneinander: die alte Spanne unverändert (die Serie
+    // läuft seit Wochen), die Wartezeit als eigenes Feld.
+    const tVecWait = Date.now();
+    const vecOrTimeout = await abandonAfter(
+      vectorArm,
+      opts.vector_deadline_ms ?? 0,
+      opts.onVectorLateSettle,
+    );
+    const vectorWaitMs = Date.now() - tVecWait;
     const vectorArmTimedOut = vecOrTimeout === null;
     const errAfter = this.embeddings.runtimeHealth().errorCount;
     // Ein gewachsener Zähler heißt: über diesem await ist mindestens ein
@@ -1056,9 +1083,18 @@ export class SearchIndex {
     // `overlapped` sagt jedem Leser dieser Telemetrie, dass die Stages keine
     // Partition des Totals mehr sind — genau die Residuum-Rechnung, mit der
     // die Sequentialität nachgewiesen wurde, gilt danach nicht mehr.
+    // #489: `wait_ms` reitet auf derselben Stage mit, statt eine neue
+    // aufzumachen — die Stage-Namen sind eine geschlossene Union, an der
+    // Banter-Phrasen und Fortschrittsindex hängen, und eine zweite Stage für
+    // dieselbe Sache hätte den Fortschrittsbalken verlängert, ohne dass ein
+    // Schritt dazugekommen wäre. `durationMs` bleibt exakt die alte Spanne.
     stage.end("vector.search", tVec, {
       vector_hit_count: vectorTop.length,
       overlapped: true,
+      wait_ms: vectorWaitMs,
+      // Ohne dieses Bit ist eine Wartezeit auf der Deadline nicht von einem Arm
+      // zu unterscheiden, der zufällig genau dort fertig wurde.
+      timed_out: vectorArmTimedOut,
     });
 
     // #240/B1: an empty vector arm is NOT "degraded to BM25" — running RRF

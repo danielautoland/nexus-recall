@@ -44,6 +44,7 @@ import type {
   EvidenceDecisionEvent,
   MutationIncidentEvent,
   OllamaLifecycleEvent,
+  VectorLateSettleEvent,
   RecallBand,
   TurnSource,
   ReadDocumentEvent,
@@ -831,6 +832,37 @@ export class Telemetry {
       session_id: null,
       run_id: this.sessionId,
       ...payload,
+    });
+  }
+
+  /**
+   * #489 — die späte Stichprobe eines aufgegebenen dichten Arms.
+   *
+   * Kommt aus einer Fortsetzung, die feuert, NACHDEM der Recall beantwortet
+   * ist; deshalb eine eigene Zeile statt eines Feldes am `hook_recall`, das
+   * dann schon geschrieben wäre. `recall_id` verbindet beide.
+   *
+   * Die Session kommt vom Aufrufer mit — der Hook liefert die echte
+   * Claude-Session-id im Body, und ohne sie stempelt der Sink die Boot-UUID,
+   * unter der sich keine Lane mehr trennen lässt (dieselbe Regel wie bei
+   * `logHookRecall`).
+   */
+  async logVectorLateSettle(
+    payload: Omit<VectorLateSettleEvent, "kind" | "ts" | "session_id" | "late"> & {
+      session_id?: string;
+      client?: unknown;
+      hook_source?: unknown;
+    },
+  ): Promise<void> {
+    if (!this.enabled) return;
+    const { client, hook_source, session_id, ...rest } = payload;
+    await this.write({
+      kind: "vector_late_settle",
+      ts: new Date().toISOString(),
+      session_id: session_id ?? this.sessionId,
+      late: true,
+      ...rest,
+      dimensions: this.dimensionsFor({ client, hook_source, session_id }),
     });
   }
 

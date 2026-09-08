@@ -193,6 +193,12 @@ function makeStageCollector(forward?: StageListener): {
       if (typeof emitted === "number") timings.terms_emitted = emitted;
       if (typeof unique === "number") timings.terms_unique = unique;
     }
+    if (stage.name === "vector.search" && typeof stage.meta?.wait_ms === "number") {
+      // #489: dieselbe Wartezeit wie auf dem Hook-Pfad. `durationMs` bleibt die
+      // überlappende Spanne ab dem Abfeuern; erst beide Zahlen zusammen sagen,
+      // ob ein langsamer Recall am dichten Arm lag oder am lexikalischen.
+      timings.vector_wait_ms = stage.meta.wait_ms;
+    }
     if (stage.durationMs === undefined) return;
     const key = STAGE_TO_TIMING_KEY[stage.name];
     if (!key) return;

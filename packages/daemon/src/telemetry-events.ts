@@ -28,6 +28,7 @@ export type TelemetryEvent =
   | MutationIncidentEvent
   | EvidenceDecisionEvent
   | OllamaLifecycleEvent
+  | VectorLateSettleEvent
   | ReadDocumentEvent;
 
 /**
@@ -44,6 +45,21 @@ export interface RecallStageBuckets {
   query_parse_ms?: number;
   bm25_search_ms?: number;
   vector_search_ms?: number;
+  /**
+   * #489: Die WARTEZEIT des Aufrufers auf den dichten Arm — vom `await` bis
+   * Settle oder Aufgabe.
+   *
+   * `vector_search_ms` daneben ist die Wanduhr des Arms ab dem Abfeuern und
+   * überlappt `bm25_search_ms` (`overlapped: true`); die Stages sind seit #370
+   * bewusst keine Partition des Totals. Gemessen 06.–08.09.2026 klaffen die
+   * beiden Größen in der Prompt-Lane um zwei Größenordnungen auseinander:
+   * `vector_search_ms` p50 336 ms, echte Wartezeit p50 5 ms — der Embed
+   * versteckte sich hinter einem langen BM25-Lauf.
+   *
+   * Optional, weil Events vor #489 das Feld nicht haben. Fehlt es, ist die
+   * Wartezeit UNBEKANNT — nicht null und schon gar nicht `vector_search_ms`.
+   */
+  vector_wait_ms?: number;
   rrf_fuse_ms?: number;
   hops_expand_ms?: number;
   staleness_rank_ms?: number;
@@ -738,4 +754,39 @@ export interface OllamaLifecycleEvent extends Omit<BaseEvent, "session_id"> {
   last_embed_age_ms: number | null;
   /** Provider-Calls (query + backfill batches) seit Daemon-Boot. */
   embed_calls_since_boot: number | null;
+}
+
+/**
+ * #489 — das ECHTE Settle eines aufgegebenen dichten Arms.
+ *
+ * `abandonAfter` bricht nicht ab: Der Embed läuft nach dem Aufgeben weiter und
+ * wärmt das Modell für den nächsten Aufruf. Bisher wurde sein Ende nirgends
+ * notiert — die Stage endete an der Deadline, und eine Verteilung aus solchen
+ * Werten lernt genau die Grenze, die schon gilt (`session-context` las p95
+ * 312 ms gegen eine 350-ms-Deadline: keine Verteilung, eine Wand).
+ *
+ * EIGENE Zeile statt eines Feldes am `hook_recall`: Der Wert trifft ein,
+ * nachdem der Recall beantwortet und sein Event geschrieben ist. Ein Feld, das
+ * nachträglich in ein schon geschriebenes Event mutiert, wäre ein Rennen. Der
+ * Join läuft über `recall_id`.
+ *
+ * `late: true` steht redundant an jeder Zeile, weil das die eine Eigenschaft
+ * ist, die ein Leser nie übersehen darf: Diese Latenz hat NIEMAND bezahlt.
+ */
+export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
+  kind: "vector_late_settle";
+  /** Der Recall, dessen dichter Arm aufgegeben wurde — Join-Schlüssel zum
+   *  `hook_recall`-Event mit derselben `recall_id`. */
+  recall_id: string;
+  /** Die Frist, an der aufgegeben wurde. */
+  deadline_ms: number;
+  /** Was der Aufrufer tatsächlich gewartet hat (≈ `deadline_ms`) — mitgeführt,
+   *  damit die Zeile ohne Join lesbar ist. */
+  wait_ms: number;
+  /** Wie lange der Arm wirklich brauchte, ab demselben Nullpunkt wie `wait_ms`. */
+  settle_ms: number;
+  /** `false` = der Arm scheiterte am Ende doch. Dann ist `settle_ms` die Zeit
+   *  bis zum Fehler, kein Latenzwert für eine Deadline-Rechnung. */
+  settled: boolean;
+  late: true;
 }
