@@ -52,7 +52,7 @@ import {
   type RecallStage,
 } from "@bastra-recall/core";
 import { ALL_TOOL_DEFS } from "./tool-defs.js";
-import { mergeBatchResults } from "./recall-batch.js";
+import { mergeBatchResults, projectRecallResult } from "./recall-batch.js";
 import { claudeSessionPid, sessionFeedPath, STATUSLINE_DIR, reapStaleFeeds } from "./statusline-session.js";
 import { commandOf, parentPidOf } from "./reap-forwarders.js";
 import { DAEMON_VERSION } from "./version.js";
@@ -519,6 +519,16 @@ interface HookRecallDonePayload {
   vault_size: number;
   latency_ms: number;
   recall_id: string;
+  /** Die Ehrlichkeitsfelder des Daemons. Sie standen schon immer im
+   *  `done`-Event, fehlten aber hier — und was der Typ nicht kennt, hat die
+   *  Projektion unten nicht weitergereicht. Siehe `projectRecallResult`. */
+  weak_result?: boolean;
+  no_home?: boolean;
+  score_kind?: "rrf" | "bm25";
+  score_arms?: string[];
+  score_version?: string;
+  unfused?: boolean;
+  degraded?: string;
 }
 
 /** Dense-arm deadline for model-triggered recalls (see body.vector_deadline_ms). */
@@ -642,13 +652,10 @@ async function callRecallStreaming(
   // No `stages` block in the tool-result (#50): stage events already drove
   // the live progress channel via onStage; the timing map would just bloat
   // the context Claude reads. Debug timings live in /api/v1/recall + telemetry.
-  return {
-    query: body.query,
-    vault_size: payload.vault_size,
-    hits: payload.hits,
-    recall_id: payload.recall_id,
-    latency_ms: payload.latency_ms,
-  };
+  // Alles Übrige — Score-Raum, Armmenge, Formelversion, weak_result/no_home —
+  // reicht `projectRecallResult` durch: der Batch-Merge liest genau daraus
+  // seine Vergleichbarkeitssignatur, und ohne sie war jeder Batch „gemischt".
+  return projectRecallResult(body.query as string, payload);
 }
 
 // Feed is namespaced by the CC session (claude ancestor PID) so concurrent
