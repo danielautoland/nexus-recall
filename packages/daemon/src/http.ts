@@ -446,7 +446,9 @@ export async function startHttpServer(opts: HttpOptions): Promise<HttpHandle> {
     // #369, same pattern, three more lanes: /hook/stop, /hook/session,
     // /hook/todo. Their routes live in http-lane-routes.ts (file-size
     // convention) — the contract is identical to the four above.
-    if (dispatchLaneRoutes(req, res, method, url)) return;
+    // #490: the session lane among them takes the shared embedding warm-up,
+    // injected here the same way the prompt lane takes its prewarmer.
+    if (dispatchLaneRoutes(req, res, method, url, toolDeps.warmupEmbedding)) return;
 
     // #144: lightweight act-signal (PostToolUse:Bash). No recall, no injection —
     // only matches the excerpt against open loadedMemories episodes so

@@ -34,7 +34,7 @@
 // start against +0.8ms for the three leafs, on a fresh spawn per event.
 import { RRF_K, RRF_SCALE } from "@bastra-recall/core/rrf";
 import { projectForLane } from "./scope-filter.js";
-import { bandHits, requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE } from "./band-wording.js";
+import { bandHits, requiredHeadline, unfusedHeadline, CANDIDATES_ONLY_NOTICE, type UnfusedReason } from "./band-wording.js";
 import { isUnfused } from "./hook-recall-response.js";
 import { HINT_FRAME_NOTE, stripFenceMarkers } from "@bastra-recall/core/scrub";
 import { appendFile, mkdir } from "node:fs/promises";
@@ -53,6 +53,7 @@ import { clearShown } from "./session-state.js";
 import { formatPinnedBlock, dropPinnedFromRanked, type PinnedFloorLean } from "./pinned-block.js";
 import { reportHinted } from "./hook-hinted.js";
 import { hookClient } from "./hook-surface.js";
+import type { Residency, WarmupCoordinator } from "./embedding-warmup.js";
 import {
   postSessionContext, probeHealth,
   type ConventionLean, type RecallHit, type RecallResponse, type SessionContextResponse,
@@ -111,6 +112,27 @@ const SESSION_VECTOR_DEADLINE_MS = 350;
  * Fest verdrahtet wie die 350 darüber, aus demselben Grund.
  */
 const SESSION_HOOK_BUDGET_MS = 500;
+
+/**
+ * Die Deadline des dichten Arms, wenn das Modell NICHT im Speicher liegt
+ * (#490). 50 ms ist die Untergrenze, die `http-hook-routes.ts` überhaupt
+ * durchlässt — also „so kurz wie erlaubt".
+ *
+ * Die 350 ms darüber sind für ein WARMES Modell bemessen (33-54 ms gemessen am
+ * 08.09.2026). Ein kaltes braucht 585 ms und reißt sie sicher; sie warm-blind
+ * trotzdem zu verwarten heißt, 350 ms der 500-ms-Wanduhr zu verbrennen und am
+ * Ende dasselbe einarmige Ergebnis zu liefern. Also gar nicht erst warten: Der
+ * Arm wird nach 50 ms aufgegeben, die Lane antwortet lexikalisch und sagt das
+ * im Block (`unfusedHeadline(..., "cold-model")`).
+ *
+ * Und das Aufgeben ist hier die halbe Lösung, kein Verlust: `abandonAfter`
+ * bricht NICHT ab (deadline.ts). Der aufgegebene Embed lädt das Modell fertig
+ * — zusammen mit dem Warmup, den der Koordinator daneben startet. Ab dem
+ * zweiten Recall derselben Sitzung ist fusioniert.
+ *
+ * Fest verdrahtet wie die beiden Konstanten darüber, aus demselben Grund.
+ */
+const COLD_VECTOR_DEADLINE_MS = 50;
 const MUST_LOAD_SCORE = 100;
 const TOTAL_HINTS_CAP = 7;
 
@@ -129,11 +151,26 @@ export interface SessionPayload {
 export async function runSessionLane(
   payload: SessionPayload,
   selfBaseUrl: string,
+  /** #490: der gemeinsame Warmup. Fehlt er (keine Embeddings, Tests), verhält
+   *  sich die Lane exakt wie vor #490 — volle 350 ms für den dichten Arm. */
+  warmup?: WarmupCoordinator,
 ): Promise<string> {
   const startedAt = Date.now();
   const client = hookClient(payload);
 
   if (payload.hook_event_name !== "SessionStart") return "{}";
+
+  // #490: DER erste Sitzungskontakt. Ein Aufruf, zwei Wirkungen: Er sagt, ob
+  // das Modell im Speicher liegt, und startet — wenn nicht — den gemeinsamen
+  // Ladevorgang NEBEN diesem Recall statt darin. Mehrere gleichzeitig
+  // startende Sitzungen teilen sich dabei EINEN Warmup (Koordinator hält das
+  // In-Flight-Flag), sonst bekäme eine kalte Maschine einen Embed-Sturm genau
+  // dann, wenn sie am langsamsten ist. Kein Await: Die Lane wartet nie auf ein
+  // Modell-Laden (#490, ausdrücklich abgelehnt).
+  const residency: Residency | null = warmup?.onSessionContact() ?? null;
+  // „Unbekannt" zählt wie kalt: Ohne einen einzigen erfolgreichen Embed in
+  // diesem Prozess ist die einzige sichere Annahme die teure.
+  const denseCold = residency === "cold" || residency === "unknown";
 
   // #354: compact/clear/resume keep the session id but rebuild the transcript,
   // so every hint the per-session dedup was holding back is gone from the
@@ -211,8 +248,10 @@ export async function runSessionLane(
           // diese Zeilen wäre eine stille Produktänderung. `0` = ungekappt.
           caps: { conventions: 6, pinned: 0 },
           // Siehe SESSION_VECTOR_DEADLINE_MS: die Lane kauft ihrem dichten Arm
-          // mehr Zeit als der Hook-Default, und zwar nur für sich.
-          vector_deadline_ms: SESSION_VECTOR_DEADLINE_MS,
+          // mehr Zeit als der Hook-Default, und zwar nur für sich. #490: aber
+          // nur, wenn das Modell überhaupt im Speicher liegt — auf einem
+          // kalten wären die 350 ms sicher verbrannt (COLD_VECTOR_DEADLINE_MS).
+          vector_deadline_ms: denseCold ? COLD_VECTOR_DEADLINE_MS : SESSION_VECTOR_DEADLINE_MS,
           // Siehe SESSION_HOOK_BUDGET_MS: der Schatten-Router soll gegen die
           // Wanduhr DIESER Lane rechnen, nicht gegen die der Prompt-Lane.
           hook_budget_ms: SESSION_HOOK_BUDGET_MS,
@@ -575,7 +614,12 @@ export async function runSessionLane(
     // real signal here, and framing the whole block as noise would hide it.
     const answered = responses.filter((r) => r.resp !== null);
     const allWeak = answered.length > 0 && answered.every((r) => r.resp!.weak_result === true);
-    recallBlock = formatBlock(top, project, payload.source ?? null, allWeak, unfused, client);
+    recallBlock = formatBlock(
+      top, project, payload.source ?? null, allWeak, unfused, client,
+      // #490: Ehrlichkeit im Block. Einarmig UND das Modell war kalt → sag
+      // genau das, statt „semantic search is off" zu behaupten.
+      denseCold ? "cold-model" : "off",
+    );
     injected = pinnedHead + recallBlock + extras;
     out = JSON.stringify({
       hookSpecificOutput: {
@@ -602,6 +646,7 @@ export async function runSessionLane(
     latency_ms_total: Date.now() - startedAt,
     degraded_reason: degradedReason,
     score_unfused: unfused,
+    embedding_residency: residency,
     hint_tokens_est: Math.ceil(injected.length / 4),
     // #462: dieselbe Schätzung je Teil. Nichts injiziert = alle Teile 0.
     hint_tokens_by_part: tokensByPart(
@@ -683,6 +728,9 @@ export function formatBlock(
   weak = false,
   unfused = false,
   surface = "claude-code",
+  /** #490: WARUM einarmig. `cold-model` nur, wenn der Koordinator das Modell
+   *  als nicht resident gemeldet hat — sonst bleibt es bei der alten Aussage. */
+  unfusedReason: UnfusedReason = "off",
 ): string {
   const projAttr = project ? ` project="${escapeAttr(project)}"` : "";
   const srcAttr = source ? ` source="${escapeAttr(source)}"` : "";
@@ -697,7 +745,7 @@ export function formatBlock(
 
   if (unbanded.length > 0) {
     sections.push(
-      `${unfusedHeadline(`the ${project ?? "current"} session`)} ${CANDIDATES_ONLY_NOTICE} ` +
+      `${unfusedHeadline(`the ${project ?? "current"} session`, unfusedReason)} ${CANDIDATES_ONLY_NOTICE} ` +
         `load_memory(id) the ones relevant to what the user actually asks for. ` +
         `These are hints, not obligations.`,
     );
@@ -811,6 +859,11 @@ interface SessionHookTelemetry {
    *  Block bandet — die Telemetrie soll denselben Satz erzählen wie der Text,
    *  den der Nutzer sieht. */
   score_unfused: boolean;
+  /** #490: Lag das Embedding-Modell beim Sitzungsstart im Speicher? `cold`
+   *  und `unknown` heißen: Der dichte Arm bekam nur COLD_VECTOR_DEADLINE_MS
+   *  und der Warmup lief daneben an. `null` = kein Koordinator (keine
+   *  Embeddings). Fehlt auf Zeilen vor #490. */
+  embedding_residency: Residency | null;
 }
 
 export const SESSION_CONTEXT_PARTS = [

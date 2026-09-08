@@ -84,6 +84,7 @@ import { writeSharedVaultSize } from "./statusline-session.js";
 import { prewarmOllamaModel } from "./ollama-lifecycle.js";
 import { EmbeddingBreaker, BreakerGuardedProvider } from "./embedding-breaker.js";
 import { createEmbeddingPrewarmer } from "./embedding-prewarm.js";
+import { createEmbeddingWarmup } from "./embedding-warmup.js";
 import { ensureOllamaServerForDaemon } from "./cli/ollama.js";
 import { spawnSync } from "node:child_process";
 
@@ -421,6 +422,30 @@ async function main(): Promise<void> {
   // half-open probe) — the same boundary every other embed crosses. And
   // availability is asked exactly as the recall path asks it: an attached
   // embedding index, and a breaker that is not open (half-open passes).
+  // #490: the shared warm-up. One object per provider+model — the daemon
+  // resolves exactly one provider, so this process-wide instance IS the
+  // per-model one. It owns two things no single trigger can own: the residency
+  // answer the session lane asks for instead of racing blind, and the
+  // in-flight flag that makes several sessions starting at once share ONE
+  // load instead of hitting a cold machine with an embed storm.
+  const warmupEmbedding = createEmbeddingWarmup({
+    // `ollama` is set exactly when the resolved provider is an Ollama one —
+    // the only case with a model that goes cold and that our per-request
+    // keep_alive (#78) governs. A hosted API keeps no model of ours resident,
+    // so warming it is one egress request for nothing.
+    hostedProvider: () => rawProvider !== null && ollama === undefined,
+    denseArmAvailable: () => search.hasEmbeddings() && embeddingBreaker?.state(Date.now()) !== "open",
+    // Provider-agnostic and free (#490): the last successful provider call.
+    // Deliberately not an Ollama /api/ps probe.
+    lastOkAt: () => embIdxForHealth?.runtimeHealth().lastOkAt ?? null,
+    warm: async () => {
+      await guardedProvider?.embed(["warm"]);
+    },
+    onError: () => {
+      // Silent by design, same as the prewarm below.
+    },
+  });
+
   const prewarmEmbedding = createEmbeddingPrewarmer({
     // `ollama` is set exactly when the resolved provider is an Ollama one —
     // the only case with a model that goes cold and that our per-request
@@ -428,8 +453,14 @@ async function main(): Promise<void> {
     // so warming it is one egress request per minute of work for nothing.
     hostedProvider: () => rawProvider !== null && ollama === undefined,
     denseArmAvailable: () => search.hasEmbeddings() && embeddingBreaker?.state(Date.now()) !== "open",
+    // #490: through the coordinator, not straight at the provider. The turn
+    // start stays the trigger and its telemetry keeps meaning "the turn fired
+    // the warm-up path"; whether that path then embeds is the coordinator's
+    // call — it now KNOWS the model is resident where the 60s debounce could
+    // only assume it, and it will not start a second load while one is
+    // already in flight for another session.
     warm: async () => {
-      await guardedProvider?.embed(["warm"]);
+      warmupEmbedding.ensureWarm();
     },
     onError: () => {
       // Silent by design: the prewarm is an optimisation, and a provider that
@@ -459,6 +490,9 @@ async function main(): Promise<void> {
     evidenceGateEnabled: () => evidenceGateOn,
     // #361: the prompt lane fires this at turn start (fire-and-forget).
     prewarmEmbedding,
+    // #490: the session lane asks this for residency and lets it start the
+    // load beside the session-start recall.
+    warmupEmbedding,
   };
 
   // Idle self-shutdown: the shared daemon is spawned on demand by the
