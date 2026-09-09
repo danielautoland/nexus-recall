@@ -163,12 +163,18 @@ export interface VectorLateSettleEvent extends BaseEvent, DimensionedEvent {
   cap_reason?: "profile-empty" | "lane-wall-clock" | "lane-too-short" | "floor" | "max-deadline" | "none";
   residency?: "warm" | "cold" | "unknown" | "hosted";
   /** `true` = auch die gelernte Frist wäre gerissen (`settle_ms` über ihr).
-   *  #495: Fehlt, wenn das Profil gar keinen dichten Arm gestartet hätte —
-   *  siehe `shadow_would_run`. */
+   *  #499: Steht jetzt auch auf `lane-too-short`-Zeilen — eine Prognose von 0
+   *  ist „nicht weiter warten", und ein spät settelnder Arm reißt sie
+   *  definitionsgemäß. Fehlt nur ohne Schattenprofil. */
   shadow_timeout?: boolean;
-  /** #495: Hätte das Profil überhaupt einen dichten Arm gestartet? `false` bei
-   *  `predicted_deadline_ms: 0`. */
+  /** #495/#499: Hätte das Profil überhaupt einen dichten Arm gestartet? Seit
+   *  #499 konstant `true` — der Arm läuft vor BM25, die Prognose kommt danach.
+   *  Siehe `shadow_would_wait`. */
   shadow_would_run?: boolean;
+  /** #499: Hätte das Profil an dieser Stelle noch gewartet? `false` bei
+   *  `predicted_deadline_ms: 0` (`lane-too-short`) — der Arm läuft, wird aber
+   *  nicht mehr abgewartet. */
+  shadow_would_wait?: boolean;
   /**
    * #493: das ERGEBNIS des aufgegebenen Arms, nicht nur seine Laufzeit.
    *

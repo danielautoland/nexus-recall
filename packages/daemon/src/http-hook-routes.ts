@@ -685,16 +685,14 @@ export async function runHookRecall(
                   residency_source: deadlineShadowRow.residency_source,
                   residency_estimated: deadlineShadowRow.residency_estimated,
                   shadow_would_run: deadlineShadowRow.shadow_would_run,
-                  // #495: Nur ein Arm, den das Profil überhaupt gestartet
-                  // hätte, kann seine Frist reißen. Bei einer Prognose von 0
-                  // (`lane-too-short`) ist die Antwort „kein dichter Arm",
-                  // nicht „Timeout nach 0 ms".
-                  ...(deadlineShadowRow.shadow_would_run
-                    ? {
-                        shadow_timeout:
-                          sample.settle_ms > deadlineShadowRow.predicted_deadline_ms,
-                      }
-                    : {}),
+                  shadow_would_wait: deadlineShadowRow.shadow_would_wait,
+                  // #499: Der Vergleich steht auf JEDER Zeile. Bis hierher
+                  // fehlte er bei einer Prognose von 0, weil die als „kein
+                  // dichter Arm" gelesen wurde — der Arm lief aber, er wäre
+                  // nur nicht mehr abgewartet worden. Genau dann ist die
+                  // Antwort auch klar: Ein Arm, der erst spät settelt, reißt
+                  // eine Frist von null definitionsgemäß.
+                  shadow_timeout: sample.settle_ms > deadlineShadowRow.predicted_deadline_ms,
                 }
               : {}),
             ...(hookSessionId ? { session_id: hookSessionId } : {}),

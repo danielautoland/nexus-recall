@@ -19,8 +19,8 @@
  * Ändert an keiner Antwort etwas: reiner Schatten, bis das Zeit-Tor aus #492
  * geöffnet ist.
  */
-import type { LateSettleSample } from "@bastra-recall/core";
-import type { ResidencyReading } from "./embedding-warmup.js";
+import { PROVIDER_COLD_LOAD_MS, type LateSettleSample } from "@bastra-recall/core";
+import type { Residency, ResidencyReading } from "./embedding-warmup.js";
 import type { DeadlineShadow } from "./latency-profile.js";
 import type { DeadlineShadowRow } from "./telemetry-events.js";
 
@@ -50,6 +50,40 @@ export interface VectorArmReport {
  */
 export function isLatencySample(report: VectorArmReport | null | undefined): boolean {
   return report?.outcome === "hits";
+}
+
+/**
+ * Unter WELCHER Residenz diese Stichprobe abgelegt gehört (#499).
+ *
+ * Der Defekt: Prognose und Stichprobe teilten sich die Vorab-Lesung. Die ist
+ * für die Prognose richtig — auf ihr wurde entschieden — und für die
+ * Stichprobe falsch, sobald der Provider hinterher etwas anderes belegt.
+ * Livezeile der ersten Messnacht (09.09.2026):
+ *
+ *   residency: cold   residency_source: last-ok   residency_estimated: true
+ *   provider_load_ms: 0.800791   cold_start_observed: false
+ *   actual_settle_ms: 85   bucket: cold|xs|2-3
+ *
+ * Ollamas `load_duration` ist genau der Beleg: 0,8 ms lädt kein Modell, das
+ * nicht schon im Speicher liegt. Trotzdem landete der Call im kalten Eimer —
+ * und `cold|xs|2-3 = [85]` war der einzige kalte Eintrag im ganzen Profil.
+ * Die kalte Trainingsmenge bestand damit zu 100 % aus einem warmen Call, und
+ * der hierarchische Rückfall (#493) hätte jeden echten Kaltstart gegen 85 ms
+ * prognostiziert, wo real 525 ms stehen.
+ *
+ * Die Schwelle ist dieselbe, an der auch `cold_start_observed` und Tor 3 aus
+ * #492 hängen ({@link PROVIDER_COLD_LOAD_MS}) — eine Residenzgrenze, nicht
+ * zwei. Ohne gemeldeten Ladewert bleibt es bei der Vorab-Lesung: keine
+ * Grundwahrheit, keine Umbuchung. Und `hosted` kennt kein Modell, das laden
+ * könnte; dort gibt es nichts zu klassifizieren.
+ */
+export function sampleResidency(
+  reading: ResidencyReading,
+  providerLoadMs: number | null | undefined,
+): Residency {
+  if (reading.state === "hosted") return "hosted";
+  if (typeof providerLoadMs !== "number" || !Number.isFinite(providerLoadMs)) return reading.state;
+  return providerLoadMs >= PROVIDER_COLD_LOAD_MS ? "cold" : "warm";
 }
 
 export interface ObserveShadowInput {
@@ -123,17 +157,24 @@ export function observeDeadlineShadow(input: ObserveShadowInput): DeadlineShadow
   // trugen — eine Schätzung neben einer vorhandenen Messung.
   if (report && report.provider_load_ms !== null) shadow.observeLoad(report.provider_load_ms);
 
+  // #499: Hätte das gelernte Profil an dieser Stelle NOCH GEWARTET? Das ist
+  // die Frage, die eine Prognose von 0 beantwortet — nicht „gäbe es einen
+  // Arm". Den gibt es auf jeder Zeile, die es bis hierher schafft: Der dichte
+  // Arm wird vor BM25 abgefeuert, und `http-hook-routes.ts` baut ohne ihn gar
+  // keine Schattenzeile (kein Provider, offener Breaker oder `lexical_only`
+  // aus #494 heißt: kein `shadowKey`, keine Zeile).
+  const shadowWouldWait = derived.predicted_deadline_ms > 0;
   // Ein Arm, der gesettelt IST, ist seine eigene Gesamtzeit; nur der
   // aufgegebene braucht die späte Stichprobe (#489), und die trifft später
   // ein. Gelernt wird ausschließlich ein Arm mit echten Treffern.
-  // #495: Ein übersprungener Arm ist kein Timeout — siehe `shadow_would_run`
-  // unten.
-  const shadowWouldRun = derived.predicted_deadline_ms > 0;
   const settledInCall = !input.timedOut;
   if (settledInCall && isLatencySample(report)) {
     shadow.profile.record({
       key,
-      residency: residency.state,
+      // #499: die Residenz aus dem PROVIDERERGEBNIS, nicht die Vorab-Lesung —
+      // siehe {@link sampleResidency}. Die Prognose oben steht weiter auf der
+      // Vorab-Lesung, weil auf ihr entschieden wurde.
+      residency: sampleResidency(residency, report?.provider_load_ms),
       queryChars: input.queryChars,
       concurrency: input.concurrency,
       totalMs: input.vectorMs,
@@ -171,24 +212,34 @@ export function observeDeadlineShadow(input: ObserveShadowInput): DeadlineShadow
     // sie in der `vector_late_settle`-Zeile mit derselben `recall_id` — dort
     // trägt sie dieselbe Prognose noch einmal, damit die Auswertung ohne Join
     // auskommt.
-    // #495: Hätte das Profil überhaupt einen dichten Arm gestartet? Eine
-    // Prognose von 0 ist ein SKIP (`cap_reason: "lane-too-short"`, seit #494
-    // die ehrliche Antwort unter der Mindestfrist) und keine Frist von null
-    // Millisekunden. Ohne dieses Feld meldete der Schatten für einen
-    // übersprungenen Arm einen Timeout, sobald auch nur 1 ms gewartet wurde —
-    // und Kriterium 4 aus #492 zählte Skips als Fristverletzungen.
-    shadow_would_run: shadowWouldRun,
-    ...(settledInCall && shadowWouldRun
+    // #495/#499: Der Arm ist gelaufen — auf jeder Zeile, die es hierher
+    // schafft. Das Feld bleibt, weil die Auswertung und die
+    // `vector_late_settle`-Zeile es tragen; seine Antwort ist seit #499
+    // konstant `true`, und die interessante Unterscheidung steht daneben.
+    shadow_would_run: true,
+    // #499: Hätte das Profil an dieser Stelle noch GEWARTET? `false` heißt:
+    // Der Arm lief, aber die gelernte Politik hätte ihn nicht mehr abgewartet
+    // und spät auslaufen lassen. Das war bis hierher als `shadow_would_run:
+    // false` verbucht, also als „kein Arm" — und damit fielen genau die
+    // `lane-too-short`-Zeilen ohne `shadow_timeout` aus Kriterium 4 aus
+    // (3 von 21 der ersten Messnacht, alle drei fusioniert).
+    shadow_would_wait: shadowWouldWait,
+    ...(settledInCall
       ? {
           actual_settle_ms: input.vectorMs,
           // Hätte die GELERNTE Frist gehalten? Sie läuft ab demselben Nullpunkt
           // wie die Wartezeit, also ist der Vergleich genau dieser. Das ist die
           // Timeout-Quote, gegen die Kriterium 4 aus #492 die feste Zahl prüft.
+          //
+          // #499: Auch bei einer Prognose von 0, und dort ist der Vergleich
+          // sogar besonders aussagekräftig: Er sagt, ob die gelernte Politik
+          // diesen Recall verloren hätte. Für die drei Zeilen der ersten Nacht
+          // (Wartezeit 6, 2 und 5 ms) lautet die Antwort `true` — sie
+          // fusionierten unter der festen Zahl und hätten es unter der
+          // gelernten nicht getan.
           shadow_timeout: input.waitMs > derived.predicted_deadline_ms,
         }
-      : settledInCall
-        ? { actual_settle_ms: input.vectorMs }
-        : {}),
+      : {}),
   };
 }
 
@@ -223,7 +274,12 @@ export function recordLateSettleSample(
   if (!usable) return;
   shadow.profile.record({
     key,
-    residency: residency.state,
+    // #499: wie im Aufrufpfad — der Providerbeleg klassifiziert die
+    // Stichprobe, nicht die Vorab-Lesung. Gerade hier zählt es doppelt: Diese
+    // Zeilen sind die einzigen, die den kalten Schwanz sehen, also entscheidet
+    // genau diese Stelle darüber, ob der kalte Eimer je echte kalte Daten
+    // bekommt.
+    residency: sampleResidency(residency, sample.provider_load_ms),
     queryChars: row.query_chars,
     concurrency: row.concurrency,
     totalMs: row.overlap_ms + sample.settle_ms,

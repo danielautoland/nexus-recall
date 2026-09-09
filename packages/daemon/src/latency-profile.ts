@@ -165,8 +165,24 @@ const PERSIST_DEBOUNCE_MS = 5_000;
  * kann. Der Preis ist ehrlich: Auch die wenigen Stichproben NACH #493 gehen
  * mit. Vier Stichproben sind kein Verlust, gegen den sich eine Sonderregel
  * lohnt.
+ *
+ * 2 → 3 (#499): wieder die BEDEUTUNG, wieder die Residenz. Bis hierher ging
+ * die Stichprobe in den Eimer der Residenz, die VOR dem Aufruf gelesen wurde —
+ * auch dann, wenn der Provider hinterher das Gegenteil belegt hatte. Livezeile
+ * der ersten Nacht: `residency: cold, residency_source: last-ok,
+ * residency_estimated: true` bei `provider_load_ms: 0.800791` und
+ * `cold_start_observed: false`, abgelegt als `cold|xs|2-3` mit 85 ms. Der Call
+ * war nach dem Beleg des Providers warm.
+ *
+ * Das war kein Ausreißer im Rauschen: `cold|xs|2-3 = [85]` war der EINZIGE
+ * kalte Eintrag im ganzen Profil, die kalte Trainingsmenge bestand also zu
+ * 100 % aus einem warmen Call — im Eimer, um den sich der ganze Entwurf dreht.
+ * Ein Zeit-Cutoff könnte diesen Eintrag nicht sauber treffen (er ist jünger
+ * als die frischen warmen), und eine Umbuchung beim Laden gäbe es nicht: In
+ * der Datei steht nur die Dauer, nicht der Providerbeleg, aus dem die richtige
+ * Residenz folgte. Die Version ist deshalb die einzige Grenze, die hier hält.
  */
-const FILE_VERSION = 2;
+const FILE_VERSION = 3;
 
 /**
  * Längenband der Eingabe. Die Grenzen liegen dort, wo die Lanes liegen:
@@ -216,13 +232,34 @@ export function bucketKey(
  *   `lane-wall-clock` — die Lane hatte weniger Wanduhr übrig als das Profil
  *                       wollte. Die Wanduhr ist ein Vertrag, keine Schätzung.
  *   `lane-too-short`  — die Lane hatte weniger als die Mindestfrist übrig.
- *                       Antwort: KEIN dichter Arm, `predicted_deadline_ms: 0`.
- *                       Bis #494 gab die Ableitung hier trotzdem 50 zurück und
- *                       ein Test schrieb das fest — im Schatten folgenlos, ab
- *                       #492 ein Vertragsbruch: eine Frist, die länger ist als
- *                       die Wanduhr, die sie decken soll, ist keine Frist. Und
- *                       unterhalb der Mindestfrist ist die richtige Antwort
- *                       nicht eine kürzere Deadline, sondern gar keine.
+ *                       Antwort: NICHT WEITER WARTEN,
+ *                       `predicted_deadline_ms: 0`.
+ *
+ *                       #499: „nicht weiter warten" und ausdrücklich NICHT
+ *                       „kein Arm". Der dichte Arm wird VOR BM25 abgefeuert
+ *                       (`search.ts`, `searchDetailed` vor `mini.search`);
+ *                       wenn diese Ableitung läuft, ist er längst in Flug und
+ *                       lässt sich nicht mehr ungeschehen machen. Drei
+ *                       Prompt-Zeilen der ersten Messnacht (09.09.2026):
+ *                       `predicted 0 / lane-too-short / basis residency-wide /
+ *                       settle 279, 208, 320 ms / timed_out false`. Die
+ *                       zusätzliche Wartezeit betrug rekonstruiert 6, 2 und
+ *                       5 ms, und alle drei fusionierten. Wer die 0 als „kein
+ *                       Arm" liest, wirft genau diese Zeilen aus der
+ *                       Auswertung — 3 von 21 der ersten Nacht.
+ *
+ *                       FÜR #492, wenn diese Zahl scharf wird: Sie darf NICHT
+ *                       einfach an `abandonAfter()` gehen. Dort heißt `0`
+ *                       „Deadline aus, unbegrenzt warten" (`deadline.ts:88`) —
+ *                       also exakt das Gegenteil. Der scharfe Pfad braucht
+ *                       einen ausdrücklichen non-blocking Join: einmal
+ *                       nachsehen, ob der Arm schon gesettelt ist, sonst ohne
+ *                       Warten weiter und ihn spät auslaufen lassen.
+ *
+ *                       Bis #494 gab die Ableitung hier 50 zurück und ein Test
+ *                       schrieb das fest — im Schatten folgenlos, ab #492 ein
+ *                       Vertragsbruch: eine Frist, die länger ist als die
+ *                       Wanduhr, die sie decken soll, ist keine Frist.
  *   `floor`           — das Profil wollte weniger als die 50 ms, die der
  *                       Endpunkt zulässt.
  *   `none`            — ungedeckelt, die Zahl kommt direkt aus dem Profil.
@@ -242,7 +279,8 @@ export type CapReason =
 
 export interface DerivedDeadline {
   /** Die Zahl, die gegolten HÄTTE. Ändert in diesem Auftrag nichts. `0` heißt
-   *  KEIN dichter Arm — siehe `lane-too-short` in {@link CapReason}. */
+   *  NICHT WEITER WARTEN — der Arm läuft, es wird nur nichts mehr auf ihn
+   *  gewartet (#499). Siehe `lane-too-short` in {@link CapReason}. */
   predicted_deadline_ms: number;
   cap_reason: CapReason;
   /** Auf welcher Ebene des hierarchischen Rückfalls die Zahl steht (siehe
@@ -281,6 +319,17 @@ export interface DeriveInput {
 
 export interface RecordInput {
   key: string;
+  /**
+   * Die Residenz, unter der diese Stichprobe ABGELEGT wird — und das ist eine
+   * andere Frage als die aus {@link DeriveInput}.
+   *
+   * #499: Dort zählt, worauf ENTSCHIEDEN wurde (die Vorab-Lesung, notfalls
+   * geschätzt); hier zählt, was WAR. Wenn der Provider für diesen Call einen
+   * Ladewert gemeldet hat, klassifiziert der die Stichprobe — sonst trainiert
+   * der kalte Eimer auf warmen Calls. Die Umrechnung macht
+   * `sampleResidency()` in `deadline-shadow-row.ts`, wo beide Größen
+   * zusammenkommen.
+   */
   residency: Residency;
   queryChars: number;
   concurrency: number;
@@ -488,9 +537,10 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
 
     derive(input: DeriveInput): DerivedDeadline {
       const bk = bucketKey(input.residency, input.queryChars, input.concurrency);
-      // #494: Unter der Mindestfrist gibt es keinen Arm — siehe
-      // `lane-too-short` in {@link CapReason}. Einmal oben festgestellt, weil
-      // beide Ausgänge unten (leeres Profil und die Deckelung) daran hängen.
+      // #494/#499: Unter der Mindestfrist wird nicht weiter gewartet — siehe
+      // `lane-too-short` in {@link CapReason}. Der Arm selbst ist zu diesem
+      // Zeitpunkt schon unterwegs. Einmal oben festgestellt, weil beide
+      // Ausgänge unten (leeres Profil und die Deckelung) daran hängen.
       const laneTooShort =
         Number.isFinite(input.laneRemainingMs) && input.laneRemainingMs < MIN_DEADLINE_MS;
       const buckets = profiles.get(input.key);
@@ -524,7 +574,10 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
         // liefert die erste Stichprobe.
         return {
           // #494: Auch der Kaltstart, der seine eigene Kalibrierung bezahlt,
-          // braucht dafür Wanduhr. Ist keine mehr da, ist er kein Arm.
+          // braucht dafür Wanduhr. Ist keine mehr da, wird nicht auf ihn
+          // gewartet — er läuft weiter und liefert die Stichprobe trotzdem
+          // (#499: die 0 ist der Verzicht aufs Warten, nicht der Verzicht auf
+          // den Arm).
           predicted_deadline_ms: laneTooShort ? 0 : MIN_DEADLINE_MS,
           cap_reason: laneTooShort ? "lane-too-short" : "profile-empty",
           basis: "empty",
@@ -559,6 +612,11 @@ export function createLatencyProfile(opts: LatencyProfileOptions = {}): LatencyP
       // decken sollte. Im Schatten folgenlos, nach #492 ein Vertragsbruch.
       // Unterhalb der Mindestfrist ist die Antwort kein kürzerer Arm, sondern
       // keiner: der Endpunkt nähme eine Frist unter 50 ms ohnehin nicht an.
+      // #499: `0` heißt hier NICHT WEITER WARTEN. Der Arm ist längst in Flug
+      // (vor BM25 abgefeuert), also kann diese Zahl ihn nicht verhindern —
+      // sie kann nur sagen, dass sich das Warten nicht mehr lohnt. Wer sie
+      // scharf schaltet, braucht dafür einen non-blocking Join und darf sie
+      // nicht an `abandonAfter()` durchreichen (dort ist `0` „unbegrenzt").
       if (laneTooShort) {
         predicted = 0;
         cap = "lane-too-short";

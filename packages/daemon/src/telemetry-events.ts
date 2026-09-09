@@ -596,17 +596,35 @@ export interface DeadlineShadowRow {
   /**
    * #495: Hätte das Profil überhaupt einen dichten Arm GESTARTET?
    *
-   * `false` = nein (`predicted_deadline_ms: 0`, seit #494 die ehrliche Antwort
-   * unter der Mindestfrist). Dann gibt es auch keinen `shadow_timeout`: Ein
-   * übersprungener Arm ist kein gerissener. Ohne diese Trennung meldete der
-   * Schatten bei `cap_reason: "lane-too-short"` einen Timeout, sobald 1 ms
-   * gewartet wurde, und Kriterium 4 aus #492 verglich Skips mit Timeouts.
+   * #499: Seit dieser Runde konstant `true`, und das ist kein Schönreden,
+   * sondern die Korrektur eines Denkfehlers. Der dichte Arm wird VOR BM25
+   * abgefeuert; die Prognose entsteht danach und kann ihn nicht mehr
+   * verhindern. Eine Schattenzeile ohne Arm gibt es zudem gar nicht — ohne
+   * Provider, mit offenem Breaker oder bei `lexical_only` (#494) wird keine
+   * gebaut. Das Feld bleibt, weil die Auswertung des laufenden Fensters es
+   * liest; die Unterscheidung, die es sein wollte, heißt jetzt
+   * {@link DeadlineShadowRow.shadow_would_wait}.
    */
   shadow_would_run: boolean;
+  /**
+   * #499: Hätte das Profil an dieser Stelle noch GEWARTET?
+   *
+   * `false` = nein (`predicted_deadline_ms: 0`, `cap_reason:
+   * "lane-too-short"`): Der Arm läuft, die gelernte Politik hätte ihn aber
+   * nicht mehr abgewartet, sondern spät auslaufen lassen. Bis #499 stand
+   * dieser Fall als `shadow_would_run: false` in der Zeile und trug keinen
+   * `shadow_timeout` — 3 von 21 Zeilen der ersten Messnacht fielen damit aus
+   * Kriterium 4 heraus, obwohl alle drei unter der festen Zahl fusioniert
+   * hatten.
+   */
+  shadow_would_wait: boolean;
   /** Hätte die GELERNTE Frist gehalten? `true` = sie wäre gerissen. Zusammen
    *  mit `timed_out` ist das der direkte Vergleich der beiden Timeout-Quoten,
-   *  den Kriterium 4 aus #492 verlangt. Fehlt, wenn `shadow_would_run` falsch
-   *  ist. */
+   *  den Kriterium 4 aus #492 verlangt. #499: Steht auf JEDER im Aufruf
+   *  gesettelten Zeile, auch bei `shadow_would_wait: false` — dort heißt
+   *  `true`, dass die gelernte Politik diese Fusion verloren hätte. Fehlt nur
+   *  beim aufgegebenen Arm, dessen Wirklichkeit erst in `vector_late_settle`
+   *  feststeht. */
   shadow_timeout?: boolean;
   /**
    * #493: Wie der dichte Arm ausgegangen ist.

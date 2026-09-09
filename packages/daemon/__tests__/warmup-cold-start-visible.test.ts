@@ -17,7 +17,11 @@
  *     `coldStartObserved: true`, samt Auslöser und der Klammer des
  *     Sitzungsstarts, der ihn ausgelöst hat.
  *  2. Das Profil verwirft Stichproben aus der Semantik vor #493 (Dateiversion).
- *  3. Ein ÜBERSPRUNGENER Arm meldet keinen Timeout. Ein Skip ist kein Riss.
+ *  3. Der Schatten trennt „hätte gewartet" von „hätte nicht weiter gewartet".
+ *     #495 stand hier „ein Skip ist kein Riss"; #499 hat an Livezeilen
+ *     gemessen, dass es den Skip auf diesem Pfad gar nicht gibt — der Arm
+ *     läuft vor BM25 los. Die Zusage lautet seither: eine Prognose von 0
+ *     nimmt der Zeile ihren Timeout-Vergleich NICHT.
  *  4. Auch ein WARMER Ladewert landet im Lifecycle-Zustand und macht die
  *     Residenz gemessen statt geschätzt.
  *
@@ -217,14 +221,15 @@ function schatten(now: () => number): {
   };
 }
 
-test("#495: ein übersprungener Arm meldet KEINEN Timeout", () => {
+test("#499: ohne Restbudget wird nicht weiter gewartet — aber der Arm lief", () => {
   const c = uhr();
   const { shadow } = schatten(c.now);
 
-  // Die Lane hat weniger übrig als die Mindestfrist: Seit #494 ist die
-  // ehrliche Antwort „kein dichter Arm" (`predicted_deadline_ms: 0`), nicht
-  // „eine Frist von 0 ms". Ein Arm, der gar nicht gestartet wäre, kann keine
-  // Frist reißen — vorher genügte 1 ms Wartezeit für ein `shadow_timeout`.
+  // Die Lane hat weniger übrig als die Mindestfrist: Die Prognose ist 0.
+  // #495 las das als „kein dichter Arm"; #499 hat gemessen, dass es das nicht
+  // sein kann — der Arm wird VOR BM25 abgefeuert und ist hier längst in Flug.
+  // 0 heißt deshalb „nicht weiter warten", und der Timeout-Vergleich bleibt
+  // gültig statt zu fehlen.
   const row = observeDeadlineShadow({
     shadow,
     key: KEY,
@@ -243,8 +248,9 @@ test("#495: ein übersprungener Arm meldet KEINEN Timeout", () => {
 
   assert.equal(row.cap_reason, "lane-too-short");
   assert.equal(row.predicted_deadline_ms, 0);
-  assert.equal(row.shadow_would_run, false, "das Profil hätte gar keinen Arm gestartet");
-  assert.equal(row.shadow_timeout, undefined, "ein Skip ist kein Riss");
+  assert.equal(row.shadow_would_run, true, "der Arm lief — er wurde vor BM25 abgefeuert");
+  assert.equal(row.shadow_would_wait, false, "gewartet hätte die gelernte Politik nicht mehr");
+  assert.equal(row.shadow_timeout, true, "12 ms Wartezeit gegen „nicht weiter warten“");
   assert.equal(row.actual_settle_ms, 12, "die Wirklichkeit bleibt trotzdem in der Zeile");
 });
 
@@ -278,6 +284,7 @@ test("#495: ein gestarteter Arm behält seinen Timeout-Vergleich", () => {
   });
 
   assert.equal(row.shadow_would_run, true);
+  assert.equal(row.shadow_would_wait, true, "mit Restbudget hätte die Politik gewartet");
   assert.equal(row.shadow_timeout, true, "400 ms Wartezeit gegen eine Frist um 70 ms");
 });
 
